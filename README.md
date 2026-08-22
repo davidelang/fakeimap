@@ -19,6 +19,35 @@ source ./env                 # umask 002 + group refresh via ./refresh-shell
 ./run-grok-planner
 ```
 
+## Clone a new host
+
+Create `git_home/<new-name>/` (branch `orchestration`) plus a `master/` worktree
+from this example. Works from this tree, from `git_home`, or with `--source`.
+
+```bash
+./clone-orchestration-project <new-name>
+# from git_home:
+./orchestration-example/clone-orchestration-project <new-name>
+# from elsewhere:
+/path/to/orchestration-example/clone-orchestration-project --source /path/to/orchestration-example <new-name>
+./clone-orchestration-project --dry-run <new-name>   # print plan only
+```
+
+Uses `sudo` / `sudo -u <primary_user>` when the caller cannot write `git_home`
+or fix DAC. Does not create Unix users and does not write sudoers.
+
+`./run-grok-*` from `master/` (or any worktree) needs `orch_root=` in that
+worktree’s `project.config`; the clone tool seeds dest and `master/`. Repair an
+existing dest without re-cloning:
+
+```bash
+./clone-orchestration-project --repair /path/to/host
+```
+
+`--repair` also refreshes dest DAC so `ai-planner` can exec `agent-landlock` (needs
+other +x; planner is not in `ai-code`). A sudo password prompt may still appear:
+host sudoers NOPASSWD lists the grok binary, not the landlock wrap.
+
 Landlock (mutation-only) wraps agents via `agent-landlock` from `run-grok*`.
 
 ## Drift report

@@ -12,7 +12,7 @@ Follow `new_agent_prompt` (in session). Then **read with tools**:
 4. Full `project-facts.md` (hygiene)
 5. `standard-plan-compliance-block.md` (cite in plans by path — **never paste**)
 6. `dev-ai-interaction/research/plan-style-guide.md`
-7. Scan `dev-ai-interaction/implementation-failure-logs/` on new cycle / fresh load
+7. On fresh load / new cycle with **no** user problem statement: `ls` names only under `dev-ai-interaction/implementation-failure-logs/`. Put those names in the ack. **Do not read** the files. Then **STOP**.
 
 Standing template continues in `.grok/prompts/dedicated-planner.md` (also in this session pack).
 

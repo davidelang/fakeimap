@@ -85,7 +85,13 @@ scoped_mode_fix_changed_paths() {
       # Keep setgid if present; ensure ug+rwx (no recursive chown)
       chmod ug+rwx "$path" 2>/dev/null || true
     elif [ -f "$path" ] || [ -L "$path" ]; then
-      # PERMISSIONS_MODEL: planner-readable via o+r when group is ai-code
+      # PERMISSIONS_MODEL: planner-readable via o+r when group is ai-code.
+      # 100755 must also get o+x (planner is not in ai-code; 774 is EACCES).
+      local idxmode
+      idxmode=$(git ls-files -s -- "$path" 2>/dev/null | awk '{print $1; exit}')
+      if [ "$idxmode" = "100755" ]; then
+        chmod a+x "$path" 2>/dev/null || true
+      fi
       chmod ug+rw,o+r "$path" 2>/dev/null || true
     fi
   done <<< "$list"

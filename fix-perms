@@ -355,6 +355,7 @@ ensure_worktree_scripts_executable() {
     set-worktree-perms set-sandbox-perms
     run-grok run-grok-master run-grok-planner run-grok-coder run-grok-orchestrator
     run-antigravity run-gemini
+    agent-landlock env
   )
   for f in "${scripts[@]}"; do
     if [ -f "$wt/$f" ]; then

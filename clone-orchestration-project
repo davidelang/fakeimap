@@ -1,0 +1,827 @@
+#!/bin/bash
+# clone-orchestration-project — clone this example host to git_home/<new-name>
+#
+# Creates a sibling multi-agent host that uses this tree's workflows
+# (Grok role launchers, packs, Landlock, setup_agent, fix-perms).
+#
+# Usage:
+#   ./clone-orchestration-project [--dry-run] [--source DIR] [--git-home DIR] <new-name>
+#   ./clone-orchestration-project [--dry-run] --repair DIR
+#
+# Layout of dest:
+#   git_home/<name>/         branch orchestration (managing tree)
+#   git_home/<name>/master/  worktree on branch master
+#   git_home/<name>/sandbox/ plans / research / PRs / failure logs
+#
+# Git clone/commit/worktree run as primary_user (sudo -u when needed).
+# Root sudo is only for chown/chmod/setuid/fix-perms.
+# Never git clone as root. Does not create Unix users. Does not write sudoers.
+# Does not mutate the source repo's branches.
+
+set -euo pipefail
+
+umask 007
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CWD="$(pwd)"
+
+DRY=0
+SOURCE_ARG=""
+GIT_HOME_ARG=""
+REPAIR_ARG=""
+NAME=""
+
+usage() {
+  cat <<'EOF'
+Usage: clone-orchestration-project [--dry-run] [--source DIR] [--git-home DIR] <new-name>
+       clone-orchestration-project [--dry-run] --repair DIR
+
+Clone this orchestration-example tree to git_home/<new-name> as a new
+multi-agent host (orchestration branch at dest root, master/ worktree).
+
+  --dry-run       Print resolved paths and planned steps; no writes, no sudo
+  --source DIR    Path to orchestration-example (default: auto-detect)
+  --git-home DIR  Override git_home (must be an absolute existing directory)
+  --repair DIR    Seed project.config + dest-root DAC on an existing clone
+  -h, --help      Show this help
+
+./run-grok-* from a worktree (including master/) needs orch_root= in that
+worktree's project.config. This tool seeds dest and dest/master via
+ve_seed_worktree_project_config. Use --repair on a dest that was cloned
+before that seed existed.
+
+Discovery of --source (first match):
+  1. --source DIR
+  2. directory containing this script, if it looks like the example
+  3. current working directory, if it looks like the example
+  4. cwd/orchestration-example (when cwd is git_home / parent of the example)
+  5. git_home/orchestration-example from --git-home or project.config
+
+Looks-like-example: run-grok-orchestrator + setup_agent.sh + AGENT_MANDATES.md
+plus sandbox/ (or sandbox_dir / sandbox_path from that tree's project.config).
+
+new-name: one path component matching [A-Za-z0-9._-]+, not . .. master
+orchestration or agent-N. Dest git_home/<name> must not already exist.
+
+Examples:
+  ./clone-orchestration-project MyHost
+  ./orchestration-example/clone-orchestration-project MyHost    # from git_home
+  /path/to/orchestration-example/clone-orchestration-project --source /path/to/orchestration-example MyHost
+  ./clone-orchestration-project --repair /home/dlang/git/MyHost
+EOF
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+warn() {
+  echo "WARNING: $*" >&2
+}
+
+abs_dir() {
+  local p="$1"
+  [ -d "$p" ] || return 1
+  (cd "$p" && pwd)
+}
+
+read_config_key() {
+  local file="$1" key="$2"
+  local val=""
+  [ -f "$file" ] || return 1
+  val=$(sed -n "s/^${key}=//p" "$file" | tr -d '\r' | head -1)
+  [ -n "$val" ] || return 1
+  case "$val" in
+    @@*) return 1 ;;
+  esac
+  printf '%s\n' "$val"
+}
+
+looks_like_example() {
+  local d="$1" sd=""
+  [ -n "$d" ] && [ -d "$d" ] || return 1
+  [ -f "$d/run-grok-orchestrator" ] || return 1
+  [ -f "$d/setup_agent.sh" ] || return 1
+  [ -f "$d/AGENT_MANDATES.md" ] || return 1
+  if [ -d "$d/sandbox" ]; then
+    return 0
+  fi
+  if [ -f "$d/project.config" ]; then
+    sd=$(sed -n 's/^sandbox_dir=//p' "$d/project.config" | tr -d '\r' | head -1 || true)
+    if [ -n "$sd" ] && [[ "$sd" != @@* ]] && [ -d "$d/$sd" ]; then
+      return 0
+    fi
+    sd=$(sed -n 's/^sandbox_path=//p' "$d/project.config" | tr -d '\r' | head -1 || true)
+    if [ -n "$sd" ] && [[ "$sd" != @@* ]]; then
+      case "$sd" in
+        /*) [ -d "$sd" ] && return 0 ;;
+        *) [ -d "$d/$sd" ] && return 0 ;;
+      esac
+    fi
+  fi
+  return 1
+}
+
+guess_git_home_for_discovery() {
+  local v=""
+  if [ -n "$GIT_HOME_ARG" ]; then
+    printf '%s\n' "$GIT_HOME_ARG"
+    return 0
+  fi
+  if v=$(read_config_key "$CWD/project.config" git_home 2>/dev/null); then
+    printf '%s\n' "$v"
+    return 0
+  fi
+  if v=$(read_config_key "$SCRIPT_DIR/project.config" git_home 2>/dev/null); then
+    printf '%s\n' "$v"
+    return 0
+  fi
+  return 1
+}
+
+resolve_source() {
+  local cand gh
+  if [ -n "$SOURCE_ARG" ]; then
+    cand=$(abs_dir "$SOURCE_ARG") || die "--source is not a directory: $SOURCE_ARG"
+    looks_like_example "$cand" || die "--source does not look like orchestration-example: $cand"
+    SOURCE="$cand"
+    return 0
+  fi
+  if looks_like_example "$SCRIPT_DIR"; then
+    SOURCE="$SCRIPT_DIR"
+    return 0
+  fi
+  if looks_like_example "$CWD"; then
+    SOURCE="$CWD"
+    return 0
+  fi
+  if looks_like_example "$CWD/orchestration-example"; then
+    SOURCE=$(abs_dir "$CWD/orchestration-example")
+    return 0
+  fi
+  gh=$(guess_git_home_for_discovery || true)
+  if [ -n "$gh" ] && looks_like_example "$gh/orchestration-example"; then
+    SOURCE=$(abs_dir "$gh/orchestration-example")
+    return 0
+  fi
+  die "cannot detect orchestration-example source (pass --source DIR)"
+}
+
+resolve_git_home() {
+  local v=""
+  if [ -n "$GIT_HOME_ARG" ]; then
+    v="$GIT_HOME_ARG"
+  elif v=$(read_config_key "$SOURCE/project.config" git_home 2>/dev/null); then
+    :
+  else
+    v=$(dirname "$SOURCE")
+  fi
+  case "$v" in
+    ''|@@*) die "git_home unset or still a @@ token" ;;
+    /*) ;;
+    ~*|\$HOME*|\$HOME/*)
+      die "git_home must be an absolute path, not ~/git or \$HOME/git (got: $v)"
+      ;;
+    *) die "git_home must be an absolute path (got: $v)" ;;
+  esac
+  [ -d "$v" ] || die "git_home is not a directory: $v"
+  GIT_HOME=$(abs_dir "$v")
+}
+
+validate_name() {
+  local n="$1"
+  [ -n "$n" ] || die "missing <new-name>"
+  case "$n" in
+    .|..) die "invalid new-name: $n" ;;
+    master|orchestration) die "new-name cannot be '$n' (reserved branch/worktree)" ;;
+  esac
+  [[ "$n" =~ ^[A-Za-z0-9._-]+$ ]] || die "new-name must match [A-Za-z0-9._-]+ (got: $n)"
+  if [[ "$n" =~ ^agent-[0-9]+$ ]]; then
+    die "new-name cannot be '$n' (reserved for feature worktrees)"
+  fi
+}
+
+load_source_config() {
+  PRIMARY_USER=$(read_config_key "$SOURCE/project.config" primary_user 2>/dev/null || true)
+  PLANNING_USER=$(read_config_key "$SOURCE/project.config" planning_user 2>/dev/null || true)
+  CODER_USER=$(read_config_key "$SOURCE/project.config" coder_user 2>/dev/null || true)
+  ORCHESTRATOR_USER=$(read_config_key "$SOURCE/project.config" orchestrator_user 2>/dev/null || true)
+  SANDBOX_REL=$(read_config_key "$SOURCE/project.config" sandbox_dir 2>/dev/null || true)
+  if [ -z "${SANDBOX_REL:-}" ]; then
+    SANDBOX_REL=$(read_config_key "$SOURCE/project.config" sandbox_path 2>/dev/null || true)
+  fi
+  SPECIAL_PATHS=$(read_config_key "$SOURCE/project.config" sandbox_special_paths 2>/dev/null || true)
+  CODE_GROUP=$(read_config_key "$SOURCE/project.config" code_group 2>/dev/null || true)
+  PRIMARY_USER="${PRIMARY_USER:-dlang}"
+  PLANNING_USER="${PLANNING_USER:-ai-planner}"
+  CODER_USER="${CODER_USER:-ai-coder}"
+  ORCHESTRATOR_USER="${ORCHESTRATOR_USER:-ai-orchestrator}"
+  CODE_GROUP="${CODE_GROUP:-ai-code}"
+  SANDBOX_REL="${SANDBOX_REL:-sandbox}"
+  SPECIAL_PATHS="${SPECIAL_PATHS:-plans,historical-plans,implementation-failure-logs,PRs,research}"
+}
+
+require_users() {
+  local u
+  for u in "$PRIMARY_USER" "$PLANNING_USER" "$CODER_USER" "$ORCHESTRATOR_USER"; do
+    if ! id "$u" >/dev/null 2>&1; then
+      die "required user '$u' does not exist (this tool does not create Unix users)"
+    fi
+  done
+}
+
+# Git clone/commit/worktree: always primary_user, never root.
+as_primary() {
+  if [ "$(id -un)" = "$PRIMARY_USER" ]; then
+    "$@"
+  else
+    sudo -u "$PRIMARY_USER" -- "$@"
+  fi
+}
+
+# chown/chmod/setuid/fix-perms only.
+as_root() {
+  if [ "$EUID" -eq 0 ]; then
+    "$@"
+  else
+    sudo -- "$@"
+  fi
+}
+
+git_primary() {
+  as_primary git -c safe.directory=* "$@"
+}
+
+# Print a planned/executed step. who = primary|root|check
+step() {
+  local who="$1"
+  shift
+  echo "  [$who] $*"
+}
+
+write_as_primary() {
+  local file="$1"
+  if [ "$DRY" -eq 1 ]; then
+    step primary "write $file"
+    cat >/dev/null
+    return 0
+  fi
+  if [ "$(id -un)" = "$PRIMARY_USER" ]; then
+    cat > "$file"
+  else
+    sudo -u "$PRIMARY_USER" -- tee "$file" >/dev/null
+  fi
+}
+
+upsert_config_key() {
+  local file="$1" key="$2" val="$3"
+  if [ "$DRY" -eq 1 ]; then
+    step primary "set $key=$val in $file"
+    return 0
+  fi
+  as_primary bash -c '
+    set -euo pipefail
+    file="$1"; key="$2"; val="$3"
+    if [ ! -f "$file" ]; then
+      printf "%s=%s\n" "$key" "$val" > "$file"
+      exit 0
+    fi
+    if grep -q "^${key}=" "$file"; then
+      tmp="${file}.tmp.$$"
+      sed "s|^${key}=.*|${key}=${val}|" "$file" > "$tmp"
+      mv "$tmp" "$file"
+    else
+      printf "%s=%s\n" "$key" "$val" >> "$file"
+    fi
+  ' bash "$file" "$key" "$val"
+}
+
+seed_dest_project_configs() {
+  step primary "ve_seed_worktree_project_config $DEST $DEST  (orch_root=$DEST)"
+  step primary "ve_seed_worktree_project_config $DEST/master $DEST  (orch_root=$DEST)"
+  if [ "$DRY" -eq 1 ]; then
+    return 0
+  fi
+  as_primary test -f "$DEST/ve-resolve-orch" || die "ve-resolve-orch missing in $DEST"
+  as_primary test -d "$DEST/master" || die "master worktree missing: $DEST/master"
+  as_primary bash -c '
+    set -euo pipefail
+    DEST="$1"
+    # shellcheck source=/dev/null
+    . "$DEST/ve-resolve-orch"
+    ve_seed_worktree_project_config "$DEST" "$DEST"
+    ve_seed_worktree_project_config "$DEST/master" "$DEST"
+  ' bash "$DEST"
+}
+
+verify_dest_orch_root() {
+  step check "$DEST/ve-resolve-orch $DEST  (must print $DEST)"
+  step check "$DEST/ve-resolve-orch $DEST/master  (must print $DEST)"
+  if [ "$DRY" -eq 1 ]; then
+    return 0
+  fi
+  local got
+  got=$(as_primary bash "$DEST/ve-resolve-orch" "$DEST") || die "ve-resolve-orch failed for $DEST"
+  got="${got//$'\r'/}"
+  [ "$got" = "$DEST" ] || die "ve-resolve-orch $DEST printed '$got' (want $DEST)"
+  got=$(as_primary bash "$DEST/ve-resolve-orch" "$DEST/master") || die "ve-resolve-orch failed for $DEST/master"
+  got="${got//$'\r'/}"
+  [ "$got" = "$DEST" ] || die "ve-resolve-orch $DEST/master printed '$got' (want $DEST)"
+}
+
+do_fix_perms() {
+  # Use this example's fix-perms (not dest's stale copy) with explicit worktrees.
+  step root "$SCRIPT_DIR/fix-perms --skip-sudoers $DEST"
+  step root "$SCRIPT_DIR/fix-perms --skip-sudoers $DEST/master"
+  if [ "$DRY" -eq 1 ]; then
+    return 0
+  fi
+  if ! as_root "$SCRIPT_DIR/fix-perms" --skip-sudoers "$DEST"; then
+    die "fix-perms failed: $SCRIPT_DIR/fix-perms --skip-sudoers $DEST"
+  fi
+  if ! as_root "$SCRIPT_DIR/fix-perms" --skip-sudoers "$DEST/master"; then
+    die "fix-perms failed: $SCRIPT_DIR/fix-perms --skip-sudoers $DEST/master"
+  fi
+}
+
+do_dest_root_dac() {
+  step root "chown $PRIMARY_USER:$CODE_GROUP $DEST $DEST/master && chmod 2775 both"
+  if [ "$DRY" -eq 1 ]; then
+    return 0
+  fi
+  if ! as_root chown "$PRIMARY_USER:$CODE_GROUP" "$DEST" "$DEST/master"; then
+    die "chown $PRIMARY_USER:$CODE_GROUP failed for dest roots"
+  fi
+  if ! as_root chmod 2775 "$DEST" "$DEST/master"; then
+    die "chmod 2775 failed for dest roots"
+  fi
+}
+
+do_landlock_exec_dac() {
+  local f
+  for f in "$DEST/agent-landlock" "$DEST/master/agent-landlock"; do
+    step root "chown $PRIMARY_USER:$CODE_GROUP $f && chmod 775 (o+x for ai-planner)"
+    if [ "$DRY" -eq 1 ]; then
+      continue
+    fi
+    [ -f "$f" ] || continue
+    if ! as_root chown "$PRIMARY_USER:$CODE_GROUP" "$f"; then
+      die "chown landlock failed: $f"
+    fi
+    if ! as_root chmod 775 "$f"; then
+      die "chmod 775 landlock failed: $f"
+    fi
+  done
+}
+
+# Absolute dest path without cd (dest may be 770 primary:primary; we cannot enter it).
+abs_existing_dir() {
+  local p="$1"
+  case "$p" in
+    /*) ;;
+    *) p="$CWD/$p" ;;
+  esac
+  p="${p%/}"
+  [ -d "$p" ] || return 1
+  printf '%s\n' "$p"
+}
+
+dest_looks_like_clone() {
+  local d="$1"
+  [ -f "$d/run-grok-orchestrator" ] && [ -f "$d/setup_agent.sh" ] && [ -f "$d/AGENT_MANDATES.md" ] && [ -d "$d/master" ]
+}
+
+repair_validate_dest() {
+  if dest_looks_like_clone "$DEST"; then
+    return 0
+  fi
+  if [ ! -x "$DEST" ]; then
+    if [ "$DRY" -eq 1 ]; then
+      step check "dest exists but is not enterable by $(id -un); execute seeds as $PRIMARY_USER"
+      return 0
+    fi
+    if [ "$(id -un)" = "$PRIMARY_USER" ]; then
+      die "cannot enter $DEST as $PRIMARY_USER"
+    fi
+    echo "ERROR: $DEST is not enterable by $(id -un). Trying sudo -u $PRIMARY_USER ..." >&2
+    if as_primary bash -c '
+      d="$1"
+      [ -f "$d/run-grok-orchestrator" ] || exit 1
+      [ -f "$d/setup_agent.sh" ] || exit 1
+      [ -f "$d/AGENT_MANDATES.md" ] || exit 1
+      [ -d "$d/master" ] || exit 1
+    ' bash "$DEST"; then
+      return 0
+    fi
+    die "sudo -u $PRIMARY_USER failed. Run as $PRIMARY_USER: ./clone-orchestration-project --repair $DEST"
+  fi
+  die "--repair DIR does not look like a clone with master/ worktree: $DEST"
+}
+
+run_install_merge_drivers() {
+  if [ "$DRY" -eq 1 ]; then
+    return 0
+  fi
+  if [ "$(id -un)" = "$PRIMARY_USER" ]; then
+    (cd "$DEST" && ./install-merge-drivers.sh)
+  else
+    sudo -u "$PRIMARY_USER" -- bash -c 'cd "$1" && ./install-merge-drivers.sh' bash "$DEST"
+  fi
+}
+
+STAMPED_FILES=(
+  setup-project
+  set-worktree-perms
+  set-sandbox-perms
+  project.config.example
+  landlock.config
+  landlock.config.example
+  run-grok
+  run-grok-master
+  run-grok-planner
+  run-grok-coder
+  run-grok-orchestrator
+  .grok/lib/grok-launch-common.sh
+  run-antigravity
+  run-antigravity-master
+  run-antigravity-planner
+  run-antigravity-coder
+  run-antigravity-orchestrator
+  third_party/fetch-deps
+  third_party/get-artifacts
+  third_party/libpin-landlock
+  third_party/libpin-bwrap
+  third_party/libpin-sandbox
+)
+
+re_smudge_dest() {
+  local f
+  if [ "$DRY" -eq 1 ]; then
+    step primary "re-smudge manage-configs files in $DEST if @@TOKEN@@ remain"
+    return 0
+  fi
+  [ -f "$DEST/filter-apply-config" ] || die "filter-apply-config missing in dest"
+  [ -f "$DEST/project.config" ] || die "project.config missing in dest (needed to smudge)"
+  for f in "${STAMPED_FILES[@]}"; do
+    if ! git_primary -C "$DEST" cat-file -e "HEAD:$f" 2>/dev/null; then
+      continue
+    fi
+    as_primary bash -c '
+      set -euo pipefail
+      DEST="$1"
+      f="$2"
+      cd "$DEST"
+      tmp=".smudge.tmp.$$"
+      git -c safe.directory=* show "HEAD:$f" | bash ./filter-apply-config > "$tmp"
+      mv "$tmp" "$f"
+      mode=$(git -c safe.directory=* ls-tree HEAD "$f" | awk "{print \$1}")
+      case "$mode" in
+        100755|100775) chmod a+x "$f" ;;
+      esac
+    ' bash "$DEST" "$f"
+  done
+}
+
+add_safe_directory() {
+  local u="$1" path="$2"
+  if [ "$DRY" -eq 1 ]; then
+    if [ "$(id -un)" = "$u" ]; then
+      step "$u" "git config --global --add safe.directory $path"
+    else
+      step root "sudo -u $u git config --global --add safe.directory $path"
+    fi
+    return 0
+  fi
+  if [ "$(id -un)" = "$u" ]; then
+    git config --global --add safe.directory "$path" 2>/dev/null || true
+  else
+    sudo -u "$u" git config --global --add safe.directory "$path" 2>/dev/null || true
+  fi
+}
+
+warn_sudoers_coverage() {
+  local needle="$DEST/append-to-engineering-log"
+  local hit=0
+  if [ "$DRY" -eq 1 ]; then
+    step check "warn if sudoers does not mention $needle (do not write sudoers)"
+    return 0
+  fi
+  if grep -RqsF "$needle" /etc/sudoers /etc/sudoers.d 2>/dev/null; then
+    hit=1
+  elif sudo grep -RqsF "$needle" /etc/sudoers /etc/sudoers.d 2>/dev/null; then
+    hit=1
+  fi
+  if [ "$hit" -eq 0 ]; then
+    warn "sudoers does not mention $needle"
+    warn "  eng-log wrapper elevation may fail on this host; do not auto-write /etc/sudoers.d"
+  fi
+}
+
+write_identity_files() {
+  write_as_primary "$DEST/AGENT_CONTEXT.md" <<EOF
+# AGENT_CONTEXT.md
+
+- **Agent ID:** master
+- **Current Branch:** master
+- **Role:** template / drift SoT
+- **Sandbox:** ${DEST}/sandbox/
+- **Status:** ACTIVE
+EOF
+
+  write_as_primary "$DEST/project-facts.md" <<EOF
+# project-facts.md — ${NAME}
+
+- Host: multi-agent host cloned from orchestration-example
+- Sandbox: \`sandbox/\` (absolute: ${DEST}/sandbox/)
+- Layout: \`${DEST}/\` branch \`orchestration\`; \`${DEST}/master/\` branch \`master\`
+- git_home: ${GIT_HOME}
+- Launch: \`./run-grok-*\` via \`.grok/lib/grok-launch-common.sh\` + \`agent-landlock\`
+- Groups: source \`./env\` (refresh-shell setuid)
+EOF
+
+  write_as_primary "$DEST/README.md" <<EOF
+# ${NAME}
+
+Cloned from orchestration-example. Multi-agent orchestration host: launchers,
+policies, Landlock helper, group-refresh shell, setup/update/fix tooling.
+
+## Layout
+
+- \`${DEST}/\` — branch \`orchestration\` (managing tree)
+- \`${DEST}/master/\` — worktree on branch \`master\`
+- \`${DEST}/sandbox/\` — plans, research, PRs, failure logs
+
+## Quick start
+
+\`\`\`bash
+source ./env
+./setup_agent.sh my-feature
+./run-grok-planner
+\`\`\`
+
+Landlock (mutation-only) wraps agents via \`agent-landlock\` from \`run-grok*\`.
+EOF
+}
+
+write_worktree_contexts() {
+  write_as_primary "$DEST/AGENT_CONTEXT.md" <<EOF
+# AGENT_CONTEXT.md — orchestration
+
+- **Agent ID:** orchestration
+- **Current Branch:** orchestration
+- **Role:** Orchestrator
+- **Sandbox:** ${DEST}/sandbox/
+- **Status:** ACTIVE
+EOF
+
+  write_as_primary "$DEST/master/AGENT_CONTEXT.md" <<EOF
+# AGENT_CONTEXT.md — master
+
+- **Agent ID:** master
+- **Current Branch:** master
+- **Role:** Master
+- **Sandbox:** ${DEST}/sandbox/
+- **Status:** ACTIVE
+EOF
+}
+
+print_header() {
+  echo "=== clone-orchestration-project ==="
+  echo "source:       $SOURCE"
+  echo "git_home:     $GIT_HOME"
+  echo "new-name:     $NAME"
+  echo "dest:         $DEST"
+  echo "primary_user: $PRIMARY_USER"
+  echo "sandbox:      $DEST/$SANDBOX_REL"
+  if [ "$DRY" -eq 1 ]; then
+    echo "mode:         dry-run (no writes, no sudo)"
+  else
+    echo "mode:         execute"
+  fi
+  echo
+  echo "Planned steps:"
+}
+
+do_clone_layout() {
+  step primary "git -c safe.directory=* clone --no-hardlinks -- $SOURCE $DEST"
+  if [ "$DRY" -eq 0 ]; then
+    git_primary clone --no-hardlinks -- "$SOURCE" "$DEST"
+  fi
+
+  if [ -f "$SOURCE/project.config" ]; then
+    step primary "cp $SOURCE/project.config $DEST/project.config"
+    if [ "$DRY" -eq 0 ]; then
+      as_primary cp "$SOURCE/project.config" "$DEST/project.config"
+    fi
+  elif [ -f "$SOURCE/project.config.example" ]; then
+    step primary "cp $SOURCE/project.config.example $DEST/project.config"
+    if [ "$DRY" -eq 0 ]; then
+      as_primary cp "$SOURCE/project.config.example" "$DEST/project.config"
+    fi
+  else
+    die "no project.config or project.config.example in source"
+  fi
+  upsert_config_key "$DEST/project.config" orch_root "$DEST"
+  if [ -n "$GIT_HOME_ARG" ]; then
+    upsert_config_key "$DEST/project.config" git_home "$GIT_HOME"
+  fi
+
+  step primary "rewrite AGENT_CONTEXT.md project-facts.md README.md for $NAME"
+  write_identity_files
+
+  step primary "git add AGENT_CONTEXT.md project-facts.md README.md && git commit -m 'Host identity for $NAME'"
+  if [ "$DRY" -eq 0 ]; then
+    git_primary -C "$DEST" add AGENT_CONTEXT.md project-facts.md README.md
+    git_primary -C "$DEST" commit -m "Host identity for $NAME"
+  fi
+
+  step primary "git branch orchestration (if missing)"
+  step primary "git checkout orchestration"
+  step primary "git worktree add $DEST/master master"
+  if [ "$DRY" -eq 0 ]; then
+    if ! git_primary -C "$DEST" show-ref --verify --quiet refs/heads/orchestration; then
+      git_primary -C "$DEST" branch orchestration
+    fi
+    local cur
+    cur=$(git_primary -C "$DEST" rev-parse --abbrev-ref HEAD)
+    if [ "$cur" != "orchestration" ]; then
+      git_primary -C "$DEST" checkout orchestration
+    fi
+    git_primary -C "$DEST" worktree add "$DEST/master" master
+  fi
+
+  seed_dest_project_configs
+  verify_dest_orch_root
+
+  step primary "write AGENT_CONTEXT.md in dest root (orchestration) and master/ (master)"
+  write_worktree_contexts
+
+  step primary "ln -sfn ../sandbox $DEST/master/sandbox"
+  if [ "$DRY" -eq 0 ]; then
+    if [ -d "$DEST/master/sandbox" ] && [ ! -L "$DEST/master/sandbox" ]; then
+      as_primary rm -rf "$DEST/master/sandbox"
+    fi
+    as_primary ln -sfn ../sandbox "$DEST/master/sandbox"
+  fi
+
+  step primary "mkdir -p sandbox specials ($SPECIAL_PATHS)"
+  if [ "$DRY" -eq 0 ]; then
+    as_primary mkdir -p "$DEST/$SANDBOX_REL"
+    local p
+    IFS=',' read -r -a _sp <<< "$SPECIAL_PATHS"
+    for p in "${_sp[@]}"; do
+      p="${p#"${p%%[![:space:]]*}"}"
+      p="${p%"${p##*[![:space:]]}"}"
+      [ -n "$p" ] || continue
+      as_primary mkdir -p "$DEST/$SANDBOX_REL/$p"
+    done
+  fi
+
+  step primary "install hooks/post-checkout -> $DEST/.git/hooks/post-checkout (775)"
+  if [ "$DRY" -eq 0 ]; then
+    local hook_src=""
+    if [ -f "$DEST/hooks/post-checkout" ]; then
+      hook_src="$DEST/hooks/post-checkout"
+    elif [ -f "$SOURCE/hooks/post-checkout" ]; then
+      hook_src="$SOURCE/hooks/post-checkout"
+    fi
+    [ -n "$hook_src" ] || die "hooks/post-checkout missing in dest and source"
+    as_primary cp "$hook_src" "$DEST/.git/hooks/post-checkout"
+    as_primary chmod 775 "$DEST/.git/hooks/post-checkout"
+  fi
+
+  step primary "git config core.sharedRepository=group + manage-configs filter"
+  if [ "$DRY" -eq 0 ]; then
+    git_primary -C "$DEST" config core.sharedRepository group
+    git_primary -C "$DEST" config filter.manage-configs.clean "bash ./filter-clean-config %f"
+    git_primary -C "$DEST" config filter.manage-configs.smudge "bash ./filter-apply-config"
+    git_primary -C "$DEST" config filter.manage-configs.required false
+  fi
+
+  step primary "./install-merge-drivers.sh (cwd $DEST)"
+  run_install_merge_drivers
+
+  re_smudge_dest
+}
+
+do_perms() {
+  do_fix_perms
+  do_dest_root_dac
+  do_landlock_exec_dac
+
+  step root "$DEST/install-refresh-shell.sh $DEST"
+  step root "$DEST/install-refresh-shell.sh $DEST/master"
+  if [ "$DRY" -eq 0 ]; then
+    as_root "$DEST/install-refresh-shell.sh" "$DEST"
+    as_root "$DEST/install-refresh-shell.sh" "$DEST/master"
+  fi
+
+  local u
+  for u in "$PRIMARY_USER" "$PLANNING_USER" "$CODER_USER" "$ORCHESTRATOR_USER"; do
+    add_safe_directory "$u" "$DEST"
+    add_safe_directory "$u" "$DEST/*"
+  done
+
+  warn_sudoers_coverage
+}
+
+# --- args ---
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --dry-run)
+      DRY=1
+      shift
+      ;;
+    --source)
+      [ $# -ge 2 ] || die "--source requires a directory"
+      SOURCE_ARG="$2"
+      shift 2
+      ;;
+    --git-home)
+      [ $# -ge 2 ] || die "--git-home requires a directory"
+      GIT_HOME_ARG="$2"
+      shift 2
+      ;;
+    --repair)
+      [ $# -ge 2 ] || die "--repair requires a directory"
+      REPAIR_ARG="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown option: $1 (see --help)"
+      ;;
+    *)
+      if [ -z "$NAME" ]; then
+        NAME="$1"
+      else
+        die "unexpected argument: $1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -n "$REPAIR_ARG" ]; then
+  [ -z "$NAME" ] || die "do not pass <new-name> with --repair"
+  resolve_source
+  load_source_config
+  require_users
+  DEST=$(abs_existing_dir "$REPAIR_ARG") || die "--repair is not a directory: $REPAIR_ARG"
+  NAME="$(basename "$DEST")"
+  GIT_HOME="$(dirname "$DEST")"
+  repair_validate_dest
+  print_header
+  seed_dest_project_configs
+  verify_dest_orch_root
+  do_fix_perms
+  do_dest_root_dac
+  do_landlock_exec_dac
+  echo
+  if [ "$DRY" -eq 1 ]; then
+    echo "Dry-run complete. No files written."
+  else
+    echo "Repaired $DEST"
+    echo "  ve-resolve-orch from dest and dest/master must print $DEST"
+    echo "  Next: $DEST/master/run-grok-planner"
+  fi
+  exit 0
+fi
+
+if [ -z "$NAME" ]; then
+  usage >&2
+  exit 1
+fi
+
+validate_name "$NAME"
+resolve_source
+resolve_git_home
+load_source_config
+require_users
+
+DEST="$GIT_HOME/$NAME"
+
+if [ -e "$DEST" ]; then
+  die "dest already exists: $DEST (use --repair $DEST to seed config + DAC)"
+fi
+
+print_header
+do_clone_layout
+do_perms
+
+echo
+if [ "$DRY" -eq 1 ]; then
+  echo "Dry-run complete. No files written."
+else
+  echo "Created $DEST"
+  echo "  HEAD should be orchestration; master worktree at $DEST/master"
+  echo "  Next: cd $DEST && source ./env"
+fi

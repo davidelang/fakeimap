@@ -165,4 +165,7 @@ rules = [
 
 # Project skill policy (startup-rules cleanup 2026-07-13)
 [skills]
+# Bundled GitHub/Graphite skills. Do not add "review" here: the project
+# .grok/skills/review overrides bundled review by name; disabled is by name
+# and would also kill the local skill.
 disabled = ["pr-babysit", "execute-plan", "design", "check-work", "implement"]

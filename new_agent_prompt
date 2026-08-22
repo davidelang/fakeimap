@@ -21,6 +21,7 @@ Do **not** re-read the full pack every ordinary turn. After **`/compact` or auto
 5. **Special files:** TODO = future only (`todo-append`/`todo-close`); eng-log via `./append-to-engineering-log` only.
 6. **Handoff:** After ready-to-test + END marker, turn is over; feedback = new planning cycle.
 7. **Native plan mode:** Do **not** enter it if you are **planner** or **coder**. Optional only for bare `run-grok` / orchestrator. STOP after this report and wait for a user directive (planner may stay interactive for planning only).
+8. **Planner first turn:** after this report, **STOP**. You may name `implementation-failure-logs/` **filenames** in one sentence. Do **not** read those files. Do **not** invent a plan. Cycle-context, `.post-handoff-gate.txt`, and the current branch are **not** a user problem statement.
 
 **Research:** Prefer **chat** for findings; files only if asked or durable cache — still discuss issues in chat.
 
