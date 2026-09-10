@@ -126,6 +126,7 @@ Product defaults (4.6 “just do reversible work,” native plan **`a`**, backgr
 - Built-in “do clear reversible local work without asking” **never** authorizes tracked non-sandbox edits. Named sandbox plan + magic path approval still required.
 - `ask_user_question` stays **on**. Answers inform the sandbox plan only — they are **not** magic approval and **not** permission to implement.
 - Planner launchers force `GROK_SUBAGENTS=0` and `GROK_WORKFLOWS=0` (explicit `=1` may override for debug). Coder launchers force `GROK_WORKFLOWS=0` only. Orch / bare / master are unset unless the human sets env.
+- User/config `default_reasoning_effort = "xhigh"` does **not** apply to `run-grok-coder` / `run-grok-master`: those launchers pin `--effort high` (`GROK_REASONING_EFFORT` overrides). Planner / orch / bare do not pass `--effort`. Execute **body** is a fresh spawn (`execution-subagent.md`, `isolation=none`) or a fresh coder process — not the long-lived parent transcript.
 - `grok -c` / `--resume` keeps the transcript and the session’s **stored** model. It does **not** upgrade 4.5 → 4.6. Switch with `/model grok-4.6` after resume. Role launchers without `-c` start a **new** session.
 
 ### 3.6 Skills
@@ -143,7 +144,7 @@ On execution handoff, also follow **`MULTI_AGENT_USER_INSTRUCTIONS.md`**: includ
 
 - **Before any edit:** re-read target file content; do not trust prior-turn memory (`State verification`).
 - Write-tool success ≠ integrity. After edits: forensic read/grep of changed lines; `./build_app` per phase (STANDARD BLOCK).
-- **Plan completeness (mandatory):** Before END/ready-to-test, re-read approved plan. Missing/reverted in-scope work → implement it. Blocked → stop, report, **no** ready-to-test.
+- **Plan completeness (mandatory):** Before END/ready-to-test, re-read approved plan. Missing/reverted work in the **closed Critical Files** set → implement it. Unlisted paths: report in chat; **do not** implement. Blocked → stop, report, **no** ready-to-test.
 - Plan Status: execute start → **APPROVED**; success → **CODE LANDED**; block → **BLOCKED — needs replan**. Stale DRAFT after ordered execute is not a human-facing “finding” — hygiene-fix or ignore when eng-log/git show execution.
 - Product-intent PASS is not coder’s claim. Plan-scope complete or blocked only. Human/planner intent chat; **master Compliance Checker optional** (not required every execute).
 - **Total turn reversion:** only during **active** execution before handoff — approved reset (§6), then replan. After handoff build, no auto-revert; feedback = new cycle. Revert handed-off work only with explicit user approval.
@@ -180,7 +181,7 @@ Strike = failed build / recoverable phase failure. 3 strikes = out → reset to 
 - **Plans:** only user-**designated** files under `dev-ai-interaction/plans/`. Completed → `historical-plans/`. Never treat harness `~/.grok/sessions/**/plan.md` as approved work plan. Never read `historical-plans/` or non-designated plans for execution influence.
 - **If you read a wrong/historical plan or continued after handoff:** (1) enter plan mode if available / treat self as planning-only, (2) revert unauthorized changes via §6, (3) report violation, (4) wait for user direction.
 - **Filenames:** `descriptive-kebab-YYYYMMDD-HHMM-plan.md` (minutes when stamping; not day-only; seconds not required). New contract → new file + new minutes.
-- **Plan content:** Context, Approach, Critical Files, reuse, **Phased Execution** (what/files/success), Verification/Acceptance. Cite STANDARD BLOCK by path only. No Mandate Acknowledgment. No ultra-micro except post–inning recovery. High-signal; soft ~2–8 KB typical. Style guide: `dev-ai-interaction/research/plan-style-guide.md`.
+- **Plan content:** Context, Approach, Critical Files, reuse, **Phased Execution** (what/files/success), Verification/Acceptance. Cite STANDARD BLOCK by path only. No Mandate Acknowledgment. No ultra-micro except post–inning recovery. High-signal; soft ~2–8 KB typical. Style guide: `dev-ai-interaction/research/plan-style-guide.md`. **Critical Files is a closed set** (path + function + predicate; last line: files not listed → no edits). Finish greps in planning — no `grep` / `unless` / optional extra sites in the approved file. Fewest phases (one file often one phase). Completeness (§4) applies only to that set. Each plan stands alone (executor does not need the prior cycle’s chat).
 - **project-facts:** full read launch/new cycle/before edit; orientation only; prune; no plan/branch/status narrative.
 - **TODO:** future only; wrappers only.
 - **ENGINEERING_LOG:** `./append-to-engineering-log` only.

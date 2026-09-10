@@ -9,6 +9,8 @@
 #   - best-effort light modes on worktree paths that actually changed
 #     (git diff --name-only old new), so umask 007 does not leave files
 #     unreadable to other roles via o+r
+#   - restamp worktree-root TODO.md / project-facts.md to :ai-shared 664
+#     (planner is in ai-shared, not ai-code; 666 is a bug)
 #
 # File checkout (3rd arg = 0): no permission walk — path list is not passed
 # to the hook; parent setgid + launcher umask / explicit recovery apply.
@@ -58,9 +60,19 @@ path_under_common_git() {
 # Soft cap so huge branch switches stay cheap (no full-tree find).
 MAX_SCOPED_PATHS=500
 
+shared_group_for_root() {
+  local g=""
+  if [ -f "$GIT_ROOT/project.config" ]; then
+    g=$(sed -n 's/^shared_group=//p' "$GIT_ROOT/project.config" | tr -d '\r' | head -1)
+  fi
+  printf '%s' "${g:-ai-shared}"
+}
+
 scoped_mode_fix_changed_paths() {
   local old="$1" new="$2"
   local list path n=0
+  local sg
+  sg=$(shared_group_for_root)
 
   [ -n "$old" ] && [ -n "$new" ] || return 0
   [ "$old" != "$new" ] || return 0
@@ -85,6 +97,14 @@ scoped_mode_fix_changed_paths() {
       # Keep setgid if present; ensure ug+rwx (no recursive chown)
       chmod ug+rwx "$path" 2>/dev/null || true
     elif [ -f "$path" ] || [ -L "$path" ]; then
+      # Worktree-root specials: planner writes via ai-shared, not other-write.
+      case "$path" in
+        TODO.md|project-facts.md)
+          chgrp "$sg" "$path" 2>/dev/null || true
+          chmod 664 "$path" 2>/dev/null || true
+          continue
+          ;;
+      esac
       # PERMISSIONS_MODEL: planner-readable via o+r when group is ai-code.
       # 100755 must also get o+x (planner is not in ai-code; 774 is EACCES).
       local idxmode

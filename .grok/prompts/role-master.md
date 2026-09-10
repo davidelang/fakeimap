@@ -24,7 +24,7 @@ When user says **New planning cycle** (optional one-liner context):
 
 When user magic-approves / says execute plan at `dev-ai-interaction/plans/…`:
 
-- Dispatch coder / execution sub-agent with that path; inject obligations from `.grok/prompts/execution-subagent.md` (read/prepend that file — do not weaken it).
+- Dispatch: `spawn_subagent` `general-purpose`, `isolation=none`, `cwd` = the **named worktree**. Prompt = **full** `.grok/prompts/execution-subagent.md` + that exact plan path (do not weaken it). This master session does **not** implement the plan body and does **not** open `.jpg` / `.png` / overlays.
 - First executor action must be `./append-to-engineering-log` — **not** ritual TODO.
 - Phases: coherent independently verifiable (~3–8 typical). **Ban ultra-micro / maximum-granularity language** except post–inning-end recovery. Cite `standard-plan-compliance-block.md` by path only (never paste).
 - Monitor run-away edits; resets via `./get-builds-tag.sh` only.

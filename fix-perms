@@ -80,19 +80,68 @@ if ! $VERBOSE; then
   exec 1>/dev/null
 fi
 
-# Load config (from project.config if present)
-if [ -f "$SCRIPT_DIR/project.config" ]; then
-  . <(sed 's/=/ /; s/^/export /' "$SCRIPT_DIR/project.config" | grep -E '^(code_group|shared_group|sandbox_group|primary_user|planning_user|coder_user|orchestrator_user|sandbox_path)')
+# Load KEY=VALUE from project.config. Keep equals — do not split on '='.
+_CFG="$SCRIPT_DIR/project.config"
+if [ ! -f "$_CFG" ]; then
+  echo "ERROR: missing $_CFG (required keys; no layout/user defaults)." >&2
+  exit 1
 fi
+while IFS= read -r line || [[ -n "$line" ]]; do
+  line="${line%%#*}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -z "$line" ]] && continue
+  [[ "$line" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]] || continue
+  # shellcheck disable=SC2163
+  export "$line"
+done <"$_CFG"
 
-CODE_GROUP=${code_group:-ai-code}
-SHARED_GROUP=${shared_group:-ai-shared}
-SANDBOX_GROUP=${sandbox_group:-ai-sandbox}
-PRIMARY_USER=${primary_user:-dlang}
-PLANNING_USER=${planning_user:-ai-planner}
-CODER_USER=${coder_user:-ai-coder}
-ORCHESTRATOR_USER=${orchestrator_user:-ai-orchestrator}
-SANDBOX=${sandbox_path:-dev-ai-interaction}
+_cfg_nonempty() {
+  local n="$1" v="$2"
+  if [ -z "$v" ] || [[ "$v" == @@* ]]; then
+    echo "ERROR: $_CFG missing or unsmudged $n" >&2
+    exit 1
+  fi
+}
+
+CODE_GROUP=${code_group:-}
+SHARED_GROUP=${shared_group:-}
+SANDBOX_GROUP=${sandbox_group:-}
+PRIMARY_USER=${primary_user:-}
+PLANNING_USER=${planning_user:-}
+CODER_USER=${coder_user:-}
+ORCHESTRATOR_USER=${orchestrator_user:-}
+_cfg_nonempty primary_user "$PRIMARY_USER"
+_cfg_nonempty planning_user "$PLANNING_USER"
+_cfg_nonempty coder_user "$CODER_USER"
+_cfg_nonempty orchestrator_user "$ORCHESTRATOR_USER"
+_cfg_nonempty code_group "$CODE_GROUP"
+_cfg_nonempty sandbox_group "$SANDBOX_GROUP"
+_cfg_nonempty shared_group "$SHARED_GROUP"
+
+_sd=${sandbox_dir:-}
+_sp=${sandbox_path:-}
+[[ "$_sd" == @@* ]] && _sd=""
+[[ "$_sp" == @@* ]] && _sp=""
+if [ -n "$_sd" ] && [ -n "$_sp" ] && [ "$_sd" != "$_sp" ]; then
+  echo "ERROR: $_CFG sandbox_dir=$_sd differs from sandbox_path=$_sp" >&2
+  exit 1
+fi
+SANDBOX="${_sd:-$_sp}"
+_cfg_nonempty sandbox_dir/sandbox_path "$SANDBOX"
+
+_sandbox_under() {
+  local root="$1"
+  case "$SANDBOX" in
+    /*) printf '%s\n' "$SANDBOX" ;;
+    *) printf '%s\n' "$root/$SANDBOX" ;;
+  esac
+}
+
+if $VERBOSE; then
+  echo "  config: $_CFG"
+  echo "  sandbox=$SANDBOX  sandbox_group=$SANDBOX_GROUP  primary_user=$PRIMARY_USER"
+fi
 
 # Canonical wrapper (pure Unix, setgid 2755)
 CANONICAL_APPEND_WRAPPER=$(cat << 'WRAPPER_EOF'
@@ -355,7 +404,8 @@ ensure_worktree_scripts_executable() {
     set-worktree-perms set-sandbox-perms
     run-grok run-grok-master run-grok-planner run-grok-coder run-grok-orchestrator
     run-antigravity run-gemini
-    agent-landlock env
+    agent-landlock todo-append todo-close ve-env
+    landlock-smoke-matrix landlock-write-probe
   )
   for f in "${scripts[@]}"; do
     if [ -f "$wt/$f" ]; then
@@ -371,6 +421,8 @@ ensure_worktree_scripts_executable() {
   # Named *.sh at worktree root
   find "$wt" -maxdepth 1 -type f -name '*.sh' -exec chown "$PRIMARY_USER:$CODE_GROUP" {} + 2>/dev/null || true
   find "$wt" -maxdepth 1 -type f -name '*.sh' -exec chmod 2775 {} + 2>/dev/null || true
+  # Tracked 100755 (agent-landlock is Python, not *.sh). Planner is not in ai-code.
+  ve_ensure_tracked_exec_other_x "$wt"
 }
 
 fix_worktree() {
@@ -388,9 +440,10 @@ fix_worktree() {
   fi
 
   # Re-apply sandbox if present
-  if [ -d "$wt/$SANDBOX" ]; then
-    chown -R :$SANDBOX_GROUP "$wt/$SANDBOX" 2>/dev/null || true
-    find "$wt/$SANDBOX" -type d -exec chmod u+rwx,g+rwxs,o+rx {} + 2>/dev/null || true
+  _wt_sb="$(_sandbox_under "$wt")"
+  if [ -d "$_wt_sb" ]; then
+    chown -R :$SANDBOX_GROUP "$_wt_sb" 2>/dev/null || true
+    find "$_wt_sb" -type d -exec chmod u+rwx,g+rwxs,o+rx {} + 2>/dev/null || true
   fi
 
   git_config_as_primary "$wt" config core.sharedRepository group
@@ -413,9 +466,11 @@ fix_worktree() {
   find "$wt" -name .git -prune -o -type f -exec chmod u+rw,g+rw,o+r {} + 2>/dev/null || true
   find "$wt" -name .git -prune -o -type d -exec chmod u+rwx,g+rwxs,o+rx {} + 2>/dev/null || true
 
-  # 666 for TODO/facts (planner writable)
-  chmod 666 "$wt/TODO.md" 2>/dev/null || true
-  chmod 666 "$wt/project-facts.md" 2>/dev/null || true
+  # Planner writes via ai-shared group rw (664), not other-write. 666 is a bug.
+  chown :"$SHARED_GROUP" "$wt/TODO.md" 2>/dev/null || true
+  chmod 664 "$wt/TODO.md" 2>/dev/null || true
+  chown :"$SHARED_GROUP" "$wt/project-facts.md" 2>/dev/null || true
+  chmod 664 "$wt/project-facts.md" 2>/dev/null || true
 
   # .git handling (linked worktree file vs main common dir).
   # NEVER chmod 660 a .git *directory* (strips search bit → recursive heal cannot descend).
@@ -512,11 +567,16 @@ fix_worktree() {
 }
 
 fix_sandbox() {
-  if [ ! -d "$SCRIPT_DIR/$SANDBOX" ]; then return; fi
-  if $VERBOSE; then echo "  Applying to sandbox: $SANDBOX (group=$SANDBOX_GROUP)"; fi
-  chown -R :$SANDBOX_GROUP "$SCRIPT_DIR/$SANDBOX" 2>/dev/null || true
-  chmod -R g+rwX "$SCRIPT_DIR/$SANDBOX" 2>/dev/null || true
-  find "$SCRIPT_DIR/$SANDBOX" -type d -exec chmod u+rwx,g+rwxs,o+rx {} + 2>/dev/null || true
+  local sb
+  sb="$(_sandbox_under "$SCRIPT_DIR")"
+  if [ ! -d "$sb" ]; then
+    echo "ERROR: sandbox is not a directory: $sb (from $_CFG sandbox_dir/sandbox_path=$SANDBOX)" >&2
+    exit 1
+  fi
+  if $VERBOSE; then echo "  Applying to sandbox: $sb (group=$SANDBOX_GROUP)"; fi
+  chown -R :$SANDBOX_GROUP "$sb" 2>/dev/null || true
+  chmod -R g+rwX "$sb" 2>/dev/null || true
+  find "$sb" -type d -exec chmod u+rwx,g+rwxs,o+rx {} + 2>/dev/null || true
   # NOTE: Do NOT chown to ai-shared here. The sandbox group is ai-sandbox.
   # ai-shared is for AI engine configs (.gemini/, .grok/), not for sandbox files.
 }

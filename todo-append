@@ -37,12 +37,20 @@ if [[ $ITEM =~ (##|###|Phase|forensic|build gate|commit) ]]; then
   exit 1
 fi
 
-# Append under # Future work if not present, else just append at end.
-if grep -q '^# Future work' "$TODOFILE"; then
-  # Simple append after the section (production version would be smarter)
-  printf '\n%s\n' "$ITEM" >> "$TODOFILE"
-else
-  printf '\n# Future work\n\n%s\n' "$ITEM" >> "$TODOFILE"
+append_todo() {
+  if grep -q '^# Future work' "$TODOFILE"; then
+    printf '\n%s\n' "$ITEM" >> "$TODOFILE"
+  else
+    printf '\n# Future work\n\n%s\n' "$ITEM" >> "$TODOFILE"
+  fi
+}
+
+if ! append_todo; then
+  echo "ERROR: cannot append to $TODOFILE" >&2
+  stat -c '%a %U:%G %n' "$TODOFILE" >&2 || true
+  echo "id: $(id -un) groups: $(id -nG)" >&2
+  echo "needs :ai-shared 664; planner is not in ai-code; do not chmod 666; human: chgrp ai-shared && chmod 664 (fix-perms restamps 664)" >&2
+  exit 1
 fi
 
 echo "Appended (rare) item to TODO.md. Remember: keep it small and high-level only."

@@ -40,7 +40,7 @@ When **spawning** planner/executor roles, load the full file under `.grok/prompt
 
 | Enabled (project) | Disabled (do not use for app multi-agent) |
 |-------------------|------------------------------------------|
-| `prepare-local-pr`, `master-merge`, `rebase-on-master`, `review` (local; shadows bundled GitHub `review`) | `pr-babysit`, `execute-plan`, `design`, `check-work`, **`implement`** |
+| `prepare-local-pr`, `master-merge`, `rebase-on-master`, `review` (local; shadows bundled GitHub `review`), `check-upgrade` | `pr-babysit`, `execute-plan`, `design`, `check-work`, **`implement`** |
 
 `/code-review` only when user explicitly wants ambitious restructure (separate planned turn).
 
@@ -50,9 +50,10 @@ When **spawning** planner/executor roles, load the full file under `.grok/prompt
 |------------------|-----|
 | “Do clear reversible work without asking” | No tracked non-sandbox edits without named-plan magic approval |
 | Native plan **`a`** / `exit_plan_mode` starts building | Not execute. Work plan is only `dev-ai-interaction/plans/…-plan.md` |
-| Subagents on (incl. during planning) | Planner: `GROK_SUBAGENTS=0`. No spawn while planning |
+| Subagents on (incl. during planning) | Planner: `GROK_SUBAGENTS=0`. No spawn while planning. Execute body: fresh child (`execution-subagent.md`, `isolation=none`) or fresh `./run-grok-coder` (no `-c` across plans). Long-lived coder/master **dispatch** that child; they must not implement in the organizer transcript |
 | Workflows / `/goal` on | Planner + coder: `GROK_WORKFLOWS=0`. Orch/bare may opt in |
 | Shift+Tab → Plan / always-approve | Launchers stay ask. Do not cycle modes on role sessions |
+| User/config `xhigh` reasoning | Coder+master launchers `--effort high` (`GROK_REASONING_EFFORT` overrides). Planner/orch unset. Spawned execute child inherits parent |
 | `grok -c` uses new default model | `-c` keeps **stored** model; `/model grok-4.6` to switch |
 
 `ask_user_question` stays on; answers are not approval.
