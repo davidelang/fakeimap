@@ -20,7 +20,7 @@ Overlays + this file take absolute precedence. Bypassing protocol for speed is a
 - An **approved plan never** authorizes foundational violations (deploying; `git commit --amend`; moving or rewriting `works` / lifecycle tags outside rules).
 - Lifecycle tags (`builds`, `deployed`, `works`) are **branch-prefixed** except on `master` (`builds`).
 - **No agent deployment:** no `./deploy`, `./gradlew installDebug`, or `adb install`. User deploys; agents fetch logs next turn.
-- Version integrity: commit via `./build_app` before builds that matter for `git describe`. Prefer `./build_app @phase_summary.txt …` for multi-line phase summaries; single-line `-m` only for trivial steps. Plan + eng-log + git carry “why”; tags carry state.
+- Version integrity: commit via `./build_app` before builds that matter for `git describe`. Any commit message that is not a single short `-m` line **must** be `./build_app @file paths…` (write the file first). No quoted multi-line `-m` and no heredoc in the Shell tool. Plan + eng-log + git carry “why”; tags carry state.
 - Native Android/Kotlin/Gradle — ignore default web-stack advice.
 
 ### 1.1 Permission denials — report; do not work around
@@ -106,7 +106,7 @@ Follow boundaries in letter and spirit. You may **not** justify illegal edits/bu
 - “Variable-wrap or indirect a whitelisted command so the allow pattern still ‘works’”
 - “Don’t re-read every turn, so skip the pack after compact / auto-compact”
 
-**Shell allow-list:** literal `./helper` at command start. **Never** `cd … && ./helper`. **Never** construct blessed helper invocations via variables/indirection to dodge patterns. `pwd` once at startup; keep cwd at worktree root.
+**Shell allow-list:** literal `./helper` at command start. **Never** `cd … && ./helper`. **Never** construct blessed helper invocations via variables/indirection to dodge patterns. `pwd` once at startup; keep cwd at worktree root. The allow matcher splits on newlines / `&&` / `||` / `;` / `|`; every segment must match. Multi-line `./append-to-engineering-log` or `./build_app` bodies: write a file, then `./append-to-engineering-log @file` or `./build_app @file paths…` as the **entire** command (one segment). Do not put the body in a quoted argv with real newlines.
 
 ### 3.4 Subagents
 
@@ -176,6 +176,7 @@ Strike = failed build / recoverable phase failure. 3 strikes = out → reset to 
 ## 7. Geography and special files
 
 - **Never** `..` in paths. Sandbox absolute path in §2. Orchestration root feeds `update-rules.sh`.
+- **Wrong-host instructions:** this session is only `pwd` + `AGENT_CONTEXT.md` (role, branch, sandbox) + this git toplevel. Sibling clones (VehicleExpenses, torque-ford-gas-tracking, remotetable, extractmail, orchestration-example, …) are **different git hosts**, not worktrees of this repo. If the user’s request is **work for a different git host** (named other clone, other sandbox, other app), **do not** plan, research, or edit for that host. **Do not guess** the correct session or worktree. Report this `pwd`, `AGENT_CONTEXT` Agent ID / branch / sandbox, and tell the human to paste in the intended launcher. Wait. Ambiguous “the app” / “this repo” means **this** host. Mentioning another product in passing is not a redirect unless the **task** is that other product’s work.
 - **Rebase onto master:** follow `.grok/skills/rebase-on-master/SKILL.md`. Keep the feature copies of `ENGINEERING_LOG.md` / `TODO.md` / `project-facts.md`; do not merge specials. Other conflicts: stop and ask the human.
 - **Worktree copy rule:** tracked copies must be committed on that branch or use `./update-rules.sh`. Uncommitted tracked dirt blocks `./build_app`. Gitignored binaries OK uncommitted.
 - **Plans:** only user-**designated** files under `dev-ai-interaction/plans/`. Completed → `historical-plans/`. Never treat harness `~/.grok/sessions/**/plan.md` as approved work plan. Never read `historical-plans/` or non-designated plans for execution influence.

@@ -17,7 +17,7 @@ Do **not** re-read the full pack every ordinary turn. After **`/compact` or auto
 1. **Overrides:** Sandbox write exemption; testing exemption (forensic + build).
 2. **Barrier:** Planning = no app source edits; execution only after magic approval of a named sandbox plan.
 3. **Verification:** Forensic read after edits; `./build_app`; coder **plan completeness** before handoff.
-4. **Geography:** Role + Branch; never `..` in paths; sandbox `/home/dlang/git/VehicleExpenses-automated/dev-ai-interaction/`.
+4. **Geography:** Role + Branch; never `..` in paths; sandbox `/home/dlang/git/VehicleExpenses-automated/dev-ai-interaction/`. Wrong-host instructions (work for a different git clone than this `pwd`) → **STOP**; do not guess another repo; tell the human to paste in the intended session.
 5. **Special files:** TODO = future only (`todo-append`/`todo-close`); eng-log via `./append-to-engineering-log` only.
 6. **Handoff:** After ready-to-test + END marker, turn is over; feedback = new planning cycle.
 7. **Native plan mode:** Do **not** enter it if you are **planner** or **coder**. Optional only for bare `run-grok` / orchestrator. STOP after this report and wait for a user directive (planner may stay interactive for planning only).

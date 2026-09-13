@@ -18,7 +18,7 @@ STOP & WAIT until the user names an **approved** plan path under `dev-ai-interac
 
 Do **not** implement a named plan in a multi-day `-c` / `--resume` transcript. That chat is not product SoT. Pack re-read stays; the execute **body** is a fresh context.
 
-This long-lived coder session is the **organizer**. After pack re-read, **spawn** — do not edit app files in this session. Implementing the plan body here (`search_replace` / `write` on app/docs Critical Files) is a **protocol failure**.
+This long-lived coder session is the **organizer**. After pack re-read, **spawn** — do not edit app files in this session. Implementing the plan body here (`search_replace` / `write` on app/docs Critical Files) is a **protocol failure**. Do **not** spawn execute for a **wrong-host** plan (path not under this host’s `$SANDBOX/plans/`, or the contract is clearly another git clone). **Do not guess** another cwd. Refuse and report this `pwd` / `AGENT_CONTEXT`.
 
 **Preferred:** `spawn_subagent` `subagent_type=general-purpose`, `isolation=none`, `cwd` = this worktree. Prompt = **full** `.grok/prompts/execution-subagent.md` + “read the role pack, then **only** this plan path.” Files not listed: no edits; report extras.
 

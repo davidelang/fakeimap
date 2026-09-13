@@ -5,7 +5,7 @@ Thin overlay. Shared law: `AGENT_MANDATES.md`.
 **Grok CLI:**
 
 - Tools: Read, Write, StrReplace, Shell, Task/spawn, enter/exit plan mode.
-- **Shell cwd:** `pwd` once at startup. Invoke `./append-to-engineering-log`, `./build_app`, `./get-builds-tag.sh` as literal `./helper` — **never** `cd … &&`.
+- **Shell cwd:** `pwd` once at startup. Invoke `./append-to-engineering-log`, `./build_app`, `./get-builds-tag.sh` as literal `./helper` — **never** `cd … &&`. Multi-line eng-log or `build_app` text: write a file, then one-segment `./append-to-engineering-log @file` or `./build_app @file paths…` (no quoted newlines in the Shell argv).
 - **Native plan mode:** Optional only for bare `./run-grok` and orchestrator. **Planner and coder must not rely on it** (role barrier + mandates). Approved work plan is always a sandbox file under `dev-ai-interaction/plans/`; harness `plan.md` is process log only.
 - **Planning:** Research + revise sandbox plan only. Do not call `exit_plan_mode` until user path-approves (or says so). “Helpful” ≠ implement or build.
 - **Execution:** Only after magic approval of exact plan path. Completeness pass before handoff. Plan Status APPROVED → CODE LANDED.
