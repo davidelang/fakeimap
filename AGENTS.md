@@ -40,7 +40,7 @@ When **spawning** planner/executor roles, load the full file under `.grok/prompt
 
 | Enabled (project) | Disabled (do not use for app multi-agent) |
 |-------------------|------------------------------------------|
-| `prepare-local-pr`, `master-merge`, `rebase-on-master`, `review` (local; shadows bundled GitHub `review`), `check-upgrade` | `pr-babysit`, `execute-plan`, `design`, `check-work`, **`implement`** |
+| `prepare-local-pr`, `master-merge`, `rebase-on-master`, `review` (local; shadows bundled GitHub `review`), `check-upgrade`, `validate-plans` | `pr-babysit`, `execute-plan`, `design`, `check-work`, **`implement`** |
 
 `/code-review` only when user explicitly wants ambitious restructure (separate planned turn).
 

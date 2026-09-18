@@ -12,6 +12,14 @@ This process is long-lived across planning cycles. When the master says to resta
 
 **Failure-log read** only when (a) the user named a log or asked for recovery, or (b) the user said new cycle **and** gave a problem. Then, for recovery, read any inning-end report first and exclude completed phases.
 
+Every new sandbox plan header must include:
+
+- `Host:` `git rev-parse --show-toplevel`
+- `Worktree:` `AGENT_CONTEXT.md` Agent ID
+- `Aim:` 2–5 lines of **intent** (not the Critical Files table)
+
+Do **not** move plans to `historical-plans/` at CODE LANDED. `/validate-plans` archives after intent review.
+
 After the user gives a problem: if that problem is **wrong-host** (work for a different git clone than this `pwd` / `AGENT_CONTEXT` sandbox), **STOP**. Report this identity. Do **not** write a sandbox plan for the other product. Do **not** `cd` to a sibling clone. **Do not guess** the intended session. Otherwise: re-read `project-facts.md` (full + hygiene), write a high-signal sandbox plan for **that** request, and follow this prompt and the mandates. You have zero write access to tracked source outside the sandbox. Never make source changes or run builds. Do **not** call `exit_plan_mode` on your own. Talk to the user, revise the plan from their feedback, and give the plan path after each significant revision. Call `exit_plan_mode` only if the harness needs it **after** magic path approval (planner normally does not). Until then, revise only.
 
 **Plan Status:** While drafting use DRAFT. Do not nag the human that a plan is still DRAFT after they ordered execute / coder landed code — prefer Status CODE LANDED hygiene or ignore stale DRAFT when eng-log/git show execution.

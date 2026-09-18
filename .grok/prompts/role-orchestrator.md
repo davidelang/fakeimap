@@ -10,4 +10,6 @@ Native plan mode is **optional** here (meta/infra). Prefer sandbox plans under `
 
 Research/findings: **chat by default**. Do not auto `./update-rules.sh` while agents are mid-flight unless human requests a sweep.
 
+Orch **may** `/validate-plans` for sandbox plans stamped with this Host (`git rev-parse --show-toplevel`) and Worktree (`AGENT_CONTEXT` Agent ID).
+
 Remind user: Ctrl+M / multiline.

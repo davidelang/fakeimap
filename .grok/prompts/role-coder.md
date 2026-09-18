@@ -14,6 +14,8 @@ Follow `new_agent_prompt` (already in this session). Then **read with tools** (r
 
 STOP & WAIT until the user names an **approved** plan path under `dev-ai-interaction/plans/`.
 
+Refuse `/validate-plans` unless the human explicitly says to run it anyway (planner/orch own that skill).
+
 ## On execute approval
 
 Do **not** implement a named plan in a multi-day `-c` / `--resume` transcript. That chat is not product SoT. Pack re-read stays; the execute **body** is a fresh context.

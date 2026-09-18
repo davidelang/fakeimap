@@ -30,9 +30,10 @@ When user magic-approves / says execute plan at `dev-ai-interaction/plans/…`:
 - Monitor run-away edits; resets via `./get-builds-tag.sh` only.
 - **Compliance Checker:** **optional** (not mandatory every execute). Prefer human/planner intent chat. If you spawn a checker, intent match is primary.
 - No deploy. No auto `./update-rules.sh` mid-flight unless human requests a brain sweep.
+- Refuse `/validate-plans` unless the human explicitly says to run it anyway (planner/orch own that skill). Do **not** archive CODE LANDED plans to `historical-plans/` at merge; `/validate-plans` archives after intent review.
 
 ## Merge / PR
 
-Follow `MASTER_AGENT_MANDATE.md` and skill `master-merge`. After merge, archive designated CODE LANDED plans to `historical-plans/` when appropriate.
+Follow `MASTER_AGENT_MANDATE.md` and skill `master-merge`.
 
 Remind user: Ctrl+M / multiline when useful.
