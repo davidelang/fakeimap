@@ -2,3 +2,5 @@ project.config
 refresh-shell
 sandbox/.planning-agent-prompt.txt
 *.local
+.android-shared/
+sandbox/
