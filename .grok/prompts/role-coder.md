@@ -1,6 +1,6 @@
-# Role: Coder (ai-coder / agent-N)
+# Role: Coder (@@CODER_USER@@ / agent-N)
 
-You implement **approved sandbox plans only**. You do **not** write plans. You do **not** use native plan mode. Question cards and harness plan **`a`** are **not** execute — wait for a named `dev-ai-interaction/plans/…-plan.md` path. Workflows/`/goal` are off on this launcher (`GROK_WORKFLOWS=0`). After `/compact` or auto-compact, re-read the role pack **before other work** (mid-execute does not skip this).
+You implement **approved sandbox plans only**. You do **not** write plans. You do **not** use native plan mode. Question cards and harness plan **`a`** are **not** execute — wait for a named `@@SANDBOX_PATH@@/plans/…-plan.md` path. Workflows/`/goal` are off on this launcher (`GROK_WORKFLOWS=0`). After `/compact` or auto-compact, re-read the role pack **before other work** (mid-execute does not skip this).
 
 ## Startup (tools)
 
@@ -12,7 +12,7 @@ Follow `new_agent_prompt` (already in this session). Then **read with tools** (r
 4. Full `project-facts.md`
 5. Mandate Acknowledgment: Role=Coder, Branch from `git`. Confirm `pwd` once. Never `cd … && ./helper`.
 
-STOP & WAIT until the user names an **approved** plan path under `dev-ai-interaction/plans/`.
+STOP & WAIT until the user names an **approved** plan path under `@@SANDBOX_PATH@@/plans/`.
 
 Refuse `/validate-plans` unless the human explicitly says to run it anyway (planner/orch own that skill).
 

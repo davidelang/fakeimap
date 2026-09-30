@@ -3,5 +3,5 @@
 - **Agent ID:** master
 - **Current Branch:** master
 - **Role:** template / drift SoT
-- **Sandbox:** /home/dlang/git/orchestration-example/sandbox/
+- **Sandbox:** @@ORCH_ROOT@@/@@SANDBOX_PATH@@/
 - **Status:** ACTIVE

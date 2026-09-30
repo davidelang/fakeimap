@@ -7,7 +7,7 @@
 //
 // Key policy (as of 2026-06):
 // - In plan mode: deny write/edit (search_replace/write) and most bash to paths
-//   outside dev-ai-interaction/ (the sandbox). Use the config rules for granular
+//   outside the sandbox directory named by project.config (sandbox_dir, else sandbox_path). Use the config rules for granular
 //   exceptions inside the sandbox and for local state files.
 // - "Being helpful," "proactive," "efficient," etc. during planning/research/strategy
 //   means doing research, suggesting ideas, and making the plan document better —
@@ -51,9 +51,70 @@ function isPlanMode() {
   return true;
 }
 
+
+const fs = require('fs');
+const path = require('path');
+
+function readSandboxDirFromConfig(configPath) {
+  let text;
+  try {
+    text = fs.readFileSync(configPath, 'utf8');
+  } catch (e) {
+    return '';
+  }
+  let fromDir = '';
+  let fromPath = '';
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    const val = line.slice(eq + 1).trim();
+    if (!val || val.includes('@@')) continue;
+    if (key === 'sandbox_dir') fromDir = val;
+    else if (key === 'sandbox_path' && !fromPath) fromPath = val;
+  }
+  return fromDir || fromPath;
+}
+
+function configuredSandboxDir() {
+  const seen = new Set();
+  const candidates = [];
+  let dir = process.cwd();
+  for (let i = 0; i < 5; i++) {
+    candidates.push(path.join(dir, 'project.config'));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const found = readSandboxDirFromConfig(candidate);
+    if (found) return found;
+  }
+  return '';
+}
+
+function pathInConfiguredSandbox(targetPath) {
+  const p = targetPath || '';
+  if (p.includes('@@SANDBOX_PATH@@')) return true;
+  const dir = configuredSandboxDir();
+  if (!dir) {
+    // project.config named no directory. Discover either historical dirname.
+    return p.startsWith('dev-ai-interaction/') || p.includes('/dev-ai-interaction/')
+      || p.startsWith('sandbox/') || p.includes('/sandbox/')
+      || p === 'dev-ai-interaction' || p === 'sandbox';
+  }
+  if (p === dir || p === './' + dir) return true;
+  if (p.startsWith(dir + '/') || p.startsWith('./' + dir + '/')) return true;
+  if (p.includes('/' + dir + '/')) return true;
+  return false;
+}
+
 if (isPlanMode()) {
-  const inSandbox = (targetPath || '').startsWith('dev-ai-interaction/') ||
-                    (targetPath || '').includes('/dev-ai-interaction/');
+  const inSandbox = pathInConfiguredSandbox(targetPath);
   if (!inSandbox) {
     // Only deny non-sandbox edits/writes in plan mode (other tools may still ask).
     if (toolName === 'search_replace' || toolName === 'write' || toolName === 'edit') {

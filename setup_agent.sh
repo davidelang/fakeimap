@@ -159,8 +159,12 @@ ensure_common_hooks_executable() {
   # Install/refresh post-checkout from tracked template (hooks/post-checkout)
   if [ -f "$ORCH_ROOT/hooks/post-checkout" ]; then
     cp "$ORCH_ROOT/hooks/post-checkout" "$hooks/post-checkout"
-  elif [ ! -f "$hooks/post-checkout" ] && [ -f "$ORCH_ROOT/dev-ai-interaction/new-project-template/post-checkout" ]; then
-    cp "$ORCH_ROOT/dev-ai-interaction/new-project-template/post-checkout" "$hooks/post-checkout"
+  elif [ ! -f "$hooks/post-checkout" ]; then
+    local sb_dir
+    sb_dir="$(read_sandbox_dir "$ORCH_ROOT/project.config" || true)"
+    if [ -n "$sb_dir" ] && [ -f "$ORCH_ROOT/$sb_dir/new-project-template/post-checkout" ]; then
+      cp "$ORCH_ROOT/$sb_dir/new-project-template/post-checkout" "$hooks/post-checkout"
+    fi
   fi
   # Active hooks only (not *.sample)
   find "$hooks" -maxdepth 1 -type f ! -name '*.sample' -exec chmod 775 {} + 2>/dev/null || true
@@ -171,6 +175,26 @@ ensure_common_hooks_executable() {
     echo "WARNING: $hooks/post-checkout is still not executable (check ownership)."
   fi
 }
+
+# sandbox_dir wins; sandbox_path is the legacy alias. Empty if unset.
+read_sandbox_dir() {
+  local cfg="$1" key val from_dir="" from_path=""
+  [ -f "$cfg" ] || return 1
+  while IFS='=' read -r key val; do
+    case "$key" in
+      sandbox_dir) [ -n "$val" ] && from_dir="$val" ;;
+      sandbox_path) [ -n "$val" ] && from_path="$val" ;;
+    esac
+  done < "$cfg"
+  if [ -n "$from_dir" ]; then
+    printf '%s' "$from_dir"
+  elif [ -n "$from_path" ]; then
+    printf '%s' "$from_path"
+  else
+    return 1
+  fi
+}
+
 ensure_common_hooks_executable
 
 # 2. Create Worktree & Branch
@@ -264,6 +288,20 @@ seed_smudge_inputs() {
   fi
 }
 
+
+# Tracked paths whose .gitattributes say filter=manage-configs.
+# Fallback is STAMPED_FILES when check-attr returns nothing.
+manage_configs_files() {
+  local listed
+  listed=$(git ls-files | git check-attr --stdin filter \
+    | awk -F': ' '$3 == "manage-configs" { print $1 }')
+  if [ -n "$listed" ]; then
+    printf '%s\n' "$listed"
+  else
+    printf '%s\n' "${STAMPED_FILES[@]}"
+  fi
+}
+
 re_smudge_stamped_files() {
   # Apply orchestration's filter script directly (do not use git checkout smudge:
   # the branch may ship an older broken filter-apply-config that git would invoke).
@@ -277,11 +315,12 @@ re_smudge_stamped_files() {
     echo "  Commit the fix on orchestration, then retry."
     return 1
   fi
-  for f in "${STAMPED_FILES[@]}"; do
+  mapfile -t _mc_files < <(manage_configs_files)
+  for f in "${_mc_files[@]}"; do
     if ! git cat-file -e "HEAD:$f" 2>/dev/null; then
       continue
     fi
-    tmp=".$f.smudged"
+    tmp="$(mktemp)"
     if ! git show "HEAD:$f" | bash ./filter-apply-config > "$tmp"; then
       echo "Error: manual smudge failed for $f"
       rm -f "$tmp"
@@ -301,7 +340,8 @@ verify_smudge() {
     echo "Error: project.config missing (smudge filters cannot run without it)."
     return 1
   fi
-  for f in "${STAMPED_FILES[@]}"; do
+  mapfile -t _mc_files < <(manage_configs_files)
+  for f in "${_mc_files[@]}"; do
     [ -f "$f" ] || continue
     # Match real tokens only (@@SANDBOX_PATH@@). Do NOT match:
     # - comments mentioning "@@ tokens"
@@ -365,8 +405,23 @@ mkdir -p .gemini/policies
 mkdir -p .gemini/plans
 touch .gemini/plans/.gitkeep
 
-# 6. Setup Sandbox (Symlink)
-ln -sf ../dev-ai-interaction dev-ai-interaction
+# 6. Setup Sandbox (symlink named by project.config sandbox_dir, else sandbox_path)
+SANDBOX_DIR="$(read_sandbox_dir ./project.config || read_sandbox_dir "$ORCH_ROOT/project.config" || true)"
+if [ -z "$SANDBOX_DIR" ]; then
+  echo "Error: project.config has neither sandbox_dir nor sandbox_path."
+  exit 1
+fi
+if [ "$SANDBOX_DIR" != "dev-ai-interaction" ] && [ -L "dev-ai-interaction" ]; then
+  rm -f "dev-ai-interaction"
+fi
+if [ "$SANDBOX_DIR" != "sandbox" ] && [ -L "sandbox" ]; then
+  rm -f "sandbox"
+fi
+if [ -L "$SANDBOX_DIR" ] || [ ! -e "$SANDBOX_DIR" ]; then
+  ln -sfn "../$SANDBOX_DIR" "$SANDBOX_DIR"
+else
+  echo "Sandbox $SANDBOX_DIR already exists and is not a symlink. Leaving it."
+fi
 
 # 6b. Copy local.properties for Android builds
 if [ -f "../master/local.properties" ]; then

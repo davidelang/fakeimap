@@ -102,6 +102,173 @@ ve_seed_worktree_project_config() {
   fi
 }
 
+# After ve_resolve_orch: worktree Gradle/Android homes. Writes stay under $wt.
+# orch is read/seed only. Does not create daemon/ (launchers run as dlang).
+ve_setup_worktree_build_homes() {
+  local wt src dest
+  wt="$(ve_resolve_orch_worktree "${1:-}")" || return 1
+  if [ -z "${ORCH_ROOT:-}" ] || [ ! -d "${ORCH_ROOT}" ]; then
+    echo "ERROR: ve_setup_worktree_build_homes: ORCH_ROOT unset; call ve_resolve_orch first." >&2
+    return 1
+  fi
+
+  mkdir -p -m 2770 "$wt/.gradle-home" || {
+    echo "ERROR: cannot create $wt/.gradle-home" >&2
+    return 1
+  }
+  chmod 2770 "$wt/.gradle-home" 2>/dev/null || true
+
+  mkdir -p -m 2770 "$wt/.android-shared" || {
+    echo "ERROR: cannot create $wt/.android-shared" >&2
+    return 1
+  }
+  chmod 2770 "$wt/.android-shared" 2>/dev/null || true
+
+  dest="$wt/.android-shared/debug.keystore"
+  src="$ORCH_ROOT/.android-shared/debug.keystore"
+  if [ ! -f "$dest" ]; then
+    if [ -f "$src" ]; then
+      cp "$src" "$dest" || {
+        echo "ERROR: cannot copy debug.keystore from $src to $dest" >&2
+        return 1
+      }
+      chmod 660 "$dest" 2>/dev/null || true
+    else
+      echo "ERROR: no debug.keystore at $dest and none at $src" >&2
+      echo "  Copy a canonical debug.keystore to $src" >&2
+      return 1
+    fi
+  fi
+
+  export GRADLE_USER_HOME="$wt/.gradle-home"
+  export ANDROID_USER_HOME="$wt/.android-shared"
+  return 0
+}
+
+# Remove $GRADLE_USER_HOME/daemon so the builder owns the next mkdir.
+# Gradle hardcodes chmod 700 on that tree. Do not chmod it here.
+ve_reset_gradle_daemon_dir() {
+  local home="${GRADLE_USER_HOME:-}"
+  if [ -z "$home" ]; then
+    echo "ERROR: ve_reset_gradle_daemon_dir: GRADLE_USER_HOME unset" >&2
+    return 1
+  fi
+  case "$home" in
+    */.gradle-home) ;;
+    *)
+      echo "ERROR: GRADLE_USER_HOME is not a worktree .gradle-home: $home" >&2
+      return 1
+      ;;
+  esac
+  if [ -e "$home/daemon" ]; then
+    rm -rf "$home/daemon" || {
+      echo "ERROR: cannot remove $home/daemon (do not chmod it)." >&2
+      echo "  Remove as the owner, or fix group write on $home." >&2
+      return 1
+    }
+  fi
+  return 0
+}
+
+# AGP Maven aapt2 (com.android.tools.build:aapt2 classifier linux) is stored
+# unix 0644 in the jar. After extract, Gradle's transform cache drops +x, so
+# ProcessBuilder gets EACCES ("AAPT2 Daemon startup failed"). Point AGP at
+# the SDK build-tools binary instead (android.aapt2FromMavenOverride = file).
+ve_aapt2_from_sdk() {
+  local wt props sdk ver aapt
+  wt="$(ve_resolve_orch_worktree "${1:-}")" || return 1
+  props="$wt/local.properties"
+  if [ ! -f "$props" ]; then
+    echo "ERROR: missing $props (sdk.dir required to locate SDK aapt2)." >&2
+    echo "  Create it with sdk.dir=/absolute/path/to/Android/Sdk" >&2
+    return 1
+  fi
+  sdk=$(sed -n 's/^sdk\.dir=//p' "$props" | tr -d '\r' | head -1)
+  if [ -z "$sdk" ]; then
+    echo "ERROR: sdk.dir unset in $props." >&2
+    echo "  Set sdk.dir to the Android SDK root (must contain build-tools/*/aapt2)." >&2
+    return 1
+  fi
+  if [ ! -d "$sdk/build-tools" ]; then
+    echo "ERROR: no build-tools directory under sdk.dir=$sdk" >&2
+    return 1
+  fi
+  while IFS= read -r ver; do
+    [ -n "$ver" ] || continue
+    aapt="$sdk/build-tools/$ver/aapt2"
+    if [ -f "$aapt" ] && [ -x "$aapt" ]; then
+      printf '%s\n' "$aapt"
+      return 0
+    fi
+  done < <(find "$sdk/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V -r)
+  echo "ERROR: no executable aapt2 under $sdk/build-tools/*/aapt2" >&2
+  echo "  Install Android SDK build-tools, or ensure aapt2 is a regular executable file." >&2
+  return 1
+}
+
+# Incremental app/build is same-uid only. If intermediates/generated/kspCaches
+# are owned by someone else, Gradle chmod on leftover dest dirs fails.
+# Wipe those trees (group write, no sticky). Do not chmod/chown them.
+ve_wipe_foreign_app_build_outputs() {
+  local me d owner need=0
+  me=$(id -un)
+  for d in app/build/intermediates app/build/generated app/build/kspCaches; do
+    if [ -e "$d" ]; then
+      owner=$(stat -c %U "$d" 2>/dev/null || true)
+      if [ -n "$owner" ] && [ "$owner" != "$me" ]; then
+        need=1
+        break
+      fi
+    fi
+  done
+  if [ "$need" -eq 0 ]; then
+    return 0
+  fi
+  echo "Wiping foreign app/build outputs (not owned by $me)..."
+  rm -rf app/build/intermediates app/build/generated app/build/kspCaches || {
+    echo "ERROR: cannot remove foreign app/build outputs (do not chmod them)." >&2
+    return 1
+  }
+  for d in app/build/intermediates app/build/generated app/build/kspCaches; do
+    if [ -e "$d" ]; then
+      echo "ERROR: still present after wipe: $d" >&2
+      ls -ld "$d" >&2 || true
+      echo "  Remove as the owner. Do not chmod." >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Restore other-execute on tracked 100755 helpers.
+# umask 007 + git checkout writes 770; o+r-only passes leave 774.
+# ai-planner is not in ai-code, so 774 dlang:ai-code is Permission denied.
+# Always chmod a+x (umask-proof). Never chmod +x under umask 007.
+# Taken from orchestration:ve-resolve-orch (union with ve_aapt2_from_sdk).
+# Callers on orch: update-rules.sh / setup_agent.sh — not build_app/deploy.
+ve_ensure_tracked_exec_other_x() {
+  local wt="${1:-}"
+  local p mode _hash _stage
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  for p in agent-landlock todo-append todo-close ve-env \
+           landlock-smoke-matrix landlock-write-probe; do
+    if [ -f "$wt/$p" ]; then
+      chmod a+x "$wt/$p" 2>/dev/null || true
+    fi
+  done
+  if ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  while read -r mode _hash _stage p; do
+    [ "$mode" = "100755" ] || continue
+    [ -n "$p" ] || continue
+    if [ -f "$wt/$p" ]; then
+      chmod a+x "$wt/$p" 2>/dev/null || true
+    fi
+  done < <(git -C "$wt" ls-files -s)
+  return 0
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
   ve_resolve_orch "${1:-}" || exit 1

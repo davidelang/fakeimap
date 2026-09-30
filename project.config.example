@@ -2,12 +2,12 @@
 # Committed template. Copy to project.config (gitignored) and fill real values.
 # Used by clean/smudge filters (manage-configs) and setup-project.
 
-@@SANDBOX_PATH@@_path=@@SANDBOX_PATH@@
+sandbox_path=@@SANDBOX_PATH@@
 planning_user=@@PLANNING_USER@@
 coder_user=@@CODER_USER@@
 orchestrator_user=@@ORCHESTRATOR_USER@@
 code_group=@@CODE_GROUP@@
-@@SANDBOX_PATH@@_group=@@SANDBOX_GROUP@@
+sandbox_group=@@SANDBOX_GROUP@@
 shared_group=@@SHARED_GROUP@@
 
 # Example paths (will be @@ substituted in scripts via manage-configs filter)
@@ -22,7 +22,7 @@ primary_user=@@PRIMARY_USER@@
 #   - @@CODER_USER@@ / @@PLANNING_USER@@ have different $HOME; ~/git is not shared.
 #   - Landlock and open() need a concrete path.
 # Checked-in templates use @@GIT_HOME@@; local project.config has the real path.
-# landlock.config (tracked) is smudged from the same git_home= / @@SANDBOX_PATH@@_path=.
+# landlock.config (tracked) is smudged from the same git_home= / sandbox_path=.
 git_home=@@GIT_HOME@@
 
 # Absolute orchestration root (managing tree). Worktrees do not guess via
@@ -30,15 +30,15 @@ git_home=@@GIT_HOME@@
 # gitignored project.config. Runtime: ./ve-resolve-orch or source it.
 orch_root=@@ORCH_ROOT@@
 
-# Special @@SANDBOX_PATH@@ paths (for setup-project to create)
-@@SANDBOX_PATH@@_special_paths=plans,historical-plans,implementation-failure-logs,PRs,research
+# Special sandbox paths (for setup-project to create)
+sandbox_special_paths=plans,historical-plans,implementation-failure-logs,PRs,research
 
-# Prefer @@SANDBOX_PATH@@_dir for launchers/generate_pr (generic hosts).
+# Prefer sandbox_dir for launchers/generate_pr (generic hosts).
 # VehicleExpenses default: dev-ai-interaction
-# Library hosts default: @@SANDBOX_PATH@@
-# Legacy alias still accepted: @@SANDBOX_PATH@@_path
-# @@SANDBOX_PATH@@_dir=dev-ai-interaction
-# @@SANDBOX_PATH@@_dir=@@SANDBOX_PATH@@
+# Library hosts default: sandbox
+# Legacy alias still accepted: sandbox_path
+# sandbox_dir=dev-ai-interaction
+# sandbox_dir=sandbox
 
 # Optional build gate for master-merge on non-Android hosts:
 # build_command=./build

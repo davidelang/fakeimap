@@ -264,7 +264,7 @@ FILES=(
     "get-builds-tag.sh"
     # run-grok-planner: convenience launcher for dedicated narrow Planning Agent sessions.
     # Reads the narrow prompt file (written by the main orchestrator to
-    # dev-ai-interaction/.planning-agent-prompt.txt) to allow the user direct
+    # ${sandbox_dir}/.planning-agent-prompt.txt) to allow the user direct
     # interaction with the planner until explicit approval. Synced for use from
     # any worktree.
     "run-grok-planner"
@@ -290,8 +290,8 @@ FILES=(
     # Stable canonical guardrails block (cite by path in plans; do not paste).
     # This is the single source of truth for the short "Compliance & Execution
     # Guardrails (STANDARD BLOCK)" section. Placed at repo root (not under
-    # dev-ai-interaction/) so it is a regular tracked file in every worktree
-    # (dev-ai-interaction/ is gitignored and symlinked in agent worktrees for
+    # ${sandbox_dir}/) so it is a regular tracked file in every worktree
+    # (${sandbox_dir}/ is gitignored and symlinked in agent worktrees for
     # sandbox sharing). Listed in FILES so it is physically copied + committed
     # into each agent-N/ and master/ worktree and can be `cat`'d reliably.
     # This makes drift immediately visible to the user.

@@ -11,7 +11,7 @@ This file (AGENTS.md) is the entry point for agent CLIs in this multi-agent Vehi
 3. `./AGENT_MANDATES.md` (shared core).
 4. `./project-facts.md` (**full** file — orientation only).
 5. **If Master:** also `MASTER_AGENT_MANDATE.md`.
-6. **If Planner:** `standard-plan-compliance-block.md` (path), `dev-ai-interaction/research/plan-style-guide.md`, designated plan if any.
+6. **If Planner:** `standard-plan-compliance-block.md` (path), `@@SANDBOX_PATH@@/research/plan-style-guide.md`, designated plan if any.
 7. **If Coder (execute):** `standard-plan-compliance-block.md` + **approved** plan path only.
 8. **Master / orch after handoff:** also `MULTI_AGENT_USER_INSTRUCTIONS.md`.
 9. Confirm **`pwd` once** — never `cd … && ./helper` (breaks allow-lists).
@@ -30,11 +30,11 @@ When **spawning** planner/executor roles, load the full file under `.grok/prompt
 
 | Launcher | OS user | Role | Plans? | Implements app? | Native plan mode? |
 |----------|---------|------|--------|-----------------|-------------------|
-| `./run-grok-orchestrator` | ai-orchestrator | Meta rules / brain | Meta | Meta | Optional |
-| `./run-grok-master` | ai-coder | Execute dispatch; PR review/merge | No | Via coder | No |
-| `./run-grok-planner` | ai-planner | Long-lived planning; **owns new cycles** | Yes | **No** | **Avoid** |
-| `./run-grok-coder` | ai-coder | Implement in agent-N | **No** | Yes (approved plan only) | **No** |
-| `./run-grok` | dlang | Bare process-break session | Yes | Yes | Optional |
+| `./run-grok-orchestrator` | @@ORCHESTRATOR_USER@@ | Meta rules / brain | Meta | Meta | Optional |
+| `./run-grok-master` | @@CODER_USER@@ | Execute dispatch; PR review/merge | No | Via coder | No |
+| `./run-grok-planner` | @@PLANNING_USER@@ | Long-lived planning; **owns new cycles** | Yes | **No** | **Avoid** |
+| `./run-grok-coder` | @@CODER_USER@@ | Implement in agent-N | **No** | Yes (approved plan only) | **No** |
+| `./run-grok` | @@PRIMARY_USER@@ | Bare process-break session | Yes | Yes | Optional |
 
 ## Skills
 
@@ -49,7 +49,7 @@ When **spawning** planner/executor roles, load the full file under `.grok/prompt
 | Built-in default | VE |
 |------------------|-----|
 | “Do clear reversible work without asking” | No tracked non-sandbox edits without named-plan magic approval |
-| Native plan **`a`** / `exit_plan_mode` starts building | Not execute. Work plan is only `dev-ai-interaction/plans/…-plan.md` |
+| Native plan **`a`** / `exit_plan_mode` starts building | Not execute. Work plan is only `@@SANDBOX_PATH@@/plans/…-plan.md` |
 | Subagents on (incl. during planning) | Planner: `GROK_SUBAGENTS=0`. No spawn while planning. Execute body: fresh child (`execution-subagent.md`, `isolation=none`) or fresh `./run-grok-coder` (no `-c` across plans). Long-lived coder/master **dispatch** that child; they must not implement in the organizer transcript |
 | Workflows / `/goal` on | Planner + coder: `GROK_WORKFLOWS=0`. Orch/bare may opt in |
 | Shift+Tab → Plan / always-approve | Launchers stay ask. Do not cycle modes on role sessions |
@@ -73,11 +73,11 @@ When **spawning** planner/executor roles, load the full file under `.grok/prompt
 | TODO.md | Future backlog (`todo-append` / `todo-close`) |
 | ENGINEERING_LOG.md | Activity (`append-to-engineering-log` only) |
 | MULTI_AGENT_USER_INSTRUCTIONS.md | Human magic phrases / rituals |
-| dev-ai-interaction/ | Sandbox (absolute path preferred) |
+| @@SANDBOX_PATH@@/ | Sandbox (absolute path preferred) |
 
 ## Plans
 
-- Designated file under `dev-ai-interaction/plans/` only. Completed → `historical-plans/`.
+- Designated file under `@@SANDBOX_PATH@@/plans/` only. Completed → `historical-plans/`.
 - Filenames: `descriptive-kebab-YYYYMMDD-HHMM-plan.md` (**minutes** when stamping).
 - Harness session `plan.md` = process log only — never the approved work plan.
 - Research findings default to **chat**; files only if asked or durable cache (still discuss in chat).
@@ -93,8 +93,8 @@ ICRS or raw pixel integers only. Normalized 0.0–1.0 per-axis is obsolete.
 ## Next steps after reading
 
 - Fresh launch: Mandate Acknowledgment from `new_agent_prompt`, then STOP & WAIT (except pure role already mid-cycle).
-- Implementation only after magic approval naming `dev-ai-interaction/plans/<name>-plan.md`.
+- Implementation only after magic approval naming `@@SANDBOX_PATH@@/plans/<name>-plan.md`.
 - Planning help = research + better plan file, not source changes/builds.
-- Sandbox: `/home/dlang/git/VehicleExpenses-automated/dev-ai-interaction/`.
+- Sandbox: `@@ORCH_ROOT@@/@@SANDBOX_PATH@@/`.
 
 Welcome. Report your role, branch, and mandates understanding now.

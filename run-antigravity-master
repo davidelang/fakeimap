@@ -13,7 +13,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Stamped defaults (manage-configs smudge from project.config)
-sandbox_path=@@SANDBOX_PATH@@
+sandbox_path=dev-ai-interaction
 antigravity_bin=@@ANTIGRAVITY_BIN@@
 
 if [ -f project.config ]; then

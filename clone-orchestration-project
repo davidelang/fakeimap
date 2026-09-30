@@ -455,6 +455,24 @@ STAMPED_FILES=(
   third_party/libpin-sandbox
 )
 
+
+# Tracked paths whose .gitattributes say filter=manage-configs.
+# Fallback is STAMPED_FILES when check-attr returns nothing.
+manage_configs_files() {
+  local repo="$1"
+  local listed
+  listed=$(as_primary bash -c '
+    cd "$1" || exit 0
+    git -c safe.directory=* ls-files | git -c safe.directory=* check-attr --stdin filter \
+      | awk -F": " "\$3 == \"manage-configs\" { print \$1 }"
+  ' bash "$repo")
+  if [ -n "$listed" ]; then
+    printf '%s\n' "$listed"
+  else
+    printf '%s\n' "${STAMPED_FILES[@]}"
+  fi
+}
+
 re_smudge_dest() {
   local f
   if [ "$DRY" -eq 1 ]; then
@@ -463,7 +481,8 @@ re_smudge_dest() {
   fi
   [ -f "$DEST/filter-apply-config" ] || die "filter-apply-config missing in dest"
   [ -f "$DEST/project.config" ] || die "project.config missing in dest (needed to smudge)"
-  for f in "${STAMPED_FILES[@]}"; do
+  mapfile -t _mc_files < <(manage_configs_files "$DEST")
+  for f in "${_mc_files[@]}"; do
     if ! git_primary -C "$DEST" cat-file -e "HEAD:$f" 2>/dev/null; then
       continue
     fi

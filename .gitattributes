@@ -40,3 +40,24 @@ third_party/libpin-bwrap filter=manage-configs
 third_party/libpin-sandbox filter=manage-configs
 filter-apply-config !filter
 filter-clean-config !filter
+# @@SANDBOX_PATH@@ — project.config sandbox_dir, else sandbox_path
+new_agent_prompt filter=manage-configs
+AGENTS.md filter=manage-configs
+AGENT_MANDATES.md filter=manage-configs
+standard-plan-compliance-block.md filter=manage-configs
+GROK.md filter=manage-configs
+GEMINI.md filter=manage-configs
+MULTI_AGENT_USER_INSTRUCTIONS.md filter=manage-configs
+MASTER_AGENT_MANDATE.md filter=manage-configs
+project-facts.md filter=manage-configs
+AGENT_CONTEXT.md filter=manage-configs
+.grok/config.toml filter=manage-configs
+.grok/prompts/role-planner.md filter=manage-configs
+.grok/prompts/role-coder.md filter=manage-configs
+.grok/prompts/role-master.md filter=manage-configs
+.grok/prompts/role-orchestrator.md filter=manage-configs
+.grok/prompts/dedicated-planner.md filter=manage-configs
+.grok/prompts/planning-subagent.md filter=manage-configs
+.grok/agents/plan.md filter=manage-configs
+.grok/agents/explore.md filter=manage-configs
+sandbox/research/plan-style-guide.md filter=manage-configs

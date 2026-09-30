@@ -24,7 +24,6 @@ while IFS='=' read -r key val; do
 done < "$CONFIG"
 
 declare -A TOKENS=(
-  [sandbox_path]="@@SANDBOX_PATH@@"
   [planning_user]="@@PLANNING_USER@@"
   [coder_user]="@@CODER_USER@@"
   [orchestrator_user]="@@ORCHESTRATOR_USER@@"
@@ -41,9 +40,25 @@ declare -A TOKENS=(
   [orch_root]="@@ORCH_ROOT@@"
 )
 
+# One token for the sandbox directory. sandbox_dir wins; sandbox_path is the
+# legacy alias. Neither key stays in TOKENS: a dumb substring replace of a
+# short dirname such as sandbox also rewrites ordinary sentences.
+SANDBOX_TOKEN='@@SANDBOX_PATH@@'
+resolve_sandbox_dir() {
+  if [ -n "${CONF_SANDBOX_DIR:-}" ]; then
+    printf '%s' "$CONF_SANDBOX_DIR"
+  elif [ -n "${CONF_SANDBOX_PATH:-}" ]; then
+    printf '%s' "$CONF_SANDBOX_PATH"
+  fi
+}
+
 apply() {
-  local content
+  local content sandbox_val
   content=$(cat)
+  sandbox_val="$(resolve_sandbox_dir)"
+  if [ -n "$sandbox_val" ]; then
+    content="${content//$SANDBOX_TOKEN/$sandbox_val}"
+  fi
   for var in "${!TOKENS[@]}"; do
     token="${TOKENS[$var]}"
     confvar="CONF_${var^^}"

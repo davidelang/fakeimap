@@ -63,7 +63,8 @@ if _unsmudged "$SANDBOX_REL"; then
   elif [[ -d "$PROJECT_ROOT/sandbox" || -L "$PROJECT_ROOT/sandbox" ]]; then
     SANDBOX_REL="sandbox"
   else
-    SANDBOX_REL="dev-ai-interaction"
+    echo "Error: project.config sandbox_dir/sandbox_path is unset and no sandbox directory exists." >&2
+    exit 1
   fi
 fi
 if [[ "$SANDBOX_REL" = /* ]]; then

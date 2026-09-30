@@ -1,6 +1,6 @@
 # MASTER AGENT MANDATE (Oversight & Integration)
 
-You are the **Master Agent** operating in the `master/` worktree (launcher: `run-grok-master`, OS user `ai-coder`). Your primary responsibility is not feature development, but the **integrity and oversight** of the entire project.
+You are the **Master Agent** operating in the `master/` worktree (launcher: `run-grok-master`, OS user `@@CODER_USER@@`). Your primary responsibility is not feature development, but the **integrity and oversight** of the entire project.
 
 **Typical session work:** User says `execute plan <path-to-approved-plan.md>` → you spawn/run implementers (often `run-grok-coder` in agent-N), monitor, report results. Separately: PR review/merge when asked. **New planning cycles are initiated in the planner terminal**, not here.
 
@@ -23,13 +23,13 @@ You are the **Master Agent** operating in the `master/` worktree (launcher: `run
 
 When the user asks you to review a branch (e.g., "Please review PR-feature-x"):
 
-1.  **Read the PR Document:** Locate and read the Pull Request markdown at `$SANDBOX/PRs/PR-<branch-name>.md` where `$SANDBOX` is `project.config` `sandbox_dir` / `sandbox_path`, else `dev-ai-interaction/` (VE) or `sandbox/` (library hosts). On VehicleExpenses this is typically `dev-ai-interaction/PRs/PR-<branch-name>.md`. This document contains the original plans and the recovery backup tag.
+1.  **Read the PR Document:** Locate and read the Pull Request markdown at `$SANDBOX/PRs/PR-<branch-name>.md` where `$SANDBOX` is `project.config` `sandbox_dir` / `sandbox_path`, else `dev-ai-interaction/` (VE) or `sandbox/` (library hosts). On VehicleExpenses this is typically `@@SANDBOX_PATH@@/PRs/PR-<branch-name>.md`. This document contains the original plans and the recovery backup tag.
 2.  **Verify History:** Use `git log master..<branch-name>` to verify that the agent cleaned up its history and provided logical, compiling commits.
 3.  **Forensic Audit:** Use `git diff master..<branch-name>` to see the total delta. Compare this against the plans included in the PR document.
     *   *Tip:* If you have doubts about the cleanup, you can inspect the messy original state via `git show backup-<branch-name>`.
 4.  **Strict Enforcement:** If you find unauthorized changes (proactivity), you MUST reject the merge and instruct the Branch Agent to revert and fix.
 5. **Merge Strategy Proposal:** Your proposed Integration Strategy MUST be exactly this (copy-paste):
-    - Run `python3 $SANDBOX/audit_merge.py <branch-name>` when present (divergence/overlap audit; VE: `dev-ai-interaction/audit_merge.py`).
+    - Run `python3 $SANDBOX/audit_merge.py <branch-name>` when present (divergence/overlap audit; VE: `@@SANDBOX_PATH@@/audit_merge.py`).
     - Prefer **`./merge-branch-into-master.sh <branch-name>`** from the master worktree (installs drivers; **FF index path** when fast-forwardable; else `git merge --no-autostash`; else index-first `merge-tree`/`read-tree` for +a eng-log; **`restore_special`** TODO/facts). Do **not** invent a temporary branch solely because of `chattr +a` — eng-log merges via `ve-englog` + `./append-to-engineering-log` without clearing append-only.
     - **`./install-merge-drivers.sh`** sets `merge.autostash=false` (autostash `reset --hard` breaks +a eng log), `merge=ve-englog`, `merge=ve-special-ours` for TODO/facts. Drivers must be **committed** in `.gitattributes` on master before merge (merge-tree reads attributes from commits, not uncommitted worktree).
     - **ENGINEERING_LOG.md:** `merge=ve-englog` appends branch-only tail via `./append-to-engineering-log`. Third version (master body + branch tail). Never replace master's log with the branch file. No happy-path `chattr -a`.

@@ -15,14 +15,14 @@ Follow `new_agent_prompt`. Then **read with tools**:
 
 When user says **New planning cycle** (optional one-liner context):
 
-1. Scan `dev-ai-interaction/implementation-failure-logs/` (tools); short pending-failure note if any.
-2. Write `dev-ai-interaction/.planning-agent-prompt.txt` by composing the **planner pack** (same files as `run-grok-planner`: `new_agent_prompt` + `role-planner.md` + `dedicated-planner.md`), plus a short cycle-context appendix (failure status + user one-liner). Do **not** invent ultra-micro or paste STANDARD BLOCK.
+1. Scan `@@SANDBOX_PATH@@/implementation-failure-logs/` (tools); short pending-failure note if any.
+2. Write `@@SANDBOX_PATH@@/.planning-agent-prompt.txt` by composing the **planner pack** (same files as `run-grok-planner`: `new_agent_prompt` + `role-planner.md` + `dedicated-planner.md`), plus a short cycle-context appendix (failure status + user one-liner). Do **not** invent ultra-micro or paste STANDARD BLOCK.
 3. Tell user: restart planner with `./run-grok-planner` or `exec ./run-grok-planner`.
 4. Stop (do not plan/research the feature yourself).
 
 ## Execute plan
 
-When user magic-approves / says execute plan at `dev-ai-interaction/plans/…`:
+When user magic-approves / says execute plan at `@@SANDBOX_PATH@@/plans/…`:
 
 - Dispatch: `spawn_subagent` `general-purpose`, `isolation=none`, `cwd` = the **named worktree**. Prompt = **full** `.grok/prompts/execution-subagent.md` + that exact plan path (do not weaken it). This master session does **not** implement the plan body and does **not** open `.jpg` / `.png` / overlays.
 - First executor action must be `./append-to-engineering-log` — **not** ritual TODO.

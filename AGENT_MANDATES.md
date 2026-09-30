@@ -41,7 +41,7 @@ If a Unix DAC, Landlock, sudo, group-membership, or filesystem permission denial
 
 **Allowed:** re-try the **same** mandated helper/path after the human fixes host state; use project wrappers already intended for the action (e.g. `./append-to-engineering-log`); read-only diagnosis the agent can run without escalating privileges.
 
-**Rationale:** Multi-user DAC (`ai-shared` vs `ai-code`, setgid `.git`, Landlock) is load-bearing. Silent bypasses re-break planner/coder isolation and hide real defects (see multi-user git repair docs / `./fix-multiuser-git-hosts.sh --audit-only`).
+**Rationale:** Multi-user DAC (`@@SHARED_GROUP@@` vs `@@CODE_GROUP@@`, setgid `.git`, Landlock) is load-bearing. Silent bypasses re-break planner/coder isolation and hide real defects (see multi-user git repair docs / `./fix-multiuser-git-hosts.sh --audit-only`).
 
 This is **policy** (this file). Orientation map only: `project-facts.md`.
 
@@ -52,8 +52,8 @@ This is **policy** (this file). Orientation map only: `project-facts.md`.
 ### 2.1 Planning (until magic approval of a named sandbox plan)
 
 **May write:** sandbox  
-`/home/dlang/git/VehicleExpenses-automated/dev-ai-interaction/`  
-(and `./dev-ai-interaction`), plus:
+`@@ORCH_ROOT@@/@@SANDBOX_PATH@@/`  
+(and `./@@SANDBOX_PATH@@`), plus:
 
 - `project-facts.md` (orientation only — §7)
 - `TODO.md` **only** via `./todo-append` / `./todo-close`
@@ -62,7 +62,7 @@ This is **policy** (this file). Orientation map only: `project-facts.md`.
 
 **Helpfulness in planning** = research, alternatives, better plan document — **not** source changes, builds, or “just one fix.”
 
-### 2.2 Execution (after user magic-approves exact `dev-ai-interaction/plans/…-plan.md`)
+### 2.2 Execution (after user magic-approves exact `@@SANDBOX_PATH@@/plans/…-plan.md`)
 
 Only that plan’s observable contract. First action: `./append-to-engineering-log`. Re-read `standard-plan-compliance-block.md` at execute start (cite in plans; never paste).
 
@@ -117,7 +117,7 @@ When spawning in allowed contexts, load the **full** prompt file for that role (
 
 Harness details. Real approval = path-named magic phrase. Continued draft feedback ≠ abandon unless user says start over / new cycle / abandon. Who may use native plan mode: **`AGENTS.md`** (planner/coder avoid; bare `run-grok` + orchestrator optional).
 
-Native `enter_plan_mode` / `exit_plan_mode` / TUI **`a` (approve and start building)** is **not** VE execute. Harness `plan.md` and `.grok/plan.md` are process logs only — never the approved work plan. Planner/coder must not enter native plan mode (it cannot write `dev-ai-interaction/plans/`).
+Native `enter_plan_mode` / `exit_plan_mode` / TUI **`a` (approve and start building)** is **not** VE execute. Harness `plan.md` and `.grok/plan.md` are process logs only — never the approved work plan. Planner/coder must not enter native plan mode (it cannot write `@@SANDBOX_PATH@@/plans/`).
 
 ### 3.5a Grok 4.6 / Build 1.0 defaults do not override VE
 
@@ -135,7 +135,7 @@ Product defaults (4.6 “just do reversible work,” native plan **`a`**, backgr
 
 ### 3.7 Long-lived handoff / new cycle (must not drop)
 
-On execution handoff, also follow **`MULTI_AGENT_USER_INSTRUCTIONS.md`**: including writing `dev-ai-interaction/.post-handoff-gate.txt` when staying in the same long chat.  
+On execution handoff, also follow **`MULTI_AGENT_USER_INSTRUCTIONS.md`**: including writing `@@SANDBOX_PATH@@/.post-handoff-gate.txt` when staying in the same long chat.  
 “New planning cycle” master automation and planner restart: that doc + launchers. **Role pack requires reading MULTI_AGENT** for master/orchestrator and after handoff (see §10).
 
 ---
@@ -158,8 +158,8 @@ then `results ready to test (new tag: ...)`.
 ## 5. Baseball and recovery
 
 Strike = failed build / recoverable phase failure. 3 strikes = out → reset to last good phase/build tag. 3 outs = end of inning →  
-`dev-ai-interaction/implementation-failure-logs/<date>-<slug>-inning-end.md`  
-(template: `dev-ai-interaction/research/inning-end-report-template.md`) **before** replan. Recovery plans include **Already completed (exclude)**. Default ~3–8 coherent phases; finer only post–inning-end. Egregious failure = immediate out.
+`@@SANDBOX_PATH@@/implementation-failure-logs/<date>-<slug>-inning-end.md`  
+(template: `@@SANDBOX_PATH@@/research/inning-end-report-template.md`) **before** replan. Recovery plans include **Already completed (exclude)**. Default ~3–8 coherent phases; finer only post–inning-end. Egregious failure = immediate out.
 
 ---
 
@@ -179,10 +179,10 @@ Strike = failed build / recoverable phase failure. 3 strikes = out → reset to 
 - **Wrong-host instructions:** this session is only `pwd` + `AGENT_CONTEXT.md` (role, branch, sandbox) + this git toplevel. Sibling clones (VehicleExpenses, torque-ford-gas-tracking, remotetable, extractmail, orchestration-example, …) are **different git hosts**, not worktrees of this repo. If the user’s request is **work for a different git host** (named other clone, other sandbox, other app), **do not** plan, research, or edit for that host. **Do not guess** the correct session or worktree. Report this `pwd`, `AGENT_CONTEXT` Agent ID / branch / sandbox, and tell the human to paste in the intended launcher. Wait. Ambiguous “the app” / “this repo” means **this** host. Mentioning another product in passing is not a redirect unless the **task** is that other product’s work.
 - **Rebase onto master:** follow `.grok/skills/rebase-on-master/SKILL.md`. Keep the feature copies of `ENGINEERING_LOG.md` / `TODO.md` / `project-facts.md`; do not merge specials. Other conflicts: stop and ask the human.
 - **Worktree copy rule:** tracked copies must be committed on that branch or use `./update-rules.sh`. Uncommitted tracked dirt blocks `./build_app`. Gitignored binaries OK uncommitted.
-- **Plans:** only user-**designated** files under `dev-ai-interaction/plans/`. Completed → `historical-plans/`. Never treat harness `~/.grok/sessions/**/plan.md` as approved work plan. Never read `historical-plans/` or non-designated plans for execution influence.
+- **Plans:** only user-**designated** files under `@@SANDBOX_PATH@@/plans/`. Completed → `historical-plans/`. Never treat harness `~/.grok/sessions/**/plan.md` as approved work plan. Never read `historical-plans/` or non-designated plans for execution influence.
 - **If you read a wrong/historical plan or continued after handoff:** (1) enter plan mode if available / treat self as planning-only, (2) revert unauthorized changes via §6, (3) report violation, (4) wait for user direction.
 - **Filenames:** `descriptive-kebab-YYYYMMDD-HHMM-plan.md` (minutes when stamping; not day-only; seconds not required). New contract → new file + new minutes.
-- **Plan content:** Context, Approach, Critical Files, reuse, **Phased Execution** (what/files/success), Verification/Acceptance. Cite STANDARD BLOCK by path only. No Mandate Acknowledgment. No ultra-micro except post–inning recovery. High-signal; soft ~2–8 KB typical. Style guide: `dev-ai-interaction/research/plan-style-guide.md`. **Critical Files is a closed set** (path + function + predicate; last line: files not listed → no edits). Finish greps in planning — no `grep` / `unless` / optional extra sites in the approved file. Fewest phases (one file often one phase). Completeness (§4) applies only to that set. Each plan stands alone (executor does not need the prior cycle’s chat).
+- **Plan content:** Context, Approach, Critical Files, reuse, **Phased Execution** (what/files/success), Verification/Acceptance. Cite STANDARD BLOCK by path only. No Mandate Acknowledgment. No ultra-micro except post–inning recovery. High-signal; soft ~2–8 KB typical. Style guide: `@@SANDBOX_PATH@@/research/plan-style-guide.md`. **Critical Files is a closed set** (path + function + predicate; last line: files not listed → no edits). Finish greps in planning — no `grep` / `unless` / optional extra sites in the approved file. Fewest phases (one file often one phase). Completeness (§4) applies only to that set. Each plan stands alone (executor does not need the prior cycle’s chat).
 - **project-facts:** full read launch/new cycle/before edit; orientation only; prune; no plan/branch/status narrative.
 - **TODO:** future only; wrappers only.
 - **ENGINEERING_LOG:** `./append-to-engineering-log` only.
@@ -260,4 +260,3 @@ Planner owns new cycles; failure logs under `implementation-failure-logs/`. Inte
 Magic phrases, never-say lists, two-terminal ritual: **`MULTI_AGENT_USER_INSTRUCTIONS.md`**. Launcher inject strings load prompt files under `.grok/prompts/`. Do not re-author conflicting ultra-micro / paste-STANDARD-BLOCK text in launchers.
 
 ---
-

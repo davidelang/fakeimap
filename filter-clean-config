@@ -30,7 +30,6 @@ done < "$CONFIG"
 
 # Tokens to scrub: common ones
 declare -A TOKENS=(
-  [sandbox_path]="@@SANDBOX_PATH@@"
   [planning_user]="@@PLANNING_USER@@"
   [coder_user]="@@CODER_USER@@"
   [orchestrator_user]="@@ORCHESTRATOR_USER@@"
@@ -44,6 +43,167 @@ declare -A TOKENS=(
   [antigravity_bin]="@@ANTIGRAVITY_BIN@@"
   [orch_root]="@@ORCH_ROOT@@"
 )
+
+# One token for the sandbox directory. sandbox_dir wins; sandbox_path is the
+# legacy alias. Neither key stays in TOKENS: a dumb substring replace of a
+# short dirname such as sandbox also rewrites ordinary sentences.
+SANDBOX_TOKEN='@@SANDBOX_PATH@@'
+resolve_sandbox_dir() {
+  if [ -n "${CONF_SANDBOX_DIR:-}" ]; then
+    printf '%s' "$CONF_SANDBOX_DIR"
+  elif [ -n "${CONF_SANDBOX_PATH:-}" ]; then
+    printf '%s' "$CONF_SANDBOX_PATH"
+  fi
+}
+
+
+apply_sandbox_boundary() {
+  local content="$1"
+  local shell_mode="$2"
+  local val
+  val="$(resolve_sandbox_dir)"
+  printf '%s' "$content" | SANDBOX_VAL="$val" SANDBOX_SHELL="$shell_mode" SANDBOX_ORCH="${CONF_ORCH_ROOT:-}" python3 -c "$(cat <<'PYBOUND'
+
+import os
+import re
+import sys
+
+TOKEN = "@@SANDBOX_PATH@@"
+TOKEN_ROOT = "@@ORCH_ROOT@@/" + TOKEN
+HISTORICAL = ("dev-ai-interaction", "sandbox")
+ABS_RE = re.compile(
+    r"/(?:[A-Za-z0-9._-]+/)+(?:dev-ai-interaction|sandbox)(?=/|[`\"']|$)"
+)
+PROBE_RE = re.compile(r"(^|[\s\[])-[dLef]([\s\]]|$)")
+
+
+def _shaped(name, line):
+    if re.search(r"(^|[/`\"=(\s])" + re.escape(name) + r"(?=[/`\"']|$)", line):
+        return True
+    if re.search(r"=" + re.escape(name) + r"(?=\s|$)", line):
+        return True
+    return False
+
+
+def _both_layouts(line):
+    return _shaped("dev-ai-interaction", line) and _shaped("sandbox", line)
+
+
+def _longer_path(src, end):
+    if src[end:end + 1] != "/":
+        return False
+    nxt = src[end + 1:end + 2]
+    return nxt.isalnum() or nxt in "._-"
+
+
+def _rewrite_absolute(body, orch):
+    def repl(match):
+        full = match.group(0)
+        parent = full.rsplit("/", 1)[0]
+        if orch and parent == orch:
+            return TOKEN_ROOT
+        if "VehicleExpenses-automated/dev-ai-interaction" in full:
+            return TOKEN_ROOT
+        if "Sandbox" in body:
+            return TOKEN_ROOT
+        return full
+    return ABS_RE.sub(repl, body)
+
+
+def _foreign_absolute(src, name_at):
+    """True when name sits in an absolute path. Those are handled only by _rewrite_absolute."""
+    stop = (" ", "\t", "'", '"', "`")
+    i = name_at
+    while i > 0 and src[i - 1] not in stop:
+        i -= 1
+    return src[i:i + 1] == "/"
+
+
+def _boundary(body, names):
+    comparison = _both_layouts(body)
+    is_comment = body.lstrip().startswith("#")
+    directory_comment = bool(re.match(r"\s*#\s*sandbox_dir=", body))
+    for name in sorted({n for n in names if n}, key=len, reverse=True):
+        src = body
+
+        def repl_as(match, src=src):
+            if comparison or (is_comment and directory_comment):
+                return match.group(0)
+            return "=" + TOKEN
+
+        body = re.sub(r"=" + re.escape(name) + r"(?=\s|$)", repl_as, body)
+        src = body
+
+        def repl(match, src=src):
+            name_at = match.start() + len(match.group(1))
+            if _foreign_absolute(src, name_at):
+                return match.group(0)
+            if comparison and not _longer_path(src, match.end()):
+                return match.group(0)
+            prefix = match.group(1)
+            nxt = src[match.end():match.end() + 1]
+            if is_comment and directory_comment:
+                return match.group(0)
+            if is_comment and nxt != "/" and prefix != "=":
+                return match.group(0)
+            return prefix + TOKEN
+
+        body = re.sub(
+            r"(^|[/`\"=(\s])" + re.escape(name) + r"(?=[/`\"']|$)",
+            repl,
+            body,
+        )
+    return body
+
+
+def rewrite_line(body, names, shell_mode, orch):
+    if shell_mode and (PROBE_RE.search(body) or "SANDBOX_REL=" in body):
+        return body
+    body = body.replace("dev-ai*/plans/**", TOKEN + "/plans/**")
+    body = _rewrite_absolute(body, orch)
+    return _boundary(body, names)
+
+
+def rewrite_text(text, names, shell_mode, orch_root=""):
+    clean = []
+    for name in names:
+        name = (name or "").strip().strip("/")
+        if name and "@@" not in name:
+            clean.append(name)
+    orch = (orch_root or "").strip().rstrip("/")
+    lines = text.splitlines(keepends=True)
+    if text and not lines:
+        lines = [text]
+    out = []
+    prev = None
+    for line in lines:
+        nl = ""
+        body = line
+        if body.endswith("\n"):
+            nl = "\n"
+            body = body[:-1]
+            if body.endswith("\r"):
+                nl = "\r\n"
+                body = body[:-1]
+        body = rewrite_line(body, clean, bool(shell_mode), orch)
+        if (
+            prev is not None
+            and body == prev
+            and TOKEN + "/plans/**" in body
+        ):
+            continue
+        prev = body
+        out.append(body + nl)
+    return "".join(out)
+
+val = os.environ.get("SANDBOX_VAL", "")
+shell = os.environ.get("SANDBOX_SHELL", "0") == "1"
+orch = os.environ.get("SANDBOX_ORCH", "")
+names = [val] if val else []
+sys.stdout.write(rewrite_text(sys.stdin.read(), names, shell, orch))
+PYBOUND
+)"
+}
 
 # For shell files: scrub VAR=real back to VAR=@@TOKEN@@
 scrub_shell_assignments() {
@@ -113,8 +273,10 @@ if [[ "$filename" == *.sh \
   content=$(scrub_shell_assignments "$content")
   # Restore path tokens that smudge rewrote inside comments/docs
   content=$(scrub_values "$content" 1)
+  content=$(apply_sandbox_boundary "$content" 1)
   printf '%s\n' "$content"
 else
   content=$(scrub_values "$content" 0)
+  content=$(apply_sandbox_boundary "$content" 0)
   printf '%s\n' "$content"
 fi
