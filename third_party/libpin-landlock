@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""libpin-landlock — optional Landlock write confinement for pin tooling.
+
+Applies a Landlock domain that **handles only filesystem mutation** (write,
+create, remove, truncate, refer). Unhandled rights (read, execute) stay
+unrestricted so JDKs, SDKs, and system tools keep working.
+
+Usage:
+  libpin-landlock --path DIR [--path DIR ...] -- command…
+  libpin-landlock --mode MODE --lib NAME -- command…
+  libpin-landlock --status
+
+Modes (same as libpin-bwrap; resolved under third_party/):
+  third_party | lib | src | artifact
+
+Env:
+  LIBPIN_NO_LANDLOCK=1   skip (exec command bare)
+  LIBPIN_LANDLOCK_DEBUG=1
+  --path DIR             extra RW root (libpin-sandbox passes $GIT_HOME/<lib>/.git)
+  TMPDIR /tmp /var/tmp     always granted for mutation when any path is set
+    (builds need temp files; corruption bound is still not the app tree)
+
+Exit: exec's the command, or 0 for --status if available, 1 if unavailable.
+"""
+from __future__ import annotations
+
+import argparse
+import ctypes
+import ctypes.util
+import os
+import sys
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence, Tuple
+
+# linux/landlock.h
+LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
+LANDLOCK_RULE_PATH_BENEATH = 1
+
+LANDLOCK_ACCESS_FS_EXECUTE = 1 << 0
+LANDLOCK_ACCESS_FS_WRITE_FILE = 1 << 1
+LANDLOCK_ACCESS_FS_READ_FILE = 1 << 2
+LANDLOCK_ACCESS_FS_READ_DIR = 1 << 3
+LANDLOCK_ACCESS_FS_REMOVE_DIR = 1 << 4
+LANDLOCK_ACCESS_FS_REMOVE_FILE = 1 << 5
+LANDLOCK_ACCESS_FS_MAKE_CHAR = 1 << 6
+LANDLOCK_ACCESS_FS_MAKE_DIR = 1 << 7
+LANDLOCK_ACCESS_FS_MAKE_REG = 1 << 8
+LANDLOCK_ACCESS_FS_MAKE_SOCK = 1 << 9
+LANDLOCK_ACCESS_FS_MAKE_FIFO = 1 << 10
+LANDLOCK_ACCESS_FS_MAKE_BLOCK = 1 << 11
+LANDLOCK_ACCESS_FS_MAKE_SYM = 1 << 12
+LANDLOCK_ACCESS_FS_REFER = 1 << 13
+LANDLOCK_ACCESS_FS_TRUNCATE = 1 << 14
+LANDLOCK_ACCESS_FS_IOCTL_DEV = 1 << 15
+
+# Mutation-only: reads/exec remain unhandled → always allowed
+HANDLED_FS = (
+    LANDLOCK_ACCESS_FS_WRITE_FILE
+    | LANDLOCK_ACCESS_FS_REMOVE_DIR
+    | LANDLOCK_ACCESS_FS_REMOVE_FILE
+    | LANDLOCK_ACCESS_FS_MAKE_CHAR
+    | LANDLOCK_ACCESS_FS_MAKE_DIR
+    | LANDLOCK_ACCESS_FS_MAKE_REG
+    | LANDLOCK_ACCESS_FS_MAKE_SOCK
+    | LANDLOCK_ACCESS_FS_MAKE_FIFO
+    | LANDLOCK_ACCESS_FS_MAKE_BLOCK
+    | LANDLOCK_ACCESS_FS_MAKE_SYM
+    | LANDLOCK_ACCESS_FS_REFER
+    | LANDLOCK_ACCESS_FS_TRUNCATE
+)
+
+# Full set granted under allowed trees (all handled bits)
+ALLOWED_BENEATH = HANDLED_FS
+
+PR_SET_NO_NEW_PRIVS = 38
+O_PATH = 0o10000000
+O_CLOEXEC = 0o2000000
+O_DIRECTORY = 0o200000
+
+# x86_64 / aarch64 common NR on modern kernels
+_SYS = {
+    "x86_64": (444, 445, 446),
+    "amd64": (444, 445, 446),
+    "aarch64": (444, 445, 446),
+    "arm64": (444, 445, 446),
+}
+
+
+class LandlockRulesetAttr(ctypes.Structure):
+    _fields_ = [("handled_access_fs", ctypes.c_uint64)]
+
+
+class LandlockPathBeneathAttr(ctypes.Structure):
+    _fields_ = [
+        ("allowed_access", ctypes.c_uint64),
+        ("parent_fd", ctypes.c_int32),
+    ]
+
+
+def _debug(msg: str) -> None:
+    if os.environ.get("LIBPIN_LANDLOCK_DEBUG", "0") == "1":
+        print(f"libpin-landlock: {msg}", file=sys.stderr)
+
+
+def _machine_syscalls() -> Optional[Tuple[int, int, int]]:
+    import platform
+
+    mach = platform.machine().lower()
+    if mach in _SYS:
+        return _SYS[mach]
+    # Fallback try common numbers
+    return (444, 445, 446)
+
+
+def _libc():
+    return ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+
+
+def landlock_abi_version() -> Optional[int]:
+    """Return ABI version or None if unavailable."""
+    if sys.platform != "linux":
+        return None
+    nrs = _machine_syscalls()
+    if not nrs:
+        return None
+    libc = _libc()
+    create_nr, _, _ = nrs
+    # landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)
+    ver = libc.syscall(create_nr, None, ctypes.c_size_t(0), LANDLOCK_CREATE_RULESET_VERSION)
+    if ver < 0:
+        return None
+    return int(ver)
+
+
+def _prctl_no_new_privs(libc) -> None:
+    # prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    r = libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    if r != 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"prctl(NO_NEW_PRIVS) failed: {os.strerror(e)}")
+
+
+def _open_path_fd(path: str, directory: bool) -> int:
+    p = Path(path)
+    if directory:
+        p = p.resolve()
+        if not p.exists():
+            p.mkdir(parents=True, exist_ok=True)
+        flags = O_PATH | O_CLOEXEC | O_DIRECTORY
+    else:
+        # Device nodes / files: do not resolve away special paths oddly
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        flags = O_PATH | O_CLOEXEC
+    return os.open(str(p) if directory else path, flags)
+
+
+def _add_path_rule(libc, add_nr: int, ruleset_fd: int, path: str, directory: bool) -> None:
+    parent_fd = _open_path_fd(path, directory=directory)
+    try:
+        # For a single file (e.g. /dev/null), only WRITE is needed
+        access = ALLOWED_BENEATH if directory else (
+            LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_TRUNCATE
+        )
+        pb = LandlockPathBeneathAttr(access, parent_fd)
+        r = libc.syscall(
+            add_nr,
+            ctypes.c_int(ruleset_fd),
+            ctypes.c_uint(LANDLOCK_RULE_PATH_BENEATH),
+            ctypes.byref(pb),
+            ctypes.c_uint32(0),
+        )
+        if r != 0:
+            e = ctypes.get_errno()
+            raise OSError(e, f"landlock_add_rule({path}): {os.strerror(e)}")
+        _debug(f"allow mutation under {path} (dir={directory})")
+    finally:
+        os.close(parent_fd)
+
+
+def apply_landlock(rw_paths: Sequence[str]) -> None:
+    """Restrict this process: mutation only under rw_paths (+ temps + essential devices)."""
+    nrs = _machine_syscalls()
+    if not nrs:
+        raise OSError("unsupported architecture for landlock syscalls")
+    create_nr, add_nr, restrict_nr = nrs
+    libc = _libc()
+
+    attr = LandlockRulesetAttr(HANDLED_FS)
+    ruleset_fd = libc.syscall(
+        create_nr,
+        ctypes.byref(attr),
+        ctypes.c_size_t(ctypes.sizeof(attr)),
+        ctypes.c_uint32(0),
+    )
+    if ruleset_fd < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"landlock_create_ruleset: {os.strerror(e)}")
+
+    try:
+        dir_paths = list(rw_paths)
+        # Temp dirs: builds need them; not the app tree
+        for t in (
+            os.environ.get("TMPDIR"),
+            os.environ.get("TEMP"),
+            os.environ.get("TMP"),
+            "/tmp",
+            "/var/tmp",
+        ):
+            if t and os.path.isdir(t):
+                dir_paths.append(t)
+
+        # Essential device nodes (write to /dev/null is WRITE_FILE under Landlock)
+        file_paths = [
+            "/dev/null",
+            "/dev/zero",
+            "/dev/full",
+            "/dev/urandom",
+            "/dev/random",
+            "/dev/tty",
+        ]
+
+        seen_dirs: set = set()
+        n_ok = 0
+        for raw in dir_paths:
+            if not raw:
+                continue
+            try:
+                resolved = str(Path(raw).resolve())
+            except Exception:
+                resolved = raw
+            if resolved in seen_dirs:
+                continue
+            seen_dirs.add(resolved)
+            try:
+                _add_path_rule(libc, add_nr, ruleset_fd, resolved, directory=True)
+                n_ok += 1
+            except OSError as exc:
+                _debug(f"skip dir {resolved}: {exc}")
+
+        for fp in file_paths:
+            try:
+                _add_path_rule(libc, add_nr, ruleset_fd, fp, directory=False)
+                n_ok += 1
+            except OSError as exc:
+                _debug(f"skip file {fp}: {exc}")
+
+        if n_ok == 0:
+            raise OSError("no landlock paths could be opened")
+
+        _prctl_no_new_privs(libc)
+        r = libc.syscall(restrict_nr, ctypes.c_int(ruleset_fd), ctypes.c_uint32(0))
+        if r != 0:
+            e = ctypes.get_errno()
+            raise OSError(e, f"landlock_restrict_self: {os.strerror(e)}")
+        _debug(f"restricted (rules≈{n_ok})")
+    finally:
+        os.close(ruleset_fd)
+
+
+def resolve_mode_paths(mode: str, lib: Optional[str], tp_root: Path) -> List[str]:
+    tp_root = tp_root.resolve()
+    paths: List[str] = []
+    if mode == "third_party":
+        paths.append(str(tp_root))
+    elif mode in ("lib", "src", "artifact"):
+        if not lib:
+            raise SystemExit("libpin-landlock: --lib required for mode=%s" % mode)
+        lib_dir = (tp_root / lib).resolve()
+        if mode == "lib":
+            paths.append(str(lib_dir))
+            # ensure children exist for later steps
+            (lib_dir / "src").mkdir(parents=True, exist_ok=True)
+            (lib_dir / "artifact").mkdir(parents=True, exist_ok=True)
+        elif mode == "src":
+            src = lib_dir / "src"
+            src.mkdir(parents=True, exist_ok=True)
+            paths.append(str(src.resolve()))
+        else:
+            art = lib_dir / "artifact"
+            art.mkdir(parents=True, exist_ok=True)
+            paths.append(str(art.resolve()))
+        # Narrow host allow: only this lib's .git (linked worktree object store / refs)
+        gh = os.environ.get("GIT_HOME", "")
+        host_git = os.environ.get("LIBPIN_HOST_GIT", "")
+        if host_git and os.path.isdir(host_git):
+            paths.append(str(Path(host_git).resolve()))
+        elif gh and lib:
+            candidate = Path(gh) / lib / ".git"
+            if candidate.is_dir():
+                paths.append(str(candidate.resolve()))
+    else:
+        raise SystemExit(f"libpin-landlock: unknown mode {mode}")
+
+    return paths
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--mode", help="third_party|lib|src|artifact")
+    ap.add_argument("--lib", help="library name under third_party/")
+    ap.add_argument("--path", action="append", default=[], help="extra RW root (repeatable)")
+    ap.add_argument("--status", action="store_true", help="print landlock availability and exit")
+    ap.add_argument("--tp-root", default=str(Path(__file__).resolve().parent), help="third_party root")
+    ap.add_argument("command", nargs=argparse.REMAINDER, help="command after --")
+    args = ap.parse_args(argv)
+
+    # strip leading --
+    cmd = list(args.command)
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+
+    ver = landlock_abi_version()
+    if args.status:
+        if ver is None:
+            print("unavailable")
+            return 1
+        print(f"available abi={ver}")
+        return 0
+
+    if not cmd:
+        print("libpin-landlock: missing command", file=sys.stderr)
+        return 2
+
+    if os.environ.get("LIBPIN_NO_LANDLOCK", "0") == "1":
+        _debug("LIBPIN_NO_LANDLOCK=1 — exec bare")
+        os.execvp(cmd[0], cmd)
+
+    if ver is None:
+        _debug("landlock unavailable — exec bare")
+        os.execvp(cmd[0], cmd)
+
+    paths: List[str] = list(args.path)
+    if args.mode:
+        paths.extend(resolve_mode_paths(args.mode, args.lib, Path(args.tp_root)))
+    if not paths:
+        print("libpin-landlock: need --mode/--lib or --path", file=sys.stderr)
+        return 2
+
+    try:
+        apply_landlock(paths)
+    except OSError as exc:
+        # Soft-fail: optional hardening (same spirit as missing bwrap)
+        print(f"libpin-landlock: WARN {exc} — continuing unsandboxed", file=sys.stderr)
+        os.execvp(cmd[0], cmd)
+
+    os.environ["LIBPIN_LANDLOCK"] = "1"
+    os.execvp(cmd[0], cmd)
+    return 127
+
+
+if __name__ == "__main__":
+    sys.exit(main())

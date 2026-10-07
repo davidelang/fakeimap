@@ -1,0 +1,6 @@
+diff --git a/README.txt b/README.txt
+--- a/README.txt
++++ b/README.txt
+@@ -1 +1,2 @@
+ example pin source
++patched-by-fetch-deps

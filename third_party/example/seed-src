@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Create a tiny git tree for the example pin (no network).
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+SRC="$HERE/src"
+rm -rf "$SRC"
+mkdir -p "$SRC"
+cd "$SRC"
+git init -q
+git config user.email "example@third-party.local"
+git config user.name "example"
+echo "example pin source" > README.txt
+git add README.txt
+git commit -q -m "example seed"
+# Fake pin sha is not used for real checkout; HEAD is the seed commit
+echo "seeded $SRC @ $(git rev-parse --short HEAD)"

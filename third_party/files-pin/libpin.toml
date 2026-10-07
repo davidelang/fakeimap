@@ -1,0 +1,12 @@
+name = "files-pin"
+source_kind = "files"
+reproducible = true
+build_time = "minutes"
+requires_writable_src = false
+build = []
+consumer_note = "Minimal non-git [[source]] pin — materialize only"
+
+[[source]]
+seed = "seed/hello.txt"
+path = "hello.txt"
+sha256 = "d3fef97f23389645b523b57ff930b5f00aeff196cfb2566c605db6bddc243d1a"

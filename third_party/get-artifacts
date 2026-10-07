@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# get-artifacts — copy build products to destinations declared in libpin.toml
+#
+# Usage:
+#   third_party/get-artifacts [NAME…]
+#   third_party/get-artifacts --help
+#
+# Called by fetch-deps build; also usable alone when iterating builds.
+#
+# Each [[artifact]] is independent (same `from` may appear twice with different `path`).
+#
+# libpin.toml [[artifact]] fields:
+#   from     source path or glob under third_party/<lib>/ (e.g. src/bin/foo.so)
+#   path     destination:
+#              - under third_party/<lib>/ if relative and not a consumer path
+#                (e.g. artifact/foo.so — pin-local)
+#              - under repo root if it starts with app/ (or other top-level consumer
+#                dirs: docs/ is not auto; use app/ for VE jniLibs/libs)
+#              - absolute paths accepted
+#   pick     newest (default for globs) | sort | sort-n
+#   sha256   optional; fail that row if content hash mismatches after resolve
+#
+# Landlock/bwrap: NOT applied by default. Collect is our copy step of already-built
+# products (unlike fetch-deps which executes retrieved trees). Optional confinement
+# remains available via LIBPIN_GET_ARTIFACTS_SANDBOX=1 (artifact mode only; paths
+# outside third_party/<lib>/artifact/ will fail under that mode — use without sandbox).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Worktree / consumer repo root (parent of third_party/)
+REPO_ROOT="$(cd "$ROOT/.." && pwd)"
+NAMES=()
+FAILURES=0
+NO_BWRAP=0
+NO_LANDLOCK=0
+
+usage() {
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --no-bwrap) NO_BWRAP=1; shift ;;
+    --no-landlock) NO_LANDLOCK=1; shift ;;
+    *) NAMES+=("$1"); shift ;;
+  esac
+done
+
+if [[ "$NO_BWRAP" -eq 1 ]]; then
+  export LIBPIN_NO_BWRAP=1
+fi
+if [[ "$NO_LANDLOCK" -eq 1 ]]; then
+  export LIBPIN_NO_LANDLOCK=1
+fi
+
+if [[ ${#NAMES[@]} -eq 0 ]]; then
+  for d in "$ROOT"/*/; do
+    [[ -f "${d}libpin.toml" ]] || continue
+    base="$(basename "$d")"
+    [[ "$base" == "example" ]] && continue
+    NAMES+=("$base")
+  done
+fi
+
+# Optional sandbox (off by default — see header). Only useful when all paths stay
+# under third_party/<lib>/artifact/.
+if [[ "${LIBPIN_GET_ARTIFACTS_SANDBOX:-0}" == "1" ]]; then
+  if [[ -z "${LIBPIN_LANDLOCK:-}" && -z "${LIBPIN_SANDBOX:-}" && -x "$ROOT/libpin-sandbox" && ${#NAMES[@]} -gt 0 ]]; then
+    if [[ "${LIBPIN_NO_BWRAP:-0}" != "1" || "${LIBPIN_NO_LANDLOCK:-0}" != "1" ]]; then
+      for n in "${NAMES[@]}"; do
+        "$ROOT/libpin-sandbox" --mode artifact --lib "$n" -- \
+          "$0" --no-bwrap --no-landlock "$n" || FAILURES=$((FAILURES + 1))
+      done
+      exit "$FAILURES"
+    fi
+  fi
+fi
+
+# Lines: path<TAB>from<TAB>pick<TAB>sha256
+parse_artifacts() {
+  local pin="$1"
+  python3 - "$pin" <<'PY'
+import sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+entries = data.get("artifact") or data.get("artifacts") or []
+for e in entries:
+    path = e.get("path") or ""
+    frm = e.get("from") or ""
+    if not frm and e.get("from_src"):
+        frm = "src/" + str(e["from_src"]).lstrip("/")
+    pick = e.get("pick") or "newest"
+    sha = e.get("sha256") or ""
+    # tabs cannot appear in paths we care about
+    print(f"{path}\t{frm}\t{pick}\t{sha}")
+PY
+}
+
+is_glob() {
+  [[ "$1" == *'*'* || "$1" == *'?'* || "$1" == *'['* ]]
+}
+
+# Resolve destination path for one artifact row.
+# - absolute → as-is
+# - starts with app/ → $REPO_ROOT/path (VE consumer tree)
+# - else → $lib_dir/path (pin-local, e.g. artifact/…)
+resolve_dest() {
+  local lib_dir="$1" path="$2"
+  if [[ "$path" == /* ]]; then
+    echo "$path"
+  elif [[ "$path" == app/* ]]; then
+    echo "$REPO_ROOT/$path"
+  else
+    echo "$lib_dir/$path"
+  fi
+}
+
+pick_file() {
+  local pick="$1"
+  shift
+  local files=("$@")
+  [[ ${#files[@]} -eq 0 ]] && return 1
+  [[ ${#files[@]} -eq 1 ]] && { echo "${files[0]}"; return 0; }
+  case "$pick" in
+    sort)
+      printf '%s\n' "${files[@]}" | sort | tail -1
+      ;;
+    sort-n)
+      printf '%s\n' "${files[@]}" | sort -V | tail -1
+      ;;
+    smart)
+      echo "get-artifacts: pick=smart not implemented yet; using newest (mtime)" >&2
+      ;&
+    newest|*)
+      local f best="" best_t=0 t
+      for f in "${files[@]}"; do
+        t=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+        if [[ "$t" -ge "$best_t" ]]; then
+          best_t=$t
+          best=$f
+        fi
+      done
+      echo "$best"
+      ;;
+  esac
+}
+
+sha256_file() {
+  sha256sum "$1" 2>/dev/null | awk '{print $1}'
+}
+
+collect_one() {
+  local name="$1"
+  local dir="$ROOT/$name"
+  local pin="$dir/libpin.toml"
+  [[ -f "$pin" ]] || { echo "FAIL $name: no libpin.toml" >&2; return 1; }
+  echo "==> $name  get-artifacts"
+  local path from pick sha matches m chosen dest got
+  local any=0
+  local row_fail=0
+  while IFS=$'\t' read -r path from pick sha; do
+    [[ -z "$path" ]] && continue
+    any=1
+    [[ -z "$pick" ]] && pick=newest
+    if [[ -z "$from" ]]; then
+      echo "    WARN: $path has no from — skip" >&2
+      continue
+    fi
+    matches=()
+    if is_glob "$from"; then
+      shopt -s globstar nullglob
+      # shellcheck disable=SC2206
+      local expanded=( "$dir"/$from )
+      shopt -u globstar
+      for m in "${expanded[@]}"; do
+        [[ -f "$m" ]] && matches+=("$m")
+      done
+      if [[ ${#matches[@]} -eq 0 ]]; then
+        local basepat
+        basepat="$(basename "$from")"
+        while IFS= read -r m; do
+          matches+=("$m")
+        done < <(find "$dir" -type f -name "$basepat" 2>/dev/null)
+      fi
+    else
+      if [[ -f "$dir/$from" ]]; then
+        matches+=("$dir/$from")
+      fi
+    fi
+    if [[ ${#matches[@]} -eq 0 ]]; then
+      echo "    WARN: no file for from=$from" >&2
+      row_fail=1
+      continue
+    fi
+    chosen="$(pick_file "$pick" "${matches[@]}")"
+    if [[ -n "$sha" ]]; then
+      got="$(sha256_file "$chosen")"
+      if [[ "$got" != "$sha" ]]; then
+        echo "    FAIL sha256 $from: got $got want $sha" >&2
+        row_fail=1
+        continue
+      fi
+    fi
+    dest="$(resolve_dest "$dir" "$path")"
+    mkdir -p "$(dirname "$dest")"
+    if [[ -e "$dest" ]]; then
+      chmod u+w "$dest" 2>/dev/null || true
+    fi
+    cp -a "$chosen" "$dest"
+    echo "    $chosen → $dest"
+  done < <(parse_artifacts "$pin")
+
+  if [[ "$any" -eq 0 ]]; then
+    echo "    (no [[artifact]] entries — nothing to copy)"
+  fi
+  if [[ "$row_fail" -ne 0 ]]; then
+    echo "    FAIL get-artifacts $name (one or more rows)" >&2
+    return 1
+  fi
+  echo "    OK get-artifacts $name"
+}
+
+for n in "${NAMES[@]}"; do
+  collect_one "$n" || FAILURES=$((FAILURES + 1))
+done
+exit "$FAILURES"

@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# libpin-bwrap — bubblewrap helpers for third_party pin tooling
+#
+# Modes (write surfaces):
+#   third_party  RW: <repo>/third_party/ only
+#   lib          RW: third_party/<lib>/ only  (src + status.local + artifact parent)
+#   src          RW: third_party/<lib>/src/ only
+#   artifact     RW: third_party/<lib>/artifact/ only
+#
+# Usage:
+#   libpin-bwrap --mode third_party -- command…
+#   libpin-bwrap --mode lib|src|artifact --lib NAME -- command…
+#
+# Env:
+#   LIBPIN_NO_BWRAP=1          skip sandbox (run bare)
+#   LIBPIN_SANDBOX=<mode>      already sandboxed — do not nest (nested userns fails)
+#   LIBPIN_BWRAP_DEBUG=1       print bwrap argv
+#   LIBPIN_HOST_GIT=/path/to/<lib>/.git   RW-bind only that dir (linked worktree metadata)
+#   (set by libpin-sandbox from GIT_HOME + --lib; never whole $GIT_HOME)
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TP_ROOT="$HERE"
+MODE=""
+LIB=""
+
+usage() {
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --mode) MODE="$2"; shift 2 ;;
+    --lib) LIB="$2"; shift 2 ;;
+    --) shift; break ;;
+    -*)
+      echo "libpin-bwrap: unknown option: $1" >&2
+      exit 2
+      ;;
+    *) break ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  echo "libpin-bwrap: missing command" >&2
+  exit 2
+fi
+
+if [[ -z "$MODE" ]]; then
+  echo "libpin-bwrap: --mode required" >&2
+  exit 2
+fi
+
+# Already inside a sandbox, explicit disable, or bwrap missing: run bare.
+# Missing bubblewrap is supported — tools remain correct; sandbox is optional hardening.
+if [[ -n "${LIBPIN_SANDBOX:-}" || "${LIBPIN_NO_BWRAP:-0}" == "1" ]] || ! command -v bwrap >/dev/null 2>&1; then
+  if [[ "${LIBPIN_BWRAP_DEBUG:-0}" == "1" ]]; then
+    if ! command -v bwrap >/dev/null 2>&1; then
+      echo "libpin-bwrap: debug: bwrap not installed — unsandboxed" >&2
+    elif [[ -n "${LIBPIN_SANDBOX:-}" ]]; then
+      echo "libpin-bwrap: debug: already sandboxed ($LIBPIN_SANDBOX) — no nest" >&2
+    else
+      echo "libpin-bwrap: debug: LIBPIN_NO_BWRAP=1 — unsandboxed" >&2
+    fi
+  fi
+  exec "$@"
+fi
+
+abs() {
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -m "$1"
+  else
+    readlink -f "$1" 2>/dev/null || echo "$1"
+  fi
+}
+
+TP_ROOT="$(abs "$TP_ROOT")"
+CWD="$(pwd)"
+
+LIB_DIR=""
+SRC_DIR=""
+ART_DIR=""
+if [[ -n "$LIB" ]]; then
+  LIB_DIR="$(abs "$TP_ROOT/$LIB")"
+  SRC_DIR="$LIB_DIR/src"
+  ART_DIR="$LIB_DIR/artifact"
+fi
+
+case "$MODE" in
+  third_party)
+    mkdir -p "$TP_ROOT"
+    ;;
+  lib)
+    [[ -n "$LIB" ]] || { echo "libpin-bwrap: --lib required for mode=lib" >&2; exit 2; }
+    mkdir -p "$LIB_DIR" "$SRC_DIR" "$ART_DIR"
+    ;;
+  src)
+    [[ -n "$LIB" ]] || { echo "libpin-bwrap: --lib required for mode=src" >&2; exit 2; }
+    mkdir -p "$SRC_DIR"
+    ;;
+  artifact)
+    [[ -n "$LIB" ]] || { echo "libpin-bwrap: --lib required for mode=artifact" >&2; exit 2; }
+    mkdir -p "$ART_DIR"
+    ;;
+  *)
+    echo "libpin-bwrap: unknown mode: $MODE" >&2
+    exit 2
+    ;;
+esac
+
+BWRAP=(
+  bwrap
+  --ro-bind / /
+  --dev /dev
+  --proc /proc
+  --tmpfs /tmp
+  --tmpfs /var/tmp
+  --share-net
+  --die-with-parent
+  --chdir "$CWD"
+)
+
+case "$MODE" in
+  third_party) BWRAP+=(--bind "$TP_ROOT" "$TP_ROOT") ;;
+  lib)         BWRAP+=(--bind "$LIB_DIR" "$LIB_DIR") ;;
+  src)         BWRAP+=(--bind "$SRC_DIR" "$SRC_DIR") ;;
+  artifact)    BWRAP+=(--bind "$ART_DIR" "$ART_DIR") ;;
+esac
+
+if [[ -n "${LIBPIN_HOST_GIT:-}" && -d "${LIBPIN_HOST_GIT}" ]]; then
+  HG="$(abs "$LIBPIN_HOST_GIT")"
+  BWRAP+=(--bind "$HG" "$HG")
+fi
+
+# Docker client → host daemon (rclone). Real path only (no /var/run alias).
+_dockersock=""
+if [[ -S /run/docker.sock ]]; then
+  _dockersock=/run/docker.sock
+elif [[ -S /var/run/docker.sock ]]; then
+  _dockersock=/var/run/docker.sock
+fi
+if [[ -n "$_dockersock" ]]; then
+  BWRAP+=(--bind "$_dockersock" "$_dockersock")
+  export DOCKER_HOST="${DOCKER_HOST:-unix://${_dockersock}}"
+fi
+
+if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "${XDG_RUNTIME_DIR}" ]]; then
+  BWRAP+=(--bind "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR")
+fi
+
+export LIBPIN_SANDBOX="$MODE"
+
+if [[ "${LIBPIN_BWRAP_DEBUG:-0}" == "1" ]]; then
+  echo "libpin-bwrap: mode=$MODE lib=${LIB:-}" >&2
+  printf '  %q' "${BWRAP[@]}" -- "$@" >&2
+  echo >&2
+fi
+
+exec "${BWRAP[@]}" -- "$@"

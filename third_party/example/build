@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Toy build: RO-friendly. Writes only under src/build and src/bin.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+SRC="$HERE/src"
+[[ -d "$SRC" ]] || { echo "no src — run: ./third_party/fetch-deps ro example" >&2; exit 1; }
+
+# Writable scratch + output (sources stay RO if possible)
+for d in "$SRC/build" "$SRC/bin"; do
+  mkdir -p "$d" 2>/dev/null || true
+  chmod u+w "$d" 2>/dev/null || true
+done
+# If parent src is RO, mkdir may fail — temporarily allow bin/build only via parent
+if [[ ! -w "$SRC/bin" ]]; then
+  chmod u+w "$SRC" 2>/dev/null || true
+  mkdir -p "$SRC/build" "$SRC/bin"
+  chmod u+w "$SRC/build" "$SRC/bin"
+  # re-lock everything except build/bin
+  find "$SRC" -mindepth 1 -maxdepth 1 ! -name build ! -name bin -exec chmod a-w {} + 2>/dev/null || true
+fi
+
+VER="0.0.1"
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+OUT="$SRC/bin/hello-${VER}-${TS}.bin"
+echo "hello from third_party/example pin ${VER} at ${TS}" >"$SRC/build/hello.txt"
+cp -f "$SRC/build/hello.txt" "$OUT"
+# also leave a fixed name for debugging
+cp -f "$OUT" "$SRC/bin/hello-latest.bin"
+echo "wrote $OUT"

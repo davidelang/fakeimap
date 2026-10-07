@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# libpin-sandbox — optional Landlock + bubblewrap for pin tooling
+#
+# Modes (write surfaces for mutation; reads stay unrestricted under Landlock):
+#   third_party  → third_party/
+#   lib          → third_party/<lib>/
+#   src          → third_party/<lib>/src/
+#   artifact     → third_party/<lib>/artifact/
+#
+# Order when both available:
+#   bwrap (outer, if not already sandboxed) → landlock (inner, stackable) → command
+#
+# Usage:
+#   libpin-sandbox --mode lib|src|artifact --lib NAME -- command…
+#   libpin-sandbox --mode third_party -- command…
+#
+# Env:
+#   LIBPIN_NO_BWRAP=1 / LIBPIN_NO_LANDLOCK=1
+#   LIBPIN_SANDBOX=<mode>   already in bwrap — do not nest bwrap
+#   GIT_HOME + --lib NAME → auto-allow only $GIT_HOME/<lib>/.git (linked worktree metadata)
+#   LIBPIN_BWRAP_DEBUG=1 / LIBPIN_LANDLOCK_DEBUG=1
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODE=""
+LIB=""
+
+usage() {
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --mode) MODE="$2"; shift 2 ;;
+    --lib) LIB="$2"; shift 2 ;;
+    --) shift; break ;;
+    -*)
+      echo "libpin-sandbox: unknown option: $1" >&2
+      exit 2
+      ;;
+    *) break ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  echo "libpin-sandbox: missing command" >&2
+  exit 2
+fi
+if [[ -z "$MODE" ]]; then
+  echo "libpin-sandbox: --mode required" >&2
+  exit 2
+fi
+
+# Narrow host allow: only this lib's object store / worktree registry (not whole GIT_HOME).
+resolve_host_git() {
+  local lib="$1" gh p
+  gh="${GIT_HOME:-}"
+  [[ -n "$lib" && -n "$gh" ]] || return 1
+  p="$gh/$lib"
+  if [[ -d "$p/.git" ]]; then
+    if command -v realpath >/dev/null 2>&1; then realpath "$p/.git"; else readlink -f "$p/.git"; fi
+    return 0
+  fi
+  if [[ -f "$p/.git" ]]; then
+    # gitfile: gitdir: /path/to/.git
+    local gd
+    gd="$(sed -n 's/^gitdir:[[:space:]]*//p' "$p/.git" | head -1)"
+    [[ -n "$gd" && -d "$gd" ]] || return 1
+    # Prefer common .git root (strip /worktrees/…)
+    if [[ "$gd" == */worktrees/* ]]; then
+      gd="${gd%%/worktrees/*}"
+    fi
+    if command -v realpath >/dev/null 2>&1; then realpath "$gd"; else readlink -f "$gd"; fi
+    return 0
+  fi
+  return 1
+}
+
+HOST_GIT=""
+if [[ -n "$LIB" ]]; then
+  HOST_GIT="$(resolve_host_git "$LIB" 2>/dev/null || true)"
+fi
+if [[ -n "$HOST_GIT" ]]; then
+  export LIBPIN_HOST_GIT="$HOST_GIT"
+fi
+
+# Build final command: optionally wrap with landlock first (runs inside bwrap if used)
+CMD=("$@")
+if [[ "${LIBPIN_NO_LANDLOCK:-0}" != "1" && -x "$HERE/libpin-landlock" ]]; then
+  LL=( "$HERE/libpin-landlock" --mode "$MODE" --tp-root "$HERE" )
+  [[ -n "$LIB" ]] && LL+=( --lib "$LIB" )
+  [[ -n "$HOST_GIT" ]] && LL+=( --path "$HOST_GIT" )
+  LL+=( -- )
+  CMD=( "${LL[@]}" "${CMD[@]}" )
+fi
+
+# Outer bwrap (single-level only)
+if [[ "${LIBPIN_NO_BWRAP:-0}" != "1" && -z "${LIBPIN_SANDBOX:-}" && -x "$HERE/libpin-bwrap" ]]; then
+  BW=( "$HERE/libpin-bwrap" --mode "$MODE" )
+  [[ -n "$LIB" ]] && BW+=( --lib "$LIB" )
+  BW+=( -- )
+  # libpin-bwrap sets LIBPIN_SANDBOX; landlock still applies inside
+  exec "${BW[@]}" "${CMD[@]}"
+fi
+
+exec "${CMD[@]}"
