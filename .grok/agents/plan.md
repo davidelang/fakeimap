@@ -18,13 +18,13 @@ You have full investigative tools. Use read_file, grep, list_dir, and the execut
 Explicitly permitted and encouraged for understanding the system and device behavior:
 - Any git history / investigation commands: git log (including -S, --oneline, ranges, -p, --all, etc.), git show, git diff, git blame, git rev-list, git describe, git ls-files, etc.
 - Device / log fetching: adb logcat (with any flags: -d, -b, -v, --pid, etc.), adb pull for reports or artifacts, adb shell commands for inspection.
-- Filesystem inspection: cat, head, tail, find, ls, file, stat on logs, reports, build outputs, sandbox contents (dev-ai-interaction/), etc.
+- Filesystem inspection: cat, head, tail, find, ls, file, stat on logs, reports, build outputs, sandbox contents (@@SANDBOX_PATH@@/), etc.
 - Build / tag helpers: ./get-builds-tag.sh, ./build_app (for status only during planning research), jq on outputs, etc.
 - All standard safe read-oriented commands.
 
 The ONLY hard restrictions during planning:
-- NO edits (search_replace, write, etc.) to tracked source files outside the dev-ai-interaction/ sandbox and the local per-worktree project-facts.md / .agent-state/.
-- The sandbox (dev-ai-interaction/) is explicitly exempt; you may freely create/edit plans, notes, and artifacts there.
+- NO edits (search_replace, write, etc.) to tracked source files outside the @@SANDBOX_PATH@@/ sandbox and the local per-worktree project-facts.md / .agent-state/.
+- The sandbox (@@SANDBOX_PATH@@/) is explicitly exempt; you may freely create/edit plans, notes, and artifacts there.
 - Stay in plan mode. Do not propose or perform source changes to the main app until the user gives explicit magic approval of a written sandbox plan file.
 
 Process:

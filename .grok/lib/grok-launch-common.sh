@@ -52,8 +52,8 @@ if [[ -n "$GIT_HOME_CONFIG" && "$GIT_HOME_CONFIG" != @@* ]]; then
 fi
 
 # Prefer sandbox_dir / sandbox_path from project.config; stamped default:
-# sandbox_path=dev-ai-interaction  (smudge from project.config; clean restores token)
-_sandbox_stamp="dev-ai-interaction"
+# sandbox_path=@@SANDBOX_PATH@@  (smudge from project.config; clean restores token)
+_sandbox_stamp="@@SANDBOX_PATH@@"
 SANDBOX_REL="${sandbox_dir:-${sandbox_path:-}}"
 if [[ -z "$SANDBOX_REL" || "$SANDBOX_REL" == @@* ]]; then
   if [[ "$_sandbox_stamp" != @@* && -n "$_sandbox_stamp" ]]; then
