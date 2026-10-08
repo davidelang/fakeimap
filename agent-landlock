@@ -9,7 +9,7 @@ Usage:
   agent-landlock --role ROLE --worktree DIR [--dump-grants]
   agent-landlock --role ROLE --worktree DIR -- command…
 
-Roles: primary | planner | coder | master | orchestrator
+Roles: primary | planner | coder | master | orchestrator | imagine
 
 Env:
   AGENT_LANDLOCK_DISABLE=1   skip restriction (exec bare)
@@ -81,7 +81,7 @@ _SYS = {
     "arm64": (444, 445, 446),
 }
 
-ROLES = ("primary", "planner", "coder", "master", "orchestrator")
+ROLES = ("primary", "planner", "coder", "master", "orchestrator", "imagine")
 
 
 class LandlockRulesetAttr(ctypes.Structure):
@@ -343,6 +343,51 @@ def _resolve_grant_token(tok: str, worktree: Path) -> str:
     return str((worktree / tok).resolve())
 
 
+def _load_role_section_paths(landlock_cfg: Path, worktree: Path, section_name: str) -> List[str]:
+    """Parse [role.imagine] path= lines (worktree-relative or absolute)."""
+    paths: List[str] = []
+    if not landlock_cfg.is_file():
+        return paths
+    section = ""
+    for raw in landlock_cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        if section != section_name:
+            continue
+        if not line.startswith("path="):
+            continue
+        val = line.split("=", 1)[1].strip()
+        r = _resolve_grant_token(val, worktree)
+        if r:
+            paths.append(r)
+    return paths
+
+
+def _imagine_paint_dirs(worktree: Path, project: Dict[str, str], landlock: Dict[str, str]) -> List[str]:
+    """Sandbox-relative research/yellow-ink-map only (not the whole sandbox)."""
+    rel = Path("research") / "yellow-ink-map"
+    out: List[str] = []
+    for base in _sandbox_paths(worktree, project, landlock):
+        p = Path(base) / rel
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        if p.exists():
+            out.append(str(p.resolve()))
+            try:
+                named = Path(base) / rel
+                if str(named) != str(p.resolve()):
+                    out.append(str(named))
+            except OSError:
+                pass
+    return out
+
+
 def _sandbox_paths(worktree: Path, project: Dict[str, str], landlock: Dict[str, str]) -> List[str]:
     rel = (
         project.get("sandbox_dir")
@@ -477,6 +522,13 @@ def resolve_grants(
             if fp.is_file():
                 files.append(str(fp.resolve()))
         # Helpers live at worktree root but only write those files; no full root grant.
+    elif role == "imagine":
+        # Tighter than planner: paint tree + optional [role.imagine] path= extras.
+        # HOME/.grok already granted above. No worktree, no TODO/eng-log, no .git.
+        dirs.extend(_imagine_paint_dirs(worktree, project, landlock))
+        dirs.extend(
+            _load_role_section_paths(landlock_path, worktree, "role.imagine")
+        )
     elif role in ("coder", "master"):
         dirs.append(str(worktree))
         dirs.extend(sandbox)

@@ -430,19 +430,12 @@ elif [ -f "../local.properties" ]; then
     cp ../local.properties local.properties
 fi
 
-# 7. Initialize AGENT_CONTEXT.md
-if [ -f "../AGENT_CONTEXT.md.template" ]; then
-    cp "../AGENT_CONTEXT.md.template" AGENT_CONTEXT.md
-    sed -i "s/agent-X/$AGENT_ID/" AGENT_CONTEXT.md
-    sed -i "s/UNASSIGNED/$BRANCH_NAME/" AGENT_CONTEXT.md
-else
-    cat > AGENT_CONTEXT.md <<EOF
-# Agent Context: $AGENT_ID
-
-- **Current Branch:** $BRANCH_NAME
-- **Status:** INITIALIZED
+# 7. Fork anchor for git describe. Not a role and not the checked-out branch.
+# Start-branch owns the -start tag. Forked-from is the parent branch name.
+cat > AGENT_CONTEXT.md <<EOF
+Forked-from: master
+Start-branch: $BRANCH_NAME
 EOF
-fi
 
 # 8. Make this a *fully working* tree with all correct permissions.
 #    Since we are always run from the orchestration root (which has the

@@ -1,30 +1,9 @@
-# Mandate Acknowledgment (Fast-Track)
+# Startup
 
-You are in a **Multi-Agent Orchestration** environment.
+Read `AGENT_MANDATES.md`, the tool overlay (`GROK.md` or `ANTIGRAVITY.md`), and `project-facts.md`. Read them again on the first turn after compact. Do not recite them.
 
-**MANDATORY STARTUP:**
+`AGENT_CONTEXT.md` is `Forked-from` and `Start-branch` only. Role comes from the launcher prompt.
 
-1. Read `./AGENT_CONTEXT.md` (or template + `git status` if missing).
-2. Read CLI overlay `./GROK.md` or `./GEMINI.md`, and `./AGENT_MANDATES.md`.
-3. Read full `./project-facts.md`.
-4. Confirm `pwd` once. Never prefix helpers with `cd … &&`.
-5. Read the rest of your **role pack** from `AGENTS.md` (planner/coder/master extras).
+Confirm `pwd` once. Run helpers as `./helper` with no `cd … &&`.
 
-Do **not** re-read the full pack every ordinary turn. After **`/compact` or auto-compact**, re-read the pack on that next turn **before other work** — mid-process is not an exception (`AGENT_MANDATES.md` §10).
-
-**Brief report:**
-
-1. **Overrides:** Sandbox write exemption; testing exemption (forensic + build).
-2. **Barrier:** Planning = no app source edits; execution only after magic approval of a named sandbox plan.
-3. **Verification:** Forensic read after edits; `./build_app`; coder **plan completeness** before handoff.
-4. **Geography:** Role + Branch; never `..` in paths; sandbox `@@ORCH_ROOT@@/@@SANDBOX_PATH@@/`. Wrong-host instructions (work for a different git clone than this `pwd`) → **STOP**; do not guess another repo; tell the human to paste in the intended session.
-5. **Special files:** TODO = future only (`todo-append`/`todo-close`); eng-log via `./append-to-engineering-log` only.
-6. **Handoff:** After ready-to-test + END marker, turn is over; feedback = new planning cycle.
-7. **Native plan mode:** Do **not** enter it if you are **planner** or **coder**. Optional only for bare `run-grok` / orchestrator. STOP after this report and wait for a user directive (planner may stay interactive for planning only).
-8. **Planner first turn:** after this report, **STOP**. You may name `implementation-failure-logs/` **filenames** in one sentence. Do **not** read those files. Do **not** invent a plan. Cycle-context, `.post-handoff-gate.txt`, and the current branch are **not** a user problem statement.
-
-**Research:** Prefer **chat** for findings; files only if asked or durable cache — still discuss issues in chat.
-
-*User tip:* Multiline input — **Ctrl+M** or **/multiline** (**/ml**).
-
-**Cwd fixed** after geography. Invoke `./append-to-engineering-log` etc. without `cd … &&`.
+Then wait for a directive.

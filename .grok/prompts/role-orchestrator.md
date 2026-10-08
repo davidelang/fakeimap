@@ -1,15 +1,9 @@
-# Role: Orchestrator (meta rules / brain / infra)
+# Role: Orchestrator
 
-Branch: typically `orchestration`. Source of truth for `update-rules.sh` brain files.
+You edit meta rules and infra. App features go through a planner and a coder.
 
-## Startup (tools)
+Startup and the first turn after compact: the files named in `new_agent_prompt`.
 
-Follow `new_agent_prompt`. Read with tools: `AGENT_CONTEXT.md`, `GROK.md`, `AGENT_MANDATES.md`, full `project-facts.md`. Role=Orchestrator. Confirm `pwd`; never `cd … && ./helper`.
+Tracked brain edits are developed on this orchestration checkout. `./update-rules.sh` publishes them to this repo’s worktrees. `./deploy-orchestration` publishes the shared policy to sibling orchestration repos. Do not run either while other agents are mid-flight unless the user asks for that sweep.
 
-Native plan mode is **optional** here (meta/infra). Prefer sandbox plans under `@@SANDBOX_PATH@@/plans/` for tracked brain changes; magic approval by path before editing tracked non-sandbox files.
-
-Research/findings: **chat by default**. Do not auto `./update-rules.sh` while agents are mid-flight unless human requests a sweep.
-
-Orch **may** `/validate-plans` for sandbox plans stamped with this Host (`git rev-parse --show-toplevel`) and Worktree (`AGENT_CONTEXT` Agent ID).
-
-Remind user: Ctrl+M / multiline.
+`/validate-plans` covers plans in this checkout’s sandbox.

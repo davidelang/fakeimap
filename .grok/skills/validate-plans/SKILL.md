@@ -13,10 +13,10 @@ user-invocable: true
 
 # validate-plans
 
-Review **this session’s Host+Worktree** sandbox plans still in `$SANDBOX/plans/`.
+Review sandbox plans still in `$SANDBOX/plans/` for this repo.
 Planning-only (sandbox writes). Do **not** implement app source. Do **not** spawn.
 
-Cite, do not paste: `AGENT_CONTEXT.md`, `AGENT_MANDATES.md` §2, `dedicated-planner.md`.
+Cite, do not paste: `AGENT_MANDATES.md`, `dedicated-planner.md`.
 
 ## Roles
 
@@ -26,21 +26,10 @@ Cite, do not paste: `AGENT_CONTEXT.md`, `AGENT_MANDATES.md` §2, `dedicated-plan
 
 ## Identity
 
-- **Host** = `git rev-parse --show-toplevel`
-- **Worktree** = `AGENT_CONTEXT.md` **Agent ID**
+Plans in this checkout’s sandbox are in scope. `Host:` and `Worktree:` stamps are not a filter. A `Repo:` line that is not this repo’s `git remote get-url origin` is listed in chat and skipped.
 
-Ignore a plan file unless both `Host:` and `Worktree:` in its header match.
 Ignore `$SANDBOX/historical-plans/`, including `not-implemented/`.
-Ignore basenames listed in `$SANDBOX/validate-plans-ignore/<Worktree>.txt`
-(create the dir/file if needed; one basename per line). That list is **only
-for this Worktree** — do not stamp a global skip on the plan file.
-
-## Unstamped files
-
-Plans in `$SANDBOX/plans/` missing `Host:` or `Worktree:`: **list in chat**.
-Ask which to validate this turn, which to append to **this** ignore file,
-which to stamp as this Host+Worktree (**only** if the human says it is theirs).
-Do not guess.
+Ignore basenames listed in `$SANDBOX/validate-plans-ignore/`. One basename per line. Do not stamp a skip onto the plan file.
 
 ## No cap
 
@@ -55,7 +44,7 @@ Compare the plan's **Aim** (intent) to the current code. The Critical Files tabl
    - A later change accounts for the difference → this is not a gap and it is not still-pending work. Do not write a gap plan that would undo the later plan. Stamp `Validated: YYYY-MM-DD Worktree=…` and `mv` to `$SANDBOX/historical-plans/`. Name the later plan or commit in chat.
    - You cannot tell "never implemented" from "implemented, then changed" → report that. Do not write a gap plan.
 3. Intent is not in the code, no later plan explains that, and the Status line or a header sentence says this plan will not be implemented → stamp `Validated: YYYY-MM-DD Worktree=… not-implemented` and `mv` to `$SANDBOX/historical-plans/not-implemented/` (`mkdir -p` on first use). Do not ask. Status words: `SUPERSEDED`, `CANCELED`, `CANCELLED`, `ABANDONED`, `WITHDRAWN`, `REJECTED`, `OBSOLETE`, `DROPPED`. A body mention of obsolete docs does not use this step.
-4. Intent is only partly in the code, and no later plan explains the missing part → report the gap and write a new DRAFT gap plan with this Host+Worktree. One plan if the delta is small; split if the land went badly wrong. The gap plan must not undo a later plan. Leave the source in `plans/` until the human accepts the gap plan or says archive anyway.
+4. Intent is only partly in the code, and no later plan explains the missing part → report the gap and write a new DRAFT gap plan in this sandbox. One plan if the delta is small; split if the land went badly wrong. The gap plan must not undo a later plan. Leave the source in `plans/` until the human accepts the gap plan or says archive anyway.
 5. Intent is absent, no later plan explains that, and the plan is still live (`DRAFT`, `APPROVED`, `BLOCKED — needs replan`, or no will-not-implement status) → report **pending**. Leave the file.
 
 Do **not** move plans to `historical-plans/` at CODE LANDED time. This skill archives after the intent-vs-code check.

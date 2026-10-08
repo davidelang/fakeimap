@@ -214,6 +214,9 @@ decide_sync_action() {
 # get physically copied + committed into worktrees via update-rules.sh.
 # This prevents worktrees from reverting to stale versions on git reset/checkout.
 FILES=(
+    "exec-preflight"
+    "reset-to-builds.sh"
+    "CLAUDE.md"
     ".gemini/policies/plans.toml"
     ".gemini/policies/auto-saved.toml"
     ".gemini/system.md"

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# One-segment execute identity check. Optional plan path: Host:/Worktree: vs this tree.
+set -euo pipefail
+
+echo "pwd=$(pwd)"
+host="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+echo "host=${host}"
+echo "branch=$(git branch --show-current 2>/dev/null || true)"
+
+worktree=""
+if [[ -f AGENT_CONTEXT.md ]]; then
+  worktree="$(sed -n 's/^- \*\*Agent ID:\*\* //p' AGENT_CONTEXT.md | head -1 | tr -d '\r')"
+fi
+echo "worktree=${worktree}"
+
+sandbox=""
+if [[ -f project.config ]]; then
+  sandbox="$(sed -n 's/^sandbox_dir=//p' project.config | head -1 | tr -d '\r')"
+  [[ -z "$sandbox" ]] && sandbox="$(sed -n 's/^sandbox_path=//p' project.config | head -1 | tr -d '\r')"
+fi
+if [[ -z "$sandbox" && -d ./dev-ai-interaction ]]; then
+  sandbox="./dev-ai-interaction"
+elif [[ -z "$sandbox" && -d ./sandbox ]]; then
+  sandbox="./sandbox"
+fi
+echo "sandbox=${sandbox}"
+
+plan="${1:-}"
+if [[ -z "$plan" ]]; then
+  exit 0
+fi
+if [[ ! -f "$plan" ]]; then
+  echo "ERROR: plan not a file: $plan" >&2
+  exit 1
+fi
+
+trim() { printf '%s' "$1" | tr -d '`\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+plan_host="$(trim "$(sed -n 's/^\*\*Host:\*\*[[:space:]]*//p' "$plan" | head -1)")"
+[[ -z "$plan_host" ]] && plan_host="$(trim "$(sed -n 's/^Host:[[:space:]]*//p' "$plan" | head -1)")"
+plan_wt="$(trim "$(sed -n 's/^\*\*Worktree:\*\*[[:space:]]*//p' "$plan" | head -1)")"
+[[ -z "$plan_wt" ]] && plan_wt="$(trim "$(sed -n 's/^Worktree:[[:space:]]*//p' "$plan" | head -1)")"
+echo "plan_host=${plan_host}"
+echo "plan_worktree=${plan_wt}"
+
+if [[ -z "$plan_host" || -z "$plan_wt" ]]; then
+  echo "plan_stamp=missing"
+  exit 0
+fi
+
+if [[ "$plan_host" != "$host" || "$plan_wt" != "$worktree" ]]; then
+  echo "ERROR: plan Host/Worktree mismatch (this host=${host} worktree=${worktree})" >&2
+  exit 1
+fi
+echo "plan_stamp=match"
+exit 0

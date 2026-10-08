@@ -314,7 +314,7 @@ TODO.md / project-facts.md
 POST-MERGE CHECK (do this before ./build_app):
   git diff --cached --name-only
   → must include feature paths (e.g. .kt), not ONLY ENGINEERING_LOG.md
-  If only eng-log is staged → FAILED. Do not build_app. See docs/reference/MERGE_POSTMORTEM_IMPROVE_PUMP_CLASSIFICATION.md
+  If only eng-log is staged → FAILED. Do not build_app. See docs/obsolete/MERGE_POSTMORTEM_IMPROVE_PUMP_CLASSIFICATION.md
 
 Next: complete TODO + project-facts protocol → git status → ./build_app
 ========================================================================
