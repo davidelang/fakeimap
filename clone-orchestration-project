@@ -622,6 +622,79 @@ print_header() {
   echo "Planned steps:"
 }
 
+seed_debug_keystore() {
+  local src="$SOURCE/.android-shared/debug.keystore"
+  local dest_dir="$DEST/.android-shared"
+  if [ ! -f "$src" ]; then
+    warn "no $src"
+    warn "run-grok-* fails until debug.keystore is at $dest_dir/debug.keystore"
+    return 0
+  fi
+  step primary "cp debug.keystore to $dest_dir/debug.keystore"
+  if [ "$DRY" -eq 0 ]; then
+    as_primary mkdir -p -m 2770 "$dest_dir"
+    as_primary cp "$src" "$dest_dir/debug.keystore"
+    as_primary chmod 660 "$dest_dir/debug.keystore"
+  fi
+}
+
+seed_sandbox_repo() {
+  local sandbox="$DEST/$SANDBOX_REL"
+  local meta="${GIT_HOME}/${NAME}.sandboxmetadata"
+  local gitdir="$meta/git"
+  local guide_src="$SOURCE/$SANDBOX_REL/research/plan-style-guide.md"
+  local guide_dst="$sandbox/research/plan-style-guide.md"
+
+  step primary "ensure $DEST/.gitignore ignores ${SANDBOX_REL}/"
+  if [ "$DRY" -eq 0 ]; then
+    as_primary bash -c '
+      file="$1"; line="$2"
+      touch "$file"
+      grep -qxF "$line" "$file" && exit 0
+      if [ -s "$file" ] && [ -n "$(tail -c1 "$file" 2>/dev/null || true)" ]; then
+        printf "\n" >> "$file"
+      fi
+      printf "%s\n" "$line" >> "$file"
+    ' bash "$DEST/.gitignore" "${SANDBOX_REL}/"
+  fi
+
+  if [ -f "$guide_src" ] && [ ! -e "$guide_dst" ]; then
+    step primary "cp plan-style-guide.md into $guide_dst"
+    if [ "$DRY" -eq 0 ]; then
+      as_primary mkdir -p "$(dirname "$guide_dst")"
+      as_primary cp "$guide_src" "$guide_dst"
+    fi
+  fi
+
+  step primary "stop tracking ${SANDBOX_REL}/ in the product repository"
+  if [ "$DRY" -eq 0 ]; then
+    git_primary -C "$DEST" add -- .gitignore
+    git_primary -C "$DEST" rm -r --cached --ignore-unmatch -- "$SANDBOX_REL" || true
+    if ! git_primary -C "$DEST" diff --cached --quiet; then
+      git_primary -C "$DEST" commit -m "Keep the sandbox in its own repository"
+    fi
+  fi
+
+  if [ -e "$sandbox/.git" ]; then
+    step check "sandbox git already present"
+    return 0
+  fi
+  if [ -L "$sandbox" ]; then
+    warn "$sandbox is a symlink; not creating a nested git dir"
+    return 0
+  fi
+  step primary "git init --separate-git-dir $gitdir $sandbox"
+  if [ "$DRY" -eq 0 ]; then
+    as_primary mkdir -p "$sandbox" "$meta"
+    as_primary chmod 700 "$meta"
+    as_primary git -c init.defaultBranch=master init --separate-git-dir "$gitdir" "$sandbox"
+    as_primary chmod -R go-rwx "$meta"
+    if [ -f "$sandbox/.git" ]; then
+      as_primary chmod 644 "$sandbox/.git"
+    fi
+  fi
+}
+
 do_clone_layout() {
   step primary "git -c safe.directory=* clone --no-hardlinks -- $SOURCE $DEST"
   if [ "$DRY" -eq 0 ]; then
@@ -645,6 +718,7 @@ do_clone_layout() {
   if [ -n "$GIT_HOME_ARG" ]; then
     upsert_config_key "$DEST/project.config" git_home "$GIT_HOME"
   fi
+  seed_debug_keystore
 
   step primary "rewrite AGENT_CONTEXT.md project-facts.md README.md for $NAME"
   write_identity_files
@@ -654,6 +728,8 @@ do_clone_layout() {
     git_primary -C "$DEST" add AGENT_CONTEXT.md project-facts.md README.md
     git_primary -C "$DEST" commit -m "Host identity for $NAME"
   fi
+
+  seed_sandbox_repo
 
   step primary "git branch orchestration (if missing)"
   step primary "git checkout orchestration"
@@ -800,6 +876,8 @@ if [ -n "$REPAIR_ARG" ]; then
   repair_validate_dest
   print_header
   seed_dest_project_configs
+  seed_debug_keystore
+  seed_sandbox_repo
   verify_dest_orch_root
   do_fix_perms
   do_dest_root_dac
