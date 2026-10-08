@@ -3,10 +3,11 @@
 # Git clean filter for manage-configs.
 # Scrubs real values back to @@TOKEN@@ on git add.
 # - Shell-like files:
-#     1) LHS assignment scrub (var=real → var=@@TOKEN@@)
-#     2) free-form scrub for path-like config values only (contain / or $)
-#        so comments that smudge rewrote (e.g. @@GIT_HOME@@ → /home/you/git)
-#        are restored without turning short fallbacks (ai-planner) into tokens.
+#     1) LHS assignment scrub only when the RHS equals the configured value
+#        (git_home="" stays empty; git_home=<git_home> becomes @@GIT_HOME@@)
+#     2) free-form scrub for path-like config values (contain / or $)
+#        Short names are not rewritten: a literal ${var:-ai-planner} is not a
+#        token, and a token default cannot be told apart from that literal.
 # - Other files (toml/md/text): dumb value→token replace (longer values first).
 # Run: git config filter.manage-configs.clean 'bash ./filter-clean-config %f'
 
@@ -70,7 +71,6 @@ import sys
 
 TOKEN = "@@SANDBOX_PATH@@"
 TOKEN_ROOT = "@@ORCH_ROOT@@/" + TOKEN
-HISTORICAL = ("dev-ai-interaction", "sandbox")
 ABS_RE = re.compile(
     r"/(?:[A-Za-z0-9._-]+/)+(?:dev-ai-interaction|sandbox)(?=/|[`\"']|$)"
 )
@@ -156,8 +156,26 @@ def _boundary(body, names):
     return body
 
 
-def rewrite_line(body, names, shell_mode, orch):
-    if shell_mode and (PROBE_RE.search(body) or "SANDBOX_REL=" in body):
+def _layout_dirname(text, name):
+    # Path segment only. Do not treat the English possessive sandbox's as a dirname.
+    return re.search(
+        r"(?:^|[/`\"=])" + re.escape(name) + r"(?=[/`\"]|$)",
+        text,
+        re.M,
+    ) is not None
+
+
+def _file_has_both(text):
+    return _layout_dirname(text, "dev-ai-interaction") and _layout_dirname(text, "sandbox")
+
+
+def rewrite_line(body, names, shell_mode, orch, both_layouts_file=False):
+    # Whole-line skips: fallback assignment, and existence probes in a file
+    # that names both sandbox layouts. A single-layout use such as
+    # [ -L "$wt/<sandbox>" or readlink -f still retokenizes.
+    if shell_mode and "SANDBOX_REL=" in body:
+        return body
+    if shell_mode and both_layouts_file and PROBE_RE.search(body):
         return body
     body = body.replace("dev-ai*/plans/**", TOKEN + "/plans/**")
     body = _rewrite_absolute(body, orch)
@@ -171,6 +189,7 @@ def rewrite_text(text, names, shell_mode, orch_root=""):
         if name and "@@" not in name:
             clean.append(name)
     orch = (orch_root or "").strip().rstrip("/")
+    both = _file_has_both(text)
     lines = text.splitlines(keepends=True)
     if text and not lines:
         lines = [text]
@@ -185,7 +204,7 @@ def rewrite_text(text, names, shell_mode, orch_root=""):
             if body.endswith("\r"):
                 nl = "\r\n"
                 body = body[:-1]
-        body = rewrite_line(body, clean, bool(shell_mode), orch)
+        body = rewrite_line(body, clean, bool(shell_mode), orch, both)
         if (
             prev is not None
             and body == prev
@@ -200,18 +219,45 @@ val = os.environ.get("SANDBOX_VAL", "")
 shell = os.environ.get("SANDBOX_SHELL", "0") == "1"
 orch = os.environ.get("SANDBOX_ORCH", "")
 names = [val] if val else []
+# Always retokenize the VehicleExpenses sandbox dirname. Hosts whose
+# configured name is "sandbox" otherwise leave historical dev-ai-interaction
+# paths literal. The English word sandbox is rewritten only when it is the
+# configured dirname. Lines that name both layouts are left alone.
+if "dev-ai-interaction" not in names:
+    names.append("dev-ai-interaction")
 sys.stdout.write(rewrite_text(sys.stdin.read(), names, shell, orch))
 PYBOUND
 )"
 }
 
-# For shell files: scrub VAR=real back to VAR=@@TOKEN@@
+# For shell files: scrub VAR=<configured value> back to VAR=@@TOKEN@@.
+# Any other RHS, including git_home="", is left unchanged.
 scrub_shell_assignments() {
   local content="$1"
-  local var token
+  local var token confvar val
   for var in "${!TOKENS[@]}"; do
     token="${TOKENS[$var]}"
-    content=$(printf '%s\n' "$content" | sed -E "s/^([[:space:]]*(export[[:space:]]+)?${var}[[:space:]]*)=.*/\1=${token}/")
+    confvar="CONF_${var^^}"
+    val="${!confvar:-}"
+    [ -n "$val" ] || continue
+    content=$(printf '%s\n' "$content" | SCRUB_VAR="$var" SCRUB_TOKEN="$token" SCRUB_VAL="$val" python3 -c '
+import os, re, sys
+var = os.environ["SCRUB_VAR"]
+token = os.environ["SCRUB_TOKEN"]
+val = os.environ["SCRUB_VAL"]
+pat = re.compile(r"^(\s*(?:export\s+)?" + re.escape(var) + r"\s*)=(.*)$")
+out = []
+for line in sys.stdin.read().splitlines():
+    m = pat.match(line)
+    if m:
+        rhs = m.group(2)
+        if len(rhs) >= 2 and rhs[0] == rhs[-1] and rhs[0] in (chr(34), chr(39)):
+            rhs = rhs[1:-1]
+        if rhs == val:
+            line = m.group(1) + "=" + token
+    out.append(line)
+sys.stdout.write("\n".join(out))
+')
   done
   printf '%s' "$content"
 }
