@@ -494,7 +494,13 @@ for WT in $WORKTREES; do
         git add -f standard-plan-compliance-block.md get-builds-tag.sh \
           run-grok-planner run-grok-master run-grok-coder run-grok-orchestrator run-grok \
           run-antigravity run-antigravity-master run-antigravity-planner 2>&1 | cat || true
-        git add "${COPY_LIST[@]}" 2>&1 | cat || true
+        add_now=()
+        for f in "${COPY_LIST[@]}"; do
+          [ -e "$f" ] && add_now+=("$f")
+        done
+        if [ "${#add_now[@]}" -gt 0 ]; then
+          git add "${add_now[@]}" 2>&1 | cat || true
+        fi
 
         if ! git diff --staged --quiet; then
             echo "Changes detected in $WT, committing..."
@@ -563,8 +569,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
   USER_POLICY_DIR="$HOME/.gemini/policies"
   echo ">>> Promoting policies to User-tier: $USER_POLICY_DIR"
   mkdir -p "$USER_POLICY_DIR"
-  cp "$SOURCE_DIR/.gemini/policies/plans.toml" "$USER_POLICY_DIR/vehicle_expenses_plans.toml"
-  cp "$SOURCE_DIR/.gemini/policies/auto-saved.toml" "$USER_POLICY_DIR/vehicle_expenses_auto_saved.toml"
+  if [ -f "$SOURCE_DIR/.gemini/policies/plans.toml" ]; then
+    cp "$SOURCE_DIR/.gemini/policies/plans.toml" "$USER_POLICY_DIR/vehicle_expenses_plans.toml"
+  fi
+  if [ -f "$SOURCE_DIR/.gemini/policies/auto-saved.toml" ]; then
+    cp "$SOURCE_DIR/.gemini/policies/auto-saved.toml" "$USER_POLICY_DIR/vehicle_expenses_auto_saved.toml"
+  fi
 fi
 
 echo "--- Rule Update Sync Complete ---"
