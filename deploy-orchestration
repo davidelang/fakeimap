@@ -10,12 +10,21 @@ Run it from any host. Default mode is a REPORT of what would happen; nothing is 
   ./deploy-orchestration --host-only      only this host: root -> its worktrees (update-rules.sh)
   ./deploy-orchestration --list law       print manifest paths of a class (files agents care about)
   ./deploy-orchestration --check          manifest consistency check (source host)
+  ./deploy-orchestration --override WT    in worktree/root WT, the source wins over ahead/diverged
+                                          rule files (repeatable; dirty files are still skipped)
 
 Rules:
 - Content comes from committed (clean) blobs, never the working tree, so the clean/smudge
   config (project.config) keeps user/host specifics. Managed files are re-smudged after commit.
 - The source host must have no uncommitted changes in manifest paths.
-- A worktree that is dirty in any manifest path, or ahead/diverged for one, is skipped whole.
+- A worktree that is dirty in any manifest path, or ahead/diverged for one, is skipped whole
+  (unless named with --override).
+- rules.manifest.local lists files local to the PROJECT (build_app, deploy, .gitignore, ...).
+  The project root's version is published into every worktree of that project. A file is
+  skipped (only that file, reported) when the worktree has its own modification: it differs
+  from the root AND is dirty or has a commit on the worktree branch touching it since the
+  merge-base with the root branch.
+- Class purge deletes the path everywhere it is tracked.
 - No write access to a target gives a read-only report for it, not a failure.
 - Commits use `git commit --only` on exactly the copied paths; other changes are untouched.
 - Never forces, resets, or rewrites history.
@@ -203,7 +212,18 @@ def local_seeded(host):
         return False
     return any(re.match(r"(# )?local ", l) for l in open(p, errors="replace"))
 
-def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
+OVERRIDE = set()
+PURGE = []
+
+def own_modification(src, wt, path):
+    """Worktree branch committed this path since its merge-base with the root branch."""
+    try:
+        base = git(wt, "merge-base", "HEAD", git(src, "rev-parse", "HEAD").strip()).strip()
+    except RuntimeError:
+        return True
+    return bool(git(wt, "log", "--format=%H", "-1", base + "..HEAD", "--", path, check=False).strip())
+
+def plan_target(src, src_tree, sel, retired_pats, wt, rep, label, purge_pats=()):
     """Decide actions for one worktree. Returns (actions, skip_reason)."""
     try:
         t_tree = tree(wt)
@@ -220,6 +240,16 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
         cur = t_tree.get(p)
         if cur and cur[1] == blob:
             continue
+        if cls == "local":
+            if p in dirty:
+                rep.warn.append("%s: skipped file %s (dirty, own modification)" % (label, p)); continue
+            if cur is None:
+                if os.path.lexists(os.path.join(wt, p)):
+                    rep.warn.append("%s: skipped file %s (untracked file in the way)" % (label, p)); continue
+                acts.append(("add", p, mode, blob)); continue
+            if own_modification(src, wt, p):
+                rep.warn.append("%s: skipped file %s (own commit since merge-base)" % (label, p)); continue
+            acts.append(("update", p, mode, blob)); continue
         if p in dirty:
             if cls == "local":
                 rep.warn.append("%s: left local %s (dirty)" % (label, p)); continue
@@ -231,7 +261,7 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
                 return None, "untracked file in the way: " + p
             acts.append(("add", p, mode, blob))
             continue
-        if cls == "replace":
+        if cls == "replace" or os.path.realpath(wt) in OVERRIDE:
             acts.append(("update", p, mode, blob)); continue
         cb = cleaned(wt, p, cur[1])
         if cb == blob:
@@ -245,6 +275,10 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
         else:
             return None, "diverged: " + p
     for p in sorted(t_tree):
+        if any(glob_match(pat, p) for pat in purge_pats) and p not in sel:
+            if p in dirty:
+                return None, "dirty: " + p
+            acts.append(("delete", p, None, None)); continue
         if any(glob_match(pat, p) for pat in retired_pats) and p not in sel:
             if p in dirty:
                 return None, "dirty: " + p
@@ -287,10 +321,10 @@ def apply_target(src, wt, acts, msg):
 
 def sync(src, wt, sel, src_tree, retired, rep, host_label, wt_label, apply, msg):
     if not writable(wt):
-        acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label)
+        acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label, PURGE)
         rep.row(host_label, wt_label, "REPORT-ONLY", "no write access; " + (why or "%d change(s) pending" % len(acts)))
         return False
-    acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label)
+    acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label, PURGE)
     if why:
         rep.row(host_label, wt_label, "SKIPPED", why)
         rep.warn.append("%s %s skipped: %s" % (host_label, wt_label, why))
@@ -343,12 +377,12 @@ def check(src):
     man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
     problems = []
     for cls, pat in man:
-        if cls not in ("law", "shared", "opt", "replace", "retired"):
+        if cls not in ("law", "shared", "opt", "replace", "retired", "purge"):
             problems.append("bad class: %s %s" % (cls, pat))
         hits = [p for p in t if glob_match(pat, p)]
         if cls in ("law", "shared", "replace") and not hits and "*" not in pat:
             problems.append("missing in source: %s" % pat)
-        if cls == "retired" and hits:
+        if cls in ("retired", "purge") and hits:
             problems.append("retired but still tracked: %s" % ", ".join(hits))
     sel = entries_for(src, man, t, ("law", "shared", "opt", "replace"))
     for p in t:
@@ -379,6 +413,7 @@ def main():
     ap.add_argument("--host-only", action="store_true")
     ap.add_argument("--list", metavar="CLASS")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--override", action="append", default=[], metavar="WT")
     ap.add_argument("--dry-run", action="store_true", help="same as the default report")
     a = ap.parse_args()
     src = toplevel(os.path.dirname(os.path.realpath(__file__)))
@@ -424,6 +459,8 @@ def main():
 
     REFS[:] = [canon] + discover(git_home) if os.path.isdir(canon) else discover(git_home)
     retired = [p for c, p in src_man if c == "retired"]
+    PURGE[:] = [p for c, p in src_man if c == "purge"]
+    OVERRIDE.update(os.path.realpath(o) for o in a.override)
     pushed = []
     first_src = src
     for host in hosts:
@@ -442,9 +479,10 @@ def main():
                 loc = list(dict.fromkeys(p for p in legacy_local_list(host) if p not in sel and not any(glob_match(r, p) for r in retired)))
                 try:
                     txt = "# rules.manifest.local: host-specific infra, synced only root -> this host's worktrees.\n" \
-                          "# Seeded (commented out) from the legacy update-rules.sh FILES lists. Uncomment a line\n" \
-                          "# (\"local <path>\") to sync that file from this root into every worktree.\n" + \
-                          "".join("# local %s\n" % p for p in loc)
+                          "# Files local to this PROJECT: the root's version is published into every worktree;\n" \
+                          "# a worktree's own modification of a file skips just that file. Seeded from the legacy\n" \
+                          "# update-rules.sh FILES lists. Format: local <path>\n" + \
+                          "".join("local %s\n" % p for p in loc)
                     with open(os.path.join(host, "rules.manifest.local"), "w") as f:
                         f.write(txt)
                     git(host, "add", "-f", "--", "rules.manifest.local")
@@ -473,7 +511,7 @@ def main():
                 wl = os.path.relpath(wt, host) if wt.startswith(host + "/") else wt
                 if why:
                     rep.row(hl, wl, "SKIPPED", why); continue
-                acts, w2 = plan_target(first_src, u_tree, sel_u, retired, wt, rep, wl)
+                acts, w2 = plan_target(first_src, u_tree, sel_u, retired, wt, rep, wl, PURGE)
                 rep.row(hl, wl, "SKIPPED" if w2 else ("WOULD-COMMIT" if acts else "up-to-date"),
                         w2 or ("%d change(s) after root" % len(acts) if acts else ""))
             continue

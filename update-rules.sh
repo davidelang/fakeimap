@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # update-rules.sh: sync this host's rule files (rules.manifest + rules.manifest.local)
-# from this orchestration root into its own worktrees. Thin wrapper around
+# from this project root into all its worktrees (a worktree's own modification of a
+# local file skips just that file). Thin wrapper around
 # deploy-orchestration --host-only. Default is a report; pass --apply to commit.
 # To publish across all projects use ./deploy-orchestration (from any host).
 set -euo pipefail

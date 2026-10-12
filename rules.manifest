@@ -6,8 +6,9 @@
 #   opt      updated only where the target already has it
 #   replace  overwritten even if the host changed it (its host specifics moved to rules.manifest.local)
 #   retired  removed from targets (kept, with a warning, if the target's copy is not from our history)
-# Host-specific infra lives in that host's rules.manifest.local (class local), synced only
-# from the host's orchestration root to its own worktrees.
+#   purge    removed from every target wherever tracked
+# Project-specific infra lives in that project root's rules.manifest.local (class local): the
+# root's version goes to all its worktrees, except a file a worktree modified itself.
 
 law AGENTS.md
 law GEMINI.md
@@ -73,8 +74,8 @@ opt .gemini/system.md
 opt .gemini/system_prompt.md
 
 retired MASTER_AGENT_MANDATE.md
-retired new_grok_agent_prompt
-retired sync_infrastructure.sh
+purge new_grok_agent_prompt
+purge sync_infrastructure.sh
 retired .grok/prompts/**
 retired .grok/hooks/plan-mode-hard-stops.js
 retired .grok/hooks/stop-completeness-gate.json
