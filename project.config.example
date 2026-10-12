@@ -51,7 +51,7 @@ sandbox_special_paths=plans,historical-plans,implementation-failure-logs,PRs,res
 # groupadd @@SANDBOX_GROUP@@
 # groupadd @@SHARED_GROUP@@
 # useradd -g @@SANDBOX_GROUP@@ @@PLANNING_USER@@
-# useradd -g @@CODE_GROUP@@ @@CODE_GROUP@@r
+# useradd -g @@CODE_GROUP@@ @@CODER_USER@@
 # useradd -g @@CODE_GROUP@@ -G @@SHARED_GROUP@@ @@ORCHESTRATOR_USER@@
 # usermod -aG @@CODE_GROUP@@ @@ORCHESTRATOR_USER@@
 

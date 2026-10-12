@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # third_party/fetch-deps — consumer-side pin / rw / upgrade materialize
-# Design: dev-ai-interaction/research/third-party-fetch-deps-design-20260802.md
+# Design: @@SANDBOX_PATH@@/research/third-party-fetch-deps-design-20260802.md
 #
 # Defaults simple:
 #   fetch-deps [name…]           # ro pin @ libpin.toml git_sha (patches, then chmod a-w)
