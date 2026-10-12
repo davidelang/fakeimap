@@ -207,41 +207,17 @@ collect_extra_args() {
   done
 }
 
-# Build PROMPT from pack files and/or optional prompt file argument.
+# Build PROMPT from the role pack only. Pack paths are the prompt.
+# Do not cat a sandbox file or an argument path.
 prepare_prompt() {
   PROMPT_FILE=""
   PACK_PATHS=()
-
-  # Explicit prompt file as first argument (e.g. master-written planner prompt)
-  if [[ -n "${1:-}" && -f "${1:-}" ]]; then
-    PROMPT_FILE="$1"
-    shift
-    PROMPT="$(cat "$PROMPT_FILE")"
-    collect_extra_args "$@"
-    return
-  fi
   collect_extra_args "$@"
 
-  local packf default_prompt
+  local packf
   packf="$(resolve_pack_file)"
   read_pack_paths "$packf"
-
-  default_prompt="${SANDBOX_DIR}/.planning-agent-prompt.txt"
-  if [[ "${ROLE_KEY:-}" = "planner" \
-     && -f "$default_prompt" \
-     && "${GROK_IGNORE_PLANNING_PROMPT_FILE:-0}" != "1" ]]; then
-    PROMPT_FILE="$default_prompt"
-    PROMPT="$(cat "$PROMPT_FILE")"
-    return
-  fi
-
   PROMPT="$(compose_prompt)"
-
-  if [[ "${ROLE_KEY:-}" = "planner" && "${GROK_WRITE_PLANNING_PROMPT_FILE:-1}" = "1" ]]; then
-    mkdir -p "$SANDBOX_DIR"
-    printf '%s\n' "$PROMPT" >"$default_prompt"
-    PROMPT_FILE="$default_prompt"
-  fi
 }
 
 launch_grok_with_prompt() {

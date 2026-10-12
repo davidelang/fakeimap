@@ -126,7 +126,7 @@ fi
 # project.config is intentionally gitignored (local machine secrets/paths).
 # Only warn if stamped launchers still contain unsubstituted @@ tokens.
 if [ -f "$GIT_ROOT/project.config" ]; then
-  for f in run-grok run-grok-master ve-env; do
+  for f in run-grok run-grok-master env; do
     if [ -f "$GIT_ROOT/$f" ] && grep -q '@@' "$GIT_ROOT/$f" 2>/dev/null; then
       echo "WARNING: unsubstituted @@ tokens in $f (smudge/filter may need project.config + filter-apply-config)."
       break

@@ -22,11 +22,12 @@ Keep two terminals open:
    New planning cycle. [one short sentence: goal or feedback from last test / project-facts.md]
    ```
 
-2. The master (automation is built into its initial prompt) will:
+2. The master will:
    - Read project-facts.md + latest `standard-plan-compliance-block.md`
-   - Write a complete narrow prompt file to `@@SANDBOX_PATH@@/.planning-agent-prompt.txt` (full planner template + embedded current guardrails block + your context)
-   - Tell you: "New planning cycle. Please restart your planner terminal now with the updated prompt file (run `./run-grok-planner` or `exec ./run-grok-planner`)."
+   - Tell you to restart the planner terminal (`./run-grok-planner` or `exec ./run-grok-planner`)
    - Stop (it will not plan or research)
+
+The planner prompt is only the files named in `.grok/prompts/packs/planner.pack` in that worktree. Do not write a prompt file into the sandbox.
 
 3. In your **planner** terminal run (or `exec`):
    ```
@@ -121,7 +122,7 @@ For significant or long-running work, start the top-level coordinator using the 
 ```
 
 This launches the Master Orchestrator with a role prompt that makes it fully aware of the entire scheme. Its responsibilities include:
-- Coordinating planning by maintaining a long-lived dedicated Planning Agent terminal (via `run-grok-planner`). When the master wants to start a new planning cycle it writes a fresh narrow prompt (including the current standard block and high-signal rules) to `@@SANDBOX_PATH@@/.planning-agent-prompt.txt` and tells you to restart your planner terminal with the updated file. This gives you direct, unmediated conversation with the Planning Agent (no relay) for research and plan revision across many cycles while the master handles overall coordination, monitoring, and execution handoff.
+- Coordinating planning by maintaining a long-lived dedicated Planning Agent terminal (via `run-grok-planner`). When the master wants to start a new planning cycle it tells you to restart your planner terminal. `./run-grok-planner` composes its prompt from that worktree's pack. It does not read a sandbox file. This gives you direct, unmediated conversation with the Planning Agent (no relay) for research and plan revision across many cycles while the master handles overall coordination, monitoring, and execution handoff.
 - Only considering a plan approved when you use the exact magic approval phrasing that names the file in `@@SANDBOX_PATH@@/plans/`.
 - Spawning a narrow Execution Sub-agent (via `spawn_subagent`) with the approved plan injected.
 - Actively monitoring the implementation sub-agent for run-away behavior (excessive/improper resets without using `get-builds-tag.sh`, continued editing after the END OF EXECUTION TURN marker, violating the approved plan, etc.).
@@ -145,8 +146,7 @@ Keep one master terminal (`./run-grok-master`) and one dedicated planning termin
 
 - The master (whose prompt now contains the full automation) will:
   - Read project-facts.md + the latest `standard-plan-compliance-block.md`.
-  - Write a complete, ready-to-use narrow prompt (including the full dedicated planner template + embedded current guardrails block + your context) to `@@SANDBOX_PATH@@/.planning-agent-prompt.txt`.
-  - Tell you the single line: "New planning cycle. Please restart your planner terminal now with the updated prompt file (run `./run-grok-planner` again in that terminal, or use `exec ./run-grok-planner` to replace the process in place)."
+  - Tell you to restart the planner (`./run-grok-planner`, or `exec ./run-grok-planner` to replace the process). The prompt is that worktree's planner pack. Do not write a sandbox prompt file.
   - Then stop. It will not do research or planning itself.
 
 - Immediately switch to (or restart in) your planner terminal with `./run-grok-planner` (or `exec ./run-grok-planner`).
@@ -161,7 +161,7 @@ This is the expected primary mode of operation for most users. The same hygiene 
 
 For lighter or one-off work you can still use the ordinary `run-grok` (or ask the master for an in-session Planning Sub-agent via tool). All feedback in that case still routes through the main agent.
 
-**Restart ritual for new cycles (now largely automatic):** After any handoff (or to begin fresh work), just say the short trigger in the master terminal ("New planning cycle" + optional one-liner). The master prompt is built to handle writing the full `.planning-agent-prompt.txt` (with current block and hygiene rules) and giving you the exact one-line restart instruction. You then restart the planner terminal and talk to it directly.
+**Restart ritual for new cycles:** After any handoff (or to begin fresh work), say the short trigger in the master terminal ("New planning cycle" + optional one-liner). Then restart the planner terminal with `./run-grok-planner` and talk to it directly. The launcher loads the worktree pack, not a sandbox file.
 
 **Important:** Give the substantive problem details (what exactly is wrong, what success looks like, constraints, etc.) to the *planner*, not the master. The planner is now strongly prompted to wait for your detailed input rather than autonomously generating a large plan from a tiny trigger.
 

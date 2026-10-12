@@ -6,7 +6,7 @@
 # --force: overwrite dest tracked seed files that differ from orch.
 #
 # On success: exec a new interactive shell in the new worktree with project
-# environment (umask 002 + full groups via ve-refresh-shell, same as ve-env).
+# environment (umask 002 + full groups via ve-refresh-shell, same as env).
 # That replaces this terminal only (other GUI apps stay open).
 #
 # Always run from the orchestration root.
@@ -85,11 +85,11 @@ umask 007
 # .git is mode 2770 and owned by the primary user, so this shell can enter it.
 # Role accounts rewrite files such as .git/config as mode 660, group
 # $SHARED_GROUP. A long-lived desktop shell does not have that supplementary
-# group until `source ./ve-env`.
+# group until `source ./env`.
 if ! id -nG | grep -Fqw -- "$SHARED_GROUP"; then
   echo "Error: this shell is missing group $SHARED_GROUP." >&2
   echo "  .git/config is $(stat -c '%A %U:%G' .git/config 2>/dev/null || echo missing)." >&2
-  echo "  Run: source ./ve-env" >&2
+  echo "  Run: source ./env" >&2
   echo "  Then: ./setup_agent.sh $BRANCH_NAME" >&2
   exit 1
 fi
@@ -272,7 +272,7 @@ fi
 # Files that use filter=manage-configs (see .gitattributes). Smudge substitutes @@ tokens.
 STAMPED_FILES=(
   run-grok run-grok-master run-grok-planner run-grok-coder run-grok-orchestrator
-  ve-env
+  env
   setup-project set-worktree-perms set-sandbox-perms
 )
 
@@ -363,6 +363,24 @@ re_smudge_stamped_files() {
   done
 }
 
+# Smudge rewrites tracked files in place. The clean filter turns those bytes
+# back into the index blob, so `git diff` is empty, but `git status` still
+# reports them modified because size and mtime changed. `git add` stores the
+# new stat. It does not stage a content change when the cleaned blob matches.
+refresh_smudged_index() {
+  local f
+  local -a present=()
+  mapfile -t _mc_files < <(manage_configs_files)
+  for f in "${_mc_files[@]}"; do
+    [ -f "$f" ] || continue
+    present+=("$f")
+  done
+  if [ "${#present[@]}" -eq 0 ]; then
+    return 0
+  fi
+  git add -- "${present[@]}"
+}
+
 verify_smudge() {
   local failed=0
   if [ ! -f project.config ]; then
@@ -374,9 +392,12 @@ verify_smudge() {
     [ -f "$f" ] || continue
     # Match real tokens only (@@SANDBOX_PATH@@). Do NOT match:
     # - comments mentioning "@@ tokens"
+    # - the documented shape @@VAR@@ in project.config.example
     # - intentional runtime checks like: [[ "$1" == @@* ]]
-    if grep -qE '@@[A-Z0-9_]+@@' "$f" 2>/dev/null; then
+    leftover=$(grep -oE '@@[A-Z0-9_]+@@' "$f" 2>/dev/null | grep -vx '@@VAR@@' || true)
+    if [ -n "$leftover" ]; then
       echo "Error: Unsubstituted @@ tokens remain in $f (smudge filter did not run correctly)."
+      echo "$leftover" | sort -u | sed 's/^/  /'
       failed=1
     fi
   done
@@ -411,6 +432,12 @@ fi
 seed_smudge_inputs "$ORCH_ROOT"
 if ! re_smudge_stamped_files; then
   echo "Error: Failed to smudge stamped files using orchestration filter scripts."
+  cd ..
+  git worktree remove --force "$AGENT_ID" 2>/dev/null || rm -rf "$AGENT_ID"
+  return 1 2>/dev/null || exit 1
+fi
+if ! refresh_smudged_index; then
+  echo "Error: Failed to refresh the index after smudge."
   cd ..
   git worktree remove --force "$AGENT_ID" 2>/dev/null || rm -rf "$AGENT_ID"
   return 1 2>/dev/null || exit 1
@@ -480,7 +507,7 @@ PARENT_ROOT=".."
 
 # Copy latest authoritative copies of key permission/infra files from orchestration root
 # (ensures even if the branch tip was slightly behind, the tree is current)
-for f in append-to-engineering-log run-as-primary.c ve-env ve-refresh-shell.c; do
+for f in append-to-engineering-log run-as-primary.c env ve-refresh-shell.c; do
   copy_orch_seed_file "$PARENT_ROOT/$f" "$AGENT_ABS/$f"
 done
 # Launchers often live only on orchestration until update-rules; seed common ones
@@ -578,7 +605,7 @@ fi
     git add -u 2>/dev/null || true
     # Newly copied tracked scripts may be untracked if not on branch tip yet
     git add -A -- \
-      ve-env deploy build_app setup_agent.sh fix-perms update-rules.sh \
+      env deploy build_app setup_agent.sh fix-perms update-rules.sh \
       append-to-engineering-log get-builds-tag.sh install-*.sh \
       git-merge-drivers hooks AGENT_MANDATES.md AGENTS.md GROK.md \
       standard-plan-compliance-block.md project-facts.md 2>/dev/null || true
@@ -588,21 +615,21 @@ fi
   fi
 )
 
-# --- Enter new worktree shell (ve-env semantics) ---
+# --- Enter new worktree shell (env semantics) ---
 # Replace this process with an interactive shell in AGENT_ABS, umask 002, full
-# project groups when ve-refresh-shell is installed setuid (same as source ./ve-env).
+# project groups when ve-refresh-shell is installed setuid (same as source ./env).
 unset VE_SETUP_AGENT
 trap - EXIT
 
 echo "Worktree ready: $AGENT_ABS"
 echo "Branch: $BRANCH_NAME  Agent ID: $AGENT_ID"
 echo "Next: run a launcher from here, e.g.  ../run-grok-coder   or   ../run-grok-planner"
-echo "Entering worktree shell (umask 002 + project groups via ve-env helper)..."
+echo "Entering worktree shell (umask 002 + project groups via env helper)..."
 
 export VE_ENV_CWD="$AGENT_ABS"
 umask 002
 
-# Prefer setuid-root helper only (setuid+non-root owner is unsafe — see ve-env)
+# Prefer setuid-root helper only (setuid+non-root owner is unsafe — see env)
 REFRESH=""
 for _vrs in "$ORCH_ROOT/ve-refresh-shell" "$AGENT_ABS/ve-refresh-shell"; do
   if [ -x "$_vrs" ] && [ -u "$_vrs" ] && [ "$(stat -c '%U' "$_vrs" 2>/dev/null)" = "root" ]; then
@@ -618,7 +645,7 @@ fi
 # Fallback: interactive shell in worktree with umask 002 (groups may still be stale)
 echo "NOTE: ve-refresh-shell not setuid yet — shell may lack project groups."
 echo "  One-time: gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c && sudo chown root:root ve-refresh-shell && sudo chmod 4755 ve-refresh-shell"
-echo "  Then: source ./ve-env"
+echo "  Then: source ./env"
 cd "$AGENT_ABS" || {
   echo "ERROR: cannot cd to $AGENT_ABS"
   return 1 2>/dev/null || exit 1

@@ -29,7 +29,7 @@ fi
 
 if [ ! -r .git/config ]; then
     echo "Error: cannot read .git/config ($(stat -c '%A %U:%G' .git/config 2>/dev/null || echo missing))." >&2
-    echo "  Run: source ./ve-env" >&2
+    echo "  Run: source ./env" >&2
     echo "  Then re-run this command." >&2
     exit 1
 fi
@@ -192,27 +192,33 @@ elif [ -L "$BRANCH_NAME" ]; then
 fi
 
 # 6. Branch & Tag Deletion
-DELETE_CMD="git branch -d"
+# git branch -d checks the current branch. This command runs from the
+# orchestration checkout, so a branch whose tip is master still fails -d.
+# Delete that name when the tip is already in refs/heads/master, and drop
+# the start tag only after the branch is gone.
+branch_deleted=0
 if [ $FORCE_LEVEL -ge 2 ]; then
-    DELETE_CMD="git branch -D"
+    echo "Force deleting branch '$BRANCH_NAME'..."
+    if git branch -D "$BRANCH_NAME"; then
+        branch_deleted=1
+    fi
+elif [ "$IS_MERGED" = true ] || [ "$HAS_UNIQUE_COMMITS" = false ]; then
+    echo "Branch '$BRANCH_NAME' is contained in master. Deleting it."
+    if git merge-base --is-ancestor "$BRANCH_NAME" HEAD 2>/dev/null; then
+        git branch -d "$BRANCH_NAME" && branch_deleted=1
+    else
+        git branch -D "$BRANCH_NAME" && branch_deleted=1
+    fi
+    if [ "$branch_deleted" -ne 1 ] && [ $FORCE_LEVEL -ge 1 ]; then
+        echo "Standard deletion failed. Force deleting branch..."
+        git branch -D "$BRANCH_NAME" && branch_deleted=1
+    fi
+else
+    echo "Leaving unmerged branch '$BRANCH_NAME' and its tag intact."
 fi
 
-if [ "$IS_MERGED" = true ] || [ "$HAS_UNIQUE_COMMITS" = false ]; then
-    echo "Branch '$BRANCH_NAME' is merged or empty. Attempting deletion..."
-    $DELETE_CMD "$BRANCH_NAME"
-    if [ $? -ne 0 ] && [ $FORCE_LEVEL -ge 1 ]; then
-        echo "Standard deletion failed. Force deleting branch..."
-        git branch -D "$BRANCH_NAME"
-    fi
-    git tag -d "${BRANCH_NAME}-start" 2>/dev/null
-else
-    if [ $FORCE_LEVEL -ge 2 ]; then
-        echo "Force deleting unmerged branch '$BRANCH_NAME'..."
-        git branch -D "$BRANCH_NAME"
-        git tag -d "${BRANCH_NAME}-start" 2>/dev/null
-    else
-        echo "Leaving unmerged branch '$BRANCH_NAME' and its tag intact."
-    fi
+if [ "$branch_deleted" -eq 1 ]; then
+    git tag -d "${BRANCH_NAME}-start" 2>/dev/null || true
 fi
 
 echo "Cleanup complete."
