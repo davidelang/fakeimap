@@ -76,6 +76,8 @@ opt .gemini/system_prompt.md
 retired MASTER_AGENT_MANDATE.md
 purge new_grok_agent_prompt
 purge sync_infrastructure.sh
+purge fix-android-sdk-perms
+purge sync-debug-keystores
 retired .grok/prompts/**
 retired .grok/hooks/plan-mode-hard-stops.js
 retired .grok/hooks/stop-completeness-gate.json

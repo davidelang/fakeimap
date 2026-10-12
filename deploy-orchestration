@@ -12,6 +12,9 @@ Run it from any host. Default mode is a REPORT of what would happen; nothing is 
   ./deploy-orchestration --check          manifest consistency check (source host)
   ./deploy-orchestration --override WT    in worktree/root WT, the source wins over ahead/diverged
                                           rule files (repeatable; dirty files are still skipped)
+  ./deploy-orchestration --override-path GLOB   project-local files matching GLOB are published
+                                          even where a worktree modified them (repeatable;
+                                          use for clean/smudge files; dirty files are still skipped)
 
 Rules:
 - Content comes from committed (clean) blobs, never the working tree, so the clean/smudge
@@ -213,6 +216,7 @@ def local_seeded(host):
     return any(re.match(r"(# )?local ", l) for l in open(p, errors="replace"))
 
 OVERRIDE = set()
+OVERRIDE_PATHS = []
 PURGE = []
 
 def own_modification(src, wt, path):
@@ -247,7 +251,7 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label, purge_pats=())
                 if os.path.lexists(os.path.join(wt, p)):
                     rep.warn.append("%s: skipped file %s (untracked file in the way)" % (label, p)); continue
                 acts.append(("add", p, mode, blob)); continue
-            if own_modification(src, wt, p):
+            if own_modification(src, wt, p) and not any(glob_match(g, p) for g in OVERRIDE_PATHS):
                 rep.warn.append("%s: skipped file %s (own commit since merge-base)" % (label, p)); continue
             acts.append(("update", p, mode, blob)); continue
         if p in dirty:
@@ -414,6 +418,7 @@ def main():
     ap.add_argument("--list", metavar="CLASS")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--override", action="append", default=[], metavar="WT")
+    ap.add_argument("--override-path", action="append", default=[], metavar="GLOB")
     ap.add_argument("--dry-run", action="store_true", help="same as the default report")
     a = ap.parse_args()
     src = toplevel(os.path.dirname(os.path.realpath(__file__)))
@@ -461,6 +466,7 @@ def main():
     retired = [p for c, p in src_man if c == "retired"]
     PURGE[:] = [p for c, p in src_man if c == "purge"]
     OVERRIDE.update(os.path.realpath(o) for o in a.override)
+    OVERRIDE_PATHS.extend(a.override_path)
     pushed = []
     first_src = src
     for host in hosts:
