@@ -49,7 +49,7 @@ pretool)
   deny() { jq -cn --arg r "$1" '{decision:"deny",reason:$r}'; exit 0; }
   sb="$(sandbox_dir)"
   case "$role" in
-  planner|reviewer|tester|imagine)
+  planner|reviewer|tester)
     if [[ $is_edit == 1 && -n "$fpath" ]]; then
       [[ "$fpath" = /* ]] || fpath="$root/$fpath"
       case "$fpath" in "$sb"/*|*/project-facts.md|*/TODO.md) ;; *) deny "role $role writes only the sandbox ($sb), project-facts.md, TODO.md (AGENTS.md 'Who writes')" ;; esac

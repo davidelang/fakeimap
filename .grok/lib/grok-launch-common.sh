@@ -107,7 +107,7 @@ PROMPT=""
 
 resolve_run_user() {
   case "${ROLE_KEY:-}" in
-    planner|imagine) echo "${planning_user:-ai-planner}" ;;
+    planner) echo "${planning_user:-ai-planner}" ;;
     coder) echo "${coder_user:-ai-coder}" ;;
     master) echo "${master_user:-${coder_user:-ai-coder}}" ;;
     orchestrator) echo "${orchestrator_user:-ai-orchestrator}" ;;
@@ -231,7 +231,7 @@ launch_grok_with_prompt() {
   # Orch / primary / master: leave unset.
   # sudo -u env does not inherit the parent — must pass these on the env line.
   case "${ROLE_KEY:-}" in
-    planner|imagine)
+    planner)
       : "${GROK_SUBAGENTS:=0}"
       : "${GROK_WORKFLOWS:=0}"
       ;;
@@ -250,19 +250,9 @@ launch_grok_with_prompt() {
   fi
   # User-scope [ui] permission_mode (always-approve on this host) must not
   # override VE-wins “launchers stay ask”. CLI wins. GROK_PERMISSION_MODE overrides.
-  # Exception: ROLE_KEY=imagine pins bypassPermissions + --always-approve
-  # (CLI rejects --permission-mode always-approve). Tight Landlock, Imagine batches.
   local grok_permission_mode
   local grok_always_approve_args=()
-  case "${ROLE_KEY:-}" in
-    imagine)
-      grok_permission_mode="bypassPermissions"
-      grok_always_approve_args+=(--always-approve)
-      ;;
-    *)
-      grok_permission_mode="${GROK_PERMISSION_MODE:-default}"
-      ;;
-  esac
+  grok_permission_mode="${GROK_PERMISSION_MODE:-default}"
   echo "GROK_PERMISSION_MODE=${grok_permission_mode}"
   if [[ ${#grok_always_approve_args[@]} -gt 0 ]]; then
     echo "GROK_ALWAYS_APPROVE=1"

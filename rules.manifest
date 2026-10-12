@@ -78,6 +78,10 @@ purge new_grok_agent_prompt
 purge sync_infrastructure.sh
 purge fix-android-sdk-perms
 purge sync-debug-keystores
+purge run-grok-imagine
+purge roles/imagine.md
+purge .grok/prompts/packs/imagine.pack
+purge .grok/prompts/role-imagine.md
 retired .grok/prompts/**
 retired .grok/hooks/plan-mode-hard-stops.js
 retired .grok/hooks/stop-completeness-gate.json
