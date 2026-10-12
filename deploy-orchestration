@@ -145,6 +145,13 @@ def known(src, wt, path, blob):
             return True
     return False
 
+def cleaned(wt, path, blob):
+    """Blob id after the target's clean filter (fixes copies committed smudged)."""
+    if not is_managed(wt, path):
+        return blob
+    data = git(wt, "cat-file", "blob", blob, binary=True)
+    return git(wt, "hash-object", "--path=" + path, "--stdin", inp=data).strip()
+
 class Report:
     def __init__(self):
         self.rows, self.fail, self.warn = [], [], []
@@ -187,7 +194,10 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
                 return None, "untracked file in the way: " + p
             acts.append(("add", p, mode, blob))
             continue
-        if known(src, wt, p, cur[1]):
+        cb = cleaned(wt, p, cur[1])
+        if cb == blob:
+            acts.append(("update", p, mode, blob)); continue
+        if known(src, wt, p, cur[1]) or (cb != cur[1] and known(src, wt, p, cb)):
             acts.append(("update", p, mode, blob))
         elif blob in history(wt, p):
             return None, "ahead of source: " + p
