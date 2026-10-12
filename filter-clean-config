@@ -296,7 +296,15 @@ scrub_values() {
     val="${i#*|}"
     token="${val#*|}"
     val="${val%%|*}"
-    content="${content//"$val"/$token}"
+    # Whole token only. A short name such as the primary user must not match
+    # inside a longer id (davidlang contains dlang).
+    content=$(printf '%s' "$content" | SCRUB_VAL="$val" SCRUB_TOKEN="$token" python3 -c '
+import os, re, sys
+val = os.environ["SCRUB_VAL"]
+token = os.environ["SCRUB_TOKEN"]
+pat = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(val) + r"(?![A-Za-z0-9_])")
+sys.stdout.write(pat.sub(token, sys.stdin.read()))
+')
   done
   printf '%s' "$content"
 }
