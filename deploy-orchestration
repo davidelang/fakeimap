@@ -152,6 +152,35 @@ def cleaned(wt, path, blob):
     data = git(wt, "cat-file", "blob", blob, binary=True)
     return git(wt, "hash-object", "--path=" + path, "--stdin", inp=data).strip()
 
+TOKEN = re.compile(r"@@[A-Z0-9_]+@@")
+
+def token_equal(repo_a, blob_a, repo_b, blob_b):
+    """blob_b equals blob_a except where blob_a has @@TOKEN@@ placeholders, i.e. blob_b
+    is a copy of blob_a committed with literal values the clean filter cannot map."""
+    a = git(repo_a, "cat-file", "blob", blob_a, binary=True).decode(errors="replace").split("\n")
+    b = git(repo_b, "cat-file", "blob", blob_b, binary=True).decode(errors="replace").split("\n")
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        if x == y:
+            continue
+        if not TOKEN.search(x):
+            return False
+        rx = ".*".join(re.escape(part) for part in TOKEN.split(x))
+        if not re.fullmatch(rx, y):
+            return False
+    return True
+
+def known_smudged(src, wt, path, blob):
+    for r in [src] + REFS:
+        try:
+            k = git(r, "rev-parse", "HEAD:" + path, check=False).strip()
+        except Exception:
+            k = ""
+        if k and len(k) == 40 and token_equal(r, k, wt, blob):
+            return True
+    return False
+
 class Report:
     def __init__(self):
         self.rows, self.fail, self.warn = [], [], []
@@ -194,10 +223,12 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
                 return None, "untracked file in the way: " + p
             acts.append(("add", p, mode, blob))
             continue
+        if cls == "replace":
+            acts.append(("update", p, mode, blob)); continue
         cb = cleaned(wt, p, cur[1])
         if cb == blob:
             acts.append(("update", p, mode, blob)); continue
-        if known(src, wt, p, cur[1]) or (cb != cur[1] and known(src, wt, p, cb)):
+        if known(src, wt, p, cur[1]) or (cb != cur[1] and known(src, wt, p, cb)) or known_smudged(src, wt, p, cur[1]):
             acts.append(("update", p, mode, blob))
         elif blob in history(wt, p):
             return None, "ahead of source: " + p
@@ -300,14 +331,14 @@ def check(src):
     man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
     problems = []
     for cls, pat in man:
-        if cls not in ("law", "shared", "opt", "retired"):
+        if cls not in ("law", "shared", "opt", "replace", "retired"):
             problems.append("bad class: %s %s" % (cls, pat))
         hits = [p for p in t if glob_match(pat, p)]
-        if cls in ("law", "shared") and not hits and "*" not in pat:
+        if cls in ("law", "shared", "replace") and not hits and "*" not in pat:
             problems.append("missing in source: %s" % pat)
         if cls == "retired" and hits:
             problems.append("retired but still tracked: %s" % ", ".join(hits))
-    sel = entries_for(src, man, t, ("law", "shared", "opt"))
+    sel = entries_for(src, man, t, ("law", "shared", "opt", "replace"))
     for p in t:
         if (p.startswith((".grok/", "roles/", "docs/rules/", "probes/")) or p in ("roles.config",)) and p not in sel:
             problems.append("rule-ish file not in manifest: %s" % p)
@@ -359,7 +390,7 @@ def main():
     st = git(src, "status", "--porcelain", "--untracked-files=no").splitlines()
     src_man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
     src_tree = tree(src)
-    sel_src = entries_for(src, src_man, src_tree, ("law", "shared", "opt"))
+    sel_src = entries_for(src, src_man, src_tree, ("law", "shared", "opt", "replace"))
     dirty_src = [l[3:] for l in st if l[3:] in sel_src or l[3:] == "rules.manifest"]
     if dirty_src:
         print("FAIL: source %s has uncommitted manifest paths: %s" % (src, ", ".join(dirty_src)))
@@ -389,7 +420,7 @@ def main():
         if os.path.realpath(host) != os.path.realpath(first_src):
             upstream = first_src
             u_tree = tree(upstream)
-            sel = entries_for(upstream, src_man, u_tree, ("law", "shared", "opt"))
+            sel = entries_for(upstream, src_man, u_tree, ("law", "shared", "opt", "replace"))
             msg = MSG.format(src=os.path.basename(upstream), sha=git(upstream, "rev-parse", "--short", "HEAD").strip())
             changed = sync(upstream, host, sel, u_tree, retired, rep, hl, "(root)", apply, msg)
             if changed:
@@ -418,11 +449,11 @@ def main():
         man = src_man if os.path.realpath(host) == os.path.realpath(src) else parse_manifest(
             git(host, "show", "HEAD:rules.manifest", check=False) or "\n".join("%s %s" % e for e in src_man))
         man = man + [("local", p) for c, p in (parse_manifest(git(host, "show", "HEAD:rules.manifest.local", check=False)))]
-        sel = entries_for(host, man, h_tree, ("law", "shared", "opt", "local"))
+        sel = entries_for(host, man, h_tree, ("law", "shared", "opt", "replace", "local"))
         if not apply and os.path.realpath(host) != os.path.realpath(src):
             # Report mode: root has not been updated yet, so preview worktrees against the upstream set.
             u_tree = tree(first_src)
-            sel_u = entries_for(first_src, src_man, u_tree, ("law", "shared", "opt"))
+            sel_u = entries_for(first_src, src_man, u_tree, ("law", "shared", "opt", "replace"))
             for wt, why in worktrees(host):
                 if os.path.realpath(wt) == os.path.realpath(host):
                     continue

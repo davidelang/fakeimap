@@ -4,6 +4,7 @@
 #   law      agents read or follow it (`./deploy-orchestration --list law`); created if missing
 #   shared   tooling; created if missing
 #   opt      updated only where the target already has it
+#   replace  overwritten even if the host changed it (its host specifics moved to rules.manifest.local)
 #   retired  removed from targets (kept, with a warning, if the target's copy is not from our history)
 # Host-specific infra lives in that host's rules.manifest.local (class local), synced only
 # from the host's orchestration root to its own worktrees.
@@ -22,7 +23,7 @@ law .grok/skills/*/SKILL.md
 
 shared rules.manifest
 shared deploy-orchestration
-shared update-rules.sh
+replace update-rules.sh
 shared roles.config
 shared .grok/config.toml
 shared .grok/hooks/rules-hooks.json
