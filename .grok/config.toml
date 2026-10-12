@@ -1,171 +1,53 @@
-# Project-level Grok configuration (checked in).
-# Merges with user ~/.grok/config.toml ; project rules take precedence for this workspace.
-# Managed from orchestration root; distributed via update-rules.sh.
+# Project Grok config (tracked; published by deploy-orchestration via rules.manifest).
+# Role tightening is done by Landlock (agent-landlock) and ROLE_KEY hooks in .grok/hooks/.
+# deny > ask > allow across all scopes. Agents commit only through ./build_app.
 
 [permission]
 rules = [
   { action = "allow", tool = "read" },
   { action = "allow", tool = "grep" },
-  # narrow bash allows for safe commands (orchestration + common dev)
-  # git commands - explicit list for safety (includes worktree operations needed for multi-agent)
   { action = "allow", tool = "bash", pattern = "git status*" },
   { action = "allow", tool = "bash", pattern = "git log*" },
   { action = "allow", tool = "bash", pattern = "git diff*" },
   { action = "allow", tool = "bash", pattern = "git show*" },
-  { action = "allow", tool = "bash", pattern = "git add*" },
-  { action = "allow", tool = "bash", pattern = "git commit*" },
   { action = "allow", tool = "bash", pattern = "git describe*" },
   { action = "allow", tool = "bash", pattern = "git rev-parse*" },
-  { action = "allow", tool = "bash", pattern = "git worktree*" },
-  { action = "allow", tool = "bash", pattern = "git worktree list" },
   { action = "allow", tool = "bash", pattern = "git ls-files*" },
   { action = "allow", tool = "bash", pattern = "git cat-file*" },
-  { action = "allow", tool = "bash", pattern = "git rm*" },
-  { action = "allow", tool = "bash", pattern = "git *" },  # fallback for other safe git usage (orchestration)
-  { action = "allow", tool = "bash", pattern = "gh *" },
+  { action = "allow", tool = "bash", pattern = "git worktree list*" },
+  { action = "allow", tool = "bash", pattern = "git branch --show-current" },
   { action = "allow", tool = "bash", pattern = "ls *" },
   { action = "allow", tool = "bash", pattern = "cat *" },
-  { action = "allow", tool = "bash", pattern = "./build_app*" },
-  # jq is allowed for direct invocations (with space after "jq") because it is safe, read-only,
-  # and frequently used for parsing git output, logs, JSON structures, etc.
-  # The plan-mode-hard-stops.js hook (stripLeadingAssignments + getLastPipeBase) also
-  # explicitly allows bash commands containing a leading simple env assignment prefix
-  # of the form (KEY=val )* before the command (e.g. "FOO=bar jq ...", "VAR=1 git log ... | cat").
-  # Only the first non-assignment token (or last pipe segment) is used for the blessed check.
-  # This was added per the 2026-06-13 approved plan to support the clarified prefix pattern
-  # while blocking loopholes (first token after stripping must be exactly a blessed base).
-  # Patterns still require a space after "jq" for the declarative side; the hook handles prefixes.
   { action = "allow", tool = "bash", pattern = "jq *" },
   { action = "allow", tool = "bash", pattern = "* | jq *" },
-
-  # Confirmed items from agent-1/permission_grok-pager.toml allowed_bash_commands
-  # (user "don't ask again" decisions in that context). Promoted to global per the
-  # approved plan + user review comments (2026-06-13). See plan for the full list
-  # and notes (adb logcat reading confirmed allowed; no python3 * ever).
-  # These are in addition to the broad git/ls/cat/build_app/get-builds etc. rules above.
-  { action = "allow", tool = "bash", pattern = "adb logcat*" },
-  { action = "allow", tool = "bash", pattern = "echo *" },
   { action = "allow", tool = "bash", pattern = "find *" },
+  { action = "allow", tool = "bash", pattern = "echo *" },
   { action = "allow", tool = "bash", pattern = "true" },
-
-  # Blessed orchestration / launcher scripts.
-  # These are trusted tools run from the orchestration root (or relatively from worktrees).
-  # Explicitly allowing them here prevents repeated approval prompts when the human
-  # or a trusted orchestration agent runs them.
-  { action = "allow", tool = "bash", pattern = "./update-rules.sh*" },
-  { action = "allow", tool = "bash", pattern = "./setup_agent.sh*" },
-  { action = "allow", tool = "bash", pattern = "./sync_infrastructure.sh*" },
-  # get-builds-tag.sh: safe helper for the mandatory preflight before any
-  # non-HEAD git reset --hard (see AGENT_MANDATES.md). Agents should use
-  #   TAG=$(./get-builds-tag.sh)
-  # instead of inlining the branch/tag logic. This whitelist avoids repeated
-  # per-use permission prompts for this very common safe read-only operation.
-  { action = "allow", tool = "bash", pattern = "./get-builds-tag.sh*" },
-  { action = "allow", tool = "bash", pattern = "../get-builds-tag.sh*" },
-  { action = "allow", tool = "bash", pattern = "./reset-to-builds.sh*" },
-  { action = "allow", tool = "bash", pattern = "../reset-to-builds.sh*" },
-  # append-to-engineering-log: trusted helper for append-only ENGINEERING_LOG.md updates.
-  # Enforces the dated header format and protection (chattr +a). Explicitly listed as
-  # approved helper script so it can be invoked directly (e.g. ./append-to-engineering-log)
-  # without repeated permission prompts. See AGENT_MANDATES.md (mandatory use via wrapper).
-  { action = "allow", tool = "bash", pattern = "./append-to-engineering-log*" },
-  { action = "allow", tool = "bash", pattern = "../append-to-engineering-log*" },
+  { action = "allow", tool = "bash", pattern = "adb logcat*" },
+  { action = "allow", tool = "bash", pattern = "./build_app*" },
   { action = "allow", tool = "bash", pattern = "./exec-preflight*" },
-  { action = "allow", tool = "bash", pattern = "../exec-preflight*" },
-  # cd && blessed-helper chains: allowed only via plan-mode-hard-stops.js with
-  # in-project cd validation (no broad * && patterns — avoids system-wide backdoor).
-  # Run launchers (invoked as ./run-* from root or ../run-* from worktrees)
-  { action = "allow", tool = "bash", pattern = "./run-grok*" },
-  { action = "allow", tool = "bash", pattern = "./run-gemini*" },
-  { action = "allow", tool = "bash", pattern = "./run-antigravity*" },
-  { action = "allow", tool = "bash", pattern = "./run-grok-planner*" },
-  { action = "allow", tool = "bash", pattern = "../run-grok-planner*" },
-  # run-grok-planner: Planning Agent sessions. The prompt is the worktree pack
-  # (.grok/prompts/packs/planner.pack), not a sandbox file. Whitelisted to avoid
-  # repeated permission prompts. See AGENT_MANDATES.md for usage.
-
-  { action = "allow", tool = "bash", pattern = "./run-grok-master*" },
-  { action = "allow", tool = "bash", pattern = "../run-grok-master*" },
-  # run-grok-master: specialized launcher for the top-level Master Orchestrator.
-  # This agent coordinates the overall scheme, launches dedicated planning agents
-  # (via run-grok-planner), spawns narrow execution sub-agents, monitors them for
-  # run-away behavior, intervenes with proper resets, collects failure logs, and
-  # kicks off recovery planning rounds. Whitelisted to avoid repeated permission
-  # prompts. See AGENT_MANDATES.md for the full master role.
-  { action = "allow", tool = "bash", pattern = "../run-gemini*" },
-  { action = "allow", tool = "bash", pattern = "../run-antigravity*" },
-  { action = "allow", tool = "bash", pattern = "../run-grok-planner*" },
-  # Cleanup script commonly used after agent work is merged
-  { action = "allow", tool = "bash", pattern = "./remove_worktree.sh*" },
-  { action = "allow", tool = "bash", pattern = "../remove_worktree.sh*" },
-
-  # PR workflow scripts (primarily run by AI agents for generating PRs, cleanup, etc.)
+  { action = "allow", tool = "bash", pattern = "./append-to-engineering-log*" },
+  { action = "allow", tool = "bash", pattern = "./todo-append*" },
+  { action = "allow", tool = "bash", pattern = "./todo-close*" },
+  { action = "allow", tool = "bash", pattern = "./get-builds-tag.sh*" },
+  { action = "allow", tool = "bash", pattern = "./reset-to-builds.sh*" },
   { action = "allow", tool = "bash", pattern = "./generate_pr.sh*" },
-  { action = "allow", tool = "bash", pattern = "./cleanup_pr.sh*" },
-  { action = "allow", tool = "bash", pattern = "../generate_pr.sh*" },
-  { action = "allow", tool = "bash", pattern = "../cleanup_pr.sh*" },
-
-  # Common safe sub-operations frequently performed by the blessed orchestration scripts
-  # (mkdir, cp, rm, chmod, sed, ln are used inside update-rules, setup_agent, etc.).
-  # Keeping them narrow reduces prompt noise while still being auditable.
-  { action = "allow", tool = "bash", pattern = "mkdir -p *" },
-  { action = "allow", tool = "bash", pattern = "cp *" },
-  { action = "allow", tool = "bash", pattern = "rm -f *" },
-  { action = "allow", tool = "bash", pattern = "chmod +w *" },
-  { action = "allow", tool = "bash", pattern = "sed -i *" },
-  { action = "allow", tool = "bash", pattern = "ln -s *" },
-
-  # For plan mode hard stops (reinforce native plan mode via enter_plan_mode / SwitchMode):
-  # deny edit/write/bash to non-sandbox paths; deny Task/subagent/invoke in plan mode, etc.
-  # (exact rules tuned here + PreToolUse hooks below)
-
-  # Granular edit permissions for designated safe locations only.
-  # This allows search_replace / write on the sandbox (for plans, artifacts, logs)
-  # and on project-facts.md (stable tracked facts file, planner-writable in plan mode like TODO.md)
-  # and legacy current-state.md without prompting for every edit.
-  # Add more specific patterns here as needed instead of a blanket "allow all edits".
-  # These are merged with ~/.grok/config.toml (project rules take precedence).
-  { action = "allow", tool = "search_replace", pattern = "@@SANDBOX_PATH@@/**" },
-  { action = "allow", tool = "search_replace", pattern = "@@SANDBOX_PATH@@/plans/**" },
-  { action = "allow", tool = "search_replace", pattern = "**/project-facts.md" },
-  { action = "allow", tool = "search_replace", pattern = "**/current-state.md" },
-  { action = "allow", tool = "search_replace", pattern = "**/.agent-state/**" },
-  { action = "allow", tool = "write", pattern = "@@SANDBOX_PATH@@/**" },
-  { action = "allow", tool = "write", pattern = "@@SANDBOX_PATH@@/plans/**" },
-  { action = "allow", tool = "write", pattern = "**/project-facts.md" },
-  { action = "allow", tool = "write", pattern = "**/current-state.md" },
-  { action = "allow", tool = "write", pattern = "**/.agent-state/**" },
-
-  # When NOT in planning mode (i.e. after exit_plan_mode, during approved execution),
-  # allow edits to tracked files (and anywhere) via search_replace/write.
-  # Plan mode restrictions (deny non-sandbox edits, etc.) are enforced by the
-  # native enter/exit_plan_mode + plan-mode-hard-stops.js PreToolUse hook.
-  # This stops the constant per-edit permission prompts during normal work
-  # while preserving the strict "read-only outside sandbox" rule in planning.
-  { action = "allow", tool = "search_replace" },
-  { action = "allow", tool = "write" },
-
-  # Explicit safety net for the (now tracked) stable project facts file and legacy state files.
-  # These are planner-editable even in plan mode (alongside the TODO.md exception).
-  # project-facts.md is deliberately kept to stable layout/"where things live" facts only.
-  { action = "allow", tool = "search_replace", pattern = "**/project-facts.md" },
-  { action = "allow", tool = "search_replace", pattern = "**/current-state.md" },
-  { action = "allow", tool = "search_replace", pattern = "**/.agent-state/**" },
-  { action = "allow", tool = "write", pattern = "**/project-facts.md" },
-  { action = "allow", tool = "write", pattern = "**/current-state.md" },
-  { action = "allow", tool = "write", pattern = "**/.agent-state/**" },
+  { action = "allow", tool = "bash", pattern = "./channel-*" },
   { action = "allow", tool = "bash", pattern = "./third_party/fetch-deps*" },
-  { action = "allow", tool = "bash", pattern = "./checkifclean*" },
-  { action = "allow", tool = "bash", pattern = "./execute-third-party-plan.sh*" },
+  { action = "allow", tool = "bash", pattern = "mkdir -p @@SANDBOX_PATH@@/*" },
+  { action = "allow", tool = "search_replace", pattern = "@@SANDBOX_PATH@@/**" },
+  { action = "allow", tool = "write", pattern = "@@SANDBOX_PATH@@/**" },
+  { action = "allow", tool = "search_replace", pattern = "**/project-facts.md" },
+  { action = "allow", tool = "write", pattern = "**/project-facts.md" },
+  { action = "deny", tool = "bash", pattern = "git add*" },
+  { action = "deny", tool = "bash", pattern = "git commit*" },
+  { action = "deny", tool = "bash", pattern = "git push*" },
+  { action = "deny", tool = "bash", pattern = "git reset*" },
+  { action = "deny", tool = "bash", pattern = "git checkout -- *" },
+  { action = "deny", tool = "bash", pattern = "git rebase*" },
+  { action = "deny", tool = "bash", pattern = "git tag*" },
 ]
 
-# Project .grok/hooks/ (PreToolUse) provide additional hard enforcement for plan-mode restrictions
-# (path traversal deny outside @@SANDBOX_PATH@@/, sandbox-only writes in plan, etc.).
-# See .grok/hooks/ for the actual hook implementation(s).
-
-# Project skill policy (startup-rules cleanup 2026-07-13)
 [skills]
-# Bundled GitHub/Graphite skills. Do not add "review" here: the project
-# .grok/skills/review overrides bundled review by name; disabled is by name
-# and would also kill the local skill.
+# Bundled skills to keep off. Do not add "review": the project skill overrides it by name.
 disabled = ["pr-babysit", "execute-plan", "design", "check-work", "implement"]

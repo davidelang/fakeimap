@@ -1,0 +1,4 @@
+description = "Rules v3 test-writer: tests only for the plan's scope"
+default_capability_mode = "all"
+reasoning_effort = "high"
+prompt_file = "roles/tester.md"

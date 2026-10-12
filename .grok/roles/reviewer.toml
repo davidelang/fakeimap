@@ -1,0 +1,4 @@
+description = "Rules v3 reviewer role (strict; see roles/reviewer.md)"
+default_capability_mode = "read-only"
+reasoning_effort = "high"
+prompt_file = "roles/reviewer.md"

@@ -34,6 +34,23 @@ if [[ ! -f "$plan" ]]; then
   exit 1
 fi
 
+# Approval (rules v3): grok's UserPromptSubmit hook records David's
+# "implement <path>" / "<roadmap> planned" lines with the plan's sha256.
+approval="unverified"
+if [[ -n "$sandbox" ]]; then
+  alog="${sandbox%/}/.approvals/approved.log"
+  psha="$(sha256sum "$plan" | awk '{print $1}')"
+  pabs="$(cd "$(dirname "$plan")" && pwd)/$(basename "$plan")"
+  if [[ -f "$alog" ]] && grep -E "[[:space:]](implement|planned)[[:space:]]${psha}[[:space:]]" "$alog" | grep -qF "$pabs"; then
+    approval="recorded"
+  fi
+fi
+echo "approval=${approval}"
+if [[ "$approval" != recorded && -n "${GROK_PROMPT_ROOT:-}" && "${ROLE_KEY:-}" =~ ^(coder|executor|master)$ ]]; then
+  echo "ERROR: no recorded approval for $plan (David must say: implement <plan path>; plan must be unchanged since)" >&2
+  exit 3
+fi
+
 trim() { printf '%s' "$1" | tr -d '`\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
 plan_host="$(trim "$(sed -n 's/^\*\*Host:\*\*[[:space:]]*//p' "$plan" | head -1)")"
 [[ -z "$plan_host" ]] && plan_host="$(trim "$(sed -n 's/^Host:[[:space:]]*//p' "$plan" | head -1)")"
