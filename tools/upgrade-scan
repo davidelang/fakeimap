@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# upgrade-scan: show what changed in grok since the rules were last reviewed.
+# Prints installed version, the last reviewed version (tools/upgrade-map.tsv), and
+# changelog lines mentioning the features in tools/upgrade-map.tsv.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+map="$here/tools/upgrade-map.tsv"
+ver="$(grok --version 2>/dev/null | head -1 || echo unknown)"
+echo "installed: $ver"
+echo "reviewed:  $(awk -F'\t' '$1=="reviewed"{print $2}' "$map")"
+cl=""
+for c in "$HOME/.grok/CHANGELOG.md" "$HOME/.grok/changelog.md"; do [ -f "$c" ] && cl="$c" && break; done
+[ -z "$cl" ] && { echo "no local changelog; read the upstream release notes"; exit 0; }
+awk -F'\t' '$1!="reviewed" && $1!~/^#/ && NF>=2 {print $1"\t"$2}' "$map" | while IFS=$'\t' read -r kw probe; do
+  n=$(grep -ci -- "$kw" "$cl" || true)
+  [ "$n" -gt 0 ] && echo "changelog mentions '$kw' ($n) -> recheck probes/$probe"
+done
+exit 0

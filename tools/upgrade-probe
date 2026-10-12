@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# upgrade-probe: list probes to run (general + protected) and enforce that protected
+# probes never shrink. Exit 1 if protected count < probes/protected/COUNT.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+want="$(cat "$here/probes/protected/COUNT" 2>/dev/null || echo 0)"
+have=$(find "$here/probes/protected" -maxdepth 1 -name '*.md' ! -name README.md | wc -l)
+echo "protected probes: $have (minimum $want)"
+for f in "$here"/probes/protected/*.md "$here"/probes/general/*.md; do
+  [ -f "$f" ] && [ "$(basename "$f")" != README.md ] && { echo "== ${f#"$here"/}"; sed -n '1,4p' "$f"; }
+done
+[ "$have" -ge "$want" ] || { echo "FAIL: protected probes were removed"; exit 1; }

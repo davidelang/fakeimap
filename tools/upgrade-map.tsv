@@ -1,0 +1,11 @@
+# keyword<TAB>probe (relative to probes/). Row "reviewed<TAB><version>" = last reviewed grok version.
+reviewed	1.0.52
+AGENTS.md	general/agents-md-first-message.md
+compact	general/agents-md-first-message.md
+--rules	general/rules-flag.md
+hook	general/hooks-events.md
+additionalContext	general/hooks-events.md
+context	general/context-window.md
+effort	general/reasoning-effort.md
+skills	general/skills-disabled.md
+roles	general/subagent-roles.md
