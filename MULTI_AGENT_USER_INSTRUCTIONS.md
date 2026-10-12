@@ -178,13 +178,13 @@ This gives you low-cost interactive guidance without paying full re-derivation c
 ## 5. References (Always Re-Read These on Fresh Launch / After Compaction / Post-Handoff)
 - `AGENTS.md` (the law, especially Bi-Modal Workflow, Completion and Handoff, Plan File Access and Discovery Rules, Sandbox Plan File as Primary Artifact, Harness Session plan.md Lifecycle and Hygiene, Planning and Execution Subagent Separation, Post-Handoff Cycle Start Protocol).
 - `AGENTS.md` (bootstrap, Plans Directory Rule, geography).
-- `new_grok_agent_prompt` (the report the agent must give on fresh launch or after compaction; it now includes explicit confirmations about the sandbox plan file, harness log hygiene, and post-handoff behavior).
+- `new_agent_prompt` (the short launch prompt: confirm `pwd`, then wait for a directive).
 - `MULTI_AGENT_USER_INSTRUCTIONS.md` (this file — the human rituals).
 - The specific sandbox plan file the user has most recently and explicitly designated for the *current turn* only.
 - Existing example plans in @@SANDBOX_PATH@@/plans/ (for structure): `buffer_set_lock_removal_plan.md`, `jpg_removal_plan.md`, etc.
 
 ## 6. Notes for Agent Implementers / This Document's Maintenance
-This file is maintained in the orchestration root (like the other core instruction files) and distributed by `update-rules.sh`. When the protocol or rituals evolve, update this file + the corresponding sections in AGENT_MANDATES.md / AGENTS.md / new_grok_agent_prompt, then run the sync from the orchestration root on the orchestration branch.
+This file is maintained in the orchestration root (like the other core instruction files) and published by `./deploy-orchestration` (canon: `~/git/orchestration-example`; `update-rules.sh` syncs one project's worktrees). When the protocol or rituals evolve, update this file + AGENTS.md / roles/*.md in canon, then publish.
 
 Agents must treat the lists here as non-negotiable (the "letter and spirit" of the handoff boundary rules).
 

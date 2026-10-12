@@ -399,7 +399,7 @@ ensure_worktree_scripts_executable() {
   local scripts=(
     build_app deploy setup_agent.sh remove_worktree.sh
     get-builds-tag.sh update-rules.sh ve-resolve-orch install-merge-drivers.sh merge-branch-into-master.sh
-    generate_pr.sh cleanup_pr.sh sync_infrastructure.sh
+    generate_pr.sh cleanup_pr.sh
     filter-apply-config filter-clean-config setup-project
     set-worktree-perms set-sandbox-perms
     run-grok run-grok-master run-grok-planner run-grok-coder run-grok-orchestrator

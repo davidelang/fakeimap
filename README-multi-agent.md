@@ -39,7 +39,7 @@ To assign a task to a new agent:
     cd feature-name
     # For Grok CLI (preferred for new work):
     ../run-grok
-    # Paste on launch: "Read new_grok_agent_prompt and follow its instructions."
+    # The launcher sends new_agent_prompt and the role card; no paste needed.
 
     # For a dedicated narrow Planning Agent session (direct interaction during planning):
     ../run-grok-planner
