@@ -160,6 +160,10 @@ MANDATORY BUILD DISCIPLINE (non-negotiable):
 END_MASTER_PROMPT
 )
 MASTER_PROMPT="${MASTER_PROMPT//@@SANDBOX_PATH@@/${SANDBOX_REL}}"
+# Role card replaces the legacy long prompt above (rules v3).
+MASTER_PROMPT="$(cat "$SCRIPT_DIR/roles/master.md" 2>/dev/null || cat "roles/master.md")
+
+Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive."
 
 
 exec sudo -u "$CODER_USER" "$ANTIGRAVITY_BIN" \

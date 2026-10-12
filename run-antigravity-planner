@@ -186,6 +186,10 @@ for arg in "$@"; do
 done
 
 PLANNING_PROMPT="${PLANNING_PROMPT//@@SANDBOX_PATH@@/${SANDBOX_REL}}"
+# Role card replaces the legacy long prompt above (rules v3).
+PLANNING_PROMPT="$(cat "$SCRIPT_DIR/roles/planner.md" 2>/dev/null || cat "roles/planner.md")
+
+Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive."
 
 exec sudo -u "$PLANNING_USER" "$ANTIGRAVITY_BIN" \
     -i "$PLANNING_PROMPT" \
