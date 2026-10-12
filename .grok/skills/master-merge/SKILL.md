@@ -19,6 +19,7 @@ disable-model-invocation: true
 3. Reject anything the plan did not list: silent improvements, refactors, or "best practice" changes. Ask the branch's coder to revert them.
 
 ## Merge
+0. Stacked wrappers: `build_app`, `deploy` and similar wrappers (e.g. `ve-resolve-orch`) on master carry several independent layered fixes. Merge them hunk by hunk; never wholesale-restore one from a single SHA or take one side whole.
 1. Run `python3 $SANDBOX/audit_merge.py <branch>` if it exists.
 2. Run `./install-merge-drivers.sh`, then `./merge-branch-into-master.sh <branch>` from the master worktree.
 3. `ENGINEERING_LOG.md`: the ve-englog driver appends the branch tail via `./append-to-engineering-log`. Never take the branch file. No `chattr -a`.
