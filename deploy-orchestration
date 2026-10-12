@@ -201,7 +201,7 @@ def local_seeded(host):
     p = os.path.join(host, "rules.manifest.local")
     if not os.path.lexists(p):
         return False
-    return any(l.startswith("local ") for l in open(p, errors="replace"))
+    return any(re.match(r"(# )?local ", l) for l in open(p, errors="replace"))
 
 def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
     """Decide actions for one worktree. Returns (actions, skip_reason)."""
@@ -439,11 +439,12 @@ def main():
                 pushed.append(host)
             # Seed the host-local manifest from its legacy update-rules.sh on first publish.
             if apply and not local_seeded(host) and writable(host):
-                loc = [p for p in legacy_local_list(host) if p not in sel and not any(glob_match(r, p) for r in retired)]
+                loc = list(dict.fromkeys(p for p in legacy_local_list(host) if p not in sel and not any(glob_match(r, p) for r in retired)))
                 try:
                     txt = "# rules.manifest.local: host-specific infra, synced only root -> this host's worktrees.\n" \
-                          "# Seeded from the legacy update-rules.sh FILES lists. Format: local <path>\n" + \
-                          "".join("local %s\n" % p for p in loc)
+                          "# Seeded (commented out) from the legacy update-rules.sh FILES lists. Uncomment a line\n" \
+                          "# (\"local <path>\") to sync that file from this root into every worktree.\n" + \
+                          "".join("# local %s\n" % p for p in loc)
                     with open(os.path.join(host, "rules.manifest.local"), "w") as f:
                         f.write(txt)
                     git(host, "add", "-f", "--", "rules.manifest.local")
