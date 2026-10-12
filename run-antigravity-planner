@@ -11,11 +11,11 @@
 # of context or feedback), the master's built-in prompt automates the rest:
 # it reads project-facts.md + the latest standard-plan-compliance-block.md,
 # writes a complete narrow prompt (full dedicated planner template + embedded
-# guardrails + your context) to `dev-ai-interaction/.planning-agent-prompt.txt`,
+# guardrails + your context) to `@@SANDBOX_PATH@@/.planning-agent-prompt.txt`,
 # and tells you the exact one-line restart command.
 #
 # Usage:
-#   ./run-antigravity-planner           # uses dev-ai-interaction/.planning-agent-prompt.txt
+#   ./run-antigravity-planner           # uses @@SANDBOX_PATH@@/.planning-agent-prompt.txt
 #                                       # If missing: auto-generates a default prompt and
 #                                       # starts exactly as if the master had just handled
 #                                       # a "New planning cycle" trigger.
@@ -29,7 +29,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Stamped defaults (manage-configs smudge from project.config)
-sandbox_path=dev-ai-interaction
+sandbox_path=@@SANDBOX_PATH@@
 antigravity_bin=@@ANTIGRAVITY_BIN@@
 
 if [ -f project.config ]; then
@@ -107,7 +107,7 @@ if [ ! -f "$PROMPT_FILE" ]; then
 
     FAILURE_HINT=""
     if ls "$SANDBOX_DIR/implementation-failure-logs/" 2>/dev/null | grep -q . ; then
-        FAILURE_HINT="There are files present in dev-ai-interaction/implementation-failure-logs/. You must inspect them as one of your first tool-using steps."
+        FAILURE_HINT="There are files present in @@SANDBOX_PATH@@/implementation-failure-logs/. You must inspect them as one of your first tool-using steps."
     fi
 
     PLANNING_PROMPT="You are a dedicated Planning Agent running in a long-lived terminal. You are in plan mode and must stay there.
@@ -117,7 +117,7 @@ if [ ! -f "$PROMPT_FILE" ]; then
 The prompt file was missing. This is equivalent to the master just having received a 'New planning cycle' from the user.
 
 **MANDATORY FIRST ACTIONS — DO THESE WITH TOOLS BEFORE ANY OTHER OUTPUT:**
-- list_dir on dev-ai-interaction/implementation-failure-logs/
+- list_dir on @@SANDBOX_PATH@@/implementation-failure-logs/
 - Read recent failure log files if present.
 - Use grep + read_file on code locations to verify current state.
 - Determine and report whether any failures are still unresolved.
@@ -134,14 +134,14 @@ Do not skip the failure scan + project-facts read on startup.
 **RESEARCH CAPABILITIES — FULL INVESTIGATION POWER:**
 Use the complete toolset for research. This includes full git history (git log -S, -p, ranges, git show, git diff, git describe, git blame, etc.), adb logcat (dumps, filters, all flags) + adb pull/shell, and file/artifact inspection (cat, tail, head, find, ls, jq). The project whitelists these.
 
-Your only job is research and iteratively producing/revising the highest-quality plan document in dev-ai-interaction/plans/ using the standard structure. Literally include the exact verbatim content of the file standard-plan-compliance-block.md as a section titled 'Compliance & Execution Guardrails for This Turn (STANDARD BLOCK)'. Do not modify, add to, or rephrase anything inside that block. Reference the live mandates for background rules.
+Your only job is research and iteratively producing/revising the highest-quality plan document in @@SANDBOX_PATH@@/plans/ using the standard structure. Literally include the exact verbatim content of the file standard-plan-compliance-block.md as a section titled 'Compliance & Execution Guardrails for This Turn (STANDARD BLOCK)'. Do not modify, add to, or rephrase anything inside that block. Reference the live mandates for background rules.
 
 This process is intended to be long-lived across multiple planning cycles. When the master indicates that a new planning cycle has begun (by telling you to restart with an updated prompt file), you must restart this terminal/process with the new prompt. Until a restart is requested, after every '**END OF EXECUTION TURN**' marker or when the user says 'new planning cycle', you must first perform the mandatory failure detection, then re-read project-facts.md (full read), start with a fresh high-signal plan, and follow all the rules. You have zero write access to any tracked source files outside the sandbox. You must never make source changes or run builds. You must not call exit_plan_mode on your own initiative. Talk directly with the user, incorporate their feedback into revisions of the plan file, and provide summaries of changes. Only when the user explicitly approves a plan using the magic phrasing, call exit_plan_mode (if appropriate) and stop.
 
 **WHEN A FORMAL PLAN DOCUMENT IS REQUIRED (CRITICAL RULE):**
 A formal sandbox plan document is required before any changes are made to tracked files outside the sandbox.
-- You have zero authority to edit, create, or modify any tracked file outside dev-ai-interaction/ while in planning mode.
-- You are allowed and encouraged to freely work inside the sandbox (dev-ai-interaction/**).
+- You have zero authority to edit, create, or modify any tracked file outside @@SANDBOX_PATH@@/ while in planning mode.
+- You are allowed and encouraged to freely work inside the sandbox (@@SANDBOX_PATH@@/**).
 - You may also edit project-facts.md and TODO.md (the explicit planner exceptions).
 - Pure research questions do not require creating a plan file.
 
@@ -185,7 +185,11 @@ for arg in "$@"; do
   fi
 done
 
-PLANNING_PROMPT="${PLANNING_PROMPT//dev-ai-interaction/${SANDBOX_REL}}"
+PLANNING_PROMPT="${PLANNING_PROMPT//@@SANDBOX_PATH@@/${SANDBOX_REL}}"
+# Role card replaces the legacy long prompt above (rules v3).
+PLANNING_PROMPT="$(cat "$SCRIPT_DIR/roles/planner.md" 2>/dev/null || cat "roles/planner.md")
+
+Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive."
 
 exec sudo -u "$PLANNING_USER" "$ANTIGRAVITY_BIN" \
     -i "$PLANNING_PROMPT" \

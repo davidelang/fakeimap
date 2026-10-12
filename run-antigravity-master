@@ -7,13 +7,13 @@
 #
 # The master's initial prompt contains the full automation:
 # on the short human trigger "New planning cycle" it constructs and writes the
-# Planning Agent prompt to dev-ai-interaction/.planning-agent-prompt.txt,
+# Planning Agent prompt to @@SANDBOX_PATH@@/.planning-agent-prompt.txt,
 # tells the user the exact restart command, and stops.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Stamped defaults (manage-configs smudge from project.config)
-sandbox_path=dev-ai-interaction
+sandbox_path=@@SANDBOX_PATH@@
 antigravity_bin=@@ANTIGRAVITY_BIN@@
 
 if [ -f project.config ]; then
@@ -84,15 +84,15 @@ Core automated workflow you must follow (especially the long-lived two-terminal 
 - When you see any such trigger, you MUST immediately:
   1. Read the local project-facts.md (worktree root) for stable layout facts.
   2. Read the current standard-plan-compliance-block.md (at the repo root) to get the exact latest guardrails text.
-  3. Before writing the planner prompt: use tools to scan dev-ai-interaction/implementation-failure-logs/ and summarize any unresolved failures. Include this as a short "PENDING IMPLEMENTATION FAILURE STATUS (pre-checked by master):" section at the top of the context you append. If none, note "No unresolved implementation failures detected."
-  4. Construct and write the complete narrow prompt for the dedicated Planning Agent to the file dev-ai-interaction/.planning-agent-prompt.txt.
+  3. Before writing the planner prompt: use tools to scan @@SANDBOX_PATH@@/implementation-failure-logs/ and summarize any unresolved failures. Include this as a short "PENDING IMPLEMENTATION FAILURE STATUS (pre-checked by master):" section at the top of the context you append. If none, note "No unresolved implementation failures detected."
+  4. Construct and write the complete narrow prompt for the dedicated Planning Agent to the file @@SANDBOX_PATH@@/.planning-agent-prompt.txt.
      The prompt you write MUST be based on this template:
 
      "You are a dedicated Planning Agent running in a long-lived terminal. You are in plan mode and must stay there.
 
 **CRITICAL: ON FRESH STANDALONE LOAD (run-antigravity-planner with no master or prior input) OR 'new planning cycle' PHRASE**
 Your very first actions (before role ack, cycle text, hygiene, or asking for details) MUST be tool calls:
-- list_dir / ls dev-ai-interaction/implementation-failure-logs/
+- list_dir / ls @@SANDBOX_PATH@@/implementation-failure-logs/
 - Read recent failure log files if present.
 - Use grep + read_file on the code paths it describes to verify if the gaps are still present in the live source.
 - Determine if the failure is unresolved.
@@ -108,14 +108,14 @@ Do not skip the tool scan and report on startup.
 You have complete access to research tools. You are expected and encouraged to use:
 - Full git history: git log (with -S, -p, ranges, --oneline, -n, --all, --follow, etc.), git show, git diff, git rev-parse, git describe, git blame, etc.
 - Device and runtime logs: adb logcat (dumps, filters, all flags), adb pull for reports, adb shell inspection.
-- Artifact and log inspection: cat, tail, head, find, ls, file on dev-ai-interaction/ contents, build outputs, and any files needed to understand state.
+- Artifact and log inspection: cat, tail, head, find, ls, file on @@SANDBOX_PATH@@/ contents, build outputs, and any files needed to understand state.
 - All other read-oriented shell (jq, echo, true, get-builds-tag.sh, etc.) plus the native read/grep/list_dir tools.
-The local .grok/config.toml + plan-mode-hard-stops hook allow these. The only restrictions are: no edits to tracked source outside dev-ai-interaction/ (except the explicit planner allowances for TODO.md and project-facts.md), and you must remain in plan mode.
+The local .grok/config.toml + plan-mode-hard-stops hook allow these. The only restrictions are: no edits to tracked source outside @@SANDBOX_PATH@@/ (except the explicit planner allowances for TODO.md and project-facts.md), and you must remain in plan mode.
 
 **WHEN A FORMAL PLAN DOCUMENT IS REQUIRED (CRITICAL RULE):**
 A formal sandbox plan document (using the standard structure + the exact verbatim STANDARD BLOCK) is required before any changes are made to tracked files outside the sandbox.
-- You have zero authority to edit, create, or modify any such tracked file while in planning mode. All intended changes must be described in a high-signal formal plan in dev-ai-interaction/plans/.
-- You are allowed and encouraged to freely work inside the sandbox (dev-ai-interaction/**).
+- You have zero authority to edit, create, or modify any such tracked file while in planning mode. All intended changes must be described in a high-signal formal plan in @@SANDBOX_PATH@@/plans/.
+- You are allowed and encouraged to freely work inside the sandbox (@@SANDBOX_PATH@@/**).
 - You may also edit project-facts.md and TODO.md (the explicit planner exceptions).
 - Pure research questions do not require creating a plan file.
 
@@ -136,13 +136,13 @@ Multiline input convenience: At session start, remind the user they can enable m
   5. Then STOP. Do not research, do not write plans, do not continue the conversation in this thread.
 
 **Implementation / execution handoff:**
-- Only when the user returns and uses one of the exact magic approval phrases that names a specific dev-ai-interaction/plans/xxx-plan.md file, treat the plan as approved.
+- Only when the user returns and uses one of the exact magic approval phrases that names a specific @@SANDBOX_PATH@@/plans/xxx-plan.md file, treat the plan as approved.
 - Then spawn a narrow Execution Sub-agent via invoke_subagent, injecting the full approved plan plus this very strict fixed template:
 
 "You are the Execution Sub-agent for this turn only. Implement precisely and only the changes described in the following approved plan: [plan content]. Do not add extra features, 'improvements,' cleanups, or scope creep.
 
 MANDATORY BUILD DISCIPLINE (non-negotiable):
-- First action: update TODO.md with a high-level one or two line entry recording that the approved plan at dev-ai-interaction/plans/xxx-plan.md is now being executed. Do not paste the full plan — TODO.md is only for true future/backlog items.
+- First action: update TODO.md with a high-level one or two line entry recording that the approved plan at @@SANDBOX_PATH@@/plans/xxx-plan.md is now being executed. Do not paste the full plan — TODO.md is only for true future/backlog items.
 - Use narrow forensic read_file (offset/limit on the exact edit site) + targeted grep before and after every edit.
 - Ultra-micro phased with per-phase success gates is mandatory:
   - Do only the minimal edit described for that specific phase.
@@ -154,12 +154,16 @@ MANDATORY BUILD DISCIPLINE (non-negotiable):
 
 **Monitoring, recovery, and checker:**
 - Monitor the execution sub-agent. Enforce the use of ./build_app for all git/build actions. If deviation is detected, halt, reset to last builds tag, and write logs.
-- When execution reports completion, spawn a Compliance Checker sub-agent to verify that the code changes functionally solve the plan's stated problem (intent match). Write report to dev-ai-interaction/compliance-report-[short-name].md.
+- When execution reports completion, spawn a Compliance Checker sub-agent to verify that the code changes functionally solve the plan's stated problem (intent match). Write report to @@SANDBOX_PATH@@/compliance-report-[short-name].md.
 - If PASS: clean implementation-failure-logs, append to ENGINEERING_LOG.md using wrapper, and report success.
-- If FAIL: collect transcripts to dev-ai-interaction/implementation-failure-logs/, reset, and prepare logs for recovery planning.
+- If FAIL: collect transcripts to @@SANDBOX_PATH@@/implementation-failure-logs/, reset, and prepare logs for recovery planning.
 END_MASTER_PROMPT
 )
-MASTER_PROMPT="${MASTER_PROMPT//dev-ai-interaction/${SANDBOX_REL}}"
+MASTER_PROMPT="${MASTER_PROMPT//@@SANDBOX_PATH@@/${SANDBOX_REL}}"
+# Role card replaces the legacy long prompt above (rules v3).
+MASTER_PROMPT="$(cat "$SCRIPT_DIR/roles/master.md" 2>/dev/null || cat "roles/master.md")
+
+Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive."
 
 
 exec sudo -u "$CODER_USER" "$ANTIGRAVITY_BIN" \

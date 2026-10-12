@@ -1,9 +1,1 @@
-# Startup
-
-Read `AGENT_MANDATES.md`, the tool overlay (`GROK.md` or `ANTIGRAVITY.md`), and `project-facts.md`. Read them again on the first turn after compact. Do not recite them.
-
-`AGENT_CONTEXT.md` is `Forked-from` and `Start-branch` only. Role comes from the launcher prompt.
-
-Confirm `pwd` once. Run helpers as `./helper` with no `cd … &&`.
-
-Then wait for a directive.
+Confirm `pwd` once. Then wait for a directive.

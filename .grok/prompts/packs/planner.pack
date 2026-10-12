@@ -1,4 +1,0 @@
-# Session prompt composition for planner (one repo-relative path per line)
-new_agent_prompt
-.grok/prompts/role-planner.md
-.grok/prompts/dedicated-planner.md

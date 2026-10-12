@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
 # Stamped defaults (smudge replaces @@…@@ from project.config)
-sandbox_path=dev-ai-interaction
+sandbox_path=@@SANDBOX_PATH@@
 antigravity_bin=@@ANTIGRAVITY_BIN@@
 orchestrator_user=@@ORCHESTRATOR_USER@@
 
@@ -63,6 +63,8 @@ for arg in "$@"; do
 done
 
 exec sudo -u "$ORCHESTRATOR_USER" "$ANTIGRAVITY_BIN" \
-    -i "You are starting a fresh session in this multi-agent project. As your very first action, read the file new_agent_prompt in the current working directory (use your Read tool if needed) and follow its instructions to the letter. This includes immediately reading AGENT_CONTEXT.md and your CLI thin overlay (GROK.md or GEMINI.md), providing the required brief Mandate Acknowledgment report (overrides, barrier, verification, geography with Role+Branch, plans directory rule, etc.), and then waiting. Do not read TODO.md, search for other files, or begin any other task until the user provides a specific directive after your report. Your only mission right now is to introduce yourself via the report and wait." \
+    -i "$(cat "$SCRIPT_DIR/roles/orchestrator.md" 2>/dev/null || cat "roles/orchestrator.md")
+
+Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive." \
     --add-dir "$SANDBOX_DIR" \
     "${EXTRA_ARGS[@]}"

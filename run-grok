@@ -1,6 +1,6 @@
 #!/bin/bash
 # run-grok — generic multi-agent launcher (no project rules in this file).
-# Rules: files listed in .grok/prompts/packs/primary.pack
+# Rules: AGENTS.md + roles/primary.md (--rules); settings in roles.config
 # Same script body is used across VehicleExpenses and library hosts.
 set -euo pipefail
 GROK_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

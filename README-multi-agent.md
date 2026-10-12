@@ -43,7 +43,7 @@ To assign a task to a new agent:
 
     # For a dedicated narrow Planning Agent session (direct interaction during planning):
     ../run-grok-planner
-    # Prompt is .grok/prompts/packs/planner.pack in this worktree.
+    # Role card is roles/planner.md (--rules); law is AGENTS.md.
 
     # For the top-level Master Orchestrator (coordinates planning via run-grok-planner,
     # spawns and monitors execution sub-agents, intervenes on run-away behavior,
@@ -54,7 +54,7 @@ To assign a task to a new agent:
     GEMINI_PROJECT_ROOT=$(pwd) ~/git/gemini/bin/gemini
     # Paste: "Read new_agent_prompt and follow its instructions."
     ```
-    The launcher sets up the sandbox (`dev-ai-interaction`) and passes the fast-track prompt. Grok/Gemini will then read `AGENT_CONTEXT.md` + overlay + `AGENT_MANDATES.md`.
+    The launcher sets up the sandbox (`dev-ai-interaction`) and passes the fast-track prompt. Grok/Gemini auto-load `AGENTS.md`.
 
     *Note: The Gemini CLI uses the terminal's Alternate Buffer for its interactive UI. If it crashes, your terminal scrollback might be temporarily hidden. Type `reset` or `clear` in your terminal to restore the main buffer.*
 
@@ -70,7 +70,7 @@ cat dev-ai-interaction/.post-handoff-gate.txt
 <then type or paste your actual feedback/request here>
 ```
 
-The gate file itself is short; the authoritative lists of exact magic approval phrases the user *must* type (e.g. "approved the plan at dev-ai-interaction/plans/<name>.md for the following...") and phrases the user must *never* say after a handoff live in the tracked `MULTI_AGENT_USER_INSTRUCTIONS.md`. For stable layout and location facts, read `project-facts.md` at the worktree root first (now tracked). See AGENT_MANDATES.md for content rules.
+The gate file itself is short; the authoritative lists of exact magic approval phrases the user *must* type (`implement <plan path>`, `<roadmap> planned`) and phrases the user must *never* say after a handoff live in the tracked `MULTI_AGENT_USER_INSTRUCTIONS.md`. For stable layout and location facts, read `project-facts.md` at the worktree root first (now tracked). See AGENT_MANDATES.md for content rules.
 
 ### 2.2. Critical Troubleshooting: EBADF Crash
 If the Gemini CLI crashes with `An unexpected critical error occurred:Error: ioctl(2) failed, EBADF`, it is likely due to a **Policy Violation Race Condition**.
@@ -84,7 +84,7 @@ If the Gemini CLI crashes with `An unexpected critical error occurred:Error: ioc
 ---
 
 ### 2.3. Merging and Cleanup
-Do **not** naive-merge or set `works` tags from agents. Follow **`MASTER_AGENT_MANDATE.md` §2** (local PR at `dev-ai-interaction/PRs/PR-<branch>.md`, special-file protocol for ENGINEERING_LOG / TODO / project-facts, `./build_app`). Prefer skill `/master-merge` or Master session. Coder prepares PR via `/prepare-local-pr` / `./generate_pr.sh`.
+Do **not** naive-merge or set `works` tags from agents. Follow **`/master-merge`** (`.grok/skills/master-merge/SKILL.md`) (local PR at `dev-ai-interaction/PRs/PR-<branch>.md`, special-file protocol for ENGINEERING_LOG / TODO / project-facts, `./build_app`). Prefer skill `/master-merge` or Master session. Coder prepares PR via `/prepare-local-pr` / `./generate_pr.sh`.
 
 After Master merge is complete, from orchestration root:
 

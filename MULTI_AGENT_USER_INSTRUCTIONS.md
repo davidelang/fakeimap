@@ -1,10 +1,10 @@
 # MULTI_AGENT_USER_INSTRUCTIONS.md
 
-**Human catalog of phrases. Agents do not load this file. Law for agents is `AGENT_MANDATES.md`.**
+**Human catalog of phrases. Agents do not load this file. Law for agents is `AGENTS.md`.**
 
 It lives at the orchestration root and is physically synced (via `update-rules.sh`) into `master/` and every `agent-N/` worktree so it is always present and versioned alongside AGENTS.md / AGENT_MANDATES.md.
 
-Read this (and the referenced sections in AGENT_MANDATES.md and AGENTS.md) before giving any directive after a handoff or when starting new work with an agent. The goal is reliable plan/execute cycle boundaries: the agent produces a visible plan file in the sandbox that you review and explicitly approve by path; after handoff the turn is over and the next input starts a brand-new planning cycle.
+Read this (and `AGENTS.md`) before giving any directive after a handoff or when starting new work with an agent. The goal is reliable plan/execute cycle boundaries: the agent produces a visible plan file in the sandbox that you review and explicitly approve by path; after handoff the turn is over and the next input starts a brand-new planning cycle.
 
 ## 0. Two-Terminal Long-Lived Workflow (Primary Recommended Mode) — Minimal Human Ritual
 
@@ -27,7 +27,7 @@ Keep two terminals open:
    - Tell you to restart the planner terminal (`./run-grok-planner` or `exec ./run-grok-planner`)
    - Stop (it will not plan or research)
 
-The planner prompt is only the files named in `.grok/prompts/packs/planner.pack` in that worktree. Do not write a prompt file into the sandbox.
+The planner's role is `roles/planner.md` (passed with `--rules`); the law is `AGENTS.md` (auto-loaded). Do not write a prompt file into the sandbox.
 
 3. In your **planner** terminal run (or `exec`):
    ```
@@ -65,18 +65,17 @@ This eliminates context bloat, accumulation in the harness `~/.grok/sessions/...
 
 The agent must also have created (or the user explicitly designated) a fresh sandbox plan file for the *prior* cycle; your new input will cause it to create a *new* one under `@@SANDBOX_PATH@@/plans/` for this cycle.
 
-## 2. Magic Words / Required Phrases the User *Must* Use for Approval (these count as the "explicit Directive")
-When you are ready to let the agent proceed from planning to execution, your approval message **must** reference the exact sandbox plan file path and use one of the following (or very close unambiguous equivalents). The agent is instructed to treat only these as authorizing source changes for that plan.
+## 2. Approval (rules v3)
+Only two forms count, typed by you in chat. The grok hook records them with the plan's sha256 in `<sandbox>/.approvals/approved.log`. Edits and `./build_app` by coder/executor are blocked without a recent matching entry, and an edit to the plan after approval voids it.
 
-- `approved the plan at @@SANDBOX_PATH@@/plans/<exact-filename>.md for the following request: [paste or clearly describe the work]`
-- `The user approved the plan at @@SANDBOX_PATH@@/plans/xxx-plan.md. Proceed with execution of exactly the steps described in that plan only.`
-- `approved, use the plan at @@SANDBOX_PATH@@/plans/my-task-20260612-plan.md for: [summary]. First action update ENGINEERING_LOG.md then follow the phased steps with forensic reads and build at milestones.`
+- `implement <sandbox>/plans/<exact-filename>.md`
+- `<sandbox>/plans/<roadmap>.md planned`: the planner may dispatch that roadmap's plans over the channel. Nodes may be non-grok agents.
 
-After you send one of the above, the agent may exit plan mode (if still in it), update ENGINEERING_LOG.md via `./append-to-engineering-log` (first execution action; the master ensures wrappers are used for initial ENGINEERING_LOG entries), re-read the designated plan file, and begin the small decomposed steps.
+Nothing else is approval: "looks good", question-card answers, plan-mode `a`, or an agent's own Status line. Non-grok agents (Antigravity) have no hook; `./exec-preflight` reports `approval=unverified` for them.
 
-Phases say what changes and what success looks like. `./build_app` commits. Agents do not `git add`. Retry limits and the reset that keeps the engineering log are `AGENT_MANDATES.md` “Retry”. The command is `./reset-to-builds.sh`.
-
-**Never rely on "looks good", "go ahead", "sounds right", "implement the changes", or similar vague language alone.** The path + "approved the plan at ..." is what the rules require for an unambiguous handoff from planning to execution.
+Every planner/coder/executor turn ends with `STATUS: SUCCESS|FAIL|BLOCKED|NEEDS-INPUT|WORKING <note>`. Watch the last line.
+Context window per role is in `roles.config`. grok has no flag for it, so run `/context-window <size>` once in a new session when the launcher prints it.
+Grok `-c` (continue) keeps the stored model.
 
 ## 3. Phrases the User Must *Never* Say (or Types of Feedback to Avoid) After a Handoff or When Starting a New Request
 These have repeatedly been misinterpreted by agents as permission to continue editing the just-handoff'd plan, treat the message as continuation of the prior execution turn, skip creating a fresh sandbox plan file, or bypass the enter_plan_mode + exit + explicit path approval gate.
@@ -95,7 +94,7 @@ These have repeatedly been misinterpreted by agents as permission to continue ed
 
 If you want to give test observations or corrections on a just-handoff'd turn, first say the magic approval for a *new or revised* plan that incorporates the feedback (or say "relaunch and read the new request below" and give the feedback as a fresh directive). The agent is instructed that post-handoff feedback = start of new planning cycle; it must produce (or be given) a new designated sandbox plan before any further source edits.
 
-See AGENT_MANDATES.md "No Loophole Hunting or Rationalization (CRITICAL)" and "Execution handoff rule" for the exact policy the agent must follow (and self-report violations of).
+See `AGENTS.md` "Approval" and "Ending a turn" for the exact policy the agent must follow (and self-report violations of).
 
 ## 4. Quick Checklist for Every New Request or Post-Handoff Message
 1. If this follows a handoff/END marker: prefer relaunch (`../run-grok`). Fallback: `cat @@SANDBOX_PATH@@/.post-handoff-gate.txt` then your text.
@@ -177,7 +176,7 @@ To keep re-familiarization cheap across cycles in long-lived terminals:
 This gives you low-cost interactive guidance without paying full re-derivation cost on every turn, while the safety rules (written sandbox plan + explicit magic approval) remain in force. The local state file travels with the branch/worktree and is never treated as a substitute for the approved plan document. Long verbose state or response bloat is now a violation of the content/hygiene rules.
 
 ## 5. References (Always Re-Read These on Fresh Launch / After Compaction / Post-Handoff)
-- `AGENT_MANDATES.md` (the authoritative shared core, especially Bi-Modal Workflow, Completion and Handoff, Plan File Access and Discovery Rules, Sandbox Plan File as Primary Artifact, Harness Session plan.md Lifecycle and Hygiene, Planning and Execution Subagent Separation, Post-Handoff Cycle Start Protocol).
+- `AGENTS.md` (the law, especially Bi-Modal Workflow, Completion and Handoff, Plan File Access and Discovery Rules, Sandbox Plan File as Primary Artifact, Harness Session plan.md Lifecycle and Hygiene, Planning and Execution Subagent Separation, Post-Handoff Cycle Start Protocol).
 - `AGENTS.md` (bootstrap, Plans Directory Rule, geography).
 - `new_grok_agent_prompt` (the report the agent must give on fresh launch or after compaction; it now includes explicit confirmations about the sandbox plan file, harness log hygiene, and post-handoff behavior).
 - `MULTI_AGENT_USER_INSTRUCTIONS.md` (this file — the human rituals).

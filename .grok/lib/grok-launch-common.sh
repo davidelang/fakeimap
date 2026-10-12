@@ -2,7 +2,7 @@
 # Install at: <repo>/.grok/lib/grok-launch-common.sh
 # Thin wrappers set GROK_LAUNCHER_DIR + ROLE_KEY, then source this and call grok_launch_main "$@".
 #
-# Rules: only in files listed by .grok/prompts/packs/<ROLE_KEY>.pack
+# Rules: AGENTS.md (auto-loaded) + roles/<ROLE_KEY>.md via --rules; settings in roles.config
 # Wiring: project.config (users, sandbox_dir, optional *_model)
 #
 # shellcheck shell=bash
@@ -83,12 +83,6 @@ fi
 # Normalize .. in path
 SANDBOX_DIR="$(cd "$SANDBOX_DIR" 2>/dev/null && pwd || echo "$SANDBOX_DIR")"
 
-COMPOSE="${SCRIPT_DIR}/.grok/prompts/compose-session-prompt.sh"
-if [[ ! -f "$COMPOSE" ]]; then
-  echo "ERROR: missing $COMPOSE" >&2
-  exit 1
-fi
-[[ -x "$COMPOSE" ]] || chmod a+x "$COMPOSE" 2>/dev/null || true
 
 ANDROID_SHARED=""
 if [[ ! -f "$SCRIPT_DIR/ve-resolve-orch" ]]; then
@@ -110,45 +104,6 @@ MODEL_ARGS=()
 TODO_GATE_FLAGS=()
 PROMPT_FILE=""
 PROMPT=""
-
-resolve_pack_file() {
-  if [[ -n "${PACK_FILE:-}" ]]; then
-    if [[ "$PACK_FILE" = /* ]]; then echo "$PACK_FILE"; else echo "$SCRIPT_DIR/$PACK_FILE"; fi
-    return
-  fi
-  if [[ -z "${ROLE_KEY:-}" ]]; then
-    echo "ERROR: ROLE_KEY or PACK_FILE required" >&2
-    exit 2
-  fi
-  local f="$SCRIPT_DIR/.grok/prompts/packs/${ROLE_KEY}.pack"
-  if [[ ! -f "$f" ]]; then
-    echo "ERROR: missing pack list: $f" >&2
-    echo "Add one repo-relative prompt path per line (project rules live in those files)." >&2
-    exit 1
-  fi
-  echo "$f"
-}
-
-read_pack_paths() {
-  local packf="$1" line
-  PACK_PATHS=()
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [[ -z "$line" ]] && continue
-    PACK_PATHS+=("$line")
-  done <"$packf"
-  if [[ ${#PACK_PATHS[@]} -eq 0 ]]; then
-    echo "ERROR: pack file empty: $packf" >&2
-    exit 1
-  fi
-}
-
-compose_prompt() {
-  export GROK_PROMPT_ROOT="$SCRIPT_DIR"
-  "$COMPOSE" "${PACK_PATHS[@]}"
-}
 
 resolve_run_user() {
   case "${ROLE_KEY:-}" in
@@ -181,6 +136,7 @@ build_model_args() {
   esac
   # IMPORTANT: with set -e, a failing `[[ ]] && cmd` as the last statement of a
   # function returns non-zero and aborts the launcher silently. Always return 0.
+  [[ -z "$v" ]] && v="$(role_cfg model)"
   if [[ -n "$v" ]]; then
     MODEL_ARGS=(--model "$v")
   fi
@@ -207,17 +163,35 @@ collect_extra_args() {
   done
 }
 
-# Build PROMPT from the role pack only. Pack paths are the prompt.
 # Do not cat a sandbox file or an argument path.
 prepare_prompt() {
   PROMPT_FILE=""
   PACK_PATHS=()
   collect_extra_args "$@"
+  # Startup prompt is the short new_agent_prompt; the role card goes in via --rules.
+  local start="$SCRIPT_DIR/new_agent_prompt"
+  if [[ -f "$start" ]]; then
+    PROMPT_FILE="$start"
+    PROMPT="$(cat "$start")"
+  else
+    PROMPT="Confirm pwd once. Then wait for a directive."
+  fi
+  ROLE_CARD="$SCRIPT_DIR/roles/${ROLE_KEY:-primary}.md"
+  if [[ ! -f "$ROLE_CARD" ]]; then
+    echo "ERROR: missing role card: $ROLE_CARD" >&2
+    exit 1
+  fi
+}
 
-  local packf
-  packf="$(resolve_pack_file)"
-  read_pack_paths "$packf"
-  PROMPT="$(compose_prompt)"
+# role_cfg KEY: value of KEY for ROLE_KEY in roles.config (blank if unset).
+role_cfg() {
+  local key="$1" f="$SCRIPT_DIR/roles.config" line tok
+  [[ -f "$f" ]] || return 0
+  line="$(grep -E "^${ROLE_KEY:-primary}[[:space:]]" "$f" | head -1)"
+  for tok in $line; do
+    [[ "$tok" == "$key="* ]] && { printf '%s' "${tok#*=}"; return 0; }
+  done
+  return 0
 }
 
 launch_grok_with_prompt() {
@@ -239,9 +213,6 @@ launch_grok_with_prompt() {
   echo "Running as: $run_user"
   if [[ -n "${PROMPT_FILE:-}" ]]; then
     echo "Prompt file: $PROMPT_FILE"
-  fi
-  if [[ ${#PACK_PATHS[@]} -gt 0 ]]; then
-    echo "Prompt pack: ${PACK_PATHS[*]}"
   fi
   if [[ -n "$ANDROID_SHARED" ]]; then
     echo "ANDROID_USER_HOME: $ANDROID_SHARED"
@@ -303,16 +274,17 @@ launch_grok_with_prompt() {
   # Planner/orch/primary: do not pass --effort (planner may keep xhigh).
   # Spawned execute children inherit this parent session (no spawn effort arg).
   local grok_effort_args=()
-  case "${ROLE_KEY:-}" in
-    coder|master)
-      local grok_effort="${GROK_REASONING_EFFORT:-high}"
-      if [[ -n "$grok_effort" && "$grok_effort" != "0" && "$grok_effort" != "off" ]]; then
-        grok_effort_args+=(--effort "$grok_effort")
-        echo "GROK_REASONING_EFFORT=${grok_effort}"
-      fi
-      ;;
-  esac
-
+  local grok_effort="${GROK_REASONING_EFFORT:-$(role_cfg effort)}"
+  if [[ -n "$grok_effort" && "$grok_effort" != "0" && "$grok_effort" != "off" ]]; then
+    grok_effort_args+=(--effort "$grok_effort")
+    echo "GROK_REASONING_EFFORT=${grok_effort}"
+  fi
+  local role_context
+  role_context="$(role_cfg context)"
+  if [[ -n "$role_context" ]]; then
+    echo "Context window: run '/context-window ${role_context}' once in the session (roles.config; no CLI flag)."
+  fi
+  echo "Role card (--rules): $ROLE_CARD"
   local freeform_args=()
   case "${ROLE_KEY:-}" in
     primary|orchestrator)
@@ -365,12 +337,14 @@ launch_grok_with_prompt() {
     ${ORCH_ROOT:+ORCH_ROOT="$ORCH_ROOT"} \
     ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
     GROK_PROMPT_ROOT="$SCRIPT_DIR" \
+    ROLE_KEY="${ROLE_KEY:-primary}" \
     GIT_HOME="${GIT_HOME:-}" \
     ${grok_role_env[@]+"${grok_role_env[@]}"} \
     bash -c 'umask '"${umask_launch:-002}"'; exec "$@"' bash \
       ${landlock_args[@]+"${landlock_args[@]}"} \
       "$GROK_BIN" \
       "$prompt" \
+      --rules "$(cat "$ROLE_CARD")" \
       ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
       ${TODO_GATE_FLAGS[@]+"${TODO_GATE_FLAGS[@]}"} \
       --no-alt-screen \
