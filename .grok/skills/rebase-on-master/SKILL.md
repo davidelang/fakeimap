@@ -18,7 +18,7 @@ Keep **this branch's** copies of **only** these three files:
 - `project-facts.md`
 
 Do **not** take master's copies of those three. They are reconciled only at
-**master merge** (`master-merge` / `MASTER_AGENT_MANDATE.md`).
+**master merge** (`/master-merge`).
 
 **Every other path** uses a normal rebase. On any non-special conflict:
 **stop, show both sides, ask the human.** Do not pick ours/theirs.
@@ -40,7 +40,7 @@ files. Restore only the three paths from `$FEAT` (below).
 - Clean tracked tree (`git status --porcelain -uno` empty) or the user has
   said what to do with dirt. Do not `stash --staged` as a workaround.
 - `pwd` once. No `cd … && ./helper`.
-- Reset only via `AGENT_MANDATES.md` §6 if you must abort.
+- Reset only via `./reset-to-builds.sh` (`AGENTS.md` "Retry") if you must abort.
 
 ## Steps
 

@@ -16,7 +16,7 @@ user-invocable: true
 Review sandbox plans still in `$SANDBOX/plans/` for this repo.
 Planning-only (sandbox writes). Do **not** implement app source. Do **not** spawn.
 
-Cite, do not paste: `AGENT_MANDATES.md`, `dedicated-planner.md`.
+Law: `AGENTS.md`. Role: `roles/planner.md`.
 
 ## Roles
 
@@ -34,6 +34,10 @@ Ignore basenames listed in `$SANDBOX/validate-plans-ignore/`. One basename per l
 ## No cap
 
 Process every matching file still in `plans/`.
+
+## Intent first
+
+Run this in the planner session that wrote the plan, right after a coder reports landing it. Use that session's memory of what David asked for and why, not only the plan text. Ask: does the result do what David meant? A plan can be followed to the letter and still miss the intent. Report any mismatch in chat as `INTENT-GAP: <what David wanted> vs <what landed>`. The coder and reviewer check code against the plan; this skill checks it against intent.
 
 ## Completion
 
@@ -60,3 +64,5 @@ Do **not** move plans to `historical-plans/` at CODE LANDED time. This skill arc
 ## Output (chat)
 
 Pending list; implemented archive list (`historical-plans/`); not-implemented archive list (`historical-plans/not-implemented/`); ignore-list additions; gap plan path(s).
+
+End with the STATUS line.
