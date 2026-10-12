@@ -260,13 +260,6 @@ ensure_shared_build_homes() {
   chown -R "$PRIMARY_USER:$SHARED_GROUP" "$ANDROID_SHARED" 2>/dev/null || true
   find "$ANDROID_SHARED" -type d -exec chmod 2770 {} + 2>/dev/null || true
   chmod -R ug+rwX,o-rwx "$ANDROID_SHARED" 2>/dev/null || true
-
-  # Unify every role user's ~/.android/debug.keystore with the shared key so
-  # accidental raw gradlew / Studio installs cannot mint a foreign cert.
-  if [ -x "$SCRIPT_DIR/sync-debug-keystores" ]; then
-    if $VERBOSE; then echo "  sync-debug-keystores (unify role debug keys)..."; fi
-    "$SCRIPT_DIR/sync-debug-keystores" || true
-  fi
 }
 
 ensure_groups() {
