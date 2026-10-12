@@ -132,6 +132,19 @@ def writable(wt):
         return False
     return all(os.access(d, os.W_OK) for d in (wt, gd, cd, os.path.join(cd, "objects")))
 
+REFS = []  # canonical + every host root: their HEAD histories hold every published version
+
+def known(src, wt, path, blob):
+    """True if blob was a published version: in the source's history or in another
+    host root's history (the target's own repo root counts only for its worktrees)."""
+    if blob in history(src, path):
+        return True
+    rw = os.path.realpath(wt)
+    for r in REFS:
+        if os.path.realpath(r) != rw and blob in history(r, path):
+            return True
+    return False
+
 class Report:
     def __init__(self):
         self.rows, self.fail, self.warn = [], [], []
@@ -174,7 +187,7 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
                 return None, "untracked file in the way: " + p
             acts.append(("add", p, mode, blob))
             continue
-        if cur[1] in history(src, p):
+        if known(src, wt, p, cur[1]):
             acts.append(("update", p, mode, blob))
         elif blob in history(wt, p):
             return None, "ahead of source: " + p
@@ -184,7 +197,7 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
         if any(glob_match(pat, p) for pat in retired_pats) and p not in sel:
             if p in dirty:
                 return None, "dirty: " + p
-            if t_tree[p][1] in history(src, p):
+            if known(src, wt, p, t_tree[p][1]):
                 acts.append(("delete", p, None, None))
             else:
                 rep.warn.append("%s: kept retired %s (local-only version)" % (label, p))
@@ -356,6 +369,7 @@ def main():
            and os.path.realpath(canon) not in [os.path.realpath(h) for h in hosts]:
             hosts.insert(0, canon)
 
+    REFS[:] = [canon] + discover(git_home) if os.path.isdir(canon) else discover(git_home)
     retired = [p for c, p in src_man if c == "retired"]
     pushed = []
     first_src = src
