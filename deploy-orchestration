@@ -197,6 +197,12 @@ class Report:
         for host, wt, st, d in self.rows:
             print("%-28s %-34s %-12s %s" % (host, wt, st, d))
 
+def local_seeded(host):
+    p = os.path.join(host, "rules.manifest.local")
+    if not os.path.lexists(p):
+        return False
+    return any(l.startswith("local ") for l in open(p, errors="replace"))
+
 def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
     """Decide actions for one worktree. Returns (actions, skip_reason)."""
     try:
@@ -215,6 +221,8 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
         if cur and cur[1] == blob:
             continue
         if p in dirty:
+            if cls == "local":
+                rep.warn.append("%s: left local %s (dirty)" % (label, p)); continue
             return None, "dirty: " + p
         if cur is None:
             if cls == "opt":
@@ -230,6 +238,8 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
             acts.append(("update", p, mode, blob)); continue
         if known(src, wt, p, cur[1]) or (cb != cur[1] and known(src, wt, p, cb)) or known_smudged(src, wt, p, cur[1]):
             acts.append(("update", p, mode, blob))
+        elif cls == "local":
+            rep.warn.append("%s: left local %s (%s)" % (label, p, "ahead" if blob in history(wt, p) else "diverged"))
         elif blob in history(wt, p):
             return None, "ahead of source: " + p
         else:
@@ -305,10 +315,12 @@ def sync(src, wt, sel, src_tree, retired, rep, host_label, wt_label, apply, msg)
 
 def legacy_local_list(host):
     """Host-specific infra from the host's old update-rules.sh FILES/STAMP lists."""
-    try:
-        txt = git(host, "show", "HEAD:update-rules.sh")
-    except RuntimeError:
-        return []
+    txt = ""
+    for c in git(host, "log", "--format=%H", "--", "update-rules.sh", check=False).split():
+        t = git(host, "show", c + ":update-rules.sh", check=False)
+        if re.search(r"^FILES=\(", t, re.M):
+            txt = t
+            break
     out = []
     for m in re.finditer(r"^(?:FILES|STAMP_FILES)=\((.*?)^\)", txt, re.S | re.M):
         for line in m.group(1).splitlines():
@@ -426,7 +438,7 @@ def main():
             if changed:
                 pushed.append(host)
             # Seed the host-local manifest from its legacy update-rules.sh on first publish.
-            if apply and not os.path.lexists(os.path.join(host, "rules.manifest.local")) and writable(host):
+            if apply and not local_seeded(host) and writable(host):
                 loc = [p for p in legacy_local_list(host) if p not in sel and not any(glob_match(r, p) for r in retired)]
                 try:
                     txt = "# rules.manifest.local: host-specific infra, synced only root -> this host's worktrees.\n" \
@@ -434,12 +446,12 @@ def main():
                           "".join("local %s\n" % p for p in loc)
                     with open(os.path.join(host, "rules.manifest.local"), "w") as f:
                         f.write(txt)
-                    git(host, "add", "--", "rules.manifest.local")
+                    git(host, "add", "-f", "--", "rules.manifest.local")
                     git(host, "commit", "-q", "--only", "-m", "rules: seed rules.manifest.local from legacy update-rules.sh", "--", "rules.manifest.local")
                     rep.row(hl, "(root)", "COMMITTED", "seeded rules.manifest.local (%d paths)" % len(loc))
                 except Exception as e:
                     rep.fail.append("%s: seeding rules.manifest.local: %s" % (hl, e))
-            elif not apply and not os.path.lexists(os.path.join(host, "rules.manifest.local")):
+            elif not apply and not local_seeded(host):
                 n = len([p for p in legacy_local_list(host) if p not in sel])
                 rep.row(hl, "(root)", "WOULD-SEED", "rules.manifest.local from legacy update-rules.sh (%d paths)" % n)
             if os.path.realpath(host) == os.path.realpath(canon) and apply:
