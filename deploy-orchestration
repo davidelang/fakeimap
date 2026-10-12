@@ -478,7 +478,7 @@ def main():
             if apply and not local_seeded(host) and writable(host):
                 loc = list(dict.fromkeys(p for p in legacy_local_list(host) if p not in sel and not any(glob_match(r, p) for r in retired)))
                 try:
-                    txt = "# rules.manifest.local: host-specific infra, synced only root -> this host's worktrees.\n" \
+                    txt = "# rules.manifest.local: files local to this project (not to one worktree).\n" \
                           "# Files local to this PROJECT: the root's version is published into every worktree;\n" \
                           "# a worktree's own modification of a file skips just that file. Seeded from the legacy\n" \
                           "# update-rules.sh FILES lists. Format: local <path>\n" + \
