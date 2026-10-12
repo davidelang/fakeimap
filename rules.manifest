@@ -1,0 +1,80 @@
+# rules.manifest: the shared rule set. It is byte-identical on every host and
+# published by ./deploy-orchestration (which also lists itself here).
+# Format: <class> <path or glob>   (globs match tracked paths; ** spans dirs)
+#   law      agents read or follow it (`./deploy-orchestration --list law`); created if missing
+#   shared   tooling; created if missing
+#   opt      updated only where the target already has it
+#   retired  removed from targets (kept, with a warning, if the target's copy is not from our history)
+# Host-specific infra lives in that host's rules.manifest.local (class local), synced only
+# from the host's orchestration root to its own worktrees.
+
+law AGENTS.md
+law GEMINI.md
+law CLAUDE.md
+law GROK.md
+law ANTIGRAVITY.md
+law AGENT_MANDATES.md
+law new_agent_prompt
+law standard-plan-compliance-block.md
+law roles/*.md
+law docs/rules/*.md
+law .grok/skills/*/SKILL.md
+
+shared rules.manifest
+shared deploy-orchestration
+shared update-rules.sh
+shared roles.config
+shared .grok/config.toml
+shared .grok/hooks/rules-hooks.json
+shared .grok/hooks/rules-hooks.sh
+shared .grok/roles/*.toml
+shared .grok/agents/*.md
+shared .grok/lib/grok-launch-common.sh
+shared run-grok
+shared run-grok-coder
+shared run-grok-master
+shared run-grok-orchestrator
+shared run-grok-planner
+shared exec-preflight
+shared append-to-engineering-log
+shared todo-append
+shared todo-close
+shared get-builds-tag.sh
+shared reset-to-builds.sh
+shared install-merge-drivers.sh
+shared merge-branch-into-master.sh
+shared git-merge-drivers/*
+shared setup_agent.sh
+shared remove_worktree.sh
+shared fix-perms
+shared filter-apply-config
+shared filter-clean-config
+shared hooks/post-checkout
+shared MULTI_AGENT_USER_INSTRUCTIONS.md
+shared README-multi-agent.md
+shared tools/upgrade-scan
+shared tools/upgrade-probe
+shared tools/upgrade-map.tsv
+shared probes/README.md
+shared probes/general/*.md
+shared probes/protected/*.md
+shared probes/protected/COUNT
+
+opt run-antigravity
+opt run-antigravity-master
+opt run-antigravity-planner
+opt agent-landlock
+opt landlock.config
+opt landlock.config.example
+opt landlock-smoke-matrix
+opt landlock-write-probe
+opt .gemini/system.md
+opt .gemini/system_prompt.md
+
+retired MASTER_AGENT_MANDATE.md
+retired new_grok_agent_prompt
+retired sync_infrastructure.sh
+retired .grok/prompts/**
+retired .grok/hooks/plan-mode-hard-stops.js
+retired .grok/hooks/stop-completeness-gate.json
+retired .grok/hooks/stop-completeness-gate.sh

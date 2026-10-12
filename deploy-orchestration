@@ -1,788 +1,433 @@
-#!/usr/bin/env bash
-# deploy-orchestration — publish shared multi-agent policy to sibling orch hosts.
-# This is the only policy publisher (not deploy-landlock-fix / pack-launchers / …).
-#
-# Per-host update-rules.sh is not replaced. Missing seed names are inserted
-# into its FILES list so that host's ./update-rules.sh publishes them.
-# Managed files (filter=manage-configs) are cleaned here, checked in as that
-# text (clean filter off), then checked out so the dest smudges its own values.
-# update-rules.sh inside one repo still copies smudged worktree files.
-# Will not run dest update-rules on staged dest/worktrees unless --force (dangerous).
-#
-# Run as primary_user from the VehicleExpenses orchestration root:
-#   ./deploy-orchestration --discover
-#   ./deploy-orchestration --dry-run
-#   ./deploy-orchestration --apply
-#   ./deploy-orchestration --apply --commit
-#   ./deploy-orchestration --apply --commit --update-rules
-#   ./deploy-orchestration --apply --commit --update-rules --push
-#   ./deploy-orchestration --apply --repos remotetable,extractmail --commit
-#   ./deploy-orchestration --apply --repos "$GIT_HOME/remotetable" --commit
-#
-# filter-apply-config and filter-clean-config are on the policy list. They are
-# the same bytes on every host (!filter). A dirty dest copy is overwritten.
-# When HEAD does not already store those bytes, they are committed on the dest
-# orch root and on that host's other worktrees.
-#
-set -u
-umask 007
+#!/usr/bin/env python3
+"""deploy-orchestration: publish the shared rule set (rules.manifest) to every host.
 
-usage() {
-  sed -n '2,16p' "$0"
-  echo
-  echo "Flags: --discover  --dry-run  --apply  --commit  --update-rules  --push  --force"
-  echo "       --repos name-or-/abs/path[,name...]   (repeatable)"
-  exit "${1:-0}"
-}
+Run it from any host. Default mode is a REPORT of what would happen; nothing is written.
+  ./deploy-orchestration                  report for all hosts under git_home
+  ./deploy-orchestration --apply          write + commit (canonical first, then every host
+                                          root, then each host's worktrees)
+  ./deploy-orchestration --apply --push   also push each changed branch (separate step)
+  ./deploy-orchestration --repos a,b      limit hosts (names under git_home or paths)
+  ./deploy-orchestration --host-only      only this host: root -> its worktrees (update-rules.sh)
+  ./deploy-orchestration --list law       print manifest paths of a class (files agents care about)
+  ./deploy-orchestration --check          manifest consistency check (source host)
 
-DISCOVER=0
-DRY=0
-APPLY=0
-DO_COMMIT=0
-DO_UR=0
-DO_PUSH=0
-FORCE=0
-REPO_TOKENS=()
+Rules:
+- Content comes from committed (clean) blobs, never the working tree, so the clean/smudge
+  config (project.config) keeps user/host specifics. Managed files are re-smudged after commit.
+- The source host must have no uncommitted changes in manifest paths.
+- A worktree that is dirty in any manifest path, or ahead/diverged for one, is skipped whole.
+- No write access to a target gives a read-only report for it, not a failure.
+- Commits use `git commit --only` on exactly the copied paths; other changes are untouched.
+- Never forces, resets, or rewrites history.
+"""
+import argparse, fnmatch, os, re, subprocess, sys, datetime
 
-add_repo_tokens() {
-  local raw="$1" t
-  IFS=',' read -r -a parts <<< "$raw"
-  for t in "${parts[@]}"; do
-    t="${t#"${t%%[![:space:]]*}"}"
-    t="${t%"${t##*[![:space:]]}"}"
-    [[ -n "$t" ]] && REPO_TOKENS+=("$t")
-  done
-}
+CANON_NAME = "orchestration-example"
+MSG = "rules: sync from {src}@{sha}"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --discover) DISCOVER=1; shift ;;
-    --dry-run) DRY=1; shift ;;
-    --apply) APPLY=1; shift ;;
-    --commit) DO_COMMIT=1; shift ;;
-    --update-rules) DO_UR=1; shift ;;
-    --push) DO_PUSH=1; shift ;;
-    -f|--force) FORCE=1; shift ;;
-    --repos)
-      [[ $# -ge 2 ]] || { echo "ERROR: --repos needs a value" >&2; exit 2; }
-      add_repo_tokens "$2"
-      shift 2
-      ;;
-    --repos=*)
-      add_repo_tokens "${1#--repos=}"
-      shift
-      ;;
-    -h|--help) usage 0 ;;
-    *) echo "unknown arg: $1 (try --help)" >&2; usage 2 ;;
-  esac
-done
+def git(repo, *a, check=True, inp=None, binary=False):
+    p = subprocess.run(["git", "-c", "safe.directory=*", "-C", repo] + list(a),
+                       input=inp, capture_output=True)
+    if check and p.returncode != 0:
+        raise RuntimeError("git %s (in %s): %s" % (" ".join(a), repo, p.stderr.decode(errors="replace").strip()))
+    return p.stdout if binary else p.stdout.decode(errors="replace")
 
-if [[ "$DO_PUSH" -eq 1 && "$DO_COMMIT" -eq 0 ]]; then
-  echo "ERROR: --push requires --commit" >&2
-  exit 2
-fi
-if [[ "$APPLY" -eq 1 && "$DRY" -eq 1 ]]; then
-  echo "ERROR: use only one of --dry-run / --apply" >&2
-  exit 2
-fi
-if [[ "$DISCOVER" -eq 0 && "$DRY" -eq 0 && "$APPLY" -eq 0 && "$DO_UR" -eq 0 ]]; then
-  echo "ERROR: pass --discover, --dry-run, --apply, and/or --update-rules" >&2
-  usage 2
-fi
+def toplevel(path):
+    return git(path, "rev-parse", "--show-toplevel").strip()
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VE="$SCRIPT_DIR"
-if [[ ! -f "$VE/update-rules.sh" || ! -f "$VE/AGENT_MANDATES.md" ]]; then
-  echo "ERROR: $VE is not the VE orchestration root" >&2
-  exit 1
-fi
+def read_conf(root, key):
+    for name in ("project.config",):
+        f = os.path.join(root, name)
+        if os.path.isfile(f):
+            for line in open(f, errors="replace"):
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip()
+    return ""
 
-cfg="$VE/project.config"
-if [[ ! -f "$cfg" ]]; then
-  echo "ERROR: missing $cfg" >&2
-  exit 1
-fi
-GIT_HOME=$(sed -n 's/^git_home=//p' "$cfg" | tr -d '\r' | head -1)
-PRIMARY_USER=$(sed -n 's/^primary_user=//p' "$cfg" | tr -d '\r' | head -1)
-if [[ -z "${PRIMARY_USER:-}" ]]; then
-  echo "ERROR: project.config primary_user= is unset" >&2
-  exit 1
-fi
-if [[ -z "${GIT_HOME:-}" || "$GIT_HOME" == @@* || "$GIT_HOME" != /* ]]; then
-  echo "ERROR: project.config git_home= must be an absolute path" >&2
-  exit 1
-fi
-GIT_HOME="$(cd "$GIT_HOME" && pwd)"
+def glob_match(pat, path):
+    rx = re.escape(pat).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*").replace(r"\?", "[^/]")
+    return re.fullmatch(rx, path) is not None
 
-if [[ "$APPLY" -eq 1 || "$DO_COMMIT" -eq 1 || "$DO_PUSH" -eq 1 ]]; then
-  if [[ "$(id -un)" != "$PRIMARY_USER" ]]; then
-    echo "ERROR: --apply/--commit/--push must run as $PRIMARY_USER (got $(id -un))" >&2
-    exit 1
-  fi
-fi
-
-NEVER_COPY=(
-  update-rules.sh
-  build_app
-  deploy
-  gradle.properties
-  env
-  sync-debug-keystores
-  fix-android-sdk-perms
-  ve-resolve-orch
-  project.config
-  docs/ENVIRONMENT_SETUP.md
-)
-
-in_never() {
-  local f="$1" x
-  for x in "${NEVER_COPY[@]}"; do
-    [[ "$f" == "$x" ]] && return 0
-  done
-  return 1
-}
-
-# Created on a dest that does not have them yet, and named in that dest's
-# update-rules.sh FILES list so later ./update-rules.sh keeps publishing them.
-SEED_FILES=(
-  exec-preflight
-  reset-to-builds.sh
-  GEMINI.md
-  CLAUDE.md
-  .gemini/system.md
-  .gemini/system_prompt.md
-)
-
-is_seed() {
-  local f="$1" x
-  for x in "${SEED_FILES[@]}"; do
-    [[ "$f" == "$x" ]] && return 0
-  done
-  return 1
-}
-
-files_entry_present() {
-  local ur="$1" name="$2" line trimmed
-  while IFS= read -r line || [[ -n "${line:-}" ]]; do
-    trimmed="${line#"${line%%[![:space:]]*}"}"
-    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-    trimmed="${trimmed%,}"
-    [[ "$trimmed" == "\"$name\"" ]] && return 0
-  done < "$ur"
-  return 1
-}
-
-# Insert seed names missing from dest update-rules.sh FILES. Does not replace
-# the script. Dry-run prints the inserts and leaves the file alone.
-ensure_dest_seed_files_entries() {
-  local dest="$1" ur="$dest/update-rules.sh"
-  local missing=() name joined tmp
-  if [[ ! -f "$ur" ]]; then
-    echo "  SKIP update-rules.sh FILES — dest script missing"
-    return 0
-  fi
-  if [[ "$FORCE" -eq 0 ]] && file_dirty "$dest" "update-rules.sh"; then
-    echo "  SKIP update-rules.sh FILES insert — DIRTY dest (use --force)"
-    return 0
-  fi
-  for name in "${SEED_FILES[@]}"; do
-    if files_entry_present "$ur" "$name"; then
-      continue
-    fi
-    missing+=("$name")
-    echo "  FILES update-rules.sh += $name"
-  done
-  [[ ${#missing[@]} -eq 0 ]] && return 0
-  [[ "$APPLY" -eq 1 ]] || return 0
-  joined=$(IFS='|'; printf '%s' "${missing[*]}")
-  tmp=$(mktemp)
-  if ! awk -v joined="$joined" '
-    BEGIN { n = split(joined, a, "|") }
-    /^FILES=\(/ && !done {
-      print
-      for (i = 1; i <= n; i++) printf "    \"%s\"\n", a[i]
-      done = 1
-      next
-    }
-    { print }
-    END { if (!done) exit 2 }
-  ' "$ur" > "$tmp"; then
-    rm -f "$tmp"
-    echo "ERROR: no FILES=( in $ur" >&2
-    return 1
-  fi
-  cat "$tmp" > "$ur"
-  rm -f "$tmp"
-}
-
-marker_count() {
-  local d="$1" n=0
-  [[ -f "$d/setup_agent.sh" ]] && n=$((n + 1))
-  [[ -f "$d/remove_worktree.sh" ]] && n=$((n + 1))
-  [[ -f "$d/AGENT_MANDATES.md" ]] && n=$((n + 1))
-  [[ -f "$d/AGENTS.md" ]] && n=$((n + 1))
-  echo "$n"
-}
-
-is_orch_host() {
-  local d="$1"
-  [[ -d "$d" ]] || return 1
-  [[ -f "$d/update-rules.sh" ]] || return 1
-  [[ "$(marker_count "$d")" -ge 2 ]] || return 1
-  local abs
-  abs="$(cd "$d" && pwd)"
-  [[ "$abs" != "$VE" ]] || return 1
-  return 0
-}
-
-discover_candidates() {
-  local d
-  for d in "$GIT_HOME"/*/; do
-    [[ -d "$d" ]] || continue
-    is_orch_host "$d" || continue
-    (cd "$d" && pwd)
-  done
-}
-
-resolve_repo_token() {
-  local tok="$1" dest
-  if [[ "$tok" == /* ]]; then
-    [[ -d "$tok" ]] || { echo "ERROR: --repos path not a directory: $tok" >&2; return 1; }
-    dest="$(cd "$tok" && pwd)"
-  elif [[ "$tok" != */* ]]; then
-    dest="$GIT_HOME/$tok"
-    [[ -d "$dest" ]] || { echo "ERROR: --repos $tok not under git_home=$GIT_HOME" >&2; return 1; }
-    dest="$(cd "$dest" && pwd)"
-  else
-    echo "ERROR: --repos wants a git_home basename or an absolute path (got $tok)" >&2
-    return 1
-  fi
-  if ! is_orch_host "$dest"; then
-    echo "ERROR: $dest is not an orchestration host (need update-rules.sh + two of setup_agent/remove_worktree/AGENT_MANDATES/AGENTS)" >&2
-    return 1
-  fi
-  printf '%s\n' "$dest"
-}
-
-git_c() {
-  local dest="$1"
-  shift
-  git -c "safe.directory=$dest" -c "safe.directory=*" -C "$dest" "$@"
-}
-
-build_policy_list() {
-  local dest="$1"
-  POLICY_FILES=()
-  local fixed=(
-    AGENT_MANDATES.md
-    AGENTS.md
-    GROK.md
-    GEMINI.md
-    MULTI_AGENT_USER_INSTRUCTIONS.md
-    MASTER_AGENT_MANDATE.md
-    new_agent_prompt
-    new_grok_agent_prompt
-    standard-plan-compliance-block.md
-    .grok/config.toml
-    install-merge-drivers.sh
-    merge-branch-into-master.sh
-    append-to-engineering-log
-    todo-append
-    todo-close
-    get-builds-tag.sh
-    reset-to-builds.sh
-    CLAUDE.md
-    .gemini/system.md
-    .gemini/system_prompt.md
-    setup_agent.sh
-    remove_worktree.sh
-    agent-landlock
-    landlock.config
-    landlock.config.example
-    landlock-smoke-matrix
-    landlock-write-probe
-    hooks/post-checkout
-    fix-perms
-    .grok/lib/grok-launch-common.sh
-    run-grok
-    run-grok-coder
-    run-grok-master
-    run-grok-orchestrator
-    run-grok-planner
-    exec-preflight
-    filter-apply-config
-    filter-clean-config
-  )
-  local f
-  for f in "${fixed[@]}"; do
-    in_never "$f" && continue
-    [[ -f "$VE/$f" ]] || continue
-    # Seed files are created when the dest does not have them yet.
-    if ! is_seed "$f"; then
-      [[ -f "$dest/$f" ]] || continue
-    fi
-    POLICY_FILES+=("$f")
-  done
-  while IFS= read -r f; do
-    [[ -n "$f" ]] || continue
-    in_never "$f" && continue
-    [[ -f "$dest/$f" ]] || continue
-    POLICY_FILES+=("$f")
-  done < <(
-    (
-      cd "$VE" || exit 1
-      find .grok/hooks .grok/prompts .grok/agents -type f 2>/dev/null
-      find .grok/skills -type f -name SKILL.md 2>/dev/null
-      find git-merge-drivers -type f 2>/dev/null
-    ) | sed 's|^\./||' | sort -u
-  )
-}
-
-file_dirty() {
-  local dest="$1" rel="$2"
-  [[ -n "$(git_c "$dest" status --porcelain -- "$rel" 2>/dev/null)" ]]
-}
-
-# Dest update-rules: refuse staged trees unless --force. Skip prunable,
-# grok-worktrees, and third_party/*/src the same way VE update-rules does.
-dest_ur_worktree_ok() {
-  local dest="$1" wt="$2"
-  case "$wt" in
-    */grok-worktrees|*/grok-worktrees/*) return 1 ;;
-    */third_party/*/src|*/third_party/*/src/*) return 1 ;;
-  esac
-  [[ -f "$wt/.git" || -d "$wt/.git" ]] || return 1
-  local dest_common wt_common
-  dest_common=$(git_c "$dest" rev-parse --git-common-dir 2>/dev/null) || return 1
-  case "$dest_common" in
-    /*) ;;
-    *) dest_common="$dest/$dest_common" ;;
-  esac
-  dest_common=$(cd "$dest_common" 2>/dev/null && pwd) || return 1
-  wt_common=$(git -c "safe.directory=$wt" -c "safe.directory=*" -C "$wt" rev-parse --git-common-dir 2>/dev/null) || return 1
-  case "$wt_common" in
-    /*) ;;
-    *) wt_common="$wt/$wt_common" ;;
-  esac
-  wt_common=$(cd "$wt_common" 2>/dev/null && pwd) || return 1
-  [[ "$wt_common" == "$dest_common" ]]
-}
-
-dest_report_staged() {
-  local dest="$1"
-  local any=0 wt line wt_path prunable
-  wt_path=""
-  prunable=0
-  while IFS= read -r line || [[ -n "${line:-}" ]]; do
-    case "$line" in
-      worktree\ *)
-        if [[ -n "$wt_path" && "$prunable" -eq 0 ]] && dest_ur_worktree_ok "$dest" "$wt_path"; then
-          if [[ -n "$(git -c "safe.directory=$wt_path" -c "safe.directory=*" -C "$wt_path" diff --cached --name-only 2>/dev/null)" ]]; then
-            echo "  STAGED $wt_path"
-            git -c "safe.directory=$wt_path" -c "safe.directory=*" -C "$wt_path" diff --cached --name-only | sed 's/^/    /'
-            any=1
-          fi
-        fi
-        wt_path="${line#worktree }"
-        prunable=0
-        ;;
-      prunable*)
-        prunable=1
-        ;;
-    esac
-  done < <(git_c "$dest" worktree list --porcelain)
-  if [[ -n "$wt_path" && "$prunable" -eq 0 ]] && dest_ur_worktree_ok "$dest" "$wt_path"; then
-    if [[ -n "$(git -c "safe.directory=$wt_path" -c "safe.directory=*" -C "$wt_path" diff --cached --name-only 2>/dev/null)" ]]; then
-      echo "  STAGED $wt_path"
-      git -c "safe.directory=$wt_path" -c "safe.directory=*" -C "$wt_path" diff --cached --name-only | sed 's/^/    /'
-      any=1
-    fi
-  fi
-  [[ "$any" -eq 1 ]]
-}
-
-# Worktree .gitattributes, including lines not yet committed.
-managed_attr() {
-  local root="$1" rel="$2"
-  [[ -f "$root/.gitattributes" ]] || return 1
-  awk -v p="$rel" '$1 == p && $2 == "filter=manage-configs" { found = 1 } END { exit !found }' \
-    "$root/.gitattributes"
-}
-
-# These two scripts are identical on every host and are not smudged.
-is_shared_filter() {
-  case "$1" in
-    filter-apply-config|filter-clean-config) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# 0 when dest HEAD does not already store the VE bytes for rel.
-filter_head_differs() {
-  local dest="$1" rel="$2"
-  if ! git_c "$dest" cat-file -e "HEAD:$rel" 2>/dev/null; then
-    return 0
-  fi
-  if git_c "$dest" show "HEAD:$rel" | cmp -s - "$VE/$rel"; then
-    return 1
-  fi
-  return 0
-}
-
-# Bytes that belong in git for this path. Managed files go through the clean filter.
-write_checkin_bytes() {
-  local rel="$1" outfile="$2"
-  if managed_attr "$VE" "$rel"; then
-    bash "$VE/filter-clean-config" "$rel" < "$VE/$rel" > "$outfile"
-  else
-    cat "$VE/$rel" > "$outfile"
-  fi
-}
-
-decide_copy() {
-  local dest="$1" rel="$2"
-  local tmp idx want
-  DECIDE=copy
-  REASON="differs"
-  if [[ ! -f "$VE/$rel" && ! -L "$VE/$rel" ]]; then
-    DECIDE=skip; REASON="source missing"; return
-  fi
-  if [[ ! -f "$dest/$rel" && ! -L "$dest/$rel" ]]; then
-    if is_seed "$rel"; then
-      DECIDE=copy; REASON="seed new file"; return
-    fi
-    DECIDE=skip; REASON="dest missing (will not invent)"; return
-  fi
-  if [[ -L "$VE/$rel" && ! -L "$dest/$rel" ]]; then
-    if [[ "$FORCE" -eq 0 ]] && file_dirty "$dest" "$rel"; then
-      DECIDE=skip; REASON="DIRTY dest (use --force)"; return
-    fi
-    DECIDE=copy; REASON="replace regular file with symlink"; return
-  fi
-  if [[ -L "$VE/$rel" ]]; then
-    if [[ -L "$dest/$rel" ]] && [[ "$(readlink "$VE/$rel")" == "$(readlink "$dest/$rel")" ]]; then
-      DECIDE=skip; REASON="identical"; return
-    fi
-  elif managed_attr "$VE" "$rel" && git_c "$dest" cat-file -e "HEAD:$rel" 2>/dev/null; then
-    tmp=$(mktemp)
-    if ! write_checkin_bytes "$rel" "$tmp"; then
-      rm -f "$tmp"
-      DECIDE=skip; REASON="clean failed"; return
-    fi
-    if git_c "$dest" show "HEAD:$rel" | cmp -s - "$tmp"; then
-      rm -f "$tmp"
-      DECIDE=skip; REASON="identical"; return
-    fi
-    rm -f "$tmp"
-    REASON="cleaned differs"
-  elif cmp -s "$VE/$rel" "$dest/$rel"; then
-    if is_shared_filter "$rel"; then
-      idx=$(git_c "$dest" rev-parse ":$rel" 2>/dev/null || true)
-      want=$(git hash-object "$VE/$rel" 2>/dev/null || true)
-      if filter_head_differs "$dest" "$rel" || [[ -z "$idx" || "$idx" != "$want" ]]; then
-        REASON="shared filter not at HEAD"
-      else
-        DECIDE=skip; REASON="identical"; return
-      fi
-    else
-      DECIDE=skip; REASON="identical"; return
-    fi
-  fi
-  if [[ "$FORCE" -eq 0 ]] && file_dirty "$dest" "$rel"; then
-    if ! is_shared_filter "$rel"; then
-      DECIDE=skip; REASON="DIRTY dest (use --force)"; return
-    fi
-  fi
-}
-
-if [[ "$DISCOVER" -eq 1 ]]; then
-  echo "git_home=$GIT_HOME"
-  while IFS= read -r d; do
-    [[ -n "$d" ]] || continue
-    echo "  $(basename "$d")  $d"
-  done < <(discover_candidates)
-  if [[ "$DRY" -eq 0 && "$APPLY" -eq 0 && "$DO_UR" -eq 0 ]]; then
-    exit 0
-  fi
-  echo
-fi
-
-DESTS=()
-if [[ "${#REPO_TOKENS[@]}" -gt 0 ]]; then
-  for t in "${REPO_TOKENS[@]}"; do
-    r=$(resolve_repo_token "$t") || exit 1
-    DESTS+=("$r")
-  done
-else
-  while IFS= read -r d; do
-    [[ -n "$d" ]] && DESTS+=("$d")
-  done < <(discover_candidates)
-fi
-
-echo "VE=$VE"
-echo "git_home=$GIT_HOME"
-echo "mode=$([ "$DRY" -eq 1 ] && echo dry-run || { [ "$APPLY" -eq 1 ] && echo apply || echo no-copy; })"
-echo "commit=$DO_COMMIT update-rules=$DO_UR push=$DO_PUSH force=$FORCE"
-echo
-
-if [[ "$APPLY" -eq 1 && "$DO_COMMIT" -eq 0 ]]; then
-  echo "WARN: --apply without --commit leaves dest working trees dirty (blocks dest ./build_app)."
-  echo
-fi
-
-PUSH_DIRS=()
-ANY_FAIL=0
-
-# Library update-rules.sh lists .gemini policy files VE has and those hosts do not.
-# git add of the whole COPY_LIST then fatals on the first missing path and stages nothing.
-repair_dest_update_rules() {
-  local dest="$1" ur="$dest/update-rules.sh"
-  [[ -f "$ur" ]] || return 0
-  local write=0
-  [[ "$DRY" -eq 0 ]] && write=1
-  python3 - "$ur" "$write" <<'PY'
-import pathlib, sys
-path, apply = sys.argv[1], sys.argv[2] == "1"
-file = pathlib.Path(path)
-text = file.read_text()
-old_add = 'git add "${COPY_LIST[@]}" 2>&1 | cat || true'
-new_add = '''add_now=()
-        for f in "${COPY_LIST[@]}"; do
-          [ -e "$f" ] && add_now+=("$f")
-        done
-        if [ "${#add_now[@]}" -gt 0 ]; then
-          git add "${add_now[@]}" 2>&1 | cat || true
-        fi'''
-old_cp = '''  cp "$SOURCE_DIR/.gemini/policies/plans.toml" "$USER_POLICY_DIR/vehicle_expenses_plans.toml"
-  cp "$SOURCE_DIR/.gemini/policies/auto-saved.toml" "$USER_POLICY_DIR/vehicle_expenses_auto_saved.toml"'''
-new_cp = '''  if [ -f "$SOURCE_DIR/.gemini/policies/plans.toml" ]; then
-    cp "$SOURCE_DIR/.gemini/policies/plans.toml" "$USER_POLICY_DIR/vehicle_expenses_plans.toml"
-  fi
-  if [ -f "$SOURCE_DIR/.gemini/policies/auto-saved.toml" ]; then
-    cp "$SOURCE_DIR/.gemini/policies/auto-saved.toml" "$USER_POLICY_DIR/vehicle_expenses_auto_saved.toml"
-  fi'''
-notes = []
-if old_add in text:
-    notes.append("git add skips missing COPY_LIST paths")
-    text = text.replace(old_add, new_add, 1)
-if old_cp in text:
-    notes.append("promote skips missing .gemini policy files")
-    text = text.replace(old_cp, new_cp, 1)
-if not notes:
-    sys.exit(0)
-print("  repair update-rules.sh: " + "; ".join(notes))
-if apply:
-    file.write_text(text)
-PY
-}
-
-# Real worktrees of dest, same skips as dest update-rules (prunable,
-# grok-worktrees, third_party/*/src, foreign git dir).
-dest_worktrees() {
-  local dest="$1" line wt_path="" prunable=0
-  while IFS= read -r line || [[ -n "${line:-}" ]]; do
-    case "$line" in
-      worktree\ *)
-        if [[ -n "$wt_path" && "$prunable" -eq 0 ]] && dest_ur_worktree_ok "$dest" "$wt_path"; then
-          printf '%s\n' "$wt_path"
-        fi
-        wt_path="${line#worktree }"
-        prunable=0
-        ;;
-      prunable*)
-        prunable=1
-        ;;
-    esac
-  done < <(git_c "$dest" worktree list --porcelain)
-  if [[ -n "$wt_path" && "$prunable" -eq 0 ]] && dest_ur_worktree_ok "$dest" "$wt_path"; then
-    printf '%s\n' "$wt_path"
-  fi
-}
-
-# Commit the two filter scripts on dest worktrees other than the orch root
-# (the root is committed with the rest of the policy copy above).
-publish_shared_filters() {
-  local dest="$1" do_write=0 wt rel idx want needs
-  local -a rels=()
-  [[ "$APPLY" -eq 1 && "$DO_COMMIT" -eq 1 ]] && do_write=1
-  [[ "$DRY" -eq 1 || "$do_write" -eq 1 ]] || return 0
-
-  while IFS= read -r wt; do
-    [[ -n "$wt" ]] || continue
-    [[ "$wt" == "$dest" ]] && continue
-    rels=()
-    for rel in filter-apply-config filter-clean-config; do
-      [[ -f "$VE/$rel" && -f "$wt/$rel" ]] || continue
-      needs=0
-      if ! cmp -s "$VE/$rel" "$wt/$rel"; then
-        needs=1
-      elif filter_head_differs "$wt" "$rel"; then
-        needs=1
-      else
-        idx=$(git_c "$wt" rev-parse ":$rel" 2>/dev/null || true)
-        want=$(git hash-object "$VE/$rel" 2>/dev/null || true)
-        if [[ -z "$idx" || "$idx" != "$want" ]]; then
-          needs=1
-        fi
-      fi
-      [[ "$needs" -eq 1 ]] && rels+=("$rel")
-    done
-    [[ ${#rels[@]} -eq 0 ]] && continue
-    if [[ "$do_write" -eq 0 ]]; then
-      echo "  WOULD commit filters in $wt: ${rels[*]}"
-      continue
-    fi
-    echo "  FILTER $wt — ${rels[*]}"
-    for rel in "${rels[@]}"; do
-      cp -f "$VE/$rel" "$wt/$rel"
-      chmod a+x "$wt/$rel" 2>/dev/null || true
-    done
-    if ! git_c "$wt" -c filter.manage-configs.clean=cat add -- "${rels[@]}"; then
-      echo "ERROR: git add filters failed in $wt" >&2
-      ANY_FAIL=1
-      continue
-    fi
-    if git_c "$wt" diff --cached --quiet -- "${rels[@]}"; then
-      echo "  filters already at HEAD in $wt"
-      continue
-    fi
-    if ! git_c "$wt" commit --only -m "deploy-orchestration: shared filter scripts from VE" -- "${rels[@]}"; then
-      echo "ERROR: filter commit failed in $wt" >&2
-      ANY_FAIL=1
-      git_c "$wt" restore --staged -- "${rels[@]}" 2>/dev/null || true
-      continue
-    fi
-    echo "  committed filters $(git_c "$wt" rev-parse --short HEAD)"
-    git_c "$wt" checkout -- "${rels[@]}"
-    PUSH_DIRS+=("$wt")
-  done < <(dest_worktrees "$dest")
-}
-
-for dest in "${DESTS[@]}"; do
-  echo "-- $(basename "$dest")  $dest --"
-  repair_dest_update_rules "$dest"
-  if [[ "$DRY" -eq 1 || "$APPLY" -eq 1 ]]; then
-    ensure_dest_seed_files_entries "$dest" || exit 1
-    build_policy_list "$dest"
-    copied=()
-    for f in "${POLICY_FILES[@]}"; do
-      decide_copy "$dest" "$f"
-      if [[ "$DECIDE" == skip ]]; then
-        if [[ "$REASON" != identical ]]; then
-          echo "  SKIP $f — $REASON"
-        fi
-        continue
-      fi
-      echo "  COPY $f — $REASON"
-      if [[ "$APPLY" -eq 1 ]]; then
-        mkdir -p "$dest/$(dirname "$f")"
-        if [[ -L "$VE/$f" ]]; then
-          cp -P "$VE/$f" "$dest/$f"
-        elif managed_attr "$VE" "$f"; then
-          tmp=$(mktemp)
-          if ! write_checkin_bytes "$f" "$tmp"; then
-            rm -f "$tmp"
-            echo "ERROR: clean failed for $f" >&2
-            ANY_FAIL=1
+def parse_manifest(text):
+    out = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
             continue
-          fi
-          mv "$tmp" "$dest/$f"
-        else
-          cp -f "$VE/$f" "$dest/$f"
-        fi
-        if [[ -x "$VE/$f" || "$f" == *.sh || "$f" == run-grok* || "$f" == git-merge-drivers/* || "$f" == agent-landlock || "$f" == filter-apply-config || "$f" == filter-clean-config ]]; then
-          chmod a+x "$dest/$f" 2>/dev/null || true
-        fi
-        copied+=("$f")
-      fi
-    done
-    if [[ "$APPLY" -eq 1 && "$DO_COMMIT" -eq 1 ]]; then
-      add_paths=()
-      if [[ ${#copied[@]} -gt 0 ]]; then
-        add_paths=("${copied[@]}")
-      fi
-      if [[ -n "$(git_c "$dest" status --porcelain -- update-rules.sh)" ]]; then
-        add_paths+=(update-rules.sh)
-      fi
-      if [[ ${#add_paths[@]} -gt 0 ]]; then
-        # Store the cleaned bytes as-is. checkout below is what smudges.
-        git_c "$dest" -c filter.manage-configs.clean=cat add -- "${add_paths[@]}"
-        if git_c "$dest" diff --cached --quiet; then
-          echo "  nothing to commit"
-        else
-          git_c "$dest" commit -m "deploy-orchestration: shared policy from VE"
-          echo "  committed $(git_c "$dest" rev-parse --short HEAD)"
-          PUSH_DIRS+=("$dest")
-        fi
-        git_c "$dest" checkout -- "${add_paths[@]}"
-        echo "  checked out (smudged) ${#add_paths[@]} files"
-      fi
-    fi
-    publish_shared_filters "$dest"
-  fi
+        cls, _, pat = line.partition(" ")
+        out.append((cls.strip(), pat.strip()))
+    return out
 
-  if [[ "$DO_UR" -eq 1 ]]; then
-    if dest_report_staged "$dest"; then
-      if [[ "$FORCE" -eq 0 ]]; then
-        echo "ERROR: dest $dest has staged changes; will not run update-rules (pass --force to override)" >&2
-        exit 1
-      fi
-      echo "  WARN: --force: running dest update-rules despite staged changes"
-    fi
-    ur=("$dest/update-rules.sh")
-    [[ "$DRY" -eq 1 ]] && ur+=(--dry-run)
-    [[ "$FORCE" -eq 1 && "$DRY" -eq 0 ]] && ur+=(--force)
-    echo "  RUN ${ur[*]}"
-    ur_ok=1
-    if [[ "$DRY" -eq 1 ]]; then
-      (cd "$dest" && bash ./update-rules.sh --dry-run) || {
-        echo "ERROR: dest update-rules dry-run failed" >&2
-        ANY_FAIL=1
-        ur_ok=0
-      }
-    else
-      before=$(git_c "$dest" rev-parse HEAD)
-      if ! (cd "$dest" && bash "${ur[@]}"); then
-        echo "ERROR: dest update-rules failed" >&2
-        ANY_FAIL=1
-        ur_ok=0
-      fi
-      if [[ "$ur_ok" -eq 1 && ( "$DO_COMMIT" -eq 1 || "$DO_PUSH" -eq 1 ) ]]; then
-        while IFS= read -r wt; do
-          [[ -n "$wt" ]] || continue
-          if [[ -n "$(git_c "$wt" rev-list --count '@{u}..HEAD' 2>/dev/null)" ]] \
-             && [[ "$(git_c "$wt" rev-list --count '@{u}..HEAD' 2>/dev/null)" != 0 ]]; then
-            PUSH_DIRS+=("$wt")
-          fi
-        done < <(git_c "$dest" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
-      fi
-      unset before
-    fi
-  fi
-done
+def tree(repo, rev="HEAD"):
+    """path -> (mode, blob) of tracked files at rev."""
+    res = {}
+    raw = git(repo, "ls-tree", "-r", "-z", rev, binary=True)
+    for ent in raw.split(b"\0"):
+        if not ent:
+            continue
+        meta, path = ent.split(b"\t", 1)
+        mode, _typ, blob = meta.decode().split()
+        res[path.decode()] = (mode, blob)
+    return res
 
-if [[ "$DO_PUSH" -eq 1 ]]; then
-  # unique
-  seen=
-  for d in "${PUSH_DIRS[@]}"; do
-    case " $seen " in
-      *" $d "*) continue ;;
-    esac
-    seen+=" $d"
-    br=$(git_c "$d" rev-parse --abbrev-ref HEAD)
-    echo "PUSH $d ($br)"
-    if ! git_c "$d" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-      echo "ERROR: no upstream for $d ($br)" >&2
-      ANY_FAIL=1
-      continue
-    fi
-    if ! git_c "$d" push; then
-      echo "ERROR: git push failed in $d" >&2
-      ANY_FAIL=1
-    fi
-  done
-fi
+_hist = {}
+def history(repo, path):
+    k = (repo, path)
+    if k not in _hist:
+        out = git(repo, "log", "--format=", "--raw", "--no-abbrev", "--", path, check=False)
+        s = set()
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and line.startswith(":"):
+                s.add(parts[2]); s.add(parts[3])
+        _hist[k] = s
+    return _hist[k]
 
-echo
-echo "Done. Dest update-rules.sh was never overwritten."
-exit "$ANY_FAIL"
+def entries_for(src, man, src_tree, classes):
+    """Expand manifest globs against the source tree -> {path: cls}."""
+    sel = {}
+    for cls, pat in man:
+        if cls not in classes:
+            continue
+        hits = [p for p in src_tree if glob_match(pat, p)]
+        for p in hits:
+            sel.setdefault(p, cls)
+    return sel
+
+def is_managed(repo, path):
+    out = git(repo, "check-attr", "filter", "--", path, check=False)
+    return out.strip().endswith(": manage-configs")
+
+def worktrees(host):
+    out = git(host, "worktree", "list", "--porcelain")
+    wts, cur = [], {}
+    for line in out.splitlines() + [""]:
+        if not line:
+            if cur:
+                wts.append(cur)
+            cur = {}
+            continue
+        k, _, v = line.partition(" ")
+        cur[k] = v or True
+    res = []
+    for w in wts:
+        p = w.get("worktree")
+        if not p or w.get("bare"):
+            continue
+        reason = None
+        if w.get("prunable"):
+            reason = "prunable"
+        elif "/grok-worktrees/" in p or re.search(r"/third_party/[^/]+/src(/|$)", p):
+            reason = "excluded path"
+        elif not os.path.isdir(p):
+            reason = "missing"
+        res.append((p, reason))
+    return res
+
+def writable(wt):
+    try:
+        gd = git(wt, "rev-parse", "--absolute-git-dir").strip()
+        cd = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    except RuntimeError:
+        return False
+    return all(os.access(d, os.W_OK) for d in (wt, gd, cd, os.path.join(cd, "objects")))
+
+class Report:
+    def __init__(self):
+        self.rows, self.fail, self.warn = [], [], []
+    def row(self, host, wt, status, detail=""):
+        self.rows.append((host, wt, status, detail))
+    def print(self):
+        print("\n==== SUMMARY ====")
+        for f in self.fail:
+            print("FAIL: " + f)
+        for w in self.warn:
+            print("WARN: " + w)
+        if not self.fail and not self.warn:
+            print("no failures or warnings")
+        for host, wt, st, d in self.rows:
+            print("%-28s %-34s %-12s %s" % (host, wt, st, d))
+
+def plan_target(src, src_tree, sel, retired_pats, wt, rep, label):
+    """Decide actions for one worktree. Returns (actions, skip_reason)."""
+    try:
+        t_tree = tree(wt)
+    except RuntimeError as e:
+        return None, "no HEAD (%s)" % e
+    status = git(wt, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
+    dirty = set()
+    for e in status:
+        if len(e) > 3:
+            dirty.add(e[3:].decode(errors="replace"))
+    acts = []
+    for p, cls in sorted(sel.items()):
+        mode, blob = src_tree[p]
+        cur = t_tree.get(p)
+        if cur and cur[1] == blob:
+            continue
+        if p in dirty:
+            return None, "dirty: " + p
+        if cur is None:
+            if cls == "opt":
+                continue
+            if os.path.lexists(os.path.join(wt, p)):
+                return None, "untracked file in the way: " + p
+            acts.append(("add", p, mode, blob))
+            continue
+        if cur[1] in history(src, p):
+            acts.append(("update", p, mode, blob))
+        elif blob in history(wt, p):
+            return None, "ahead of source: " + p
+        else:
+            return None, "diverged: " + p
+    for p in sorted(t_tree):
+        if any(glob_match(pat, p) for pat in retired_pats) and p not in sel:
+            if p in dirty:
+                return None, "dirty: " + p
+            if t_tree[p][1] in history(src, p):
+                acts.append(("delete", p, None, None))
+            else:
+                rep.warn.append("%s: kept retired %s (local-only version)" % (label, p))
+    return acts, None
+
+def apply_target(src, wt, acts, msg):
+    paths = []
+    for kind, p, mode, blob in acts:
+        fp = os.path.join(wt, p)
+        if kind == "delete":
+            git(wt, "rm", "-q", "--", p)
+            paths.append(p)
+            continue
+        os.makedirs(os.path.dirname(fp) or wt, exist_ok=True)
+        data = git(src, "cat-file", "blob", blob, binary=True)
+        if os.path.lexists(fp):
+            os.remove(fp)
+        if mode == "120000":
+            os.symlink(data.decode(), fp)
+        else:
+            with open(fp, "wb") as f:
+                f.write(data)
+            os.chmod(fp, 0o775 if mode == "100755" else 0o664)
+        paths.append(p)
+    adds = [p for k, p, _, _ in acts if k != "delete"]
+    if adds:
+        git(wt, "add", "-f", "--", *adds)
+    git(wt, "commit", "-q", "--only", "-m", msg, "--", *paths)
+    for p in adds:
+        fp = os.path.join(wt, p)
+        if is_managed(wt, p) and not os.path.islink(fp):
+            os.remove(fp)
+            git(wt, "checkout", "--", p)
+    left = git(wt, "status", "--porcelain", "--", *paths, check=False).strip()
+    return git(wt, "rev-parse", "--short", "HEAD").strip(), left
+
+def sync(src, wt, sel, src_tree, retired, rep, host_label, wt_label, apply, msg):
+    if not writable(wt):
+        acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label)
+        rep.row(host_label, wt_label, "REPORT-ONLY", "no write access; " + (why or "%d change(s) pending" % len(acts)))
+        return False
+    acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label)
+    if why:
+        rep.row(host_label, wt_label, "SKIPPED", why)
+        rep.warn.append("%s %s skipped: %s" % (host_label, wt_label, why))
+        return False
+    if not acts:
+        rep.row(host_label, wt_label, "up-to-date")
+        return False
+    desc = "%d change(s): %s" % (len(acts), ", ".join("%s %s" % (k[0], p) for k, p, _, _ in acts[:6]) + (" ..." if len(acts) > 6 else ""))
+    if not apply:
+        rep.row(host_label, wt_label, "WOULD-COMMIT", desc)
+        return False
+    try:
+        sha, left = apply_target(src, wt, acts, msg)
+    except Exception as e:
+        rep.fail.append("%s %s: %s" % (host_label, wt_label, e))
+        rep.row(host_label, wt_label, "FAILED", str(e)[:120])
+        return False
+    rep.row(host_label, wt_label, "COMMITTED", "%s %s" % (sha, desc))
+    if left:
+        rep.warn.append("%s %s: paths still differ after commit: %s" % (host_label, wt_label, left.replace("\n", "; ")))
+    return True
+
+def legacy_local_list(host):
+    """Host-specific infra from the host's old update-rules.sh FILES/STAMP lists."""
+    try:
+        txt = git(host, "show", "HEAD:update-rules.sh")
+    except RuntimeError:
+        return []
+    out = []
+    for m in re.finditer(r"^(?:FILES|STAMP_FILES)=\((.*?)^\)", txt, re.S | re.M):
+        for line in m.group(1).splitlines():
+            line = line.split("#", 1)[0].strip().strip('"').strip("'")
+            if line:
+                out.append(line)
+    return out
+
+def discover(git_home):
+    hosts = []
+    for name in sorted(os.listdir(git_home)):
+        d = os.path.join(git_home, name)
+        if os.path.isdir(os.path.join(d, ".git")) and os.path.isfile(os.path.join(d, "AGENTS.md")) \
+           and os.path.isfile(os.path.join(d, "update-rules.sh")):
+            hosts.append(d)
+    return hosts
+
+def check(src):
+    t = tree(src)
+    man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
+    problems = []
+    for cls, pat in man:
+        if cls not in ("law", "shared", "opt", "retired"):
+            problems.append("bad class: %s %s" % (cls, pat))
+        hits = [p for p in t if glob_match(pat, p)]
+        if cls in ("law", "shared") and not hits and "*" not in pat:
+            problems.append("missing in source: %s" % pat)
+        if cls == "retired" and hits:
+            problems.append("retired but still tracked: %s" % ", ".join(hits))
+    sel = entries_for(src, man, t, ("law", "shared", "opt"))
+    for p in t:
+        if (p.startswith((".grok/", "roles/", "docs/rules/", "probes/")) or p in ("roles.config",)) and p not in sel:
+            problems.append("rule-ish file not in manifest: %s" % p)
+    roles = [l.split()[0] for l in git(src, "show", "HEAD:roles.config").splitlines() if l.strip() and not l.startswith("#")]
+    for r in roles:
+        if "roles/%s.md" % r not in t:
+            problems.append("roles.config role without card: %s" % r)
+    for f in [p for p in t if re.fullmatch(r"run-grok(-[a-z]+)?", p)]:
+        m = re.search(r"^ROLE_KEY=(\w+)", git(src, "show", "HEAD:" + f), re.M)
+        if m and "roles/%s.md" % m.group(1) not in t:
+            problems.append("%s uses ROLE_KEY=%s without a card" % (f, m.group(1)))
+    hj = git(src, "show", "HEAD:.grok/hooks/rules-hooks.json")
+    for m in re.finditer(r"\.grok/hooks/([\w.-]+)", hj):
+        if ".grok/hooks/" + m.group(1) not in t:
+            problems.append("hook json references missing %s" % m.group(1))
+    for p in problems:
+        print("CHECK: " + p)
+    print("check: %d problem(s), %d manifest paths" % (len(problems), len(sel)))
+    return 1 if problems else 0
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--push", action="store_true")
+    ap.add_argument("--repos", default="")
+    ap.add_argument("--host-only", action="store_true")
+    ap.add_argument("--list", metavar="CLASS")
+    ap.add_argument("--check", action="store_true")
+    ap.add_argument("--dry-run", action="store_true", help="same as the default report")
+    a = ap.parse_args()
+    src = toplevel(os.path.dirname(os.path.realpath(__file__)))
+    if a.check:
+        return check(src)
+    if a.list:
+        t = tree(src)
+        for p in sorted(entries_for(src, parse_manifest(git(src, "show", "HEAD:rules.manifest")), t, (a.list,))):
+            print(p)
+        return 0
+    apply = a.apply and not a.dry_run
+    rep = Report()
+    print("deploy-orchestration %s  source=%s  user=%s  %s" % ("APPLY" if apply else "REPORT (use --apply to write)",
+          src, os.environ.get("USER", "?"), datetime.datetime.now().strftime("%F %H:%M")))
+    git_home = read_conf(src, "git_home") or os.path.dirname(src)
+    if "@@" in git_home or not os.path.isdir(git_home):
+        git_home = os.path.dirname(src)
+    canon = os.path.join(git_home, CANON_NAME)
+
+    # The source host must be committed in manifest paths.
+    st = git(src, "status", "--porcelain", "--untracked-files=no").splitlines()
+    src_man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
+    src_tree = tree(src)
+    sel_src = entries_for(src, src_man, src_tree, ("law", "shared", "opt"))
+    dirty_src = [l[3:] for l in st if l[3:] in sel_src or l[3:] == "rules.manifest"]
+    if dirty_src:
+        print("FAIL: source %s has uncommitted manifest paths: %s" % (src, ", ".join(dirty_src)))
+        return 2
+
+    if a.host_only:
+        hosts = [src]
+    else:
+        hosts = discover(git_home)
+        if a.repos:
+            want = [r if os.path.isabs(r) else os.path.join(git_home, r) for r in a.repos.split(",") if r]
+            want = [os.path.realpath(w) for w in want]
+            hosts = [h for h in hosts if os.path.realpath(h) in want]
+        # canonical first
+        hosts.sort(key=lambda h: 0 if os.path.realpath(h) == os.path.realpath(canon) else 1)
+        if os.path.isdir(canon) and os.path.realpath(src) != os.path.realpath(canon) \
+           and os.path.realpath(canon) not in [os.path.realpath(h) for h in hosts]:
+            hosts.insert(0, canon)
+
+    retired = [p for c, p in src_man if c == "retired"]
+    pushed = []
+    first_src = src
+    for host in hosts:
+        hl = os.path.basename(host)
+        # Stage 1: shared set from the publishing source (canonical once updated) -> host root.
+        if os.path.realpath(host) != os.path.realpath(first_src):
+            upstream = first_src
+            u_tree = tree(upstream)
+            sel = entries_for(upstream, src_man, u_tree, ("law", "shared", "opt"))
+            msg = MSG.format(src=os.path.basename(upstream), sha=git(upstream, "rev-parse", "--short", "HEAD").strip())
+            changed = sync(upstream, host, sel, u_tree, retired, rep, hl, "(root)", apply, msg)
+            if changed:
+                pushed.append(host)
+            # Seed the host-local manifest from its legacy update-rules.sh on first publish.
+            if apply and not os.path.lexists(os.path.join(host, "rules.manifest.local")) and writable(host):
+                loc = [p for p in legacy_local_list(host) if p not in sel and not any(glob_match(r, p) for r in retired)]
+                try:
+                    txt = "# rules.manifest.local: host-specific infra, synced only root -> this host's worktrees.\n" \
+                          "# Seeded from the legacy update-rules.sh FILES lists. Format: local <path>\n" + \
+                          "".join("local %s\n" % p for p in loc)
+                    with open(os.path.join(host, "rules.manifest.local"), "w") as f:
+                        f.write(txt)
+                    git(host, "add", "--", "rules.manifest.local")
+                    git(host, "commit", "-q", "--only", "-m", "rules: seed rules.manifest.local from legacy update-rules.sh", "--", "rules.manifest.local")
+                    rep.row(hl, "(root)", "COMMITTED", "seeded rules.manifest.local (%d paths)" % len(loc))
+                except Exception as e:
+                    rep.fail.append("%s: seeding rules.manifest.local: %s" % (hl, e))
+            elif not apply and not os.path.lexists(os.path.join(host, "rules.manifest.local")):
+                n = len([p for p in legacy_local_list(host) if p not in sel])
+                rep.row(hl, "(root)", "WOULD-SEED", "rules.manifest.local from legacy update-rules.sh (%d paths)" % n)
+            if os.path.realpath(host) == os.path.realpath(canon) and apply:
+                first_src = canon  # later hosts take from the canonical copy
+        # Stage 2: host root -> its worktrees (shared set + host-local set).
+        h_tree = tree(host)
+        man = src_man if os.path.realpath(host) == os.path.realpath(src) else parse_manifest(
+            git(host, "show", "HEAD:rules.manifest", check=False) or "\n".join("%s %s" % e for e in src_man))
+        man = man + [("local", p) for c, p in (parse_manifest(git(host, "show", "HEAD:rules.manifest.local", check=False)))]
+        sel = entries_for(host, man, h_tree, ("law", "shared", "opt", "local"))
+        if not apply and os.path.realpath(host) != os.path.realpath(src):
+            # Report mode: root has not been updated yet, so preview worktrees against the upstream set.
+            u_tree = tree(first_src)
+            sel_u = entries_for(first_src, src_man, u_tree, ("law", "shared", "opt"))
+            for wt, why in worktrees(host):
+                if os.path.realpath(wt) == os.path.realpath(host):
+                    continue
+                wl = os.path.relpath(wt, host) if wt.startswith(host + "/") else wt
+                if why:
+                    rep.row(hl, wl, "SKIPPED", why); continue
+                acts, w2 = plan_target(first_src, u_tree, sel_u, retired, wt, rep, wl)
+                rep.row(hl, wl, "SKIPPED" if w2 else ("WOULD-COMMIT" if acts else "up-to-date"),
+                        w2 or ("%d change(s) after root" % len(acts) if acts else ""))
+            continue
+        msg = MSG.format(src=hl + " root", sha=git(host, "rev-parse", "--short", "HEAD").strip())
+        for wt, why in worktrees(host):
+            if os.path.realpath(wt) == os.path.realpath(host):
+                continue
+            wl = os.path.relpath(wt, host) if wt.startswith(host + "/") else wt
+            if why:
+                rep.row(hl, wl, "SKIPPED", why)
+                continue
+            if sync(host, wt, sel, h_tree, retired, rep, hl, wl, apply, msg):
+                pushed.append(wt)
+    if a.push and apply:
+        for r in pushed:
+            p = subprocess.run(["git", "-C", r, "push"], capture_output=True, text=True)
+            if p.returncode:
+                rep.fail.append("push %s: %s" % (r, p.stderr.strip()[:200]))
+            else:
+                rep.row(os.path.basename(r), "", "PUSHED")
+    rep.print()
+    return 1 if rep.fail else 0
+
+if __name__ == "__main__":
+    sys.exit(main())
