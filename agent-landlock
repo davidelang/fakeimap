@@ -457,8 +457,17 @@ def resolve_grants(
     home = os.environ.get("HOME") or ""
     if home:
         dirs.append(str(Path(home) / ".grok"))
-        # Optional caches some CLIs use
-        for sub in (".cache/grok", ".local/share/grok"):
+        # cursor-agent: config, login, chats (~/.cursor; created here so it can be granted)
+        cur = Path(home) / ".cursor"
+        try:
+            cur.mkdir(mode=0o700, exist_ok=True)
+        except OSError:
+            pass
+        if cur.is_dir():
+            dirs.append(str(cur))
+        # Optional caches some CLIs use (cursor-agent self-updates into .local/share/cursor-agent)
+        for sub in (".cache/grok", ".local/share/grok", ".config/cursor", ".cache/cursor",
+                    ".local/share/cursor-agent"):
             cand = Path(home) / sub
             if cand.is_dir():
                 dirs.append(str(cand.resolve()))

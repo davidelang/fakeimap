@@ -14,6 +14,7 @@ shared_group=@@SHARED_GROUP@@
 # Bin paths may use $HOME/… (expanded at runtime by launchers).
 grok_bin_default=@@GROK_BIN_DEFAULT@@
 antigravity_bin=@@ANTIGRAVITY_BIN@@
+cursor_bin=@@CURSOR_BIN@@
 gemini_bin_default=@@GEMINI_BIN_DEFAULT@@
 primary_user=@@PRIMARY_USER@@
 

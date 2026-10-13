@@ -42,6 +42,7 @@ declare -A TOKENS=(
   [git_home]="@@GIT_HOME@@"
   [primary_user]="@@PRIMARY_USER@@"
   [antigravity_bin]="@@ANTIGRAVITY_BIN@@"
+  [cursor_bin]="@@CURSOR_BIN@@"
   [orch_root]="@@ORCH_ROOT@@"
 )
 
