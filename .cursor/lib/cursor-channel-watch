@@ -10,8 +10,10 @@
 set -uo pipefail
 [[ $# -ge 2 ]] || { echo "usage: $0 PLAN NODE [--stop]" >&2; exit 2; }
 plan="$1" node="$2" mode="${3:-}"
-arm="$(command -v channel-arm 2>/dev/null || true)"
-for c in "${CHANNEL_BIN:-}" "${GIT_HOME:-$HOME/git}/agent-coordination-tickets/bin" /home/*/git/agent-coordination-tickets/bin; do
+arm=
+top="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Prefer the pinned Go binary, then the host Go build, then the shell script.
+for c in "${CHANNEL_BIN:-}" "$top/third_party/agent-coordination-tickets/src/go" "${GIT_HOME:-$HOME/git}/agent-coordination-tickets/go" "$(dirname "$(command -v channel-arm 2>/dev/null || echo /nonexistent/x)")" "${GIT_HOME:-$HOME/git}/agent-coordination-tickets/bin" /home/*/git/agent-coordination-tickets/bin; do
   [[ -z "$arm" && -n "$c" && -x "$c/channel-arm" ]] && arm="$c/channel-arm"
 done
 [[ -n "$arm" ]] || { echo "channel-arm not found (set CHANNEL_BIN)" >&2; exit 1; }

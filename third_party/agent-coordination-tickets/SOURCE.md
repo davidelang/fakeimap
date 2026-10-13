@@ -4,14 +4,15 @@ Channel programs for passing one file from one agent to the next.
 
 | | |
 |--|--|
-| **Upstream** | `davidelang/agent-coordination-tickets` @ `d651627a1d5f1e8a429e4c8e292b421da5423f63` (`master`) |
-| **Profile** | Source only. `build = []`. |
+| **Upstream** | `davidelang/agent-coordination-tickets` @ `46e1f495107b41052c97750171e501db26c3f11e` (`master`) |
+| **Profile** | Source plus one build step: `go build` of `src/go/channel` (static, stdlib only). |
 | **Host clone** | `/home/dlang/git/agent-coordination-tickets` |
 
 ```bash
 ./third_party/fetch-deps ro agent-coordination-tickets
+./third_party/fetch-deps build agent-coordination-tickets
 ```
 
 When that host clone contains the pin SHA, `src/` is a linked worktree of it.
-Programs are `src/bin/channel` (shell) and `src/go` (Go). The names
+Agents run the Go binary `src/go/channel` (built by the step above); `src/bin/channel` (shell) is the fallback. The names
 `channel-setup`, `channel-arm`, and `channel-send` are the same program.

@@ -2,6 +2,8 @@
 
 Use it only when David names the plan or node. Never search for inbox files.
 
+Run the Go binaries from the repo root: `third_party/agent-coordination-tickets/src/go/channel-{setup,arm,send}`. If that pin is missing, use `$GIT_HOME/agent-coordination-tickets/go/` (same names, same output).
+
 - `channel-setup`: a human creates an inbox.
 - `channel-send`: deliver a message.
 - `channel-arm PLAN NODE`: the watch. It stays running, prints `READY`, then `FILE <path>` for the oldest inbox file. An empty inbox means the watch is waiting. In grok, run it with the `monitor` tool (`persistent: true`). In cursor-agent, run `.cursor/lib/cursor-channel-watch PLAN NODE` as a background shell (`block_until_ms: 0`) that wakes you on output matching `^FILE `; if that shell ends, start it again (it re-shows the last FILE). The stop hook also wakes you with the newest FILE. `--stop` ends the watch.

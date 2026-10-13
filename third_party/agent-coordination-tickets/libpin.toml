@@ -1,11 +1,11 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "d651627a1d5f1e8a429e4c8e292b421da5423f63"
-git_describe = "d651627a"
+git_sha = "46e1f495107b41052c97750171e501db26c3f11e"
+git_describe = "46e1f49"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
 requires_writable_src = false
-build = []
-consumer_note = "Channel handoff tools (shell and Go). Materialize only; run src/bin/channel."
+build = ["cd src/go && d=$(mktemp -d) && GOCACHE=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
+consumer_note = "Channel handoff tools (shell and Go). Build go/channel; agents run src/go/channel-{setup,arm,send} (shell src/bin/channel is the fallback)."
