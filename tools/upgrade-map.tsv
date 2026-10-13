@@ -9,3 +9,15 @@ context	general/context-window.md
 effort	general/reasoning-effort.md
 skills	general/skills-disabled.md
 roles	general/subagent-roles.md
+# cursor-agent rows: keyword<TAB>probe, scanned against the cursor CLI changelog
+cursor_reviewed	2026.10.01-e373342
+cursor:AGENTS.md	general/cursor-rule-loading.md
+cursor:rules	general/cursor-rule-loading.md
+cursor:hook	general/cursor-hook-fields.md
+cursor:sessionStart	general/cursor-hook-fields.md
+cursor:background	protected/20261013-cursor-background-watch-dies.md
+cursor:shell	protected/20261013-cursor-background-watch-dies.md
+cursor:model	general/cursor-models.md
+cursor:sandbox	general/cursor-sandbox.md
+cursor:install	protected/20261013-cursor-installer-deletes-agent-link.md
+cursor:update	protected/20261013-cursor-installer-deletes-agent-link.md
