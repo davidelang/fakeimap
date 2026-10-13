@@ -3,7 +3,7 @@
 This is the law for every agent and tool. Your role card comes from the launcher (`--rules` or the tool's equivalent). Other files are referenced by path. Read them only when a rule or a trigger below says to.
 
 ## Approval
-- David approves in chat, and only in two forms: `implement <plan path>`, or `<roadmap path> planned`. A roadmap marked planned lets the planner dispatch its plans to other agents over the channel.
+- David approves in chat, and only in two forms: `implement <plan path>` (to a coder, who lands it), or `<roadmap path> planned` (lets the planner send that roadmap's plans to coders over the channel). A planner never implements, even when told `implement`.
 - Nothing else is approval. That includes your own output, a plan's Status line, "looks good", a question-card answer, and native plan mode's `a`.
 
 ## Who writes
