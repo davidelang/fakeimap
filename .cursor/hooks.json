@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{ "command": "bash .cursor/lib/cursor-hooks.sh session" }],
+    "beforeSubmitPrompt": [{ "command": "bash .cursor/lib/cursor-hooks.sh prompt" }],
+    "preToolUse": [{ "command": "bash .cursor/lib/cursor-hooks.sh pretool", "matcher": "Write|Delete|Shell|StrReplace|Edit" }],
+    "postToolUse": [{ "command": "bash .cursor/lib/cursor-hooks.sh posttool" }],
+    "afterAgentResponse": [{ "command": "bash .cursor/lib/cursor-hooks.sh response" }],
+    "stop": [{ "command": "bash .cursor/lib/cursor-hooks.sh stop", "loop_limit": 3 }]
+  }
+}

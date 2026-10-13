@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Shell(git:status*)",
+      "Shell(git:log*)",
+      "Shell(git:diff*)",
+      "Shell(git:show*)",
+      "Shell(git:describe*)",
+      "Shell(git:rev-parse*)",
+      "Shell(git:ls-files*)",
+      "Shell(git:cat-file*)",
+      "Shell(git:worktree list*)",
+      "Shell(git:branch --show-current)",
+      "Shell(ls)",
+      "Shell(cat)",
+      "Shell(jq)",
+      "Shell(find)",
+      "Shell(echo)",
+      "Shell(true)",
+      "Shell(adb:logcat*)",
+      "Shell(./build_app)",
+      "Shell(./exec-preflight)",
+      "Shell(./append-to-engineering-log)",
+      "Shell(./todo-append)",
+      "Shell(./todo-close)",
+      "Shell(./get-builds-tag.sh)",
+      "Shell(./reset-to-builds.sh)",
+      "Shell(./generate_pr.sh)",
+      "Shell(./channel-*)",
+      "Shell(.cursor/lib/cursor-channel-watch)",
+      "Shell(./third_party/fetch-deps)",
+      "Write(sandbox/**)",
+      "Write(dev-ai-interaction/**)",
+      "Write(**/project-facts.md)"
+    ],
+    "deny": [
+      "Shell(git:add*)",
+      "Shell(git:commit*)",
+      "Shell(git:push*)",
+      "Shell(git:reset*)",
+      "Shell(git:checkout -- *)",
+      "Shell(git:rebase*)",
+      "Shell(git:tag*)"
+    ]
+  }
+}
