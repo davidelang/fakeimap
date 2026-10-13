@@ -11,7 +11,7 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - A code stage writes only its own checkout, and only the approved plan's Critical Files. No unasked refactors, renames, cleanups, or "best practice" changes. Note them under NEEDS-INPUT instead.
 - The orchestrator stage works project-wide on meta rules and infra.
 - A missing path, a path outside this checkout, or a plan file outside this repo is a question. Wait for the answer.
-- If permissions, Landlock, sudo, or groups block you, stop and report the command, the error, the path, and the user. Do not work around a denial.
+- A denial on a path your role may not write is the rules working: do your role's job instead (a planner writes the change into a plan). Only when a path your role should write is blocked: stop and report the command, the error, the path, and the user. Never work around a denial.
 
 ## Commits, tags, deploy
 - `./build_app` is the only commit and build path. Do not `git add`, `git commit`, `git reset`, or `git push`. A multi-line message is `./build_app @file paths…`.
