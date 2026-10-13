@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# cursor-channel-watch PLAN NODE : channel watch for cursor-agent. Use only when David
+# names the plan/node (docs/rules/channel.md).
+# Run it as a BACKGROUND shell that wakes the agent on output matching ^FILE .
+# A detached re-arm loop owns channel-arm (it survives the reported ~4 min kill of
+# cursor background shells); this process only tails its log, so if cursor kills it,
+# start it again and the last FILE line is shown again. The stop hook
+# (.cursor/lib/cursor-hooks.sh stop) also checks the log and wakes the agent.
+#   --stop   end the re-arm loop for PLAN NODE
+set -uo pipefail
+[[ $# -ge 2 ]] || { echo "usage: $0 PLAN NODE [--stop]" >&2; exit 2; }
+plan="$1" node="$2" mode="${3:-}"
+arm="$(command -v channel-arm 2>/dev/null || true)"
+for c in "${CHANNEL_BIN:-}" "${GIT_HOME:-$HOME/git}/agent-coordination-tickets/bin" /home/*/git/agent-coordination-tickets/bin; do
+  [[ -z "$arm" && -n "$c" && -x "$c/channel-arm" ]] && arm="$c/channel-arm"
+done
+[[ -n "$arm" ]] || { echo "channel-arm not found (set CHANNEL_BIN)" >&2; exit 1; }
+st="${TMPDIR:-/tmp}/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
+key="$(printf '%s %s' "$plan" "$node" | sha256sum | cut -c1-12)"
+log="$st/channel-$key.log" pidf="$st/channel-$key.pid"
+if [[ "$mode" == --stop ]]; then
+  [[ -f "$pidf" ]] && kill -- "-$(cat "$pidf")" 2>/dev/null; rm -f "$pidf" "$st/channel-armed"; echo "stopped"; exit 0
+fi
+if ! { [[ -f "$pidf" ]] && kill -0 "$(cat "$pidf")" 2>/dev/null; }; then
+  : >"$log"
+  setsid bash -c '
+    n=0
+    while :; do
+      "$1" "$2" "$3" >>"$4" 2>&1
+      n=$((n+1)); echo "REARM $n $(date -Is)" >>"$4"
+      [[ $n -ge ${CHANNEL_REARM_MAX:-1000} ]] && break
+      sleep 1
+    done' bash "$arm" "$plan" "$node" "$log" </dev/null >/dev/null 2>&1 &
+  echo $! >"$pidf"
+fi
+printf '%s' "$log" >"$st/channel-armed"
+echo "WATCH log=$log"
+exec tail -n 1 -F "$log"

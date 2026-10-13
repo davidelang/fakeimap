@@ -108,3 +108,12 @@ After Master merge is complete, from orchestration root:
 
 **Plan Mode "Safe-List":**
 While in Plan Mode, the `run_shell_command` tool is restricted to a hardcoded "Safe List" of binaries (e.g., `cat`, `grep`, `awk`, `python3`, `git`). Commands NOT on this list, including `jq`, are blocked with a "Execution of scripts is blocked" error, even if whitelisted in policies.
+
+## Cursor (cursor-agent)
+`./run-cursor[-coder|-planner|-master|-orchestrator]` launch cursor-agent (`~/git/cursor/bin/cursor-agent`,
+`cursor_bin=` in project.config) as the same ai-* users under agent-landlock, with
+`--workspace --trust --sandbox disabled` and the model from roles.config `cursor_model=`.
+The role card arrives through `.cursor/hooks.json` (sessionStart); approval gate, facts and
+STATUS line run through `.cursor/lib/cursor-hooks.sh`. One-time login per user:
+`sudo -u <ai-user> -H env NO_OPEN_BROWSER=1 ~/git/cursor/bin/cursor-agent login`.
+Never run cursor.com/install: it replaces `~/.local/bin/agent` (grok).
