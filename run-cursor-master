@@ -1,0 +1,11 @@
+#!/bin/bash
+# run-cursor-master — cursor-agent launcher, role master (no project rules in this file).
+# Rules: AGENTS.md (auto-loaded) + roles/master.md (sessionStart hook); model: roles.config cursor_model=
+set -euo pipefail
+GROK_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export GROK_LAUNCHER_DIR
+ROLE_KEY=master
+export ROLE_KEY
+# shellcheck source=/dev/null
+source "$GROK_LAUNCHER_DIR/.cursor/lib/cursor-launch-common.sh"
+cursor_launch_main "$@"

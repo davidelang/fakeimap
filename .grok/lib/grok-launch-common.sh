@@ -1,8 +1,11 @@
-# grok-launch-common.sh — shared machinery for run-grok* (no project law).
+# grok-launch-common.sh — shared machinery for run-grok* and run-cursor* (no project law).
 # Install at: <repo>/.grok/lib/grok-launch-common.sh
-# Thin wrappers set GROK_LAUNCHER_DIR + ROLE_KEY, then source this and call grok_launch_main "$@".
+# Thin wrappers set GROK_LAUNCHER_DIR + ROLE_KEY, then source this and call
+# grok_launch_main "$@" (grok) or cursor_launch_main "$@" (cursor-agent; see
+# .cursor/lib/cursor-launch-common.sh).
 #
-# Rules: AGENTS.md (auto-loaded) + roles/<ROLE_KEY>.md via --rules; settings in roles.config
+# Rules: AGENTS.md (auto-loaded) + roles/<ROLE_KEY>.md (grok: --rules; cursor: sessionStart
+# hook in .cursor/hooks.json); settings in roles.config (cursor: cursor_model=)
 # Wiring: project.config (users, sandbox_dir, optional *_model)
 #
 # shellcheck shell=bash
@@ -44,6 +47,11 @@ if [[ -z "$_raw_bin" || "$_raw_bin" == @@* ]]; then
   _raw_bin="${HOME}/git/grok/bin/grok"
 fi
 GROK_BIN="$(_expand_path "$_raw_bin")"
+_raw_cbin="${CURSOR_BIN:-${cursor_bin:-}}"
+if [[ -z "$_raw_cbin" || "$_raw_cbin" == @@* ]]; then
+  _raw_cbin="${HOME}/git/cursor/bin/cursor-agent"
+fi
+CURSOR_BIN="$(_expand_path "$_raw_cbin")"
 
 # Shared host-clone root for third_party / landlock (absolute path in project.config)
 GIT_HOME_CONFIG="${git_home:-}"
@@ -194,6 +202,37 @@ role_cfg() {
   return 0
 }
 
+# build_landlock_args RUN_USER: sets LANDLOCK_ARGS (agent-landlock prefix) for any agent CLI.
+# Mutation-only Landlock as the role user, immediately before the agent binary.
+# Missing helper warns and continues. Helper itself honors AGENT_LANDLOCK_DISABLE=1.
+# Owner -x is not enough: ai-planner is not in ai-code; 774 → Permission denied.
+LANDLOCK_ARGS=()
+build_landlock_args() {
+  local run_user="$1"
+  local landlock_helper="${SCRIPT_DIR}/agent-landlock"
+  LANDLOCK_ARGS=()
+  if [[ -f "$landlock_helper" ]]; then
+    if ! sudo -u "$run_user" -- test -x "$landlock_helper"; then
+      echo "ERROR: $run_user cannot execute $landlock_helper" >&2
+      echo "  $(stat -c 'mode=%a owner=%U:%G' "$landlock_helper" 2>/dev/null || ls -la "$landlock_helper")" >&2
+      echo "  $run_user groups: $(id -nG "$run_user" 2>/dev/null || true)" >&2
+      echo "  Need other-execute (775) when helper is :ai-code and the role is not in ai-code." >&2
+      echo "  Fix: chmod a+x $landlock_helper  (or run fix-perms / update-rules on this worktree)" >&2
+      exit 1
+    fi
+    LANDLOCK_ARGS=(
+      "$landlock_helper"
+      --role "${ROLE_KEY:-primary}"
+      --worktree "$SCRIPT_DIR"
+      --
+    )
+    echo "Landlock: $landlock_helper role=${ROLE_KEY:-primary}"
+  else
+    echo "Landlock: helper missing at $landlock_helper — launching without session Landlock" >&2
+  fi
+  return 0
+}
+
 launch_grok_with_prompt() {
   local prompt="$1"
   local run_user
@@ -296,30 +335,8 @@ launch_grok_with_prompt() {
     echo "Grok worktree: ${GROK_WORKTREE}"
   fi
 
-  # Mutation-only Landlock (agent-landlock) as the role user, immediately before grok.
-  # Missing helper warns and continues. Helper itself honors AGENT_LANDLOCK_DISABLE=1.
-  # Owner -x is not enough: ai-planner is not in ai-code; 774 → Permission denied.
-  local landlock_helper="${SCRIPT_DIR}/agent-landlock"
-  local landlock_args=()
-  if [[ -f "$landlock_helper" ]]; then
-    if ! sudo -u "$run_user" -- test -x "$landlock_helper"; then
-      echo "ERROR: $run_user cannot execute $landlock_helper" >&2
-      echo "  $(stat -c 'mode=%a owner=%U:%G' "$landlock_helper" 2>/dev/null || ls -la "$landlock_helper")" >&2
-      echo "  $run_user groups: $(id -nG "$run_user" 2>/dev/null || true)" >&2
-      echo "  Need other-execute (775) when helper is :ai-code and the role is not in ai-code." >&2
-      echo "  Fix: chmod a+x $landlock_helper  (or run fix-perms / update-rules on this worktree)" >&2
-      exit 1
-    fi
-    landlock_args=(
-      "$landlock_helper"
-      --role "${ROLE_KEY:-primary}"
-      --worktree "$SCRIPT_DIR"
-      --
-    )
-    echo "Landlock: $landlock_helper role=${ROLE_KEY:-primary}"
-  else
-    echo "Landlock: helper missing at $landlock_helper — launching without session Landlock" >&2
-  fi
+  build_landlock_args "$run_user"
+  local landlock_args=(${LANDLOCK_ARGS[@]+"${LANDLOCK_ARGS[@]}"})
 
   # shellcheck disable=SC2086
   exec sudo -u "$run_user" -- env \
@@ -349,4 +366,54 @@ launch_grok_with_prompt() {
 grok_launch_main() {
   prepare_prompt "$@"
   launch_grok_with_prompt "$PROMPT"
+}
+
+# ---- cursor-agent ---------------------------------------------------------
+# Same users, Landlock, env and roles.config as grok. Differences:
+#   model   roles.config cursor_model= (CURSOR_FORCE_MODEL / FORCE_MODEL override)
+#   card    injected by the sessionStart hook (.cursor/hooks.json) from ROLE_KEY
+#   flags   --workspace <worktree> --trust --sandbox disabled (agent-landlock is the boundary)
+launch_cursor_with_prompt() {
+  local prompt="$1"
+  local run_user
+  run_user="$(resolve_run_user)"
+  if [[ ! -x "$CURSOR_BIN" ]]; then
+    echo "ERROR: cursor-agent not found or not executable: $CURSOR_BIN" >&2
+    echo "Set CURSOR_BIN or cursor_bin in project.config" >&2
+    exit 1
+  fi
+  local model="${CURSOR_FORCE_MODEL:-${FORCE_MODEL:-$(role_cfg cursor_model)}}"
+  local model_args=()
+  [[ -n "$model" ]] && model_args=(--model "$model")
+  echo "Launching cursor-agent role=${ROLE_KEY:-?} root=$SCRIPT_DIR"
+  echo "cursor-agent binary: $CURSOR_BIN"
+  echo "Sandbox: $SANDBOX_DIR"
+  echo "Running as: $run_user"
+  echo "Model: ${model:-<cursor default>}"
+  echo "Role card (sessionStart hook): $ROLE_CARD"
+  echo "First run as $run_user: sudo -u $run_user -H env NO_OPEN_BROWSER=1 $CURSOR_BIN login"
+  build_landlock_args "$run_user"
+  # shellcheck disable=SC2086
+  exec sudo -u "$run_user" -- env \
+    ${ANDROID_SHARED:+ANDROID_USER_HOME="$ANDROID_SHARED"} \
+    ${ORCH_ROOT:+ORCH_ROOT="$ORCH_ROOT"} \
+    ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
+    GROK_PROMPT_ROOT="$SCRIPT_DIR" \
+    ROLE_KEY="${ROLE_KEY:-primary}" \
+    RULES_AGENT=cursor \
+    GIT_HOME="${GIT_HOME:-}" \
+    bash -c 'umask '"${umask_launch:-002}"'; exec "$@"' bash \
+      ${LANDLOCK_ARGS[@]+"${LANDLOCK_ARGS[@]}"} \
+      "$CURSOR_BIN" \
+      --workspace "$SCRIPT_DIR" \
+      --trust \
+      --sandbox disabled \
+      ${model_args[@]+"${model_args[@]}"} \
+      ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+      "$prompt"
+}
+
+cursor_launch_main() {
+  prepare_prompt "$@"
+  launch_cursor_with_prompt "$PROMPT"
 }
