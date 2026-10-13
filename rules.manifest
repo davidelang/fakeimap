@@ -37,6 +37,14 @@ shared run-grok-coder
 shared run-grok-master
 shared run-grok-orchestrator
 shared run-grok-planner
+shared run-cursor
+shared run-cursor-coder
+shared run-cursor-master
+shared run-cursor-orchestrator
+shared run-cursor-planner
+shared .cursor/lib/*
+shared .cursor/hooks.json
+shared .cursor/cli.json
 shared exec-preflight
 shared append-to-engineering-log
 shared todo-append
