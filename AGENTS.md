@@ -30,6 +30,7 @@ This is the law for every agent and tool. Your role card comes from the launcher
 ## Facts
 - `project-facts.md` is a trigger index: before touching or doing X, read Y. Follow its triggers.
 - After a compaction, re-read `project-facts.md` before relying on it.
+- Files David names (screenshots etc.) are in the sandbox (`project.config` `sandbox_dir`/`sandbox_path`, default `@@SANDBOX_PATH@@/`; same dir from any worktree): read `<sandbox>/<name>` directly. No ls/find. If it is not there, say so and ask; don't search.
 
 ## Channel
 - `channel-send`, `channel-arm PLAN NODE`, and `channel-arm PLAN NODE --whatineedtoknow` exist. Details are in `docs/rules/channel.md`.
