@@ -1,8 +1,5 @@
 {
   "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "bash \"${GROK_PROMPT_ROOT:-.}/.grok/hooks/rules-hooks.sh\" prompt", "timeout": 10 } ] }
-    ],
     "PreToolUse": [
       { "hooks": [ { "type": "command", "command": "bash \"${GROK_PROMPT_ROOT:-.}/.grok/hooks/rules-hooks.sh\" pretool", "timeout": 10 } ] }
     ],

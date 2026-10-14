@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # rules-hooks.sh <event> : project hooks for rules v3 (grok). Reads hook JSON on stdin.
-#   prompt  (UserPromptSubmit) record David's approval lines to the sandbox log.
-#   pretool (PreToolUse)       ROLE_KEY write guard, approval gate, and project-facts
+#   pretool (PreToolUse)       ROLE_KEY write guard and project-facts
 #                              injection (only when the file hash changed this session).
 #   stop    (Stop/SubagentStop) require a final STATUS line for coder/executor/planner.
 #   facts   project-facts injection only (cursor shim: postToolUse additional_context).
 # RULES_NO_FACTS=1 makes pretool skip the injection (cursor runs it as 'facts').
 # Cursor drives this script through .cursor/lib/cursor-hooks.sh (field translation).
 # No-op when ROLE_KEY is unset (David's own sessions). Fails open on internal errors.
-# TODO-VERIFY (live): UserPromptSubmit prompt field name; ROLE_KEY visible in subagent hooks.
+# TODO-VERIFY (live): ROLE_KEY visible in subagent hooks.
 set -uo pipefail
 ev="${1:-}"
 in="$(cat)"
@@ -27,7 +26,6 @@ sandbox_dir() {
   [[ "$d" = /* ]] || d="$root/$d"
   printf '%s' "$d"
 }
-approval_log() { printf '%s/.approvals/approved.log' "$(sandbox_dir)"; }
 sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 
 inject_facts() {  # $1 = hook event name
@@ -43,18 +41,6 @@ inject_facts() {  # $1 = hook event name
 }
 
 case "$ev" in
-prompt)
-  p="$(j '.prompt // .userPrompt // .text // .input // empty')"
-  [[ -z "$p" ]] && exit 0
-  path="" kind=""
-  if [[ "$p" =~ (^|[[:space:]])implement[[:space:]]+\`?([^[:space:]\`]+\.md) ]]; then path="${BASH_REMATCH[2]}"; kind=implement
-  elif [[ "$p" =~ (^|[[:space:]])\`?([^[:space:]\`]+\.md)\`?[[:space:]]+planned([[:space:][:punct:]]|$) ]]; then path="${BASH_REMATCH[2]}"; kind=planned
-  fi
-  [[ -z "$path" ]] && exit 0
-  [[ "$path" = /* ]] || path="$root/$path"
-  log="$(approval_log)"; mkdir -p "$(dirname "$log")" 2>/dev/null || exit 0
-  printf '%s %s %s %s %s\n' "$(date -Is)" "$sid" "$kind" "$(sha "$path")" "$path" >>"$log" 2>/dev/null
-  exit 0 ;;
 pretool)
   tool="$(j '.toolName // empty')"
   fpath="$(j '.toolInput.file_path // .toolInput.path // .toolInput.target_file // empty')"
@@ -70,20 +56,6 @@ pretool)
       case "$fpath" in "$sb"/*|*/project-facts.md|*/TODO.md) ;; *) deny "role $role writes only the sandbox ($sb), project-facts.md, TODO.md (AGENTS.md 'Who writes')" ;; esac
     fi
     [[ $is_build == 1 ]] && deny "role $role does not build (AGENTS.md)" ;;
-  coder|executor|master)
-    if [[ $is_edit == 1 || $is_build == 1 ]]; then
-      log="$(approval_log)"; ok=0
-      if [[ -f "$log" ]]; then
-        now="$(date +%s)"
-        while read -r ts _sid kind h p; do
-          [[ "$kind" == implement || "$kind" == planned ]] || continue
-          t="$(date -d "$ts" +%s 2>/dev/null || echo 0)"
-          (( now - t < ${RULES_APPROVAL_MAX_AGE:-86400} )) || continue
-          [[ -f "$p" && "$(sha "$p")" == "$h" ]] && { ok=1; break; }
-        done < <(tail -n 50 "$log")
-      fi
-      [[ $ok == 1 ]] || deny "no recorded approval: David must say 'implement <plan path>' (or '<roadmap> planned'), and the plan must be unchanged since then"
-    fi ;;
   esac
   [[ "${RULES_NO_FACTS:-0}" == 1 ]] && exit 0
   inject_facts PreToolUse

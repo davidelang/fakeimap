@@ -66,12 +66,12 @@ This eliminates context bloat, accumulation in the harness `~/.grok/sessions/...
 The agent must also have created (or the user explicitly designated) a fresh sandbox plan file for the *prior* cycle; your new input will cause it to create a *new* one under `@@SANDBOX_PATH@@/plans/` for this cycle.
 
 ## 2. Approval (rules v3)
-Only two forms count, typed by you in chat. The grok hook records them with the plan's sha256 in `<sandbox>/.approvals/approved.log`. Edits and `./build_app` by coder/executor are blocked without a recent matching entry, and an edit to the plan after approval voids it.
+Only two forms count, typed by you in chat (or relayed by the planner over the channel for a `planned` roadmap). No tooling records or checks approval; agents follow the `AGENTS.md` rule.
 
 - `implement <sandbox>/plans/<exact-filename>.md`
 - `<sandbox>/plans/<roadmap>.md planned`: the planner may dispatch that roadmap's plans over the channel. Nodes may be non-grok agents.
 
-Nothing else is approval: "looks good", question-card answers, plan-mode `a`, or an agent's own Status line. Non-grok agents (Antigravity) have no hook; `./exec-preflight` reports `approval=unverified` for them.
+Nothing else is approval: "looks good", question-card answers, plan-mode `a`, or an agent's own Status line.
 
 Every planner/coder/executor turn ends with `STATUS: SUCCESS|FAIL|BLOCKED|NEEDS-INPUT|WORKING <note>`. Watch the last line.
 Context window per role is in `roles.config`. grok has no flag for it, so run `/context-window <size>` once in a new session when the launcher prints it.

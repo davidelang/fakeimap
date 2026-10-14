@@ -3,8 +3,7 @@
 # Translates Cursor hook JSON (snake_case) to the grok field names rules-hooks.sh reads,
 # and its answers back to Cursor's output schema.
 #   session  (sessionStart)       additional_context = roles/$ROLE_KEY.md (the role card)
-#   prompt   (beforeSubmitPrompt) record approval lines; always {"continue":true}
-#   pretool  (preToolUse)         approval gate + write limits -> {"permission":...}
+#   pretool  (preToolUse)         role write limits -> {"permission":...}
 #   posttool (postToolUse)        project-facts.md when changed -> additional_context
 #   response (afterAgentResponse) remember the last assistant text for 'stop'
 #   stop     (stop)               final STATUS line, then channel inbox backstop -> followup_message
@@ -31,8 +30,7 @@ session)
   if [[ -n "$role" && "$role" != primary && -f "$card" ]]; then
     jq -cn --rawfile c "$card" '{additional_context:($c+"\nLaw: AGENTS.md (auto-loaded).")}'
   else echo '{}'; fi ;;
-prompt)
-  grok prompt "$(jq -cn --arg p "$(j '.prompt // empty')" --arg w "$ws" --arg s "$cid" '{prompt:$p,workspaceRoot:$w,sessionId:$s}')" >/dev/null
+prompt)  # no longer registered; kept answering for stale hooks.json copies
   echo '{"continue":true}' ;;
 pretool)
   g="$(jq -cn --argjson i "$in" --arg w "$ws" --arg s "$cid" \

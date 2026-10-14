@@ -113,7 +113,7 @@ While in Plan Mode, the `run_shell_command` tool is restricted to a hardcoded "S
 `./run-cursor[-coder|-planner|-master|-orchestrator]` launch cursor-agent (`~/git/cursor/bin/cursor-agent`,
 `cursor_bin=` in project.config) as the same ai-* users under agent-landlock, with
 `--workspace --trust --sandbox disabled` and the model from roles.config `cursor_model=`.
-The role card arrives through `.cursor/hooks.json` (sessionStart); approval gate, facts and
+The role card arrives through `.cursor/hooks.json` (sessionStart); role write limits, facts and
 STATUS line run through `.cursor/lib/cursor-hooks.sh`. One-time login per user:
 `sudo -u <ai-user> -H env NO_OPEN_BROWSER=1 ~/git/cursor/bin/cursor-agent login`.
 Never run cursor.com/install: it replaces `~/.local/bin/agent` (grok).
