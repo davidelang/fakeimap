@@ -21,6 +21,7 @@ law standard-plan-compliance-block.md
 law roles/*.md
 law docs/rules/*.md
 law .grok/skills/*/SKILL.md
+law .cursor/skills/*/SKILL.md
 
 shared rules.manifest
 shared deploy-orchestration
