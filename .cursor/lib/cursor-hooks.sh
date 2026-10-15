@@ -64,7 +64,7 @@ stop)
     f="$(grep '^FILE ' "$log" 2>/dev/null | tail -1)"
     if [[ -n "$f" && -f "${f#FILE }" && "$(cat "$seen" 2>/dev/null)" != "$f" ]]; then
       printf '%s' "$f" >"$seen"
-      jq -cn --arg f "$f" '{followup_message:("Channel: "+$f+" (oldest inbox file). Handle it per docs/rules/channel.md.")}'
+      jq -cn --arg f "$f" '{followup_message:("Channel: "+$f+" (oldest inbox file). Handle it as the --whatineedtoknow header says.")}'
       exit 0
     fi
   fi

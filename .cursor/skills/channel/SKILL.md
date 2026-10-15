@@ -1,22 +1,24 @@
 ---
 name: channel
 description: >
-  Join an agent channel as a node: set up the inbox if missing, learn the rules
-  from --whatineedtoknow, and start the watch. Use only when David runs
+  Join an agent channel as a node: check the pin, set up the inbox, learn the
+  rules from --whatineedtoknow, and start the watch. Use only when David runs
   /channel <diag path> <node> or names the plan and node.
 ---
 
 # channel
 
-Arguments: `<diag>` (plan file path) and `<node>`. Run from the repo root.
+Arguments: `<diag>` (plan file path) and `<node>`. Run every command from the repo root, exactly as written, in this order. `$B` is `third_party/agent-coordination-tickets/src/go`; there is no other location.
 
-1. Binary dir `B`: `third_party/agent-coordination-tickets/src/go/` if `channel-arm` is there, else `$GIT_HOME/agent-coordination-tickets/go/` (see `docs/rules/channel.md`).
-2. If `$B/channel-arm <diag> <node> --whatineedtoknow` shows an inbox that does not exist, run `$B/channel-setup <diag> <node>` (safe to rerun).
-3. Run `$B/channel-arm <diag> <node> --whatineedtoknow` and follow its "how to act" header. It has the paths, the send forms, and the body rules.
-4a. First review `<inbox>/claimed/`: work you already started. Check whether your reply was already sent before redoing it. Never reclaim by age; report stale claims.
-4b. Start the watch as a background shell (`block_until_ms: 0`): `.cursor/lib/cursor-channel-watch <diag> <node>`. Each `FILE <path>` line is one message: handle the oldest, then end the turn. If that shell ends, start it again. The watch answers PING itself and passes on a check-all PING.
-5. Send with `channel-send ... DEST VERB` and the body as BODYFILE, `-m 'TEXT'` (repeatable), or stdin; add REF files (several allowed).
-6. `rm` the message file when done (from `claimed/` only after your reply is sent).
-7. After a compaction, rerun steps 3 and 4a.
+Do not explore: do not glob or search for binaries or inboxes, and do not read `docs/rules/channel.md`, the watch script, or terminal logs. The header from step 1 is all you need.
 
-Checks: `$B/channel-ping <diag> <node>` tests every arrow now (never rate-limited); `--all` checks every link reachable from the node (each node passes it on once per run, at most every 30 min). Without a watch, answer a PING with PONG and, if its body has `SCOPE: all` and `RUN: <id>`, run `$B/channel-ping --run <id> <diag> <node>`; `$B/channel-status <diag>` shows inbox counts, ages, and claims.
+1. `third_party/agent-coordination-tickets/src/go/channel-arm <diag> <node> --whatineedtoknow`
+   If it does not run, or its first line is not `how to act:`, STOP. Reply only `STATUS: BLOCKED channel pin missing/too old; run fetch-deps` and do nothing else.
+2. `third_party/agent-coordination-tickets/src/go/channel-setup <diag> <node>` (safe to rerun; prints `existing` when already set up).
+3. Follow the header from step 1. First review `<inbox>/claimed/` as it says.
+4. Start the watch: run exactly `.cursor/lib/cursor-channel-watch <diag> <node>` as a background shell (`block_until_ms: 0`). Never run `channel-arm` yourself for the watch, even though the header's `watch:` line names it; this wrapper runs it for you.
+   If it prints `ALREADY-WATCHING`, a watch for this node is already running: do not start another. If it prints `WATCH-ENDED`, report the message before it and stop. If the shell ends with neither, start it again (it shows the last `FILE` again).
+5. Each `FILE <path>` is one message: handle the oldest, send with `$B/channel-send` as the header shows, `rm` the file when done, then end the turn.
+6. After a compaction, rerun step 1 and review `claimed/`. Do not restart the watch shell if it is still running.
+
+Checks, only when asked: `$B/channel-ping <diag> <node>` tests your arrows (`--all`: every reachable link); `$B/channel-status <diag>` shows inbox counts, ages, and claims.

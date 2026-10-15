@@ -6,17 +6,20 @@
 # cursor background shells); this process only tails its log, so if cursor kills it,
 # start it again and the last FILE line is shown again. The stop hook
 # (.cursor/lib/cursor-hooks.sh stop) also checks the log and wakes the agent.
+# channel-arm is exactly third_party/agent-coordination-tickets/src/go/channel-arm
+# under the repo root; there is no other location. The loop re-arms only when
+# channel-arm was killed by a signal; any other exit (an error, or
+# ALREADY-WATCHING when another watch has the node) prints WATCH-ENDED and this
+# command ends.
 #   --stop   end the re-arm loop for PLAN NODE
 set -uo pipefail
 [[ $# -ge 2 ]] || { echo "usage: $0 PLAN NODE [--stop]" >&2; exit 2; }
 plan="$1" node="$2" mode="${3:-}"
-arm=
-top="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-# Prefer the pinned Go binary, then the host Go build, then the shell script.
-for c in "${CHANNEL_BIN:-}" "$top/third_party/agent-coordination-tickets/src/go" "${GIT_HOME:-$HOME/git}/agent-coordination-tickets/go" "$(dirname "$(command -v channel-arm 2>/dev/null || echo /nonexistent/x)")" "${GIT_HOME:-$HOME/git}/agent-coordination-tickets/bin" /home/*/git/agent-coordination-tickets/bin; do
-  [[ -z "$arm" && -n "$c" && -x "$c/channel-arm" ]] && arm="$c/channel-arm"
-done
-[[ -n "$arm" ]] || { echo "channel-arm not found (set CHANNEL_BIN)" >&2; exit 1; }
+top="$(git rev-parse --show-toplevel)" || { echo "cursor-channel-watch: run it inside the project repo" >&2; exit 1; }
+arm="$top/third_party/agent-coordination-tickets/src/go/channel-arm"
+blocked() { echo "STATUS: BLOCKED channel pin missing/too old; run fetch-deps ($1)"; exit 1; }
+[[ -x "$arm" ]] || blocked "no $arm"
+[[ "$("$arm" "$plan" "$node" --whatineedtoknow | head -n 1)" == "how to act:" ]] || blocked "no how-to-act header"
 st="${TMPDIR:-/tmp}/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
 key="$(printf '%s %s' "$plan" "$node" | sha256sum | cut -c1-12)"
 log="$st/channel-$key.log" pidf="$st/channel-$key.pid"
@@ -25,16 +28,21 @@ if [[ "$mode" == --stop ]]; then
 fi
 if ! { [[ -f "$pidf" ]] && kill -0 "$(cat "$pidf")" 2>/dev/null; }; then
   : >"$log"
-  setsid bash -c '
+  # Started from a subshell so the loop is not this process's child: tail --pid
+  # must see it gone (a child would linger as a zombie of tail).
+  ( setsid bash -c '
     n=0
     while :; do
-      "$1" "$2" "$3" >>"$4" 2>&1
-      n=$((n+1)); echo "REARM $n $(date -Is)" >>"$4"
-      [[ $n -ge ${CHANNEL_REARM_MAX:-1000} ]] && break
+      rc=0; "$1" "$2" "$3" >>"$4" 2>&1 || rc=$?
+      if [[ $rc -lt 128 ]]; then echo "WATCH-ENDED channel-arm exit $rc" >>"$4"; break; fi
+      n=$((n+1))
+      if [[ $n -ge ${CHANNEL_REARM_MAX:-1000} ]]; then echo "WATCH-ENDED re-armed $n times" >>"$4"; break; fi
+      echo "REARM $n $(date -Is) (channel-arm killed, exit $rc)" >>"$4"
       sleep 1
     done' bash "$arm" "$plan" "$node" "$log" </dev/null >/dev/null 2>&1 &
-  echo $! >"$pidf"
+    echo $! >"$pidf" )
 fi
 printf '%s' "$log" >"$st/channel-armed"
 echo "WATCH log=$log"
-exec tail -n 1 -F "$log"
+# tail ends when the loop ends (after WATCH-ENDED), so the agent sees the shell finish.
+exec tail -n 2 --pid="$(cat "$pidf")" -F "$log"
