@@ -1,0 +1,30 @@
+#!/bin/bash
+# plans-scope — /validate-plans state in one call (read-only): every plan in $SANDBOX/plans/
+# with its Status, Repo check, ignore-list hit, and the commits on HEAD since the plan's
+# timestamp that touch its Critical Files paths. The agent then judges intent only.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+sb=$(sed -n 's/^sandbox_dir=//p' project.config 2>/dev/null | tr -d '\r' | tail -1)
+[ -n "$sb" ] && [[ "$sb" != *@@* ]] && [ -d "$sb/plans" ] || { echo "ERROR: project.config sandbox_dir has no value or $sb/plans is missing" >&2; exit 1; }
+origin=$(git remote get-url origin 2>/dev/null || echo "(no origin)")
+ignored=$(cat "$sb"/validate-plans-ignore/* 2>/dev/null || true)
+n=0
+for p in "$sb"/plans/*.md; do
+  [ -e "$p" ] || continue
+  n=$((n+1)); b=$(basename "$p")
+  status=$(grep -m1 -E '^(\*\*)?Status:?(\*\*)?' "$p" | sed -E 's/^(\*\*)?Status:?(\*\*)?:? *//' || true)
+  repo=$(grep -m1 -E '^Repo:' "$p" | sed -E 's/^Repo: *`?([^`]*)`?.*/\1/' || true)
+  flag=""
+  grep -qxF "$b" <<< "$ignored" && flag=" IGNORED"
+  [ -z "$repo" ] || [ "$repo" = "$origin" ] || flag="$flag REPO-MISMATCH($repo)"
+  ts=$(sed -nE 's/.*-([0-9]{8})-([0-9]{4})-plan\.md$/\1 \2/p' <<< "$b")
+  since=""; [ -z "$ts" ] || since=$(date -d "${ts:0:8} ${ts:9:2}:${ts:11:2}" '+%Y-%m-%d %H:%M')
+  paths=$(grep -oE '`[A-Za-z0-9_.][A-Za-z0-9_./-]*\.[A-Za-z0-9]+`' "$p" | tr -d '`' | sort -u | while read -r f; do [ -e "$f" ] && echo "$f"; done || true)
+  echo "## $b  status=${status:-none}${flag}"
+  if [ -n "$paths" ] && [ -n "$since" ]; then
+    git log --format='  %h %ad %s' --date=format:'%m-%d %H:%M' --since="$since" HEAD -- $paths | head -20 || echo "  (git log failed for these paths)"
+  else
+    echo "  (no existing paths or no timestamp in the name)"
+  fi
+done
+echo "PLANS $n in $sb/plans (origin $origin)"

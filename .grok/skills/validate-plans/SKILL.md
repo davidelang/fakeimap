@@ -31,6 +31,10 @@ Plans in this checkout’s sandbox are in scope. `Host:` and `Worktree:` stamps 
 Ignore `$SANDBOX/historical-plans/`, including `not-implemented/`.
 Ignore basenames listed in `$SANDBOX/validate-plans-ignore/`. One basename per line. Do not stamp a skip onto the plan file.
 
+## State first
+
+Run `./plans-scope` once: every plan with Status, IGNORED / REPO-MISMATCH flags, and the commits since the plan that touch its named files. Judge intent from that; do not gather it by hand.
+
 ## No cap
 
 Process every matching file still in `plans/`.
