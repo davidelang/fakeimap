@@ -17,4 +17,4 @@ When that host clone contains the pin SHA, `src/` is a linked worktree of it.
 Agents run only the Go binary `src/go/channel` (built by the step above), through its links `channel-setup`,
 `channel-arm`, `channel-send`, `channel-ping`, and `channel-status`; there is no other location. `src/bin/channel` (POSIX sh)
 and `src/bin/channel.py` are alternative implementations of the same tool, kept in step by the connector's tests;
-agents do not run them.
+agents do not run them. Consumers do not rerun the connector's tests when bumping this pin.

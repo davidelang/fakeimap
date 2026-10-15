@@ -8,4 +8,4 @@ reproducible = true
 build_time = "minutes"
 requires_writable_src = false
 build = ["cd src/go && d=$(mktemp -d) && GOCACHE=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
-consumer_note = "Channel handoff tools. Build go/channel; agents run only src/go/channel-{setup,arm,send,ping,status} from the repo root. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them."
+consumer_note = "Channel handoff tools. Build go/channel; agents run only src/go/channel-{setup,arm,send,ping,status} from the repo root. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them. Consumers do not rerun the connector's tests."
