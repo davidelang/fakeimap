@@ -1190,7 +1190,10 @@ cmd_upgrade() {
     echo "    FAIL upgrade $name: patch did not apply at $sha; not building, lock unchanged" >&2
     return 1
   fi
-  cmd_build "$name" || true
+  if ! cmd_build "$name"; then
+    echo "    FAIL upgrade $name: build failed at $sha; lock unchanged" >&2
+    return 1
+  fi
   write_lock_sha "$(lock_path "$name")" "$sha" "$(git -C "$src" describe --tags --long --always HEAD 2>/dev/null || echo "$sha")"
   echo "    upgraded pin to $sha — review artifact/ and commit on VE"
   echo "    OK upgrade $name"
