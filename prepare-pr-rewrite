@@ -25,8 +25,8 @@ Preflight (before the tag or any change): every path the reset writes must be re
 user (writable parent dir, no a/i attribute); offenders are listed with the fix and nothing changes.
 Resume: start/redo record the pre-reset tip in $GIT_DIR/prepare-pr-rewrite.state until they finish.
 After an interrupted run, ./prepare-pr-rewrite --redo finishes it: uncommitted changes in paths the
-reset sets (log, infra, the reset product paths) are allowed; the log is never written, the tag
-never touched.
+reset sets (log, infra, the reset product paths) and untracked infra paths are allowed; the log is
+never written, the tag never touched.
 """
 import datetime, os, re, subprocess, sys
 
@@ -228,7 +228,8 @@ def reset(c, redo):
     if not redo and c.base == c.head:
         die("nothing to rewrite: HEAD is the merge-base with " + c.target)
     untracked = [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
-    hit = [p for p in untracked if blob(c.base, p) or p in c.expect]
+    # redo: an untracked infra path is one an interrupted run wrote; the reset sets it again.
+    hit = [p for p in untracked if (blob(c.base, p) or p in c.expect) and not (redo and p in c.infra)]
     if hit:
         die("untracked files are tracked at the base or the reference; move them away first:\n" + "\n".join(hit))
     if c.conflict:
