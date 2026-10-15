@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""publish-smudge-fix: publish canon rules and make every tree's smudge filter strict and verified.
+
+  tools/publish-smudge-fix            dry run: change nothing, write the report, print the summary
+  tools/publish-smudge-fix --apply    run the fix (only after David says every agent is paused)
+
+--apply refuses while the dry run has any BLOCKER. Then, stopping at the first failure:
+  1 project.config per tree: add missing keys from their one source
+      sandbox_dir <- that tree's sandbox_path; git_home, *_bin <- canon project.config
+  2 ./deploy-orchestration --apply (publish + one commit per changed tree; no push)
+  3 per host: ./install-merge-drivers.sh (filter required=true) + .git/hooks/post-checkout
+  4 per tree: ./verify-smudge --fix (re-smudge), then ./verify-smudge (must be OK)
+  5 per tree: filtered files must show no diff (else fail; nothing is committed blind)
+Never pushes. Trees under grok-worktrees/ and third_party/*/src are excluded (deploy rule).
+"""
+import argparse, datetime, importlib.machinery, importlib.util, os, re, shutil, subprocess, sys
+
+CANON = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPORT = os.path.join(CANON, "sandbox", "publish-smudge-fix-report.md")
+
+def load_deploy():
+    p = os.path.join(CANON, "deploy-orchestration")
+    loader = importlib.machinery.SourceFileLoader("deploy_orchestration", p)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    m = importlib.util.module_from_spec(spec)
+    loader.exec_module(m)
+    return m
+
+D = load_deploy()
+git = D.git
+
+def die(msg):
+    print("publish-smudge-fix: ERROR: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+def run(cmd, cwd):
+    print("  $ (cd %s && %s)" % (cwd, " ".join(cmd)))
+    p = subprocess.run(cmd, cwd=cwd)
+    if p.returncode != 0:
+        die("failed (rc %d): %s in %s" % (p.returncode, " ".join(cmd), cwd))
+
+def conf(path):
+    out = {}
+    if not os.path.isfile(path):
+        return None
+    for line in open(path, encoding="utf-8", errors="replace"):
+        line = line.rstrip("\r\n")
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+def good(v):
+    return bool(v) and "@@" not in v
+
+# Keys every tree's launchers/hooks/landlock read (need_cfg, agent-landlock, post-checkout).
+BASE_KEYS = ["sandbox_dir", "git_home", "orch_root", "primary_user", "planning_user", "coder_user",
+             "orchestrator_user", "code_group", "sandbox_group", "shared_group", "grok_bin_default", "cursor_bin"]
+MACHINE_KEYS = ["git_home", "grok_bin_default", "cursor_bin", "antigravity_bin", "gemini_bin_default"]
+
+def tokens():
+    out = subprocess.run(["bash", os.path.join(CANON, "filter-apply-config"), "--tokens"],
+                         cwd=CANON, capture_output=True, text=True)
+    if out.returncode != 0:
+        die("canon filter-apply-config --tokens failed: " + out.stderr.strip())
+    return dict(l.split() for l in out.stdout.splitlines() if l.strip())
+
+def published_paths():
+    s = set()
+    for c in ("law", "shared", "opt", "replace"):
+        p = subprocess.run([os.path.join(CANON, "deploy-orchestration"), "--list", c], cwd=CANON,
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            die("deploy-orchestration --list %s failed" % c)
+        s.update(l.strip() for l in p.stdout.splitlines() if l.strip())
+    return s
+
+def filtered_files(wt):
+    files = [f for f in git(wt, "ls-files", "-z").split("\0") if f]
+    out = git(wt, "check-attr", "-z", "filter", "--stdin", inp="\0".join(files).encode())
+    parts = out.split("\0")
+    return sorted(parts[i] for i in range(0, len(parts) - 2, 3) if parts[i + 2] == "manage-configs")
+
+def blob_text(repo, path):
+    p = subprocess.run(["git", "-c", "safe.directory=*", "-C", repo, "show", "HEAD:" + path], capture_output=True)
+    return p.stdout.decode(errors="replace") if p.returncode == 0 else None
+
+def has_attr_ai(path):
+    p = subprocess.run(["lsattr", "-d", path], capture_output=True, text=True)
+    return p.returncode == 0 and re.search(r"^[^ ]*[ai]", p.stdout) is not None
+
+def agent_roots():
+    p = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True)
+    roots = {}
+    for line in p.stdout.splitlines():
+        m = re.search(r"GROK_PROMPT_ROOT=(\S+)", line)
+        r = re.search(r"ROLE_KEY=(\S+)", line)
+        if m and " sudo " in " " + line.split(None, 1)[1] + " ":
+            roots.setdefault(os.path.realpath(m.group(1)), set()).add(r.group(1) if r else "?")
+    return roots
+
+def plan_tree(wt, tok, pub, canon_cfg, running):
+    t = {"wt": wt, "blockers": [], "notes": [], "add": {}, "resmudge": [], "collide": []}
+    cfg = conf(os.path.join(wt, "project.config"))
+    if cfg is None:
+        t["blockers"].append("project.config missing")
+        return t
+    files = filtered_files(wt)
+    need = set(BASE_KEYS)
+    if any(os.path.exists(os.path.join(wt, f)) for f in ("run-antigravity", "run-antigravity-master", "run-antigravity-planner")):
+        need.add("antigravity_bin")
+    for f in files:
+        txt = blob_text(CANON, f) if f in pub else None
+        if txt is None:
+            txt = blob_text(wt, f) or ""
+        for k, key in tok.items():
+            if k in txt:
+                need.add(key)
+    for key in sorted(need):
+        if good(cfg.get(key, "")):
+            continue
+        if key == "sandbox_dir" and good(cfg.get("sandbox_path", "")):
+            t["add"][key] = cfg["sandbox_path"]
+        elif key in MACHINE_KEYS and good(canon_cfg.get(key, "")):
+            t["add"][key] = canon_cfg[key]
+        else:
+            t["blockers"].append("project.config %s has no value and no defined source" % key)
+    sd = t["add"].get("sandbox_dir", cfg.get("sandbox_dir", ""))
+    if good(sd) and not os.path.isdir(os.path.join(wt, sd)):
+        t["blockers"].append("sandbox_dir=%s is not a directory" % sd)
+    if not os.access(wt, os.W_OK) or not os.access(os.path.join(wt, "project.config"), os.W_OK):
+        t["blockers"].append("no write access for %s" % os.environ.get("USER", "?"))
+    dirty = set(l[3:] for l in git(wt, "status", "--porcelain", "--untracked-files=no", "--", *files).splitlines()) if files else set()
+    for f in files:
+        fp = os.path.join(wt, f)
+        if not os.path.isfile(fp) or os.path.islink(fp):
+            continue
+        body = open(fp, encoding="utf-8", errors="replace").read()
+        if any(k in body for k in tok):
+            t["resmudge"].append(f)
+            if f in dirty:
+                t["collide"].append(f + " (uncommitted change)")
+            elif has_attr_ai(fp):
+                t["collide"].append(f + " (chattr a/i)")
+    for c in t["collide"]:
+        t["blockers"].append("re-smudge collision: " + c)
+    if not files:
+        t["blockers"].append("no filter=manage-configs files (.gitattributes)")
+    t["filtered"] = len(files)
+    roles = running.get(os.path.realpath(wt))
+    if roles:
+        t["running"] = sorted(roles)
+        t["blockers"].append("agent running: " + ",".join(sorted(roles)))
+    if not os.path.isfile(os.path.join(wt, "build_app")):
+        t["notes"].append("no ./build_app (adopt tools/build_app.template + build_command)")
+    return t
+
+def plan_host(host):
+    h = {"host": host, "blockers": [], "fix": []}
+    gv = lambda k: git(host, "config", "--get", k, check=False).strip()
+    want = {"filter.manage-configs.clean": "bash ./filter-clean-config %f",
+            "filter.manage-configs.smudge": "bash ./filter-apply-config",
+            "filter.manage-configs.required": "true"}
+    bad = [k.split(".")[-1] + "=" + (gv(k) or "unset") for k, v in want.items() if gv(k) != v]
+    if bad:
+        h["fix"].append("filter config: " + ", ".join(bad))
+    cd = git(host, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    hook = os.path.join(cd, "hooks", "post-checkout")
+    src = os.path.join(CANON, "hooks", "post-checkout")
+    if not os.path.isfile(hook):
+        h["fix"].append("post-checkout hook missing")
+    elif open(hook, "rb").read() != open(src, "rb").read():
+        h["fix"].append("post-checkout hook outdated")
+    h["hook"] = hook
+    if not os.access(os.path.join(cd, "hooks"), os.W_OK):
+        h["blockers"].append("no write access to %s/hooks" % cd)
+    return h
+
+def label(path, git_home):
+    return os.path.relpath(path, git_home)
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--apply", action="store_true")
+    a = ap.parse_args()
+    canon_cfg = conf(os.path.join(CANON, "project.config")) or die("canon project.config missing")
+    gh = canon_cfg.get("git_home", "")
+    if not good(gh) or not os.path.isdir(gh):
+        die("canon project.config git_home has no value or is not a dir")
+    tok, pub, running = tokens(), published_paths(), agent_roots()
+    hosts = []
+    for host in D.discover(gh):
+        if os.path.realpath(host) == os.path.realpath(CANON):
+            continue
+        h = plan_host(host)
+        h["trees"], h["excluded"] = [], []
+        for wt, why in D.worktrees(host):
+            if why:
+                h["excluded"].append("%s (%s)" % (label(wt, gh), why))
+            else:
+                h["trees"].append(plan_tree(wt, tok, pub, canon_cfg, running))
+        hosts.append(h)
+    dep = subprocess.run([os.path.join(CANON, "deploy-orchestration")], cwd=CANON, capture_output=True, text=True)
+    deploy_out = dep.stdout + dep.stderr
+    blockers = []
+    for h in hosts:
+        blockers += ["%s: %s" % (label(h["host"], gh), b) for b in h["blockers"]]
+        for t in h["trees"]:
+            blockers += ["%s: %s" % (label(t["wt"], gh), b) for b in t["blockers"]]
+    for line in deploy_out.splitlines():
+        if re.search(r"\b(SKIPPED|REPORT-ONLY)\b", line) and "excluded path" not in line:
+            blockers.append("deploy: " + line.strip())
+    if dep.returncode != 0:
+        blockers.append("deploy-orchestration report failed (rc %d)" % dep.returncode)
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M %Z").strip()
+    L = ["# publish-smudge-fix dry run (%s PT)" % now, "",
+         "Apply: `%s/tools/publish-smudge-fix --apply` (refuses while blockers remain)." % CANON, ""]
+    for h in hosts:
+        L.append("## %s" % label(h["host"], gh))
+        L.append("- host git: " + ("; ".join(h["fix"]) or "OK"))
+        for x in h["excluded"]:
+            L.append("- excluded: " + x)
+        for t in h["trees"]:
+            L.append("### %s" % label(t["wt"], gh))
+            L.append("- filtered files: %d; re-smudge: %d%s" % (t.get("filtered", 0), len(t["resmudge"]),
+                     (" (" + ", ".join(t["resmudge"][:8]) + (" ..." if len(t["resmudge"]) > 8 else "") + ")") if t["resmudge"] else ""))
+            L.append("- project.config add: " + (", ".join("%s=%s" % kv for kv in sorted(t["add"].items())) or "none"))
+            for b in t["blockers"]:
+                L.append("- BLOCKER: " + b)
+            for n in t["notes"]:
+                L.append("- note: " + n)
+        L.append("")
+    L += ["## deploy-orchestration (report mode)", "```", deploy_out.rstrip(), "```", "",
+          "## Blockers (%d)" % len(blockers)] + ["- " + b for b in blockers]
+    if not a.apply:
+        with open(REPORT, "w") as f:
+            f.write("\n".join(L) + "\n")
+        print("dry run: %d host(s), %d tree(s), %d blocker(s). Report: %s" % (
+            len(hosts), sum(len(h["trees"]) for h in hosts), len(blockers), REPORT))
+        for b in blockers:
+            print("  BLOCKER " + b)
+        return 0
+    if blockers:
+        die("%d blocker(s); fix them and re-run the dry run:\n  " % len(blockers) + "\n  ".join(blockers))
+    print("1/5 project.config keys")
+    for h in hosts:
+        for t in h["trees"]:
+            if t["add"]:
+                p = os.path.join(t["wt"], "project.config")
+                body = open(p).read()
+                with open(p, "a") as f:
+                    f.write(("" if body.endswith("\n") or not body else "\n") +
+                            "".join("%s=%s\n" % kv for kv in sorted(t["add"].items())))
+                print("  %s: +%s" % (label(t["wt"], gh), ",".join(sorted(t["add"]))))
+    print("2/5 deploy-orchestration --apply")
+    run([os.path.join(CANON, "deploy-orchestration"), "--apply"], CANON)
+    print("3/5 host filter config + post-checkout hook")
+    for h in hosts:
+        run(["./install-merge-drivers.sh"], h["host"])
+        src = os.path.join(h["host"], "hooks", "post-checkout")
+        if not os.path.isfile(src):
+            die("%s not tracked after deploy" % src)
+        shutil.copyfile(src, h["hook"])
+        os.chmod(h["hook"], 0o775)
+        print("  hook -> " + h["hook"])
+    print("4/5 re-smudge + verify per tree")
+    for h in hosts:
+        for t in h["trees"]:
+            run(["./verify-smudge", "--fix"], t["wt"])
+            run(["./verify-smudge"], t["wt"])
+    print("5/5 filtered files clean")
+    for h in hosts:
+        for t in h["trees"]:
+            files = filtered_files(t["wt"])
+            left = git(t["wt"], "status", "--porcelain", "--untracked-files=no", "--", *files).strip() if files else ""
+            if left:
+                die("%s: filtered files differ after re-smudge:\n%s" % (t["wt"], left))
+    print("done: published, filters strict, every tree verified. Nothing pushed.")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
