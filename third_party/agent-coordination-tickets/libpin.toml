@@ -1,8 +1,8 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "61a210e3eec2379bdad8a4dc4368bd3c3223c938"
-git_describe = "61a210e"
+git_sha = "e9e8d6cac3f1d75d4df626464ce3e150c1daeff3"
+git_describe = "e9e8d6c"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
