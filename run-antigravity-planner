@@ -191,7 +191,14 @@ PLANNING_PROMPT="$(cat "$SCRIPT_DIR/roles/planner.md" 2>/dev/null || cat "roles/
 
 Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive."
 
-exec sudo -u "$PLANNING_USER" "$ANTIGRAVITY_BIN" \
+ROLE_KEY=planner
+AGENT_OOM_FUNCS_ONLY=1
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/.grok/lib/grok-launch-common.sh" || exit 1
+mem_max="$(agent_memory_max ANTIGRAVITY_MEMORY_MAX 4G)"
+start_role_process "$mem_max" sudo -u "$PLANNING_USER" -- \
+  bash -c "$(role_exec_bash)" bash \
+  "$ANTIGRAVITY_BIN" \
     -i "$PLANNING_PROMPT" \
     --model "$PLANNER_MODEL" \
     --add-dir "$SANDBOX_DIR" \

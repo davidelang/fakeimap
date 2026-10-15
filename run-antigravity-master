@@ -166,7 +166,14 @@ MASTER_PROMPT="$(cat "$SCRIPT_DIR/roles/master.md" 2>/dev/null || cat "roles/mas
 Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive."
 
 
-exec sudo -u "$CODER_USER" "$ANTIGRAVITY_BIN" \
+ROLE_KEY=master
+AGENT_OOM_FUNCS_ONLY=1
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/.grok/lib/grok-launch-common.sh" || exit 1
+mem_max="$(agent_memory_max ANTIGRAVITY_MEMORY_MAX 8G)"
+start_role_process "$mem_max" sudo -u "$CODER_USER" -- \
+  bash -c "$(role_exec_bash)" bash \
+  "$ANTIGRAVITY_BIN" \
     -i "$MASTER_PROMPT" \
     --model "$MASTER_MODEL" \
     --add-dir "$SANDBOX_DIR" \

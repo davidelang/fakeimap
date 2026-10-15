@@ -62,7 +62,14 @@ for arg in "$@"; do
   fi
 done
 
-exec sudo -u "$ORCHESTRATOR_USER" "$ANTIGRAVITY_BIN" \
+ROLE_KEY=orchestrator
+AGENT_OOM_FUNCS_ONLY=1
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/.grok/lib/grok-launch-common.sh" || exit 1
+mem_max="$(agent_memory_max ANTIGRAVITY_MEMORY_MAX 4G)"
+start_role_process "$mem_max" sudo -u "$ORCHESTRATOR_USER" -- \
+  bash -c "$(role_exec_bash)" bash \
+  "$ANTIGRAVITY_BIN" \
     -i "$(cat "$SCRIPT_DIR/roles/orchestrator.md" 2>/dev/null || cat "roles/orchestrator.md")
 
 Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive." \

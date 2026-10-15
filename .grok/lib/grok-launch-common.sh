@@ -10,6 +10,134 @@
 #
 # shellcheck shell=bash
 
+# Memory cap and early OOM kill. run-antigravity* source this file with
+# AGENT_OOM_FUNCS_ONLY=1 and return here, before launcher setup.
+# Cgroup cap: systemd-run --user --scope MemoryMax, MemorySwapMax=0.
+# No user bus: warn, and still set oom_score_adj (children inherit it).
+# OOM score by ROLE_KEY: coder 1000, master 999, planner 998, every other
+# role 997. AGENT_OOM_SCORE_ADJ overrides. A process may raise its own
+# score; only CAP_SYS_RESOURCE can lower it.
+# *_MEMORY_MAX: 0 disables the cap. Unset grok coder is 0 (the build shares
+# this cgroup); unset cursor coder is 8G; every other role is 4G.
+
+agent_oom_default() {
+  case "${ROLE_KEY:-}" in
+    coder) printf '%s' 1000 ;;
+    master) printf '%s' 999 ;;
+    planner) printf '%s' 998 ;;
+    *) printf '%s' 997 ;;
+  esac
+}
+
+agent_oom_adj() {
+  local adj="${AGENT_OOM_SCORE_ADJ:-}"
+  if [[ -n "$adj" && ! "$adj" =~ ^-?[0-9]+$ ]]; then
+    echo "WARN: ignoring invalid AGENT_OOM_SCORE_ADJ=${adj}" >&2
+    adj=""
+  fi
+  if [[ -z "$adj" ]]; then
+    adj="$(agent_oom_default)"
+  fi
+  if (( adj > 1000 )); then
+    adj=1000
+  fi
+  if (( adj < -1000 )); then
+    adj=-1000
+  fi
+  printf '%s' "$adj"
+}
+
+# $1 variable name, $2 default. Digits plus optional K/M/G/T. A zero value is 0.
+agent_memory_max() {
+  local name="$1"
+  local def="$2"
+  local val=""
+  # Separate from local: one local line expands ${!name} before name is set.
+  if [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    val="${!name-}"
+  else
+    echo "WARN: ignoring memory setting; bad variable name ${name}" >&2
+    printf '%s' "$def"
+    return 0
+  fi
+  if [[ -n "$val" ]]; then
+    if [[ "$val" =~ ^0+[KMGT]?$ ]]; then
+      printf '%s' 0
+      return 0
+    fi
+    if [[ "$val" =~ ^[0-9]+[KMGT]?$ ]]; then
+      printf '%s' "$val"
+      return 0
+    fi
+    echo "WARN: ignoring invalid ${name}=${val}" >&2
+  fi
+  printf '%s' "$def"
+}
+
+grok_memory_max() {
+  local def=4G
+  if [[ "${ROLE_KEY:-}" == coder ]]; then
+    def=0
+  fi
+  agent_memory_max GROK_MEMORY_MAX "$def"
+}
+
+cursor_memory_max() {
+  local def=4G
+  if [[ "${ROLE_KEY:-}" == coder ]]; then
+    def=8G
+  fi
+  agent_memory_max CURSOR_MEMORY_MAX "$def"
+}
+
+# bash -c script: set oom_score_adj, optional umask, then exec "$@".
+role_exec_bash() {
+  local umask_arg="${1:-}" adj
+  adj="$(agent_oom_adj)"
+  # Group redirect: a denied /proc write must not print or abort the launch.
+  if [[ -n "$umask_arg" ]]; then
+    printf '{ echo %s >/proc/self/oom_score_adj; } 2>/dev/null || true; umask %s; exec "$@"' \
+      "$adj" "$umask_arg"
+  else
+    printf '{ echo %s >/proc/self/oom_score_adj; } 2>/dev/null || true; exec "$@"' "$adj"
+  fi
+}
+
+systemd_user_scope_ok() {
+  command -v systemd-run >/dev/null 2>&1 || return 1
+  systemd-run --user --scope -q --collect -d \
+    -p MemoryMax=64M -p MemorySwapMax=0 -p OOMScoreAdjust=1000 \
+    -- true >/dev/null 2>&1
+}
+
+# $1 mem_max (empty or 0 = no cgroup cap). The rest is the command.
+start_role_process() {
+  local mem_max="$1"
+  shift
+  local adj
+  adj="$(agent_oom_adj)"
+  if [[ -n "$mem_max" && "$mem_max" != "0" ]] && systemd_user_scope_ok; then
+    echo "MemoryMax=${mem_max} MemorySwapMax=0 OOMScoreAdjust=${adj}"
+    # exec only returns when systemd-run itself cannot be started.
+    if ! exec systemd-run --user --scope -q --collect -d \
+      -p "MemoryMax=${mem_max}" \
+      -p MemorySwapMax=0 \
+      -p "OOMScoreAdjust=${adj}" \
+      -- "$@"; then
+      echo "WARN: systemd-run failed to start; OOM score ${adj} only, no MemoryMax=${mem_max}" >&2
+    fi
+  elif [[ -n "$mem_max" && "$mem_max" != "0" ]]; then
+    echo "WARN: no systemd user bus; OOM score ${adj} only, no MemoryMax=${mem_max}" >&2
+  else
+    echo "OOMScoreAdjust=${adj} (no MemoryMax)"
+  fi
+  exec "$@"
+}
+
+if [[ "${AGENT_OOM_FUNCS_ONLY:-}" == 1 ]]; then
+  return 0
+fi
+
 set -euo pipefail
 
 if [[ -z "${GROK_LAUNCHER_DIR:-}" ]]; then
@@ -338,8 +466,10 @@ launch_grok_with_prompt() {
   build_landlock_args "$run_user"
   local landlock_args=(${LANDLOCK_ARGS[@]+"${LANDLOCK_ARGS[@]}"})
 
+  local mem_max
+  mem_max="$(grok_memory_max)"
   # shellcheck disable=SC2086
-  exec sudo -u "$run_user" -- env \
+  start_role_process "$mem_max" sudo -u "$run_user" -- env \
     ${ANDROID_SHARED:+ANDROID_USER_HOME="$ANDROID_SHARED"} \
     ${ORCH_ROOT:+ORCH_ROOT="$ORCH_ROOT"} \
     ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
@@ -347,7 +477,7 @@ launch_grok_with_prompt() {
     ROLE_KEY="${ROLE_KEY:-primary}" \
     GIT_HOME="${GIT_HOME:-}" \
     ${grok_role_env[@]+"${grok_role_env[@]}"} \
-    bash -c 'umask '"${umask_launch:-002}"'; exec "$@"' bash \
+    bash -c "$(role_exec_bash "${umask_launch:-002}")" bash \
       ${landlock_args[@]+"${landlock_args[@]}"} \
       "$GROK_BIN" \
       "$prompt" \
@@ -393,8 +523,10 @@ launch_cursor_with_prompt() {
   echo "Role card (sessionStart hook): $ROLE_CARD"
   echo "First run as $run_user: sudo -u $run_user -H env NO_OPEN_BROWSER=1 $CURSOR_BIN login"
   build_landlock_args "$run_user"
+  local mem_max
+  mem_max="$(cursor_memory_max)"
   # shellcheck disable=SC2086
-  exec sudo -u "$run_user" -- env \
+  start_role_process "$mem_max" sudo -u "$run_user" -- env \
     ${ANDROID_SHARED:+ANDROID_USER_HOME="$ANDROID_SHARED"} \
     ${ORCH_ROOT:+ORCH_ROOT="$ORCH_ROOT"} \
     ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
@@ -402,7 +534,7 @@ launch_cursor_with_prompt() {
     ROLE_KEY="${ROLE_KEY:-primary}" \
     RULES_AGENT=cursor \
     GIT_HOME="${GIT_HOME:-}" \
-    bash -c 'umask '"${umask_launch:-002}"'; exec "$@"' bash \
+    bash -c "$(role_exec_bash "${umask_launch:-002}")" bash \
       ${LANDLOCK_ARGS[@]+"${LANDLOCK_ARGS[@]}"} \
       "$CURSOR_BIN" \
       --workspace "$SCRIPT_DIR" \
