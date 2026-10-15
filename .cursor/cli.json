@@ -27,6 +27,7 @@
       "Shell(./get-builds-tag.sh)",
       "Shell(./reset-to-builds.sh)",
       "Shell(./generate_pr.sh)",
+      "Shell(./prepare-pr-rewrite)",
       "Shell(./channel-*)",
       "Shell(.cursor/lib/cursor-channel-watch)",
       "Shell(./third_party/fetch-deps)",

@@ -52,6 +52,7 @@ shared todo-append
 shared todo-close
 shared get-builds-tag.sh
 shared reset-to-builds.sh
+shared prepare-pr-rewrite
 shared install-merge-drivers.sh
 shared merge-branch-into-master.sh
 shared git-merge-drivers/*

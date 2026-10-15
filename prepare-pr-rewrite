@@ -1,0 +1,21 @@
+#!/bin/bash
+# prepare-pr-rewrite [TARGET] — start the /prepare-local-pr history rewrite on this branch.
+# Refuses unless the worktree is clean. Tags the tip backup-<branch> (the safety copy and the
+# reference for the final diff), verifies the tag, then resets this branch to
+# merge-base(TARGET, HEAD). TARGET defaults to master. Never deletes or moves the tag.
+set -euo pipefail
+[ $# -le 1 ] || { echo "usage: ./prepare-pr-rewrite [TARGET]" >&2; exit 2; }
+target=${1:-master}
+branch=$(git symbolic-ref --short HEAD) || { echo "ERROR: detached HEAD" >&2; exit 1; }
+case "$branch" in master|orchestration) echo "ERROR: refusing to rewrite $branch" >&2; exit 1 ;; esac
+dirty=$(git status --porcelain)
+[ -z "$dirty" ] || { printf 'ERROR: uncommitted changes; commit or remove them first:\n%s\n' "$dirty" >&2; exit 1; }
+tip=$(git rev-parse HEAD)
+base=$(git merge-base "$target" HEAD) || { echo "ERROR: no merge-base with $target" >&2; exit 1; }
+[ "$base" != "$tip" ] || { echo "ERROR: nothing to rewrite: HEAD is the merge-base with $target" >&2; exit 1; }
+tag=backup-$branch
+git tag "$tag" "$tip" || { echo "ERROR: cannot create tag $tag (it exists?); nothing changed" >&2; exit 1; }
+[ "$(git rev-parse "$tag^{commit}")" = "$tip" ] || { echo "ERROR: $tag does not point at $tip; nothing reset" >&2; exit 1; }
+git reset --hard "$base"
+echo "REWRITE-START branch=$branch tag=$tag tip=$tip base=$base target=$target"
+echo "final check: git diff $tag HEAD (only listed deviations)"

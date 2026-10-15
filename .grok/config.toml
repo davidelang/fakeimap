@@ -32,6 +32,7 @@ rules = [
   { action = "allow", tool = "bash", pattern = "./get-builds-tag.sh*" },
   { action = "allow", tool = "bash", pattern = "./reset-to-builds.sh*" },
   { action = "allow", tool = "bash", pattern = "./generate_pr.sh*" },
+  { action = "allow", tool = "bash", pattern = "./prepare-pr-rewrite*" },
   { action = "allow", tool = "bash", pattern = "./channel-*" },
   { action = "allow", tool = "bash", pattern = "./third_party/fetch-deps*" },
   { action = "allow", tool = "bash", pattern = "mkdir -p @@SANDBOX_PATH@@/*" },
