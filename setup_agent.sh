@@ -269,13 +269,6 @@ else
     echo "Created symlink: ${BRANCH_NAME}.wt -> $AGENT_ID"
 fi
 
-# Files that use filter=manage-configs (see .gitattributes). Smudge substitutes @@ tokens.
-STAMPED_FILES=(
-  run-grok run-grok-master run-grok-planner run-grok-coder run-grok-orchestrator
-  env
-  setup-project set-worktree-perms set-sandbox-perms
-)
-
 # Copy orch seed only if dest missing, identical, or SETUP_FORCE=1.
 # After checkout, dest is the branch file — do not silently clobber worktree-ahead.
 copy_orch_seed_file() {
@@ -318,17 +311,16 @@ seed_smudge_inputs() {
 }
 
 
-# Tracked paths whose .gitattributes say filter=manage-configs.
-# Fallback is STAMPED_FILES when check-attr returns nothing.
+# Tracked paths whose .gitattributes say filter=manage-configs (none is an error).
 manage_configs_files() {
   local listed
   listed=$(git ls-files | git check-attr --stdin filter \
     | awk -F': ' '$3 == "manage-configs" { print $1 }')
-  if [ -n "$listed" ]; then
-    printf '%s\n' "$listed"
-  else
-    printf '%s\n' "${STAMPED_FILES[@]}"
+  if [ -z "$listed" ]; then
+    echo "Error: .gitattributes names no filter=manage-configs files" >&2
+    return 1
   fi
+  printf '%s\n' "$listed"
 }
 
 re_smudge_stamped_files() {
@@ -381,27 +373,9 @@ refresh_smudged_index() {
   git add -- "${present[@]}"
 }
 
+# Filter config + every filtered file smudged (orchestration's checker; cwd = this worktree).
 verify_smudge() {
-  local failed=0
-  if [ ! -f project.config ]; then
-    echo "Error: project.config missing (smudge filters cannot run without it)."
-    return 1
-  fi
-  mapfile -t _mc_files < <(manage_configs_files)
-  for f in "${_mc_files[@]}"; do
-    [ -f "$f" ] || continue
-    # Match real tokens only (@@SANDBOX_PATH@@). Do NOT match:
-    # - comments mentioning "@@ tokens"
-    # - the documented shape @@VAR@@ in project.config.example
-    # - intentional runtime checks like: [[ "$1" == @@* ]]
-    leftover=$(grep -oE '@@[A-Z0-9_]+@@' "$f" 2>/dev/null | grep -vx '@@VAR@@' || true)
-    if [ -n "$leftover" ]; then
-      echo "Error: Unsubstituted @@ tokens remain in $f (smudge filter did not run correctly)."
-      echo "$leftover" | sort -u | sed 's/^/  /'
-      failed=1
-    fi
-  done
-  return "$failed"
+  "$ORCH_ROOT/verify-smudge"
 }
 
 # 4. Populate worktree from branch tip, then manually smudge stamped files.

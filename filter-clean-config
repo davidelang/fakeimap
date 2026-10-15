@@ -17,9 +17,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/project.config"
 
 if [ ! -f "$CONFIG" ]; then
-  echo "WARNING: project.config not found next to script; passing through (no scrub)" >&2
-  cat
-  exit 0
+  echo "filter-clean-config: ERROR: $CONFIG missing; cannot scrub values back to @@TOKEN@@" >&2
+  exit 1
 fi
 
 # Parse config into env (simple name=value)
@@ -46,16 +45,15 @@ declare -A TOKENS=(
   [orch_root]="@@ORCH_ROOT@@"
 )
 
-# One token for the sandbox directory. sandbox_dir wins; sandbox_path is the
-# legacy alias. Neither key stays in TOKENS: a dumb substring replace of a
-# short dirname such as sandbox also rewrites ordinary sentences.
+# One token for the sandbox directory: sandbox_dir. It is not in TOKENS: a dumb
+# substring replace of a short dirname such as sandbox also rewrites ordinary sentences.
 SANDBOX_TOKEN='@@SANDBOX_PATH@@'
+if [ -z "${CONF_SANDBOX_DIR:-}" ]; then
+  echo "filter-clean-config: ERROR: sandbox_dir has no value in $CONFIG" >&2
+  exit 1
+fi
 resolve_sandbox_dir() {
-  if [ -n "${CONF_SANDBOX_DIR:-}" ]; then
-    printf '%s' "$CONF_SANDBOX_DIR"
-  elif [ -n "${CONF_SANDBOX_PATH:-}" ]; then
-    printf '%s' "$CONF_SANDBOX_PATH"
-  fi
+  printf '%s' "${CONF_SANDBOX_DIR:-}"
 }
 
 

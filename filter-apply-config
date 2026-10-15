@@ -1,29 +1,20 @@
 #!/bin/bash
-# filter-apply-config
-# Git smudge filter for manage-configs.
-# Populates @@TOKEN@@ with real values from project.config on checkout.
-# Supports multiple types; dumb replace for now.
-# Run: git config filter.manage-configs.smudge './filter-apply-config'
+# filter-apply-config: git smudge filter for manage-configs.
+# Replaces @@TOKEN@@ with values from project.config (next to this script).
+# Fails (non-zero) when project.config is missing or a token in the file has no value;
+# git then refuses the checkout (filter.manage-configs.required=true).
+#   bash ./filter-apply-config            smudge stdin to stdout
+#   bash ./filter-apply-config --tokens   print the known tokens (used by ./verify-smudge)
+# Files that must keep a literal @@TOKEN@@ are not filter=manage-configs in .gitattributes.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/project.config"
 
-if [ ! -f "$CONFIG" ]; then
-  echo "WARNING: project.config not found; leaving tokens as-is (dumb pass-through)" >&2
-  cat
-  exit 0
-fi
-
-# Parse
-while IFS='=' read -r key val; do
-  if [[ "$key" =~ ^[a-z_]+$ && -n "$val" ]]; then
-    export "CONF_${key^^}=$val"
-  fi
-done < "$CONFIG"
-
+# key -> token. The sandbox token comes from sandbox_dir (the one sandbox key).
 declare -A TOKENS=(
+  [sandbox_dir]="@@SANDBOX_PATH@@"
   [planning_user]="@@PLANNING_USER@@"
   [coder_user]="@@CODER_USER@@"
   [orchestrator_user]="@@ORCHESTRATOR_USER@@"
@@ -32,8 +23,7 @@ declare -A TOKENS=(
   [shared_group]="@@SHARED_GROUP@@"
   [grok_bin_default]="@@GROK_BIN_DEFAULT@@"
   [gemini_bin_default]="@@GEMINI_BIN_DEFAULT@@"
-  # Absolute path to sibling git hosts (e.g. /home/you/git). NOT ~/git —
-  # agent users have different $HOME; landlock/open need a concrete path.
+  # Absolute path to sibling git hosts (e.g. /home/you/git), not ~/git.
   [git_home]="@@GIT_HOME@@"
   [primary_user]="@@PRIMARY_USER@@"
   [antigravity_bin]="@@ANTIGRAVITY_BIN@@"
@@ -41,40 +31,37 @@ declare -A TOKENS=(
   [orch_root]="@@ORCH_ROOT@@"
 )
 
-# One token for the sandbox directory. sandbox_dir wins; sandbox_path is the
-# legacy alias. Neither key stays in TOKENS: a dumb substring replace of a
-# short dirname such as sandbox also rewrites ordinary sentences.
-SANDBOX_TOKEN='@@SANDBOX_PATH@@'
-resolve_sandbox_dir() {
-  if [ -n "${CONF_SANDBOX_DIR:-}" ]; then
-    printf '%s' "$CONF_SANDBOX_DIR"
-  elif [ -n "${CONF_SANDBOX_PATH:-}" ]; then
-    printf '%s' "$CONF_SANDBOX_PATH"
+if [ "${1:-}" = --tokens ]; then
+  for k in "${!TOKENS[@]}"; do printf '%s %s\n' "${TOKENS[$k]}" "$k"; done | sort
+  exit 0
+fi
+[ $# -eq 0 ] || { echo "usage: filter-apply-config [--tokens] (smudge stdin to stdout)" >&2; exit 2; }
+
+if [ ! -f "$CONFIG" ]; then
+  echo "filter-apply-config: ERROR: $CONFIG missing; cannot smudge @@TOKEN@@ values" >&2
+  exit 1
+fi
+
+declare -A VAL=()
+while IFS='=' read -r key val; do
+  [[ "$key" =~ ^[a-z_]+$ ]] || continue
+  VAL[$key]="$val"
+done < "$CONFIG"
+
+content=$(cat; printf x); content="${content%x}"
+missing=()
+for key in "${!TOKENS[@]}"; do
+  token="${TOKENS[$key]}"
+  [[ "$content" == *"$token"* ]] || continue
+  val="${VAL[$key]:-}"
+  if [ -z "$val" ] || [[ "$val" == @@* ]]; then
+    missing+=("$key ($token)")
+    continue
   fi
-}
-
-apply() {
-  local content sandbox_val
-  content=$(cat)
-  sandbox_val="$(resolve_sandbox_dir)"
-  if [ -n "$sandbox_val" ]; then
-    content="${content//$SANDBOX_TOKEN/$sandbox_val}"
-  fi
-  for var in "${!TOKENS[@]}"; do
-    token="${TOKENS[$var]}"
-    confvar="CONF_${var^^}"
-    val="${!confvar:-}"
-    if [ -n "$val" ]; then
-      content="${content//$token/$val}"
-    fi
-  done
-  echo "$content"
-}
-
-apply
-
-# Notes: 
-# - Dumb string replace for now.
-# - Shell files may use ${VAR} or direct after population.
-# - For future smart: compare to committed (HEAD) to decide replaces.
-# - See permissions-bootstrap-execution/ for full logs and rationale.
+  content="${content//$token/$val}"
+done
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "filter-apply-config: ERROR: no value in $CONFIG for: ${missing[*]}" >&2
+  exit 1
+fi
+printf '%s' "$content"

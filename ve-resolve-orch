@@ -79,17 +79,13 @@ ve_seed_worktree_project_config() {
   local orch_cfg="${3:-$orch/project.config}"
   local pc="$wt/project.config"
   local k v
-  if [ ! -f "$pc" ]; then
-    if [ -f "$orch_cfg" ]; then
-      cp "$orch_cfg" "$pc"
-    elif [ -f "$orch/project.config.example" ]; then
-      cp "$orch/project.config.example" "$pc"
-    else
-      : > "$pc"
-    fi
+  if [ ! -f "$orch_cfg" ]; then
+    echo "ERROR: $orch_cfg missing; cannot seed $pc" >&2
+    return 1
   fi
+  [ -f "$pc" ] || cp "$orch_cfg" "$pc"
   ve_upsert_project_config_key "$pc" orch_root "$orch"
-  if [ -f "$orch_cfg" ]; then
+  {
     while IFS='=' read -r k v || [ -n "${k:-}" ]; do
       k="${k%%#*}"
       k="${k#"${k%%[![:space:]]*}"}"
@@ -99,7 +95,7 @@ ve_seed_worktree_project_config() {
         printf '%s=%s\n' "$k" "$v" >> "$pc"
       fi
     done < "$orch_cfg"
-  fi
+  }
 }
 
 # After ve_resolve_orch: worktree Gradle/Android homes. Writes stay under $wt.

@@ -18,8 +18,9 @@
 # Common .git DAC repair is explicit only:
 #   ./fix-multiuser-git-hosts.sh   (or ./fix-ve-git-shared.sh)
 #
-# project.config is gitignored and seeded by setup_agent; missing config
-# during worktree populate is normal.
+# Every checkout ends with ./verify-smudge: all filter=manage-configs files must be
+# smudged, else the hook (and so the git command) fails. setup_agent sets
+# VE_SETUP_AGENT=1 while it populates a worktree and runs ./verify-smudge itself.
 
 set -euo pipefail
 
@@ -33,11 +34,11 @@ NEW_HEAD="${2:-}"
 # 1 = branch checkout, 0 = file checkout
 CHECKOUT_TYPE="${3:-1}"
 
-GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-cd "$GIT_ROOT" || exit 0
+GIT_ROOT=$(git rev-parse --show-toplevel)
+cd "$GIT_ROOT"
 
 # Absolute common git directory (never touch DAC under this path).
-COMMON_GITDIR=$(git rev-parse --git-common-dir 2>/dev/null || true)
+COMMON_GITDIR=$(git rev-parse --git-common-dir)
 case "${COMMON_GITDIR:-}" in
   /*) ;;
   "") COMMON_GITDIR="" ;;
@@ -61,11 +62,10 @@ path_under_common_git() {
 MAX_SCOPED_PATHS=500
 
 shared_group_for_root() {
-  local g=""
-  if [ -f "$GIT_ROOT/project.config" ]; then
-    g=$(sed -n 's/^shared_group=//p' "$GIT_ROOT/project.config" | tr -d '\r' | head -1)
-  fi
-  printf '%s' "${g:-ai-shared}"
+  local g
+  g=$(sed -n 's/^shared_group=//p' "$GIT_ROOT/project.config" | tr -d '\r' | tail -1)
+  [ -n "$g" ] || { echo "post-checkout: ERROR: shared_group has no value in $GIT_ROOT/project.config" >&2; exit 1; }
+  printf '%s' "$g"
 }
 
 scoped_mode_fix_changed_paths() {
@@ -123,15 +123,9 @@ if [ "$CHECKOUT_TYPE" = "1" ]; then
 fi
 # File checkout ($CHECKOUT_TYPE=0): intentional no-op for modes.
 
-# project.config is intentionally gitignored (local machine secrets/paths).
-# Only warn if stamped launchers still contain unsubstituted @@ tokens.
-if [ -f "$GIT_ROOT/project.config" ]; then
-  for f in run-grok run-grok-master env; do
-    if [ -f "$GIT_ROOT/$f" ] && grep -q '@@' "$GIT_ROOT/$f" 2>/dev/null; then
-      echo "WARNING: unsubstituted @@ tokens in $f (smudge/filter may need project.config + filter-apply-config)."
-      break
-    fi
-  done
+# All filtered files smudged, git filter config present (fails loudly otherwise).
+if [ ! -x "$GIT_ROOT/verify-smudge" ]; then
+  echo "post-checkout: ERROR: $GIT_ROOT/verify-smudge missing; publish rules (deploy-orchestration)" >&2
+  exit 1
 fi
-
-exit 0
+"$GIT_ROOT/verify-smudge"

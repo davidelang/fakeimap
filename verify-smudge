@@ -1,0 +1,66 @@
+#!/bin/bash
+# verify-smudge: check that this worktree's filter=manage-configs files are smudged.
+# Run from the worktree root: ./verify-smudge [--fix]
+#   Checks git config filter.manage-configs.{clean,smudge,required=true}, project.config,
+#   and that no filtered file still holds a known @@TOKEN@@ (list: ./filter-apply-config --tokens).
+#   --fix  re-smudges each such file through git (rm + git checkout -- f) when it has no
+#          local change; a file with a local change is a collision: reported, never touched.
+# Exit 0 = OK. Anything else prints ERROR lines and exits 1.
+set -euo pipefail
+
+fix=0
+case "${1:-}" in
+  "") ;;
+  --fix) fix=1 ;;
+  *) echo "usage: ./verify-smudge [--fix]" >&2; exit 2 ;;
+esac
+[ $# -le 1 ] || { echo "usage: ./verify-smudge [--fix]" >&2; exit 2; }
+
+root=$(git rev-parse --show-toplevel)
+[ "$root" = "$(pwd -P)" ] || { echo "verify-smudge: ERROR: run from the worktree root ($root)" >&2; exit 1; }
+
+err=0
+fail() { echo "verify-smudge: ERROR: $*" >&2; err=1; }
+
+want_clean='bash ./filter-clean-config %f'
+want_smudge='bash ./filter-apply-config'
+[ "$(git config --get filter.manage-configs.clean || true)" = "$want_clean" ] || fail "git config filter.manage-configs.clean is not '$want_clean' (run ./install-merge-drivers.sh)"
+[ "$(git config --get filter.manage-configs.smudge || true)" = "$want_smudge" ] || fail "git config filter.manage-configs.smudge is not '$want_smudge' (run ./install-merge-drivers.sh)"
+[ "$(git config --get filter.manage-configs.required || true)" = true ] || fail "git config filter.manage-configs.required is not true (run ./install-merge-drivers.sh)"
+[ -f project.config ] || fail "$root/project.config missing"
+[ -f filter-apply-config ] || fail "$root/filter-apply-config missing"
+[ "$err" -eq 0 ] || exit 1
+
+tokens=$(bash ./filter-apply-config --tokens | awk '{print $1}')
+[ -n "$tokens" ] || { fail "./filter-apply-config --tokens printed nothing (old filter?)"; exit 1; }
+pattern=$(printf '%s\n' "$tokens" | paste -sd'|')
+
+mapfile -t files < <(git ls-files | git check-attr --stdin filter | awk -F': ' '$3 == "manage-configs" { print $1 }')
+[ ${#files[@]} -gt 0 ] || { fail ".gitattributes names no filter=manage-configs files"; exit 1; }
+
+bad=()
+for f in "${files[@]}"; do
+  [ -f "$f" ] || continue
+  grep -q -E "$pattern" -- "$f" && bad+=("$f")
+done
+
+if [ "$fix" -eq 1 ] && [ ${#bad[@]} -gt 0 ]; then
+  still=()
+  for f in "${bad[@]}"; do
+    if ! git diff --quiet -- "$f" || ! git diff --cached --quiet -- "$f"; then
+      fail "collision: $f has local changes and unsmudged tokens; not touched"
+      continue
+    fi
+    rm -- "$f"
+    git -c core.hooksPath=/dev/null checkout -- "$f"   # no post-checkout mid-fix; verified below
+    grep -q -E "$pattern" -- "$f" && still+=("$f")
+  done
+  git update-index -q --refresh >/dev/null || true
+  bad=("${still[@]+"${still[@]}"}")
+fi
+
+for f in "${bad[@]+"${bad[@]}"}"; do
+  fail "unsmudged: $f ($(grep -o -E "$pattern" -- "$f" | sort -u | paste -sd' '))"
+done
+[ "$err" -eq 0 ] || exit 1
+echo "verify-smudge: OK (${#files[@]} filtered files)"

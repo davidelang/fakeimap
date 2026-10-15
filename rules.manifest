@@ -61,6 +61,7 @@ shared remove_worktree.sh
 shared fix-perms
 shared filter-apply-config
 shared filter-clean-config
+shared verify-smudge
 shared hooks/post-checkout
 shared MULTI_AGENT_USER_INSTRUCTIONS.md
 shared README-multi-agent.md

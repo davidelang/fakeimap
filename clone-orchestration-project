@@ -42,7 +42,7 @@ multi-agent host (orchestration branch at dest root, master/ worktree).
   --dry-run       Print resolved paths and planned steps; no writes, no sudo
   --source DIR    Path to orchestration-example (default: auto-detect)
   --git-home DIR  Override git_home (must be an absolute existing directory)
-  --repair DIR    Seed project.config + dest-root DAC on an existing clone
+  --repair DIR    Seed project.config, filter config + smudge check, dest-root DAC on an existing clone
   -h, --help      Show this help
 
 ./run-grok-* from a worktree (including master/) needs orch_root= in that
@@ -430,76 +430,14 @@ run_install_merge_drivers() {
   fi
 }
 
-STAMPED_FILES=(
-  setup-project
-  set-worktree-perms
-  set-sandbox-perms
-  project.config.example
-  landlock.config
-  landlock.config.example
-  run-grok
-  run-grok-master
-  run-grok-planner
-  run-grok-coder
-  run-grok-orchestrator
-  .grok/lib/grok-launch-common.sh
-  run-antigravity
-  run-antigravity-master
-  run-antigravity-planner
-  run-antigravity-coder
-  run-antigravity-orchestrator
-  third_party/fetch-deps
-  third_party/get-artifacts
-  third_party/libpin-landlock
-  third_party/libpin-bwrap
-  third_party/libpin-sandbox
-)
-
-
-# Tracked paths whose .gitattributes say filter=manage-configs.
-# Fallback is STAMPED_FILES when check-attr returns nothing.
-manage_configs_files() {
-  local repo="$1"
-  local listed
-  listed=$(as_primary bash -c '
-    cd "$1" || exit 0
-    git -c safe.directory=* ls-files | git -c safe.directory=* check-attr --stdin filter \
-      | awk -F": " "\$3 == \"manage-configs\" { print \$1 }"
-  ' bash "$repo")
-  if [ -n "$listed" ]; then
-    printf '%s\n' "$listed"
-  else
-    printf '%s\n' "${STAMPED_FILES[@]}"
+# Filter config (./install-merge-drivers.sh) + re-smudge + check, in one worktree.
+smudge_and_verify() {
+  local wt="$1"
+  step primary "(cd $wt && ./verify-smudge --fix)"
+  if [ "$DRY" -eq 0 ]; then
+    as_primary bash -c 'cd "$1" && ./verify-smudge --fix' bash "$wt" \
+      || die "unsmudged files remain in $wt (see verify-smudge ERROR lines)"
   fi
-}
-
-re_smudge_dest() {
-  local f
-  if [ "$DRY" -eq 1 ]; then
-    step primary "re-smudge manage-configs files in $DEST if @@TOKEN@@ remain"
-    return 0
-  fi
-  [ -f "$DEST/filter-apply-config" ] || die "filter-apply-config missing in dest"
-  [ -f "$DEST/project.config" ] || die "project.config missing in dest (needed to smudge)"
-  mapfile -t _mc_files < <(manage_configs_files "$DEST")
-  for f in "${_mc_files[@]}"; do
-    if ! git_primary -C "$DEST" cat-file -e "HEAD:$f" 2>/dev/null; then
-      continue
-    fi
-    as_primary bash -c '
-      set -euo pipefail
-      DEST="$1"
-      f="$2"
-      cd "$DEST"
-      tmp=".smudge.tmp.$$"
-      git -c safe.directory=* show "HEAD:$f" | bash ./filter-apply-config > "$tmp"
-      mv "$tmp" "$f"
-      mode=$(git -c safe.directory=* ls-tree HEAD "$f" | awk "{print \$1}")
-      case "$mode" in
-        100755|100775) chmod a+x "$f" ;;
-      esac
-    ' bash "$DEST" "$f"
-  done
 }
 
 add_safe_directory() {
@@ -701,23 +639,23 @@ do_clone_layout() {
     git_primary clone --no-hardlinks -- "$SOURCE" "$DEST"
   fi
 
-  if [ -f "$SOURCE/project.config" ]; then
-    step primary "cp $SOURCE/project.config $DEST/project.config"
-    if [ "$DRY" -eq 0 ]; then
-      as_primary cp "$SOURCE/project.config" "$DEST/project.config"
-    fi
-  elif [ -f "$SOURCE/project.config.example" ]; then
-    step primary "cp $SOURCE/project.config.example $DEST/project.config"
-    if [ "$DRY" -eq 0 ]; then
-      as_primary cp "$SOURCE/project.config.example" "$DEST/project.config"
-    fi
-  else
-    die "no project.config or project.config.example in source"
+  [ -f "$SOURCE/project.config" ] || die "$SOURCE/project.config missing (copy project.config.example and fill it first)"
+  step primary "cp $SOURCE/project.config $DEST/project.config"
+  if [ "$DRY" -eq 0 ]; then
+    as_primary cp "$SOURCE/project.config" "$DEST/project.config"
   fi
   upsert_config_key "$DEST/project.config" orch_root "$DEST"
   if [ -n "$GIT_HOME_ARG" ]; then
     upsert_config_key "$DEST/project.config" git_home "$GIT_HOME"
   fi
+
+  # The clone checked out raw @@TOKEN@@ files (no filter config yet). Configure, then smudge.
+  step primary "git config core.sharedRepository=group; ./install-merge-drivers.sh (merge drivers + manage-configs filter, required=true)"
+  if [ "$DRY" -eq 0 ]; then
+    git_primary -C "$DEST" config core.sharedRepository group
+  fi
+  run_install_merge_drivers
+  smudge_and_verify "$DEST"
   seed_debug_keystore
 
   step primary "rewrite AGENT_CONTEXT.md project-facts.md README.md for $NAME"
@@ -733,7 +671,7 @@ do_clone_layout() {
 
   step primary "git branch orchestration (if missing)"
   step primary "git checkout orchestration"
-  step primary "git worktree add $DEST/master master"
+  step primary "git worktree add --no-checkout $DEST/master master"
   if [ "$DRY" -eq 0 ]; then
     if ! git_primary -C "$DEST" show-ref --verify --quiet refs/heads/orchestration; then
       git_primary -C "$DEST" branch orchestration
@@ -743,10 +681,16 @@ do_clone_layout() {
     if [ "$cur" != "orchestration" ]; then
       git_primary -C "$DEST" checkout orchestration
     fi
-    git_primary -C "$DEST" worktree add "$DEST/master" master
+    git_primary -C "$DEST" worktree add --no-checkout "$DEST/master" master
   fi
 
+  # project.config before checkout: the smudge filter needs it.
   seed_dest_project_configs
+  step primary "git -C $DEST/master checkout HEAD -- ."
+  if [ "$DRY" -eq 0 ]; then
+    git_primary -C "$DEST/master" checkout HEAD -- .
+  fi
+  smudge_and_verify "$DEST/master"
   verify_dest_orch_root
 
   step primary "write AGENT_CONTEXT.md in dest root (orchestration) and master/ (master)"
@@ -786,18 +730,9 @@ do_clone_layout() {
     as_primary chmod 775 "$DEST/.git/hooks/post-checkout"
   fi
 
-  step primary "git config core.sharedRepository=group + manage-configs filter"
-  if [ "$DRY" -eq 0 ]; then
-    git_primary -C "$DEST" config core.sharedRepository group
-    git_primary -C "$DEST" config filter.manage-configs.clean "bash ./filter-clean-config %f"
-    git_primary -C "$DEST" config filter.manage-configs.smudge "bash ./filter-apply-config"
-    git_primary -C "$DEST" config filter.manage-configs.required false
-  fi
-
-  step primary "./install-merge-drivers.sh (cwd $DEST)"
-  run_install_merge_drivers
-
-  re_smudge_dest
+  # Hook installed: from now on every checkout runs ./verify-smudge.
+  smudge_and_verify "$DEST"
+  smudge_and_verify "$DEST/master"
 }
 
 do_perms() {
@@ -876,6 +811,9 @@ if [ -n "$REPAIR_ARG" ]; then
   repair_validate_dest
   print_header
   seed_dest_project_configs
+  run_install_merge_drivers
+  smudge_and_verify "$DEST"
+  smudge_and_verify "$DEST/master"
   seed_debug_keystore
   seed_sandbox_repo
   verify_dest_orch_root
