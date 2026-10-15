@@ -25,12 +25,12 @@ This is the law for every agent and tool. Your role card comes from the launcher
 
 ## Plans
 - Sandbox `plans/<kebab>-YYYYMMDD-HHMM-plan.md`, with Aim, Critical Files, Phases, and Acceptance.
-- Cite `standard-plan-compliance-block.md` by path.
+- Cite `standard-plan-compliance-block.md` by path. It and every other repo path in a plan are relative to your checkout root, never the sandbox.
 
 ## Facts
 - `project-facts.md` is a trigger index: before touching or doing X, read Y. Follow its triggers.
 - After a compaction, re-read `project-facts.md` before relying on it.
-- Files David names (screenshots etc.) are in the sandbox (`project.config` `sandbox_dir`/`sandbox_path`, default `@@SANDBOX_PATH@@/`; same dir from any worktree): read `<sandbox>/<name>` directly. No ls/find. If it is not there, say so and ask; don't search.
+- Files David names in chat (screenshots etc.) are in the sandbox (`project.config` `sandbox_dir`/`sandbox_path`, default `@@SANDBOX_PATH@@/`; same dir from any worktree): read `<sandbox>/<name>` directly. No ls/find. If it is not there, say so and ask; don't search.
 
 ## Channel
 - To join a channel, run the `/channel <diag path> <node>` skill. Underneath are `channel-setup`, `channel-send`, `channel-arm PLAN NODE`, and `channel-arm PLAN NODE --whatineedtoknow`. The skill and that header have every step; reference: `docs/rules/channel.md`.
