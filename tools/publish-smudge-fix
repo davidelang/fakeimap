@@ -3,6 +3,8 @@
 
   tools/publish-smudge-fix            dry run: change nothing, write the report, print the summary
   tools/publish-smudge-fix --apply    run the fix (David pauses the agents first; not detectable here)
+  --exclude NAME                      leave project NAME (a host under git_home) and all its trees
+                                      untouched (repeatable; an unknown NAME is an error)
 
 --apply refuses while the dry run has any BLOCKER. Then, stopping at the first failure:
   1 project.config per tree: add missing keys from their one source
@@ -173,16 +175,24 @@ def label(path, git_home):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--exclude", action="append", default=[], metavar="NAME")
     a = ap.parse_args()
     canon_cfg = conf(os.path.join(CANON, "project.config")) or die("canon project.config missing")
     gh = canon_cfg.get("git_home", "")
     if not good(gh) or not os.path.isdir(gh):
         die("canon project.config git_home has no value or is not a dir")
     tok, pub = tokens(), published_paths()
+    found = [h for h in D.discover(gh) if os.path.realpath(h) != os.path.realpath(CANON)]
+    names = [os.path.basename(h) for h in found]
+    unknown = [x for x in a.exclude if x not in names]
+    if unknown:
+        die("--exclude: no such project under %s: %s (projects: %s)" % (gh, ", ".join(unknown), ", ".join(names)))
+    kept = [h for h in found if os.path.basename(h) not in a.exclude]
+    if not kept:
+        die("--exclude leaves no project")
+    repos = ["--repos", ",".join(os.path.basename(h) for h in kept)] if a.exclude else []
     hosts = []
-    for host in D.discover(gh):
-        if os.path.realpath(host) == os.path.realpath(CANON):
-            continue
+    for host in kept:
         h = plan_host(host)
         h["trees"], h["excluded"] = [], []
         for wt, why in D.worktrees(host):
@@ -191,7 +201,7 @@ def main():
             else:
                 h["trees"].append(plan_tree(wt, tok, pub, canon_cfg))
         hosts.append(h)
-    dep = subprocess.run([os.path.join(CANON, "deploy-orchestration")], cwd=CANON, capture_output=True, text=True)
+    dep = subprocess.run([os.path.join(CANON, "deploy-orchestration"), *repos], cwd=CANON, capture_output=True, text=True)
     deploy_out = dep.stdout + dep.stderr
     blockers = []
     for h in hosts:
@@ -205,7 +215,8 @@ def main():
         blockers.append("deploy-orchestration report failed (rc %d)" % dep.returncode)
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M %Z").strip()
     L = ["# publish-smudge-fix dry run (%s PT)" % now, "",
-         "Apply: `%s/tools/publish-smudge-fix --apply` (refuses while blockers remain)." % CANON, ""]
+         "Apply: `%s/tools/publish-smudge-fix --apply%s` (refuses while blockers remain)." % (CANON, "".join(" --exclude " + x for x in a.exclude)),
+         "Excluded projects: " + (", ".join(a.exclude) or "none"), ""]
     for h in hosts:
         L.append("## %s" % label(h["host"], gh))
         L.append("- host git: " + ("; ".join(h["fix"]) or "OK"))
@@ -244,7 +255,7 @@ def main():
                             "".join("%s=%s\n" % kv for kv in sorted(t["add"].items())))
                 print("  %s: +%s" % (label(t["wt"], gh), ",".join(sorted(t["add"]))))
     print("2/5 deploy-orchestration --apply")
-    run([os.path.join(CANON, "deploy-orchestration"), "--apply"], CANON)
+    run([os.path.join(CANON, "deploy-orchestration"), "--apply", *repos], CANON)
     print("3/5 host filter config + post-checkout hook")
     for h in hosts:
         run(["./install-merge-drivers.sh"], h["host"])
