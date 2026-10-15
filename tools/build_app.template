@@ -1,0 +1,29 @@
+#!/bin/bash
+# build_app (template for hosts without an app-specific one; copy to ./build_app and list it
+# in rules.manifest.local). The only commit and build path (AGENTS.md).
+# Usage: ./build_app ["msg" | @msgfile] [paths…]
+#   Commits exactly the named paths, refuses any other uncommitted tracked change, runs
+#   project.config build_command (required), then tags <branch>/builds (master: builds).
+set -euo pipefail
+cd "$(dirname "$0")"
+cmd=$(sed -n 's/^build_command=//p' project.config | tail -1)
+[ -n "$cmd" ] || { echo "build_app: ERROR: build_command has no value in project.config" >&2; exit 1; }
+if [ $# -ge 1 ]; then
+  msg="$1"; shift
+  if [[ "$msg" == @* ]]; then
+    [ -f "${msg#@}" ] || { echo "build_app: ERROR: message file ${msg#@} not found" >&2; exit 1; }
+    msg=$(cat "${msg#@}")
+  fi
+  [ -n "$msg" ] || { echo "build_app: ERROR: empty commit message" >&2; exit 1; }
+  [ $# -gt 0 ] || { echo "build_app: ERROR: a message needs the paths to commit" >&2; exit 1; }
+  git add -A -- "$@"
+  git diff --cached --quiet && { echo "build_app: ERROR: nothing to commit in: $*" >&2; exit 1; }
+  git commit -q -m "$msg" -- "$@"
+fi
+dirty=$(git status --porcelain -uno)
+[ -z "$dirty" ] || { printf 'build_app: ERROR: uncommitted tracked changes (name every changed file):\n%s\n' "$dirty" >&2; exit 1; }
+bash -c "$cmd" || { echo "build_app: ERROR: build failed: $cmd" >&2; exit 1; }
+branch=$(git rev-parse --abbrev-ref HEAD)
+tag=builds; [ "$branch" = master ] || tag="$branch/builds"
+git tag -f "$tag" >/dev/null
+echo "build_app: OK $(git rev-parse --short HEAD) tagged $tag"

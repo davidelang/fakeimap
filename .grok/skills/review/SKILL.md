@@ -17,8 +17,7 @@ on disk** only.
 
 ## Sandbox
 
-1. `project.config` → `sandbox_dir` / `sandbox_path`
-2. Else `./dev-ai-interaction/` or `./sandbox/`
+`project.config` `sandbox_dir` (unset or missing: stop and report it).
 
 Call it **`$SANDBOX`**. Create `$SANDBOX/reviews/` if needed.
 

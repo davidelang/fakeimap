@@ -10,17 +10,18 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - Plan, review, and test stages write only the sandbox (`project.config` `sandbox_dir`), plus `project-facts.md` and `TODO.md` through their helpers.
 - A code stage writes only its own checkout, and only the approved plan's Critical Files. No unasked refactors, renames, cleanups, or "best practice" changes. Note them under NEEDS-INPUT instead.
 - The orchestrator stage works project-wide on meta rules and infra.
-- A missing path, a path outside this checkout, or a plan file outside this repo is a question. Wait for the answer.
+- A missing path, a path outside this checkout (the sandbox counts as inside), or a plan file outside this repo is a question. Wait for the answer.
+- Every commit is authored by David. Never infer a role or ownership from a commit author.
 - A denial on a path your role may not write is the rules working: do your role's job instead (a planner writes the change into a plan). Only when a path your role should write is blocked: stop and report the command, the error, the path, and the user. Never work around a denial.
 
 ## Commits, tags, deploy
-- `./build_app` is the only commit and build path. Do not `git add`, `git commit`, `git reset`, or `git push`. A multi-line message is `./build_app @file paths…`.
-- Tags are `<branch>/builds|deployed|works`; on `master` they are unprefixed. Agents do not deploy and do not move `works`.
+- `./build_app` is the only commit and build path; every app and library worktree has one (template: `tools/build_app.template`). Without it, stop with `STATUS: BLOCKED no ./build_app`. Do not `git add`, `git commit`, `git reset`, or `git push`. A multi-line message is `./build_app @file paths…`.
+- Tags are `<branch>/builds|deployed|works`; on `master` they are unprefixed. `backup-<branch>` comes only from `./prepare-pr-rewrite`; never move or delete it. Agents do not deploy and do not move `works`.
 - Run helpers as `./helper` from your checkout. No `cd … && ./helper`.
 
 ## Retry
 - A typo-class red build (typo, missing import, syntax) is fixed in place and does not count.
-- Any other failure counts. Each approach gets an original plus two fixups. Then reset with `./reset-to-builds.sh` (or `--head` for uncommitted junk) and start a new original.
+- Any other failure counts. Each approach gets an original plus two fixups. Then reset with `./reset-to-builds.sh` (or `--head` for uncommitted junk) and start a new original. Not during a `/prepare-local-pr` history rewrite: there a red build revises the rewrite plan.
 - After the third reset, stop, report under the sandbox `implementation-failure-logs/`, and wait.
 
 ## Plans
@@ -30,10 +31,10 @@ This is the law for every agent and tool. Your role card comes from the launcher
 ## Facts
 - `project-facts.md` is a trigger index: before touching or doing X, read Y. Follow its triggers.
 - After a compaction, re-read `project-facts.md` before relying on it.
-- Files David names in chat (screenshots etc.) are in the sandbox (`project.config` `sandbox_dir`/`sandbox_path`, default `@@SANDBOX_PATH@@/`; same dir from any worktree): read `<sandbox>/<name>` directly. No ls/find. If it is not there, say so and ask; don't search.
+- Files David names in chat (screenshots etc.) are in the sandbox (`project.config` `sandbox_dir`, `@@SANDBOX_PATH@@/`; same dir from any worktree): read `<sandbox>/<name>` directly. No ls/find. If it is not there, say so and ask; don't search.
 
 ## Channel
-- To join a channel, run the `/channel <diag path> <node>` skill. Underneath are `channel-setup`, `channel-send`, `channel-arm PLAN NODE`, and `channel-arm PLAN NODE --whatineedtoknow`. The skill and that header have every step; reference: `docs/rules/channel.md`.
+- To join a channel, run the `/channel <diag path> <node>` skill. Underneath are `channel-setup`, `channel-send`, `channel-arm PLAN NODE`, and `channel-arm PLAN NODE --whatineedtoknow`. The skill and that header have every step; `docs/rules/channel.md` is the reference for humans.
 - Use them only when David explicitly directs you to and names the plan or node. Never look for inbox or channel files on your own.
 
 ## Ending a turn
