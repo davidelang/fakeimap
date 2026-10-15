@@ -155,6 +155,11 @@ sandbox_run() {
   fi
 }
 
+# Absolute env for sandbox re-entry. The sandbox wrappers exec by PATH lookup, and an empty
+# PATH entry (cwd) would find a project's own ./env script instead of env(1).
+ENV_BIN=/usr/bin/env
+[[ -x "$ENV_BIN" ]] || ENV_BIN=/bin/env
+
 # Preserve GIT_HOME across single-level sandbox re-entry of this script.
 reenter_args() {
   REENTER_GH=()
@@ -837,7 +842,7 @@ cmd_ro() {
   if [[ "${LIBPIN_NO_BWRAP:-0}" != "1" && -z "${LIBPIN_SANDBOX:-}" && -x "$ROOT/libpin-bwrap" ]]; then
     echo "    [sandbox=lib $name]"
     reenter_args
-    bwrap_lib "$name" env LIBPIN_NO_BWRAP=1 LIBPIN_SANDBOX=lib ${GIT_HOME:+GIT_HOME="$GIT_HOME"} \
+    bwrap_lib "$name" "$ENV_BIN" LIBPIN_NO_BWRAP=1 LIBPIN_SANDBOX=lib ${GIT_HOME:+GIT_HOME="$GIT_HOME"} \
       "$ROOT/fetch-deps" --no-bwrap "${REENTER_GH[@]}" ro "$name"
     return $?
   fi
@@ -911,7 +916,7 @@ cmd_rw() {
   if [[ "${LIBPIN_NO_BWRAP:-0}" != "1" && -z "${LIBPIN_SANDBOX:-}" && -x "$ROOT/libpin-bwrap" ]]; then
     echo "    [sandbox=lib $name + host .git]"
     reenter_args
-    bwrap_lib "$name" env LIBPIN_NO_BWRAP=1 LIBPIN_SANDBOX=lib ${GIT_HOME:+GIT_HOME="$GIT_HOME"} \
+    bwrap_lib "$name" "$ENV_BIN" LIBPIN_NO_BWRAP=1 LIBPIN_SANDBOX=lib ${GIT_HOME:+GIT_HOME="$GIT_HOME"} \
       "$ROOT/fetch-deps" --no-bwrap "${REENTER_GH[@]}" rw "$name"
     return $?
   fi
