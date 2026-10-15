@@ -9,30 +9,46 @@
 #   response (afterAgentResponse) remember the last assistant text for 'stop'
 #   stop     (stop)               final STATUS line, then channel inbox backstop -> followup_message
 # No-op for David's own sessions (ROLE_KEY unset/primary) except the channel backstop.
+# Missing jq, GROK_PROMPT_ROOT, conversation_id or role card is an ERROR answered on the event
+# (pretool deny, session/posttool context, stop followup); never a shared fallback state.
 # All session state under $st is keyed by conversation id: a new session (no /channel run in it)
 # never reads another session's state.
 # TODO-VERIFY (live): ROLE_KEY reaches hook processes; sessionStart context is applied.
 set -uo pipefail
 ev="${1:-}"
 in="$(cat)"
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-root="${GROK_PROMPT_ROOT:-${CURSOR_PROJECT_DIR:-$here}}"
-rh="$root/.grok/hooks/rules-hooks.sh"
 role="${ROLE_KEY:-}"
-command -v jq >/dev/null 2>&1 || { [[ "$ev" == prompt ]] && echo '{"continue":true}'; [[ "$ev" == pretool ]] && echo '{"permission":"allow"}'; exit 0; }
+hook_error() {
+  local m="cursor-hooks: ERROR: $1"
+  echo "$m" >&2
+  m="${m//\\/\\\\}"; m="${m//\"/\\\"}"
+  case "$ev" in
+  pretool) printf '{"permission":"deny","user_message":"%s","agent_message":"%s"}\n' "$m" "$m" ;;
+  session|posttool) printf '{"additional_context":"%s"}\n' "$m" ;;
+  stop) printf '{"followup_message":"%s"}\n' "$m" ;;
+  *) echo '{}' ;;
+  esac
+  exit 0
+}
+command -v jq >/dev/null 2>&1 || hook_error "jq not installed"
 j() { printf '%s' "$in" | jq -r "$1" 2>/dev/null; }
-cid="$(j '.conversation_id // .session_id // empty')"; cid="${cid:-nosession}"
-ws="$(j '.workspace_roots[0] // .cwd // empty')"; ws="${ws:-$root}"
-st="${TMPDIR:-/tmp}/cursor-rules-$(id -u)"; mkdir -p "$st" 2>/dev/null && chmod 700 "$st" 2>/dev/null
+root="${GROK_PROMPT_ROOT:-}"
+[[ -n "$root" && -d "$root" ]] || hook_error "GROK_PROMPT_ROOT unset (start cursor-agent with the run-cursor* launchers)"
+rh="$root/.grok/hooks/rules-hooks.sh"
+cid="$(j '.conversation_id // empty')"
+[[ -n "$cid" ]] || hook_error "hook input has no conversation_id"
+ws="$(j '.workspace_roots[0] // empty')"
+[[ -n "$ws" ]] || hook_error "hook input has no workspace_roots"
+st="/tmp/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
 grok() {  # grok <mode> <json> -> rules-hooks output
-  printf '%s' "$2" | ROLE_KEY="$role" GROK_SESSION_ID="$cid" bash "$rh" "$1" 2>/dev/null
+  printf '%s' "$2" | ROLE_KEY="$role" bash "$rh" "$1"
 }
 case "$ev" in
 session)
-  card="$root/roles/${role:-primary}.md"
-  if [[ -n "$role" && "$role" != primary && -f "$card" ]]; then
-    jq -cn --rawfile c "$card" '{additional_context:($c+"\nLaw: AGENTS.md (auto-loaded).")}'
-  else echo '{}'; fi ;;
+  if [[ -z "$role" || "$role" == primary ]]; then echo '{}'; exit 0; fi
+  card="$root/roles/$role.md"
+  [[ -f "$card" ]] || hook_error "role card $card missing"
+  jq -cn --rawfile c "$card" '{additional_context:($c+"\nLaw: AGENTS.md (auto-loaded).")}' ;;
 prompt)  # no longer registered; kept answering for stale hooks.json copies
   echo '{"continue":true}' ;;
 pretool)
@@ -74,7 +90,7 @@ stop)
   active=false; [[ "$(j '.loop_count // 0')" != 0 ]] && active=true
   out=""
   if [[ -n "$role" && "$role" != primary ]]; then
-    out="$(grok stop "$(jq -cn --arg m "$last" --argjson a "$active" '{lastAssistantMessage:$m,stopHookActive:$a}')")"
+    out="$(grok stop "$(jq -cn --arg m "$last" --argjson a "$active" --arg s "$cid" '{lastAssistantMessage:$m,stopHookActive:$a,sessionId:$s}')")"
   fi
   if [[ "$(printf '%s' "$out" | jq -r '.decision // empty' 2>/dev/null)" == block ]]; then
     printf '%s' "$out" | jq -c '{followup_message:.reason}'; exit 0

@@ -14,8 +14,9 @@ Roles: primary | planner | coder | master | orchestrator
 Env:
   AGENT_LANDLOCK_DISABLE=1   skip restriction (exec bare)
   AGENT_LANDLOCK_DEBUG=1     stderr grant list
-  AGENT_LANDLOCK_STRICT=1    exit non-zero if ABI missing / apply fails (default: warn + bare exec)
-  GIT_HOME                   host clone root override (else project.config / landlock.config)
+  Landlock ABI missing or apply failure: exit non-zero, never run unrestricted.
+  Grants come from project.config (git_home, orch_root, sandbox_dir) and landlock.config;
+  an empty or @@TOKEN@@ value is an error.
 
 Design: dev-ai-interaction/research/agent-landlock-session-design-20260803.md
 Spirit of ABI helpers: third_party/libpin-landlock (pin-inner; this is session-outer).
@@ -102,6 +103,10 @@ def _debug(msg: str) -> None:
 
 def _warn(msg: str) -> None:
     print(f"agent-landlock: WARN {msg}", file=sys.stderr)
+
+
+def _die(msg: str) -> "NoReturn":
+    raise SystemExit(f"agent-landlock: ERROR: {msg}")
 
 
 def _machine_syscalls() -> Optional[Tuple[int, int, int]]:
@@ -292,7 +297,7 @@ def _load_profile_paths(landlock_cfg: Path, worktree: Path) -> List[str]:
     """
     paths: List[str] = []
     if not landlock_cfg.is_file():
-        return paths
+        _die(f"{landlock_cfg} missing")
     section = ""
     for raw in landlock_cfg.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.split("#", 1)[0].strip()
@@ -313,31 +318,27 @@ def _load_profile_paths(landlock_cfg: Path, worktree: Path) -> List[str]:
             for part in csv.split(","):
                 part = part.strip()
                 if part:
-                    r = _resolve_grant_token(part, worktree)
-                    if r:
-                        paths.append(r)
+                    paths.append(_resolve_grant_token(part, worktree, landlock_cfg))
             continue
         if val:
-            r = _resolve_grant_token(val, worktree)
-            if r:
-                paths.append(r)
+            paths.append(_resolve_grant_token(val, worktree, landlock_cfg))
     return paths
 
 
-def _resolve_grant_token(tok: str, worktree: Path) -> str:
+def _resolve_grant_token(tok: str, worktree: Path, src: Path) -> str:
     tok = tok.strip()
-    if not tok or tok.startswith("@@"):
-        return ""
+    if not tok or "@@" in tok:
+        _die(f"{src}: grant {tok!r} is empty or an unsmudged @@TOKEN@@ (run ./verify-smudge)")
     if tok.startswith("env:HOME/"):
         return _expand_path("$HOME/" + tok[len("env:HOME/") :])
     if tok.startswith("env:"):
         # env:VAR or env:VAR/rest
         rest = tok[4:]
-        if "/" in rest:
-            var, sub = rest.split("/", 1)
-            base = os.environ.get(var, "")
-            return str(Path(base) / sub) if base else ""
-        return os.environ.get(rest, "")
+        var, _, sub = rest.partition("/")
+        base = os.environ.get(var, "")
+        if not base:
+            _die(f"{src}: grant {tok!r} needs ${var}, which is unset")
+        return str(Path(base) / sub) if sub else base
     if tok.startswith("/"):
         return tok
     return str((worktree / tok).resolve())
@@ -346,19 +347,11 @@ def _resolve_grant_token(tok: str, worktree: Path) -> str:
 
 
 def _sandbox_paths(worktree: Path, project: Dict[str, str], landlock: Dict[str, str]) -> List[str]:
-    rel = (
-        project.get("sandbox_dir")
-        or project.get("sandbox_path")
-        or landlock.get("sandbox_path")
-        or ""
-    )
-    if not rel or rel.startswith("@@"):
-        if (worktree / "dev-ai-interaction").exists():
-            rel = "dev-ai-interaction"
-        elif (worktree / "sandbox").exists():
-            rel = "sandbox"
-        else:
-            rel = "dev-ai-interaction"
+    rel = project.get("sandbox_dir", "")
+    if not rel or "@@" in rel:
+        _die(f"sandbox_dir has no value in {worktree / 'project.config'}")
+    if not (rel.startswith("/") and os.path.isdir(rel)) and not (worktree / rel).is_dir():
+        _die(f"sandbox_dir={rel} is not a directory (from {worktree})")
     paths: List[str] = []
     if rel.startswith("/"):
         paths.append(rel)
@@ -424,19 +417,20 @@ def resolve_grants(
     landlock = _parse_kv_file(worktree / "landlock.config")
     landlock_path = worktree / "landlock.config"
 
-    git_home = os.environ.get("GIT_HOME") or project.get("git_home") or landlock.get(
-        "git_home", ""
-    )
-    git_home = _expand_path(git_home)
-    if git_home.startswith("@@"):
-        git_home = ""
+    cfg = worktree / "project.config"
+    if not cfg.is_file():
+        _die(f"{cfg} missing")
 
-    orch_root = os.environ.get("ORCH_ROOT") or project.get("orch_root") or ""
-    orch_root = _expand_path(orch_root)
-    if orch_root.startswith("@@") or not orch_root:
-        orch_root = ""
-    elif not os.path.isdir(orch_root):
-        orch_root = ""
+    def _cfg_dir(key: str) -> str:
+        v = _expand_path(project.get(key, ""))
+        if not v or "@@" in v:
+            _die(f"{key} has no value in {cfg}")
+        if not v.startswith("/") or not os.path.isdir(v):
+            _die(f"{key}={v} in {cfg} is not an absolute directory")
+        return v
+
+    git_home = _cfg_dir("git_home")
+    orch_root = _cfg_dir("orch_root")
 
     meta = {
         "role": role,
@@ -517,14 +511,7 @@ def resolve_grants(
                 if cand.is_dir():
                     dirs.append(str(cand.resolve()))
     elif role == "primary":
-        if git_home and os.path.isdir(git_home):
-            dirs.append(str(Path(git_home).resolve()))
-        else:
-            # fallback: worktree + $HOME/git if present
-            hg = Path(os.environ.get("HOME", "")) / "git"
-            if hg.is_dir():
-                dirs.append(str(hg.resolve()))
-            dirs.append(str(worktree))
+        dirs.append(str(Path(git_home).resolve()))
         dirs.extend([p for p in profiles if os.path.isdir(p)])
         for cand in (
             worktree / ".android-shared",
@@ -613,17 +600,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
         os.execvp(cmd[0], cmd)
 
-    strict = os.environ.get("AGENT_LANDLOCK_STRICT", "0") in ("1", "true", "yes")
-
     if ver is None:
-        _warn("Landlock ABI unavailable — continuing without restriction")
-        os.environ["AGENT_LANDLOCK"] = "0"
-        os.environ["AGENT_LANDLOCK_ABI"] = "unavailable"
-        if strict:
-            return 3
-        if not cmd:
-            return 0
-        os.execvp(cmd[0], cmd)
+        print("agent-landlock: ERROR: Landlock ABI unavailable; refusing to run unrestricted"
+              " (AGENT_LANDLOCK_DISABLE=1 is the explicit opt-out)", file=sys.stderr)
+        return 3
 
     try:
         apply_landlock(dirs, files)
@@ -631,13 +611,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         os.environ["AGENT_LANDLOCK_ABI"] = str(ver)
         os.environ["AGENT_LANDLOCK_ROLE"] = args.role
     except OSError as exc:
-        _warn(f"{exc} — continuing without restriction")
-        os.environ["AGENT_LANDLOCK"] = "0"
-        if strict:
-            return 4
-        if not cmd:
-            return 0
-        os.execvp(cmd[0], cmd)
+        print(f"agent-landlock: ERROR: {exc}; refusing to run unrestricted", file=sys.stderr)
+        return 4
 
     if not cmd:
         return 0

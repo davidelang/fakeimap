@@ -21,7 +21,7 @@ arm="$top/third_party/agent-coordination-tickets/src/go/channel-arm"
 blocked() { echo "STATUS: BLOCKED channel pin missing/too old; run fetch-deps ($1)"; exit 1; }
 [[ -x "$arm" ]] || blocked "no $arm"
 [[ "$("$arm" "$plan" "$node" --whatineedtoknow | head -n 1)" == "how to act:" ]] || blocked "no how-to-act header"
-st="${TMPDIR:-/tmp}/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
+st="/tmp/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
 # Keyed by workspace too, so the same relative plan in another checkout is another watch.
 # The posttool hook computes the same key for this conversation's channel-armed-<cid>.
 key="$(printf '%s %s %s' "$top" "$plan" "$node" | sha256sum | cut -c1-12)"

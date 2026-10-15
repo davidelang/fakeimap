@@ -6,32 +6,46 @@
 #   facts   project-facts injection only (cursor shim: postToolUse additional_context).
 # RULES_NO_FACTS=1 makes pretool skip the injection (cursor runs it as 'facts').
 # Cursor drives this script through .cursor/lib/cursor-hooks.sh (field translation).
-# No-op when ROLE_KEY is unset (David's own sessions). Fails open on internal errors.
+# No-op when ROLE_KEY is unset or primary (David's own sessions). For role sessions a missing
+# input (jq, GROK_PROMPT_ROOT, session id, project.config sandbox_dir) is an ERROR: pretool
+# denies and stop blocks with the reason, so it is never silent.
 # TODO-VERIFY (live): ROLE_KEY visible in subagent hooks.
 set -uo pipefail
 ev="${1:-}"
 in="$(cat)"
 role="${ROLE_KEY:-}"
 [[ -z "$role" || "$role" == primary ]] && exit 0
-command -v jq >/dev/null 2>&1 || exit 0
+hook_error() {  # one loud answer per event; jq may be the missing piece
+  local m="rules-hooks: ERROR: $1"
+  echo "$m" >&2
+  m="${m//\\/\\\\}"; m="${m//\"/\\\"}"
+  case "$ev" in
+  pretool) printf '{"decision":"deny","reason":"%s"}\n' "$m" ;;
+  stop) printf '{"decision":"block","reason":"%s"}\n' "$m" ;;
+  esac
+  exit 0
+}
+command -v jq >/dev/null 2>&1 || hook_error "jq not installed"
 j() { printf '%s' "$in" | jq -r "$1" 2>/dev/null; }
-root="$(j '.workspaceRoot // .cwd // empty')"; root="${root:-$PWD}"
-sid="$(j '.sessionId // empty')"; sid="${sid:-${GROK_SESSION_ID:-nosession}}"
+root="${GROK_PROMPT_ROOT:-}"
+[[ -n "$root" && -d "$root" ]] || hook_error "GROK_PROMPT_ROOT unset (start agents with the run-* launchers)"
+sid="$(j '.sessionId // empty')"  # cursor-hooks.sh passes its conversation_id here
+[[ -n "$sid" ]] || hook_error "hook input has no sessionId"
 
-sandbox_dir() {
-  local d=""
-  [[ -f "$root/project.config" ]] && d="$(sed -n 's/^sandbox_dir=//p;s/^sandbox_path=//p' "$root/project.config" | head -1)"
-  [[ -z "$d" && -d "$root/dev-ai-interaction" ]] && d=dev-ai-interaction
-  [[ -z "$d" ]] && d=sandbox
+sandbox_dir() {  # sets sb
+  local d
+  [[ -f "$root/project.config" ]] || hook_error "$root/project.config missing"
+  d="$(sed -n 's/^sandbox_dir=//p' "$root/project.config" | tail -1)"
+  [[ -n "$d" && "$d" != @@* ]] || hook_error "sandbox_dir has no value in $root/project.config"
   [[ "$d" = /* ]] || d="$root/$d"
-  printf '%s' "$d"
+  sb="$d"
 }
 sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 
 inject_facts() {  # $1 = hook event name
   local pf="$root/project-facts.md" st h f
   if [[ -f "$pf" ]]; then
-    st="${TMPDIR:-/tmp}/grok-facts-$(id -u)"; mkdir -p "$st" 2>/dev/null && chmod 700 "$st" 2>/dev/null
+    st="/tmp/grok-facts-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
     h="$(sha "$pf")"; f="$st/${sid//\//_}"
     if [[ "$(cat "$f" 2>/dev/null)" != "$h" ]]; then
       printf '%s' "$h" >"$f" 2>/dev/null
@@ -48,7 +62,7 @@ pretool)
   is_edit=0; case "$tool" in search_replace|write|write_file|Edit|Write|MultiEdit|Delete|StrReplace) is_edit=1 ;; esac
   is_build=0; [[ "$cmd" =~ (^|[[:space:];&|])\./build_app ]] && is_build=1
   deny() { jq -cn --arg r "$1" '{decision:"deny",reason:$r}'; exit 0; }
-  sb="$(sandbox_dir)"
+  sandbox_dir
   case "$role" in
   planner|reviewer|tester)
     if [[ $is_edit == 1 && -n "$fpath" ]]; then

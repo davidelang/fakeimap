@@ -21,7 +21,7 @@
 # this cgroup); unset cursor coder is 8G; every other role is 4G.
 
 agent_oom_default() {
-  case "${ROLE_KEY:-}" in
+  case "$ROLE_KEY" in
     coder) printf '%s' 1000 ;;
     master) printf '%s' 999 ;;
     planner) printf '%s' 998 ;;
@@ -145,8 +145,16 @@ if [[ -z "${GROK_LAUNCHER_DIR:-}" ]]; then
   exit 2
 fi
 SCRIPT_DIR="$(cd "$GROK_LAUNCHER_DIR" && pwd)"
+if [[ -z "${ROLE_KEY:-}" ]]; then
+  echo "ERROR: ROLE_KEY must be set by the run-* launcher" >&2
+  exit 2
+fi
 
-if [[ -f "$SCRIPT_DIR/project.config" ]]; then
+if [[ ! -f "$SCRIPT_DIR/project.config" ]]; then
+  echo "ERROR: $SCRIPT_DIR/project.config missing (copy project.config.example and fill it)" >&2
+  exit 1
+fi
+{
   # KEY=VALUE lines only (skip comments/blank). Keep equals — do not split on '='.
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%%#*}"
@@ -156,12 +164,20 @@ if [[ -f "$SCRIPT_DIR/project.config" ]]; then
     [[ "$line" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]] || continue
     # shellcheck disable=SC2163
     export "$line"
-  done <"$SCRIPT_DIR/project.config" || true
-fi
+  done <"$SCRIPT_DIR/project.config"
+}
 
-# Prefer explicit GROK_BIN, then project.config keys (VE uses grok_bin_default).
-# project.config may use $HOME/… as literal text — expand after load.
-# git_home from project.config is ABSOLUTE (e.g. /home/you/git), not ~/git.
+# need_cfg KEY: value of a project.config key; exits with a clear error if unset or a @@TOKEN@@.
+need_cfg() {
+  local v="${!1:-}"
+  if [[ -z "$v" || "$v" == @@* ]]; then
+    echo "ERROR: $1 has no value in $SCRIPT_DIR/project.config" >&2
+    exit 1
+  fi
+  printf '%s' "$v"
+}
+
+# project.config may write $HOME/… as literal text: expand after load.
 _expand_path() {
   local p="$1"
   p="${p/#\~/$HOME}"
@@ -170,54 +186,22 @@ _expand_path() {
   fi
   printf '%s' "$p"
 }
-_raw_bin="${GROK_BIN:-${grok_bin:-${grok_bin_default:-}}}"
-if [[ -z "$_raw_bin" || "$_raw_bin" == @@* ]]; then
-  _raw_bin="${HOME}/git/grok/bin/grok"
-fi
-GROK_BIN="$(_expand_path "$_raw_bin")"
-_raw_cbin="${CURSOR_BIN:-${cursor_bin:-}}"
-if [[ -z "$_raw_cbin" || "$_raw_cbin" == @@* ]]; then
-  _raw_cbin="${HOME}/git/cursor/bin/cursor-agent"
-fi
-CURSOR_BIN="$(_expand_path "$_raw_cbin")"
+# Binaries: grok_bin_default / cursor_bin, checked when that agent launches.
+# Shared host-clone root (absolute) for third_party / landlock.
+GIT_HOME="$(need_cfg git_home)"
+GIT_HOME="$(_expand_path "$GIT_HOME")"
+[[ "$GIT_HOME" = /* && -d "$GIT_HOME" ]] || { echo "ERROR: git_home=$GIT_HOME in project.config is not an absolute directory" >&2; exit 1; }
+export GIT_HOME
 
-# Shared host-clone root for third_party / landlock (absolute path in project.config)
-GIT_HOME_CONFIG="${git_home:-}"
-if [[ -n "$GIT_HOME_CONFIG" && "$GIT_HOME_CONFIG" != @@* ]]; then
-  export GIT_HOME="${GIT_HOME:-$GIT_HOME_CONFIG}"
-fi
-
-# Prefer sandbox_dir / sandbox_path from project.config; stamped default:
-# sandbox_path=@@SANDBOX_PATH@@  (smudge from project.config; clean restores token)
-_sandbox_stamp="@@SANDBOX_PATH@@"
-SANDBOX_REL="${sandbox_dir:-${sandbox_path:-}}"
-if [[ -z "$SANDBOX_REL" || "$SANDBOX_REL" == @@* ]]; then
-  if [[ "$_sandbox_stamp" != @@* && -n "$_sandbox_stamp" ]]; then
-    SANDBOX_REL="$_sandbox_stamp"
-  fi
-fi
-if [[ -z "$SANDBOX_REL" || "$SANDBOX_REL" == @@* ]]; then
-  # Layout discovery only (no machine-absolute paths)
-  if [[ -d "$SCRIPT_DIR/dev-ai-interaction" || -L "$SCRIPT_DIR/dev-ai-interaction" ]]; then
-    SANDBOX_REL="dev-ai-interaction"
-  elif [[ -d "$SCRIPT_DIR/sandbox" || -L "$SCRIPT_DIR/sandbox" ]]; then
-    SANDBOX_REL="sandbox"
-  elif [[ -d "$SCRIPT_DIR/../dev-ai-interaction" || -L "$SCRIPT_DIR/../dev-ai-interaction" ]]; then
-    SANDBOX_REL="../dev-ai-interaction"
-  elif [[ -d "$SCRIPT_DIR/../sandbox" || -L "$SCRIPT_DIR/../sandbox" ]]; then
-    SANDBOX_REL="../sandbox"
-  else
-    echo "ERROR: project.config sandbox_dir/sandbox_path is unset and no sandbox directory exists." >&2
-    exit 1
-  fi
-fi
+# Sandbox: project.config sandbox_dir only (relative to this worktree, or absolute).
+SANDBOX_REL="$(need_cfg sandbox_dir)"
 if [[ "$SANDBOX_REL" = /* ]]; then
   SANDBOX_DIR="$SANDBOX_REL"
 else
   SANDBOX_DIR="$SCRIPT_DIR/$SANDBOX_REL"
 fi
-# Normalize .. in path
-SANDBOX_DIR="$(cd "$SANDBOX_DIR" 2>/dev/null && pwd || echo "$SANDBOX_DIR")"
+[[ -d "$SANDBOX_DIR" ]] || { echo "ERROR: sandbox_dir=$SANDBOX_REL: $SANDBOX_DIR is not a directory" >&2; exit 1; }
+SANDBOX_DIR="$(cd "$SANDBOX_DIR" && pwd)"
 
 
 ANDROID_SHARED=""
@@ -232,7 +216,8 @@ ve_setup_worktree_build_homes "$SCRIPT_DIR" || exit 1
 ANDROID_SHARED="$ANDROID_USER_HOME"
 export ORCH_ROOT
 
-umask "${umask_launch:-002}"
+LAUNCH_UMASK=002
+umask "$LAUNCH_UMASK"
 
 PACK_PATHS=()
 EXTRA_ARGS=()
@@ -241,14 +226,14 @@ TODO_GATE_FLAGS=()
 PROMPT_FILE=""
 PROMPT=""
 
+# Role -> project.config user key. master runs as coder_user.
 resolve_run_user() {
-  case "${ROLE_KEY:-}" in
-    planner) echo "${planning_user:-ai-planner}" ;;
-    coder) echo "${coder_user:-ai-coder}" ;;
-    master) echo "${master_user:-${coder_user:-ai-coder}}" ;;
-    orchestrator) echo "${orchestrator_user:-ai-orchestrator}" ;;
-    primary) echo "${primary_user:-${SUDO_USER:-${USER:?primary_user is unset}}}" ;;
-    *) echo "${primary_user:-${USER:?primary_user is unset}}" ;;
+  case "$ROLE_KEY" in
+    planner) need_cfg planning_user ;;
+    coder|master) need_cfg coder_user ;;
+    orchestrator) need_cfg orchestrator_user ;;
+    primary) need_cfg primary_user ;;
+    *) echo "ERROR: unknown ROLE_KEY=$ROLE_KEY" >&2; exit 1 ;;
   esac
 }
 
@@ -263,7 +248,7 @@ build_model_args() {
     return 0
   fi
   local v=""
-  case "${ROLE_KEY:-}" in
+  case "$ROLE_KEY" in
     planner) v="${planner_model:-${GROK_PLANNER_MODEL:-}}" ;;
     coder) v="${coder_model:-}" ;;
     master) v="${master_model:-}" ;;
@@ -306,13 +291,13 @@ prepare_prompt() {
   collect_extra_args "$@"
   # Startup prompt is the short new_agent_prompt; the role card goes in via --rules.
   local start="$SCRIPT_DIR/new_agent_prompt"
-  if [[ -f "$start" ]]; then
-    PROMPT_FILE="$start"
-    PROMPT="$(cat "$start")"
-  else
-    PROMPT="Confirm pwd once. Then wait for a directive."
+  if [[ ! -f "$start" ]]; then
+    echo "ERROR: missing $start" >&2
+    exit 1
   fi
-  ROLE_CARD="$SCRIPT_DIR/roles/${ROLE_KEY:-primary}.md"
+  PROMPT_FILE="$start"
+  PROMPT="$(cat "$start")"
+  ROLE_CARD="$SCRIPT_DIR/roles/$ROLE_KEY.md"
   if [[ ! -f "$ROLE_CARD" ]]; then
     echo "ERROR: missing role card: $ROLE_CARD" >&2
     exit 1
@@ -322,8 +307,8 @@ prepare_prompt() {
 # role_cfg KEY: value of KEY for ROLE_KEY in roles.config (blank if unset).
 role_cfg() {
   local key="$1" f="$SCRIPT_DIR/roles.config" line tok
-  [[ -f "$f" ]] || return 0
-  line="$(grep -E "^${ROLE_KEY:-primary}[[:space:]]" "$f" | head -1)"
+  [[ -f "$f" ]] || { echo "ERROR: missing $f" >&2; exit 1; }
+  line="$(grep -E "^${ROLE_KEY}[[:space:]]" "$f" | head -1 || true)"
   for tok in $line; do
     [[ "$tok" == "$key="* ]] && { printf '%s' "${tok#*=}"; return 0; }
   done
@@ -332,14 +317,18 @@ role_cfg() {
 
 # build_landlock_args RUN_USER: sets LANDLOCK_ARGS (agent-landlock prefix) for any agent CLI.
 # Mutation-only Landlock as the role user, immediately before the agent binary.
-# Missing helper warns and continues. Helper itself honors AGENT_LANDLOCK_DISABLE=1.
+# Missing helper is an error. Helper itself honors AGENT_LANDLOCK_DISABLE=1 (explicit opt-out).
 # Owner -x is not enough: ai-planner is not in ai-code; 774 → Permission denied.
 LANDLOCK_ARGS=()
 build_landlock_args() {
   local run_user="$1"
   local landlock_helper="${SCRIPT_DIR}/agent-landlock"
   LANDLOCK_ARGS=()
-  if [[ -f "$landlock_helper" ]]; then
+  if [[ ! -f "$landlock_helper" ]]; then
+    echo "ERROR: $landlock_helper missing; refusing to launch without session Landlock" >&2
+    exit 1
+  fi
+  {
     if ! sudo -u "$run_user" -- test -x "$landlock_helper"; then
       echo "ERROR: $run_user cannot execute $landlock_helper" >&2
       echo "  $(stat -c 'mode=%a owner=%U:%G' "$landlock_helper" 2>/dev/null || ls -la "$landlock_helper")" >&2
@@ -350,14 +339,12 @@ build_landlock_args() {
     fi
     LANDLOCK_ARGS=(
       "$landlock_helper"
-      --role "${ROLE_KEY:-primary}"
+      --role "$ROLE_KEY"
       --worktree "$SCRIPT_DIR"
       --
     )
-    echo "Landlock: $landlock_helper role=${ROLE_KEY:-primary}"
-  else
-    echo "Landlock: helper missing at $landlock_helper — launching without session Landlock" >&2
-  fi
+    echo "Landlock: $landlock_helper role=$ROLE_KEY"
+  }
   return 0
 }
 
@@ -365,16 +352,18 @@ launch_grok_with_prompt() {
   local prompt="$1"
   local run_user
   run_user="$(resolve_run_user)"
+  GROK_BIN="$(need_cfg grok_bin_default)"
+  GROK_BIN="$(_expand_path "$GROK_BIN")"
   build_model_args
   build_todo_gate_flags
 
   if [[ ! -x "$GROK_BIN" && ! -f "$GROK_BIN" ]]; then
     echo "ERROR: grok binary not found or not executable: $GROK_BIN" >&2
-    echo "Set GROK_BIN or grok_bin / grok_bin_default in project.config" >&2
+    echo "Set grok_bin_default in project.config" >&2
     exit 1
   fi
 
-  echo "Launching Grok role=${ROLE_KEY:-?} root=$SCRIPT_DIR"
+  echo "Launching Grok role=$ROLE_KEY root=$SCRIPT_DIR"
   echo "Grok binary: $GROK_BIN"
   echo "Sandbox: $SANDBOX_DIR"
   echo "Running as: $run_user"
@@ -397,7 +386,7 @@ launch_grok_with_prompt() {
   # Coder: force workflows off only (subagents allowed after approved execute).
   # Orch / primary / master: leave unset.
   # sudo -u env does not inherit the parent — must pass these on the env line.
-  case "${ROLE_KEY:-}" in
+  case "$ROLE_KEY" in
     planner)
       : "${GROK_SUBAGENTS:=0}"
       : "${GROK_WORKFLOWS:=0}"
@@ -443,7 +432,7 @@ launch_grok_with_prompt() {
   fi
   echo "Role card (--rules): $ROLE_CARD"
   local freeform_args=()
-  case "${ROLE_KEY:-}" in
+  case "$ROLE_KEY" in
     primary|orchestrator)
       if [[ -z "${GROK_SANDBOX:-}" && "${GROK_SANDBOX_DEFAULT:-}" != "" ]]; then
         GROK_SANDBOX="${GROK_SANDBOX_DEFAULT}"
@@ -474,10 +463,10 @@ launch_grok_with_prompt() {
     ${ORCH_ROOT:+ORCH_ROOT="$ORCH_ROOT"} \
     ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
     GROK_PROMPT_ROOT="$SCRIPT_DIR" \
-    ROLE_KEY="${ROLE_KEY:-primary}" \
-    GIT_HOME="${GIT_HOME:-}" \
+    ROLE_KEY="$ROLE_KEY" \
+    GIT_HOME="$GIT_HOME" \
     ${grok_role_env[@]+"${grok_role_env[@]}"} \
-    bash -c "$(role_exec_bash "${umask_launch:-002}")" bash \
+    bash -c "$(role_exec_bash "$LAUNCH_UMASK")" bash \
       ${landlock_args[@]+"${landlock_args[@]}"} \
       "$GROK_BIN" \
       "$prompt" \
@@ -507,15 +496,17 @@ launch_cursor_with_prompt() {
   local prompt="$1"
   local run_user
   run_user="$(resolve_run_user)"
+  CURSOR_BIN="$(need_cfg cursor_bin)"
+  CURSOR_BIN="$(_expand_path "$CURSOR_BIN")"
   if [[ ! -x "$CURSOR_BIN" ]]; then
     echo "ERROR: cursor-agent not found or not executable: $CURSOR_BIN" >&2
-    echo "Set CURSOR_BIN or cursor_bin in project.config" >&2
+    echo "Set cursor_bin in project.config" >&2
     exit 1
   fi
   local model="${CURSOR_FORCE_MODEL:-${FORCE_MODEL:-$(role_cfg cursor_model)}}"
   local model_args=()
   [[ -n "$model" ]] && model_args=(--model "$model")
-  echo "Launching cursor-agent role=${ROLE_KEY:-?} root=$SCRIPT_DIR"
+  echo "Launching cursor-agent role=$ROLE_KEY root=$SCRIPT_DIR"
   echo "cursor-agent binary: $CURSOR_BIN"
   echo "Sandbox: $SANDBOX_DIR"
   echo "Running as: $run_user"
@@ -524,7 +515,7 @@ launch_cursor_with_prompt() {
   echo "First run as $run_user: sudo -u $run_user -H env NO_OPEN_BROWSER=1 $CURSOR_BIN login"
   # Fresh start: hook state is per conversation (cursor-hooks.sh). Remove the shared,
   # pre-session channel-armed file older hooks left, so it can never reach a new session.
-  sudo -u "$run_user" -- bash -c 'f="${TMPDIR:-/tmp}/cursor-rules-$(id -u)/channel-armed"; [[ ! -e "$f" ]] || rm -- "$f"'
+  sudo -u "$run_user" -- bash -c 'f="/tmp/cursor-rules-$(id -u)/channel-armed"; [[ ! -e "$f" ]] || rm -- "$f"'
   build_landlock_args "$run_user"
   local mem_max
   mem_max="$(cursor_memory_max)"
@@ -534,10 +525,10 @@ launch_cursor_with_prompt() {
     ${ORCH_ROOT:+ORCH_ROOT="$ORCH_ROOT"} \
     ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
     GROK_PROMPT_ROOT="$SCRIPT_DIR" \
-    ROLE_KEY="${ROLE_KEY:-primary}" \
+    ROLE_KEY="$ROLE_KEY" \
     RULES_AGENT=cursor \
-    GIT_HOME="${GIT_HOME:-}" \
-    bash -c "$(role_exec_bash "${umask_launch:-002}")" bash \
+    GIT_HOME="$GIT_HOME" \
+    bash -c "$(role_exec_bash "$LAUNCH_UMASK")" bash \
       ${LANDLOCK_ARGS[@]+"${LANDLOCK_ARGS[@]}"} \
       "$CURSOR_BIN" \
       --workspace "$SCRIPT_DIR" \
