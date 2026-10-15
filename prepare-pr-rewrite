@@ -1,8 +1,11 @@
 #!/bin/bash
 # prepare-pr-rewrite [TARGET] — start the /prepare-local-pr history rewrite on this branch.
 # prepare-pr-rewrite --check  — final check: record files equal backup-<branch>.
+# prepare-pr-rewrite --plan-input [TARGET] — read-only: write $SANDBOX/PRs/rewrite-input-<branch>.md
+#   (net diff by file and hunk, the original commits behind each hunk's lines, files whose
+#   changes cancel out, likely debug leftovers) so the agent only decides the grouping.
 #
-# Start: refuses unless the worktree is clean. Tags the tip backup-<branch> (the safety copy
+# Start: refuses on uncommitted tracked changes (untracked files are left alone). Tags the tip backup-<branch> (the safety copy
 # and the reference for the final diff), verifies the tag, then resets this branch to
 # merge-base(TARGET, HEAD) (TARGET defaults to master). Never deletes or moves the tag.
 # Record files keep their tip content in the worktree through the reset (never written);
@@ -24,6 +27,76 @@ records() {  # $1 = commit [$2 = all]; list from that commit's .gitattributes; t
   done
 }
 
+if [ "${1:-}" = --plan-input ]; then
+  [ $# -le 2 ] || { echo "usage: ./prepare-pr-rewrite --plan-input [TARGET]" >&2; exit 2; }
+  target=${2:-master}
+  sb=$(sed -n 's/^sandbox_dir=//p' project.config 2>/dev/null | tr -d '\r' | tail -1)
+  [ -n "$sb" ] && [[ "$sb" != *@@* ]] && [ -d "$sb/PRs" ] || { echo "ERROR: project.config sandbox_dir has no value or $sb/PRs is missing" >&2; exit 1; }
+  base=$(git merge-base "$target" HEAD) || { echo "ERROR: no merge-base with $target" >&2; exit 1; }
+  out="$sb/PRs/rewrite-input-$branch.md"
+  recs=$(records HEAD)
+  python3 - "$base" "$branch" "$target" "$out" "$recs" <<'PY'
+import re, subprocess, sys
+base, branch, target, out, recs = sys.argv[1:6]
+rec = set(recs.split())
+def g(*a): return subprocess.run(["git", *a], capture_output=True, text=True, errors="replace", check=True).stdout
+tip = g("rev-parse", "HEAD").strip()
+commits = [l.split(" ", 1) for l in g("log", "--reverse", "--format=%h %s", base + "..HEAD").splitlines()]
+subj = {h: s for h, s in commits}
+full = {g("rev-parse", h).strip(): h for h, _ in commits}
+touched = {}
+for h, _ in commits:
+    for f in g("diff-tree", "--no-commit-id", "-r", "--name-only", "--no-renames", h).split():
+        touched.setdefault(f, []).append(h)
+net = [l.split("\t") for l in g("diff", "--numstat", "--no-renames", base, "HEAD").splitlines()]
+netfiles = {f for _, _, f in net}
+DBG = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|println\(|Log\.d\(|System\.out\.|printStackTrace|console\.log|breakpoint\(|pdb\.set_trace|\bDEBUG\b")
+L = ["# rewrite input: %s" % branch, "",
+     "base %s (merge-base with %s), tip %s; %d commits, %d files in the net diff." % (base[:9], target, tip[:9], len(commits), len(net)),
+     "Record files (committed verbatim, not grouped): %s" % (", ".join(sorted(rec & netfiles)) or "none"), "",
+     "## Original commits (oldest first)"] + ["- %s %s" % (h, s) for h, s in commits]
+gone = sorted(f for f in touched if f not in netfiles)
+L += ["", "## Touched by commits but not in the net diff (changes cancel out: false starts)"] + (["- %s (%s)" % (f, ", ".join(touched[f])) for f in gone] or ["- none"])
+L += ["", "## Net diff by file and hunk", "Each hunk lists the original commits that wrote its added lines (blame at the tip)."]
+leftovers = []
+for a, d, f in net:
+    if f in rec:
+        continue
+    L.append("")
+    L.append("### %s (+%s -%s) commits: %s" % (f, a, d, ", ".join(touched.get(f, [])) or "?"))
+    if a == "-":
+        L.append("- binary"); continue
+    blame = {}
+    try:
+        cur = None
+        for line in g("blame", "--porcelain", tip, "--", f).splitlines():
+            m = re.match(r"^([0-9a-f]{40}) \d+ (\d+)", line)
+            if m:
+                cur = (m.group(1), int(m.group(2)))
+                blame[cur[1]] = full.get(cur[0], "")
+    except subprocess.CalledProcessError:
+        pass
+    for hunk in re.split(r"(?m)^(?=@@ )", g("diff", "-U0", "--no-renames", base, "HEAD", "--", f)):
+        m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", hunk)
+        if not m:
+            continue
+        ns, nc = int(m.group(3)), int(m.group(4) or 1) if m.group(4) != "0" else 0
+        who = sorted({blame.get(n, "") for n in range(ns, ns + nc)} - {""})
+        first = next((l[1:].strip() for l in hunk.splitlines()[1:] if l[:1] in "+-" and l[1:].strip()), "")
+        L.append("- %s %s | %s | %s" % (hunk.split("@@")[1].strip(), m.group(5).strip()[:50], ",".join(who) or "deletion only", first[:90]))
+        n = ns
+        for l in hunk.splitlines()[1:]:
+            if l.startswith("+"):
+                if DBG.search(l):
+                    leftovers.append("- %s:%d %s" % (f, n, l[1:].strip()[:100]))
+                n += 1
+L += ["", "## Possible leftovers in added lines (candidates for Deviations)"] + (leftovers or ["- none"])
+open(out, "w").write("\n".join(L) + "\n")
+print("PLAN-INPUT %s (%d commits, %d files, %d cancelled-out files, %d leftover candidates)" % (out, len(commits), len(net), len(gone), len(leftovers)))
+PY
+  exit 0
+fi
+
 if [ "${1:-}" = --check ]; then
   [ $# -eq 1 ] || { echo "usage: ./prepare-pr-rewrite --check" >&2; exit 2; }
   git rev-parse -q --verify "$tag^{commit}" >/dev/null || { echo "ERROR: no tag $tag" >&2; exit 1; }
@@ -42,13 +115,19 @@ if [ "${1:-}" = --check ]; then
   exit 0
 fi
 
-[ $# -le 1 ] || { echo "usage: ./prepare-pr-rewrite [TARGET] | --check" >&2; exit 2; }
+[ $# -le 1 ] || { echo "usage: ./prepare-pr-rewrite [TARGET] | --check | --plan-input [TARGET]" >&2; exit 2; }
 target=${1:-master}
 case "$branch" in master|orchestration) echo "ERROR: refusing to rewrite $branch" >&2; exit 1 ;; esac
-dirty=$(git status --porcelain)
+dirty=$(git status --porcelain --untracked-files=no)
 [ -z "$dirty" ] || { printf 'ERROR: uncommitted changes; commit or remove them first:\n%s\n' "$dirty" >&2; exit 1; }
 tip=$(git rev-parse HEAD)
 base=$(git merge-base "$target" HEAD) || { echo "ERROR: no merge-base with $target" >&2; exit 1; }
+# Untracked files stay untouched; one that is a tracked path at base would be overwritten.
+untracked=$(git ls-files --others --exclude-standard)
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if git cat-file -e "$base:$f" 2>/dev/null; then echo "ERROR: untracked $f is tracked at the merge-base; move it away first" >&2; exit 1; fi
+done <<< "$untracked"
 [ "$base" != "$tip" ] || { echo "ERROR: nothing to rewrite: HEAD is the merge-base with $target" >&2; exit 1; }
 recs=$(records "$tip")
 rec=()
@@ -65,7 +144,8 @@ while IFS= read -r -d '' f; do
   is_record "$f" && continue
   if git cat-file -e "$base:$f" 2>/dev/null; then git checkout -q "$base" -- "$f"; else rm -f -- "$f"; fi
 done < <(git diff --name-only -z --no-renames "$base" "$tip")
-left=$(git status --porcelain --untracked-files=all | while IFS= read -r l; do is_record "${l:3}" || printf '%s\n' "$l"; done)
+was_untracked() { grep -qxF -- "$1" <<< "$untracked"; }
+left=$(git status --porcelain --untracked-files=all | while IFS= read -r l; do is_record "${l:3}" || { [ "${l:0:2}" = "??" ] && was_untracked "${l:3}"; } || printf '%s\n' "$l"; done)
 [ -z "$left" ] || { printf 'ERROR: tree is not base + record files after the reset (tag %s keeps the tip):\n%s\n' "$tag" "$left" >&2; exit 1; }
 for f in ${rec[@]+"${rec[@]}"}; do
   git show "$tag:$f" | cmp -s - "$f" || { echo "ERROR: $f is not the tip content after the reset" >&2; exit 1; }
