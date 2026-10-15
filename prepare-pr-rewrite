@@ -1,155 +1,353 @@
-#!/bin/bash
-# prepare-pr-rewrite [TARGET] — start the /prepare-local-pr history rewrite on this branch.
-# prepare-pr-rewrite --check  — final check: record files equal backup-<branch>.
-# prepare-pr-rewrite --plan-input [TARGET] — read-only: write $SANDBOX/PRs/rewrite-input-<branch>.md
-#   (net diff by file and hunk, the original commits behind each hunk's lines, files whose
-#   changes cancel out, likely debug leftovers) so the agent only decides the grouping.
-#
-# Start: refuses on uncommitted tracked changes (untracked files are left alone). Tags the tip backup-<branch> (the safety copy
-# and the reference for the final diff), verifies the tag, then resets this branch to
-# merge-base(TARGET, HEAD) (TARGET defaults to master). Never deletes or moves the tag.
-# Record files keep their tip content in the worktree through the reset (never written);
-# they are committed verbatim later. Record files = paths with merge=ve-englog or
-# merge=ve-special-ours in .gitattributes that are tracked at the tip.
-set -euo pipefail
-branch=$(git symbolic-ref --short HEAD) || { echo "ERROR: detached HEAD" >&2; exit 1; }
-tag=backup-$branch
-root=$(git rev-parse --show-toplevel)
-cd "$root"
+#!/usr/bin/env python3
+"""prepare-pr-rewrite: the /prepare-local-pr history-rewrite helper (docs/rules/prepare-local-pr.md).
 
-records() {  # $1 = commit [$2 = all]; list from that commit's .gitattributes; tracked at $1 unless all
-  local f ga listed
-  ga=$(git show "$1:.gitattributes" 2>/dev/null) || { echo "ERROR: no .gitattributes at $1 (record file list)" >&2; exit 1; }
-  listed=$(awk '$1 !~ /^#/ && ($2 == "merge=ve-englog" || $2 == "merge=ve-special-ours") { print $1 }' <<< "$ga")
-  [ -n "$listed" ] || { echo "ERROR: .gitattributes names no record files (merge=ve-englog / ve-special-ours)" >&2; exit 1; }
-  for f in $listed; do
-    if [ "${2:-}" = all ] || git cat-file -e "$1:$f" 2>/dev/null; then printf '%s\n' "$f"; fi
-  done
-}
+  ./prepare-pr-rewrite [TARGET]               start: tag the tip backup-<branch>, reset to merge-base(TARGET, HEAD)
+  ./prepare-pr-rewrite --redo [TARGET]        redo: backup-<branch> exists and stays; reset to merge-base(TARGET, HEAD) again
+  ./prepare-pr-rewrite --plan-input [TARGET]  read-only: write $SANDBOX/PRs/rewrite-input-<branch>.md
+  ./prepare-pr-rewrite --check [TARGET]       final check
+TARGET defaults to master. The reference is backup-<branch> (or HEAD before the first start).
 
-if [ "${1:-}" = --plan-input ]; then
-  [ $# -le 2 ] || { echo "usage: ./prepare-pr-rewrite --plan-input [TARGET]" >&2; exit 2; }
-  target=${2:-master}
-  sb=$(sed -n 's/^sandbox_dir=//p' project.config 2>/dev/null | tr -d '\r' | tail -1)
-  [ -n "$sb" ] && [[ "$sb" != *@@* ]] && [ -d "$sb/PRs" ] || { echo "ERROR: project.config sandbox_dir has no value or $sb/PRs is missing" >&2; exit 1; }
-  base=$(git merge-base "$target" HEAD) || { echo "ERROR: no merge-base with $target" >&2; exit 1; }
-  out="$sb/PRs/rewrite-input-$branch.md"
-  recs=$(records HEAD)
-  python3 - "$base" "$branch" "$target" "$out" "$recs" <<'PY'
-import re, subprocess, sys
-base, branch, target, out, recs = sys.argv[1:6]
-rec = set(recs.split())
-def g(*a): return subprocess.run(["git", *a], capture_output=True, text=True, errors="replace", check=True).stdout
-tip = g("rev-parse", "HEAD").strip()
-commits = [l.split(" ", 1) for l in g("log", "--reverse", "--format=%h %s", base + "..HEAD").splitlines()]
-subj = {h: s for h, s in commits}
-full = {g("rev-parse", h).strip(): h for h, _ in commits}
-touched = {}
-for h, _ in commits:
-    for f in g("diff-tree", "--no-commit-id", "-r", "--name-only", "--no-renames", h).split():
-        touched.setdefault(f, []).append(h)
-net = [l.split("\t") for l in g("diff", "--numstat", "--no-renames", base, "HEAD").splitlines()]
-netfiles = {f for _, _, f in net}
-DBG = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|println\(|Log\.d\(|System\.out\.|printStackTrace|console\.log|breakpoint\(|pdb\.set_trace|\bDEBUG\b")
-L = ["# rewrite input: %s" % branch, "",
-     "base %s (merge-base with %s), tip %s; %d commits, %d files in the net diff." % (base[:9], target, tip[:9], len(commits), len(net)),
-     "Record files (committed verbatim, not grouped): %s" % (", ".join(sorted(rec & netfiles)) or "none"), "",
-     "## Original commits (oldest first)"] + ["- %s %s" % (h, s) for h, s in commits]
-gone = sorted(f for f in touched if f not in netfiles)
-L += ["", "## Touched by commits but not in the net diff (changes cancel out: false starts)"] + (["- %s (%s)" % (f, ", ".join(touched[f])) for f in gone] or ["- none"])
-L += ["", "## Net diff by file and hunk", "Each hunk lists the original commits that wrote its added lines (blame at the tip)."]
-leftovers = []
-for a, d, f in net:
-    if f in rec:
-        continue
-    L.append("")
-    L.append("### %s (+%s -%s) commits: %s" % (f, a, d, ", ".join(touched.get(f, [])) or "?"))
-    if a == "-":
-        L.append("- binary"); continue
-    blame = {}
-    try:
-        cur = None
-        for line in g("blame", "--porcelain", tip, "--", f).splitlines():
+Kinds of paths:
+  log    paths with merge=ve-englog in .gitattributes (ENGINEERING_LOG.md). Append-only: never written
+         by a reset; the worktree keeps its full content; this helper appends the start entries.
+  infra  rules.manifest paths (law/shared/opt/replace/retired/purge), the project root's
+         rules.manifest.local paths, third_party pins (third_party/*/libpin.toml, third_party/*/SOURCE.md)
+         and third_party/fetch-deps. Expected version: TARGET's when the reference copy is TARGET's or
+         came from TARGET's history (a rules sync); else the reference copy when TARGET kept the fork
+         copy (a branch-only delta); else the 3-way merge fork/reference/TARGET (both changed it). A
+         conflicting merge is written with conflict markers: resolve it by hand in the first commit
+         (--check fails while markers remain and lists the path for review). All infra deltas go in
+         the first commit.
+  product everything else. Expected: the reference copy if the branch changed it since the fork
+         (merge-base(TARGET, reference)), else the base copy.
+Untracked files are left alone; one that is tracked at the base is an error. Errors never reset.
+"""
+import datetime, os, re, subprocess, sys
+
+def die(msg):
+    print("ERROR: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+def git(*a, check=True, binary=False):
+    p = subprocess.run(["git", *a], capture_output=True)
+    if check and p.returncode:
+        die("git %s: %s" % (" ".join(a), p.stderr.decode(errors="replace").strip()))
+    return p.stdout if binary else p.stdout.decode(errors="replace")
+
+def ok(*a):
+    return subprocess.run(["git", *a], capture_output=True).returncode == 0
+
+def glob_match(pat, path):
+    rx = re.escape(pat).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*").replace(r"\?", "[^/]")
+    return re.fullmatch(rx, path) is not None
+
+def blob(rev, path):
+    out = git("rev-parse", "-q", "--verify", "%s:%s" % (rev, path), check=False).strip()
+    return out or None
+
+def tree_paths(rev):
+    return [p for p in git("ls-tree", "-r", "-z", "--name-only", rev).split("\0") if p]
+
+def show(rev, path):
+    return git("show", "%s:%s" % (rev, path), binary=True, check=False)
+
+def log_paths(rev):
+    ga = show(rev, ".gitattributes").decode(errors="replace")
+    out = [l.split()[0] for l in ga.splitlines() if l.strip() and not l.startswith("#") and "merge=ve-englog" in l.split()[1:]]
+    if not out:
+        die(".gitattributes at %s names no merge=ve-englog path (the engineering log)" % rev[:9])
+    return out
+
+INFRA_EXTRA = ["third_party/*/libpin.toml", "third_party/*/SOURCE.md", "third_party/fetch-deps"]
+
+def host_local():
+    """rules.manifest.local is committed on the project root (the main worktree), as deploy-orchestration reads it."""
+    host = os.path.dirname(os.path.realpath(git("rev-parse", "--git-common-dir").strip()))
+    p = subprocess.run(["git", "-C", host, "show", "HEAD:rules.manifest.local"], capture_output=True)
+    return p.stdout if p.returncode == 0 else b""
+
+def infra_pats(rev, local):
+    pats = list(INFRA_EXTRA)
+    for text, classes in ((show(rev, "rules.manifest"), ("law", "shared", "opt", "replace", "retired", "purge")), (local, ("local",))):
+        for line in text.decode(errors="replace").splitlines():
+            line = line.split("#", 1)[0].strip()
+            cls, _, pat = line.partition(" ")
+            if cls in classes and pat.strip():
+                pats.append(pat.strip())
+    return pats
+
+def history_blobs(rev, path):
+    out = git("log", "--format=", "--raw", "--no-abbrev", "--no-renames", rev, "--", path, check=False)
+    return {l.split()[3] for l in out.splitlines() if l.startswith(":")}
+
+def merge3(fv, rv, tv, labels):
+    """3-way merge of blob ids (fork, reference, target): (content, clean). A side that deleted the file is
+    merged as empty content, so the conflict shows what the other side has."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        fs = []
+        for n, b in (("r", rv), ("o", fv), ("t", tv)):
+            f = os.path.join(d, n)
+            open(f, "wb").write(git("cat-file", "blob", b, binary=True) if b else b"")
+            fs.append(f)
+        p = subprocess.run(["git", "merge-file", "-p", "-L", labels[0], "-L", "fork", "-L", labels[1], *fs], capture_output=True)
+        if p.returncode < 0 or p.returncode > 127:
+            die("git merge-file failed: " + p.stderr.decode(errors="replace"))
+        return p.stdout, p.returncode == 0
+
+MARK = re.compile(rb"(?m)^(<<<<<<< |=======$|>>>>>>> )")
+
+class Ctx:
+    def __init__(self, target, need_tag):
+        self.root = git("rev-parse", "--show-toplevel").strip()
+        os.chdir(self.root)
+        b = git("symbolic-ref", "-q", "--short", "HEAD", check=False).strip()
+        if not b:
+            die("detached HEAD")
+        self.branch, self.target = b, target
+        self.tag = "backup-" + b
+        if not ok("rev-parse", "-q", "--verify", target + "^{commit}"):
+            die("no such TARGET: " + target)
+        self.has_tag = ok("rev-parse", "-q", "--verify", "refs/tags/%s" % self.tag)
+        if need_tag is True and not self.has_tag:
+            die("no tag %s (run ./prepare-pr-rewrite first)" % self.tag)
+        if need_tag is False and self.has_tag:
+            die("%s exists: to rewrite again use ./prepare-pr-rewrite --redo %s (the tag stays)" % (self.tag, target))
+        self.head = git("rev-parse", "HEAD").strip()
+        self.ref = git("rev-parse", self.tag + "^{commit}").strip() if self.has_tag else self.head
+        self.base = git("merge-base", target, "HEAD", check=False).strip() or die("no merge-base of HEAD with " + target)
+        self.fork = git("merge-base", target, self.ref, check=False).strip() or die("no merge-base of %s with %s" % (self.ref[:9], target))
+        self.tgt = git("rev-parse", target + "^{commit}").strip()
+        self.logs = log_paths(self.ref)
+        local = host_local()
+        pats = infra_pats(self.ref, local) + infra_pats(self.tgt, local)
+        cand = set(tree_paths(self.ref)) | set(tree_paths(self.tgt)) | set(tree_paths(self.fork))
+        self.infra = sorted(p for p in cand if p not in self.logs and any(glob_match(x, p) for x in pats))
+        infra_set = set(self.infra)
+        self.changed = sorted(p for p in git("diff", "--name-only", "-z", "--no-renames", self.fork, self.ref).split("\0")
+                              if p and p not in infra_set and p not in self.logs)
+        self.expect, self.kind, self.merged, self.infra_conflict = {}, {}, {}, []
+        for p in self.infra:
+            rv, tv, fv = blob(self.ref, p), blob(self.tgt, p), blob(self.fork, p)
+            if rv == tv or (rv and rv in history_blobs(self.tgt, p)) or (rv is None and fv is None):
+                self.expect[p], self.kind[p] = (self.tgt, tv), "infra-target"
+            elif tv == fv:
+                self.expect[p], self.kind[p] = (self.ref, rv), "infra-branch"
+            else:
+                m, clean = merge3(fv, rv, tv, (self.tag, target))
+                self.merged[p] = m
+                h = subprocess.run(["git", "hash-object", "--stdin"], input=m, capture_output=True).stdout.decode().strip()
+                self.expect[p], self.kind[p] = (None, h), "infra-merged" if clean else "infra-conflict"
+                if not clean:
+                    self.infra_conflict.append(p)
+        self.conflict = []
+        for p in self.changed:
+            self.expect[p], self.kind[p] = (self.ref, blob(self.ref, p)), "product"
+            if blob(self.base, p) not in (blob(self.fork, p), blob(self.ref, p)):
+                self.conflict.append(p)
+
+    def sandbox(self):
+        cfg = open("project.config").read() if os.path.isfile("project.config") else die("project.config missing")
+        v = [l.split("=", 1)[1].strip() for l in cfg.splitlines() if l.startswith("sandbox_dir=")]
+        if not v or not v[-1] or "@@" in v[-1] or not os.path.isdir(os.path.join(v[-1], "PRs")):
+            die("project.config sandbox_dir has no value or its PRs/ is missing")
+        return v[-1]
+
+def append_log(entry):
+    p = subprocess.run(["./append-to-engineering-log", entry])
+    if p.returncode:
+        die("./append-to-engineering-log failed")
+
+def log_prefix_ok(c, data_by_path):
+    for lp in c.logs:
+        ref = show(c.ref, lp)
+        cur = data_by_path[lp]
+        if not cur.startswith(ref):
+            die("%s does not start with the %s copy: the log is append-only, it was rewritten" % (lp, c.tag))
+
+def read(p):
+    return open(p, "rb").read() if os.path.isfile(p) else b""
+
+def reset(c, redo):
+    if c.branch in ("master", "orchestration"):
+        die("refusing to rewrite " + c.branch)
+    dirty = [l for l in git("status", "--porcelain", "--untracked-files=no").splitlines() if l]
+    def settled(f):  # redo: the log, or an infra path already at its expected version
+        if f in c.logs:
+            return True
+        if f not in c.infra:
+            return False
+        want = c.expect[f][1]
+        return (not os.path.lexists(f)) if want is None else (os.path.isfile(f) and git("hash-object", "--", f).strip() == want)
+    bad = [l for l in dirty if not (redo and settled(l[3:]))]
+    if bad:
+        die("uncommitted tracked changes; commit or remove them first:\n" + "\n".join(bad))
+    if not redo and c.base == c.head:
+        die("nothing to rewrite: HEAD is the merge-base with " + c.target)
+    untracked = [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
+    hit = [p for p in untracked if blob(c.base, p) or p in c.expect]
+    if hit:
+        die("untracked files are tracked at the base or the reference; move them away first:\n" + "\n".join(hit))
+    if c.conflict:
+        print("NOTE: also changed on %s since the fork (their steps must keep %s's change): %s" % (c.target, c.target, ", ".join(c.conflict)))
+    logs0 = {lp: read(lp) for lp in c.logs}
+    log_prefix_ok(c, logs0)
+    if not redo:
+        git("tag", c.tag, c.head)
+        if git("rev-parse", c.tag + "^{commit}").strip() != c.head:
+            die("%s does not point at %s; nothing reset" % (c.tag, c.head))
+    # Mixed reset: moves the branch and index only. The log is never written (same guarantee as
+    # reset-to-builds.sh's skip-worktree handling); every other path is set explicitly below.
+    git("reset", "-q", c.base)
+    paths = set(git("diff", "--name-only", "-z", "--no-renames", c.base, c.head).split("\0")) - {""}
+    for p in sorted(paths - set(c.logs) - set(c.infra)):
+        if blob(c.base, p):
+            git("checkout", "-q", c.base, "--", p)
+        elif os.path.lexists(p):
+            os.remove(p)
+    kept = []
+    for p in c.infra:
+        rev, want = c.expect[p]
+        if p in c.merged:
+            if not os.path.isfile(p):
+                mode = git("ls-tree", c.ref if blob(c.ref, p) else c.tgt, "--", p).split()[0]
+                os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+                open(p, "wb").close()
+                os.chmod(p, 0o775 if mode == "100755" else 0o664)
+            open(p, "wb").write(c.merged[p])
+            if p not in c.infra_conflict:
+                git("add", "--", p)
+        elif want:
+            git("checkout", "-q", rev, "--", p)
+        elif blob(c.base, p):
+            git("rm", "-q", "--", p)
+        elif os.path.lexists(p):
+            os.remove(p)
+        if blob(c.base, p) != want:
+            kept.append(p)
+    for lp in c.logs:
+        if read(lp) != logs0[lp]:
+            die("%s changed during the reset (tag %s keeps the history)" % (lp, c.tag))
+    allowed = set(c.logs) | set(kept)
+    left = [l for l in git("status", "--porcelain", "--untracked-files=no", "--no-renames").splitlines() if l[3:] not in allowed]
+    if left:
+        die("tree is not base + log + infra after the reset (tag %s keeps the tip):\n%s" % (c.tag, "\n".join(left)))
+    today = datetime.date.today().isoformat()
+    what = "redo (backup tag %s kept)" % c.tag if redo else "started (backup tag %s)" % c.tag
+    append_log("## %s - history rewrite %s\n\n- Branch %s, reference %s (%s)." % (today, what, c.branch, c.tag, c.ref[:9]))
+    append_log("## %s - reset to %s done\n\n- Reset to merge-base with %s; log kept; infra kept: %d path(s)." % (today, c.base[:9], c.target, len(kept)))
+    log_prefix_ok(c, {lp: read(lp) for lp in c.logs})
+    print("REWRITE-%s branch=%s tag=%s ref=%s base=%s target=%s" % ("REDO" if redo else "START", c.branch, c.tag, c.ref[:9], c.base[:9], c.target))
+    print("FIRST COMMIT (commit path, before any product step): %s" % " ".join(c.logs + kept))
+    for p in kept:
+        print("  %s %s" % (c.kind[p], p))
+    for p in c.infra_conflict:
+        print("RESOLVE %s: branch and %s both changed it; conflict markers are in the file. Keep %s's version plus the branch's own change (git diff %s %s -- %s), then include it in the first commit." % (p, c.target, c.target, c.fork[:9], c.tag, p))
+    print("Then per step: ./append-to-engineering-log one entry, and name %s in that commit. Final: ./prepare-pr-rewrite --check %s" % (" ".join(c.logs), c.target))
+
+def check(c):
+    bad = []
+    for lp in c.logs:
+        h = show("HEAD", lp)
+        if not h.startswith(show(c.ref, lp)):
+            bad.append("%s at HEAD does not start with the %s copy (append-only)" % (lp, c.tag))
+        if read(lp) != h:
+            bad.append("%s in the worktree differs from HEAD (commit the appended entries)" % lp)
+    for p in c.infra:
+        rev, want = c.expect[p]
+        if p in c.infra_conflict:
+            if MARK.search(show("HEAD", p)):
+                bad.append("infra %s at HEAD still has conflict markers" % p)
+            continue
+        if blob("HEAD", p) != want:
+            bad.append("infra %s at HEAD is not the expected copy (%s: %s)" % (p, c.kind[p], {"infra-target": c.target, "infra-branch": c.tag, "infra-merged": "3-way merge %s+%s" % (c.tag, c.target)}[c.kind[p]]))
+    for p in c.conflict:
+        print("NOTE: %s also changed on %s since the fork: confirm by hand that HEAD keeps both changes" % (p, c.target))
+    print("LOG %s; INFRA %d path(s) checked" % (" ".join(c.logs), len(c.infra)))
+    if bad:
+        die("check failed:\n  " + "\n  ".join(bad))
+    print("LOG-OK INFRA-OK")
+    for p in c.infra_conflict:
+        print("REVIEW infra %s (resolved by hand): git diff %s HEAD -- %s must show only the branch's own change" % (p, c.target, p))
+    skip = set(c.logs) | set(c.infra) | set(c.changed)
+    extra = [p for p in git("diff", "--name-only", "-z", "--no-renames", c.base, "HEAD").split("\0") if p and p not in skip]
+    prod = [p for p in c.changed if blob("HEAD", p) != c.expect[p][1]]
+    print("deviations to review hunk by hunk (git diff %s HEAD -- <path>):" % c.tag)
+    if prod:
+        sys.stdout.write(git("diff", "--stat", c.ref, "HEAD", "--", *prod))
+    else:
+        print("  none: every product file the branch changed equals %s" % c.tag)
+    if extra:
+        print("changed on this branch but not by the original branch (deviations too, git diff %s HEAD -- <path>):" % c.base[:9])
+        sys.stdout.write(git("diff", "--stat", c.base, "HEAD", "--", *extra))
+
+def plan_input(c):
+    out = os.path.join(c.sandbox(), "PRs", "rewrite-input-%s.md" % c.branch)
+    commits = [l.split(" ", 1) for l in git("log", "--reverse", "--format=%h %s", c.fork + ".." + c.ref).splitlines()]
+    full = {git("rev-parse", h).strip(): h for h, _ in commits}
+    touched = {}
+    for h, _ in commits:
+        for f in git("diff-tree", "--no-commit-id", "-r", "--name-only", "--no-renames", h).split():
+            touched.setdefault(f, []).append(h)
+    kept = [p for p in c.infra if blob(c.base, p) != c.expect[p][1]]
+    DBG = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|println\(|Log\.d\(|System\.out\.|printStackTrace|console\.log|breakpoint\(|pdb\.set_trace|\bDEBUG\b")
+    L = ["# rewrite input: %s" % c.branch, "",
+         "reference %s (%s), base %s = merge-base(%s, HEAD), fork %s; %d original commits; %d product files."
+         % (c.ref[:9], c.tag if c.has_tag else "HEAD", c.base[:9], c.target, c.fork[:9], len(commits), len(c.changed)),
+         "Log (kept whole, appended per commit): %s" % ", ".join(c.logs),
+         "", "## First commit: log + infra (not part of any product step)"]
+    L += ["- %s %s" % (c.kind[p], p) for p in kept] or ["- no infra delta"]
+    L += ["  - %s: resolve by hand in the first commit (%s's version + git diff %s %s -- %s)" % (p, c.target, c.fork[:9], c.tag if c.has_tag else "HEAD", p) for p in c.infra_conflict]
+    L += ["", "## Product files also changed on %s since the fork (keep both changes)" % c.target] + (["- " + p for p in c.conflict] or ["- none"])
+    L += ["", "## Original commits (oldest first)"] + ["- %s %s" % (h, s) for h, s in commits]
+    gone = sorted(f for f in touched if f not in c.changed and f not in c.infra and f not in c.logs)
+    L += ["", "## Touched by commits but not in the net diff (changes cancel out: false starts)"] + (["- %s (%s)" % (f, ", ".join(touched[f])) for f in gone] or ["- none"])
+    L += ["", "## Net product diff by file and hunk (base -> reference)", "Each hunk lists the original commits that wrote its added lines (blame at the reference)."]
+    left = []
+    for f in c.changed:
+        num = git("diff", "--numstat", "--no-renames", c.base, c.ref, "--", f).split()
+        a, d = (num[0], num[1]) if num else ("0", "0")
+        L += ["", "### %s (+%s -%s) commits: %s" % (f, a, d, ", ".join(touched.get(f, [])) or "?")]
+        if a == "-":
+            L.append("- binary"); continue
+        bl = {}
+        for line in git("blame", "--porcelain", c.ref, "--", f, check=False).splitlines():
             m = re.match(r"^([0-9a-f]{40}) \d+ (\d+)", line)
             if m:
-                cur = (m.group(1), int(m.group(2)))
-                blame[cur[1]] = full.get(cur[0], "")
-    except subprocess.CalledProcessError:
-        pass
-    for hunk in re.split(r"(?m)^(?=@@ )", g("diff", "-U0", "--no-renames", base, "HEAD", "--", f)):
-        m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", hunk)
-        if not m:
-            continue
-        ns, nc = int(m.group(3)), int(m.group(4) or 1) if m.group(4) != "0" else 0
-        who = sorted({blame.get(n, "") for n in range(ns, ns + nc)} - {""})
-        first = next((l[1:].strip() for l in hunk.splitlines()[1:] if l[:1] in "+-" and l[1:].strip()), "")
-        L.append("- %s %s | %s | %s" % (hunk.split("@@")[1].strip(), m.group(5).strip()[:50], ",".join(who) or "deletion only", first[:90]))
-        n = ns
-        for l in hunk.splitlines()[1:]:
-            if l.startswith("+"):
-                if DBG.search(l):
-                    leftovers.append("- %s:%d %s" % (f, n, l[1:].strip()[:100]))
-                n += 1
-L += ["", "## Possible leftovers in added lines (candidates for Deviations)"] + (leftovers or ["- none"])
-open(out, "w").write("\n".join(L) + "\n")
-print("PLAN-INPUT %s (%d commits, %d files, %d cancelled-out files, %d leftover candidates)" % (out, len(commits), len(net), len(gone), len(leftovers)))
-PY
-  exit 0
-fi
+                bl[int(m.group(2))] = full.get(m.group(1), "")
+        for hunk in re.split(r"(?m)^(?=@@ )", git("diff", "-U0", "--no-renames", c.base, c.ref, "--", f)):
+            m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", hunk)
+            if not m:
+                continue
+            ns = int(m.group(3)); nc = 0 if m.group(4) == "0" else int(m.group(4) or 1)
+            who = sorted({bl.get(n, "") for n in range(ns, ns + nc)} - {""})
+            first = next((l[1:].strip() for l in hunk.splitlines()[1:] if l[:1] in "+-" and l[1:].strip()), "")
+            L.append("- %s %s | %s | %s" % (hunk.split("@@")[1].strip(), m.group(5).strip()[:50], ",".join(who) or "deletion only", first[:90]))
+            n = ns
+            for l in hunk.splitlines()[1:]:
+                if l.startswith("+"):
+                    if DBG.search(l):
+                        left.append("- %s:%d %s" % (f, n, l[1:].strip()[:100]))
+                    n += 1
+    L += ["", "## Possible leftovers in added lines (candidates for Deviations)"] + (left or ["- none"])
+    open(out, "w").write("\n".join(L) + "\n")
+    print("PLAN-INPUT %s (%d commits, %d product files, %d infra in the first commit, %d cancelled-out, %d leftover candidates)"
+          % (out, len(commits), len(c.changed), len(kept), len(gone), len(left)))
 
-if [ "${1:-}" = --check ]; then
-  [ $# -eq 1 ] || { echo "usage: ./prepare-pr-rewrite --check" >&2; exit 2; }
-  git rev-parse -q --verify "$tag^{commit}" >/dev/null || { echo "ERROR: no tag $tag" >&2; exit 1; }
-  recs=$(records "$tag" all)
-  rec=()
-  [ -z "$recs" ] || mapfile -t rec <<< "$recs"
-  echo "RECORDS ${rec[*]:-(none)}"
-  if [ ${#rec[@]} -gt 0 ] && ! git diff --quiet "$tag" HEAD -- "${rec[@]}"; then
-    echo "ERROR: record files differ from $tag (they must be committed verbatim):" >&2
-    git diff --stat "$tag" HEAD -- "${rec[@]}" >&2
-    exit 1
-  fi
-  echo "RECORDS-OK"
-  echo "deviations to review hunk by hunk (git diff $tag HEAD):"
-  git diff --stat "$tag" HEAD
-  exit 0
-fi
+def main():
+    a = sys.argv[1:]
+    mode = a.pop(0) if a and a[0].startswith("--") else "start"
+    if mode not in ("start", "--redo", "--check", "--plan-input") or len(a) > 1:
+        die("usage: ./prepare-pr-rewrite [TARGET] | --redo [TARGET] | --plan-input [TARGET] | --check [TARGET]")
+    target = a[0] if a else "master"
+    if mode == "start":
+        reset(Ctx(target, need_tag=False), redo=False)
+    elif mode == "--redo":
+        reset(Ctx(target, need_tag=True), redo=True)
+    elif mode == "--check":
+        check(Ctx(target, need_tag=True))
+    else:
+        plan_input(Ctx(target, need_tag=None))
 
-[ $# -le 1 ] || { echo "usage: ./prepare-pr-rewrite [TARGET] | --check | --plan-input [TARGET]" >&2; exit 2; }
-target=${1:-master}
-case "$branch" in master|orchestration) echo "ERROR: refusing to rewrite $branch" >&2; exit 1 ;; esac
-dirty=$(git status --porcelain --untracked-files=no)
-[ -z "$dirty" ] || { printf 'ERROR: uncommitted changes; commit or remove them first:\n%s\n' "$dirty" >&2; exit 1; }
-tip=$(git rev-parse HEAD)
-base=$(git merge-base "$target" HEAD) || { echo "ERROR: no merge-base with $target" >&2; exit 1; }
-# Untracked files stay untouched; one that is a tracked path at base would be overwritten.
-untracked=$(git ls-files --others --exclude-standard)
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  if git cat-file -e "$base:$f" 2>/dev/null; then echo "ERROR: untracked $f is tracked at the merge-base; move it away first" >&2; exit 1; fi
-done <<< "$untracked"
-[ "$base" != "$tip" ] || { echo "ERROR: nothing to rewrite: HEAD is the merge-base with $target" >&2; exit 1; }
-recs=$(records "$tip")
-rec=()
-[ -z "$recs" ] || mapfile -t rec <<< "$recs"
-
-git tag "$tag" "$tip" || { echo "ERROR: cannot create tag $tag (it exists?); nothing changed" >&2; exit 1; }
-[ "$(git rev-parse "$tag^{commit}")" = "$tip" ] || { echo "ERROR: $tag does not point at $tip; nothing reset" >&2; exit 1; }
-
-# Record files (append-only ENGINEERING_LOG.md included) are never written: a mixed reset moves
-# the branch and index only, then every other changed path is put back to base.
-git reset -q "$base"
-is_record() { local r; for r in ${rec[@]+"${rec[@]}"}; do [ "$r" = "$1" ] && return 0; done; return 1; }
-while IFS= read -r -d '' f; do
-  is_record "$f" && continue
-  if git cat-file -e "$base:$f" 2>/dev/null; then git checkout -q "$base" -- "$f"; else rm -f -- "$f"; fi
-done < <(git diff --name-only -z --no-renames "$base" "$tip")
-was_untracked() { grep -qxF -- "$1" <<< "$untracked"; }
-left=$(git status --porcelain --untracked-files=all | while IFS= read -r l; do is_record "${l:3}" || { [ "${l:0:2}" = "??" ] && was_untracked "${l:3}"; } || printf '%s\n' "$l"; done)
-[ -z "$left" ] || { printf 'ERROR: tree is not base + record files after the reset (tag %s keeps the tip):\n%s\n' "$tag" "$left" >&2; exit 1; }
-for f in ${rec[@]+"${rec[@]}"}; do
-  git show "$tag:$f" | cmp -s - "$f" || { echo "ERROR: $f is not the tip content after the reset" >&2; exit 1; }
-done
-echo "REWRITE-START branch=$branch tag=$tag tip=$tip base=$base target=$target"
-echo "RECORDS ${rec[*]:-(none)} (worktree holds the tip content; commit verbatim, never edit)"
-echo "final check: ./prepare-pr-rewrite --check"
+if __name__ == "__main__":
+    main()
