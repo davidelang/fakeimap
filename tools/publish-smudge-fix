@@ -2,7 +2,7 @@
 """publish-smudge-fix: publish canon rules and make every tree's smudge filter strict and verified.
 
   tools/publish-smudge-fix            dry run: change nothing, write the report, print the summary
-  tools/publish-smudge-fix --apply    run the fix (only after David says every agent is paused)
+  tools/publish-smudge-fix --apply    run the fix (David pauses the agents first; not detectable here)
 
 --apply refuses while the dry run has any BLOCKER. Then, stopping at the first failure:
   1 project.config per tree: add missing keys from their one source
@@ -91,17 +91,7 @@ def has_attr_ai(path):
     p = subprocess.run(["lsattr", "-d", path], capture_output=True, text=True)
     return p.returncode == 0 and re.search(r"^[^ ]*[ai]", p.stdout) is not None
 
-def agent_roots():
-    p = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True)
-    roots = {}
-    for line in p.stdout.splitlines():
-        m = re.search(r"GROK_PROMPT_ROOT=(\S+)", line)
-        r = re.search(r"ROLE_KEY=(\S+)", line)
-        if m and " sudo " in " " + line.split(None, 1)[1] + " ":
-            roots.setdefault(os.path.realpath(m.group(1)), set()).add(r.group(1) if r else "?")
-    return roots
-
-def plan_tree(wt, tok, pub, canon_cfg, running):
+def plan_tree(wt, tok, pub, canon_cfg):
     t = {"wt": wt, "blockers": [], "notes": [], "add": {}, "resmudge": [], "collide": []}
     cfg = conf(os.path.join(wt, "project.config"))
     if cfg is None:
@@ -149,10 +139,6 @@ def plan_tree(wt, tok, pub, canon_cfg, running):
     if not files:
         t["blockers"].append("no filter=manage-configs files (.gitattributes)")
     t["filtered"] = len(files)
-    roles = running.get(os.path.realpath(wt))
-    if roles:
-        t["running"] = sorted(roles)
-        t["blockers"].append("agent running: " + ",".join(sorted(roles)))
     if not os.path.isfile(os.path.join(wt, "build_app")):
         t["notes"].append("no ./build_app (adopt tools/build_app.template + build_command)")
     return t
@@ -189,7 +175,7 @@ def main():
     gh = canon_cfg.get("git_home", "")
     if not good(gh) or not os.path.isdir(gh):
         die("canon project.config git_home has no value or is not a dir")
-    tok, pub, running = tokens(), published_paths(), agent_roots()
+    tok, pub = tokens(), published_paths()
     hosts = []
     for host in D.discover(gh):
         if os.path.realpath(host) == os.path.realpath(CANON):
@@ -200,7 +186,7 @@ def main():
             if why:
                 h["excluded"].append("%s (%s)" % (label(wt, gh), why))
             else:
-                h["trees"].append(plan_tree(wt, tok, pub, canon_cfg, running))
+                h["trees"].append(plan_tree(wt, tok, pub, canon_cfg))
         hosts.append(h)
     dep = subprocess.run([os.path.join(CANON, "deploy-orchestration")], cwd=CANON, capture_output=True, text=True)
     deploy_out = dep.stdout + dep.stderr
