@@ -386,24 +386,6 @@ add_safe_directory() {
   fi
 }
 
-warn_sudoers_coverage() {
-  local needle="$DEST/append-to-engineering-log"
-  local hit=0
-  if [ "$DRY" -eq 1 ]; then
-    step check "warn if sudoers does not mention $needle (do not write sudoers)"
-    return 0
-  fi
-  if grep -RqsF "$needle" /etc/sudoers /etc/sudoers.d 2>/dev/null; then
-    hit=1
-  elif sudo grep -RqsF "$needle" /etc/sudoers /etc/sudoers.d 2>/dev/null; then
-    hit=1
-  fi
-  if [ "$hit" -eq 0 ]; then
-    warn "sudoers does not mention $needle"
-    warn "  eng-log wrapper elevation may fail on this host; do not auto-write /etc/sudoers.d"
-  fi
-}
-
 write_identity_files() {
   write_as_primary "$DEST/AGENT_CONTEXT.md" <<EOF
 # AGENT_CONTEXT.md — master
@@ -606,20 +588,16 @@ do_clone_layout() {
 
   seed_sandbox_repo
 
-  step primary "git branch orchestration (if missing)"
-  step primary "git checkout orchestration; commit AGENT_CONTEXT.md (orchestration)"
-  step primary "git worktree add --no-checkout $DEST/master master"
+  # Each step line is printed right before its command, so git's own output follows its step.
+  step primary "git checkout -b orchestration"
+  [ "$DRY" -eq 1 ] || git_primary -C "$DEST" checkout -b orchestration
+  step primary "commit AGENT_CONTEXT.md (orchestration identity)"
   if [ "$DRY" -eq 0 ]; then
-    if ! git_primary -C "$DEST" show-ref --verify --quiet refs/heads/orchestration; then
-      git_primary -C "$DEST" branch orchestration
-    fi
-    local cur
-    cur=$(git_primary -C "$DEST" rev-parse --abbrev-ref HEAD)
-    if [ "$cur" != "orchestration" ]; then
-      git_primary -C "$DEST" checkout orchestration
-    fi
     write_orchestration_context
     git_primary -C "$DEST" commit -m "Orchestration identity for $NAME" -- AGENT_CONTEXT.md
+  fi
+  step primary "git worktree add --no-checkout $DEST/master master"
+  if [ "$DRY" -eq 0 ]; then
     git_primary -C "$DEST" worktree add --no-checkout "$DEST/master" master
   fi
 
@@ -687,7 +665,6 @@ do_perms() {
     add_safe_directory "$u" "$DEST/*"
   done
 
-  warn_sudoers_coverage
 }
 
 # --- args ---
@@ -780,6 +757,9 @@ DEST="$GIT_HOME/$NAME"
 
 if [ -e "$DEST" ]; then
   die "dest already exists: $DEST (use --repair $DEST to seed config + DAC)"
+fi
+if [ -e "$GIT_HOME/$NAME.sandboxmetadata" ]; then
+  die "$GIT_HOME/$NAME.sandboxmetadata exists (left by an earlier clone of $NAME?); remove it first"
 fi
 
 print_header

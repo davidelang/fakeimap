@@ -47,21 +47,11 @@ if [[ ! $ENTRY =~ ^##\ [0-9]{4}- ]]; then
   exit 1
 fi
 
-do_append() {
-  if printf '\n%s\n' "$ENTRY" >> "$LOGFILE" 2>/dev/null; then
-    return 0
-  fi
-
-  if [ "$EUID" -ne 0 ]; then
-    SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
-    echo "Direct append denied for $(id -un); retrying as root via sudo (allowed by policy)..." >&2
-    exec sudo -n -- "$SCRIPT_PATH" "$@"
-  fi
-
-  echo "ERROR: cannot append to $LOGFILE even as root" >&2
+# One path: a direct append. The log is group ai-shared, chattr +a (append only); every role is
+# in ai-shared. No sudo: Landlock sets no-new-privileges, so it could never work from an agent.
+printf '\n%s\n' "$ENTRY" >> "$LOGFILE" || {
+  echo "ERROR: cannot append to $LOGFILE as $(id -un) (needs group write; file is $(stat -c '%U:%G %a' "$LOGFILE"))" >&2
   exit 1
 }
-
-do_append "$@"
 
 echo "Appended entry to ENGINEERING_LOG.md"
