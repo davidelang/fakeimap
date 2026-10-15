@@ -13,16 +13,9 @@ if [[ -f AGENT_CONTEXT.md ]]; then
 fi
 echo "worktree=${worktree}"
 
-sandbox=""
-if [[ -f project.config ]]; then
-  sandbox="$(sed -n 's/^sandbox_dir=//p' project.config | head -1 | tr -d '\r')"
-  [[ -z "$sandbox" ]] && sandbox="$(sed -n 's/^sandbox_path=//p' project.config | head -1 | tr -d '\r')"
-fi
-if [[ -z "$sandbox" && -d ./dev-ai-interaction ]]; then
-  sandbox="./dev-ai-interaction"
-elif [[ -z "$sandbox" && -d ./sandbox ]]; then
-  sandbox="./sandbox"
-fi
+[[ -f project.config ]] || { echo "ERROR: project.config missing in $(pwd)" >&2; exit 1; }
+sandbox="$(sed -n 's/^sandbox_dir=//p' project.config | tail -1 | tr -d '\r')"
+[[ -n "$sandbox" && "$sandbox" != *@@* ]] || { echo "ERROR: sandbox_dir has no value in project.config" >&2; exit 1; }
 echo "sandbox=${sandbox}"
 
 plan="${1:-}"

@@ -40,7 +40,7 @@ Clone this orchestration-example tree to git_home/<new-name> as a new
 multi-agent host (orchestration branch at dest root, master/ worktree).
 
   --dry-run       Print resolved paths and planned steps; no writes, no sudo
-  --source DIR    Path to orchestration-example (default: auto-detect)
+  --source DIR    Path to orchestration-example (default: this script's dir)
   --git-home DIR  Override git_home (must be an absolute existing directory)
   --repair DIR    Seed project.config, filter config + smudge check, dest-root DAC on an existing clone
   -h, --help      Show this help
@@ -50,15 +50,9 @@ worktree's project.config. This tool seeds dest and dest/master via
 ve_seed_worktree_project_config. Use --repair on a dest that was cloned
 before that seed existed.
 
-Discovery of --source (first match):
-  1. --source DIR
-  2. directory containing this script, if it looks like the example
-  3. current working directory, if it looks like the example
-  4. cwd/orchestration-example (when cwd is git_home / parent of the example)
-  5. git_home/orchestration-example from --git-home or project.config
-
-Looks-like-example: run-grok-orchestrator + setup_agent.sh + AGENT_MANDATES.md
-plus sandbox/ (or sandbox_dir / sandbox_path from that tree's project.config).
+Source: --source DIR, else the directory holding this script. It must have
+run-grok-orchestrator, setup_agent.sh, AGENT_MANDATES.md and project.config
+sandbox_dir naming an existing dir. git_home: --git-home, else source git_home.
 
 new-name: one path component matching [A-Za-z0-9._-]+, not . .. master
 orchestration or agent-N. Dest git_home/<name> must not already exist.
@@ -99,83 +93,27 @@ read_config_key() {
 }
 
 looks_like_example() {
-  local d="$1" sd=""
+  local d="$1" sd
   [ -n "$d" ] && [ -d "$d" ] || return 1
-  [ -f "$d/run-grok-orchestrator" ] || return 1
-  [ -f "$d/setup_agent.sh" ] || return 1
-  [ -f "$d/AGENT_MANDATES.md" ] || return 1
-  if [ -d "$d/sandbox" ]; then
-    return 0
-  fi
-  if [ -f "$d/project.config" ]; then
-    sd=$(sed -n 's/^sandbox_dir=//p' "$d/project.config" | tr -d '\r' | head -1 || true)
-    if [ -n "$sd" ] && [[ "$sd" != @@* ]] && [ -d "$d/$sd" ]; then
-      return 0
-    fi
-    sd=$(sed -n 's/^sandbox_path=//p' "$d/project.config" | tr -d '\r' | head -1 || true)
-    if [ -n "$sd" ] && [[ "$sd" != @@* ]]; then
-      case "$sd" in
-        /*) [ -d "$sd" ] && return 0 ;;
-        *) [ -d "$d/$sd" ] && return 0 ;;
-      esac
-    fi
-  fi
-  return 1
-}
-
-guess_git_home_for_discovery() {
-  local v=""
-  if [ -n "$GIT_HOME_ARG" ]; then
-    printf '%s\n' "$GIT_HOME_ARG"
-    return 0
-  fi
-  if v=$(read_config_key "$CWD/project.config" git_home 2>/dev/null); then
-    printf '%s\n' "$v"
-    return 0
-  fi
-  if v=$(read_config_key "$SCRIPT_DIR/project.config" git_home 2>/dev/null); then
-    printf '%s\n' "$v"
-    return 0
-  fi
-  return 1
+  [ -f "$d/run-grok-orchestrator" ] && [ -f "$d/setup_agent.sh" ] && [ -f "$d/AGENT_MANDATES.md" ] || return 1
+  sd=$(read_config_key "$d/project.config" sandbox_dir) || return 1
+  [ -d "$d/$sd" ]
 }
 
 resolve_source() {
-  local cand gh
-  if [ -n "$SOURCE_ARG" ]; then
-    cand=$(abs_dir "$SOURCE_ARG") || die "--source is not a directory: $SOURCE_ARG"
-    looks_like_example "$cand" || die "--source does not look like orchestration-example: $cand"
-    SOURCE="$cand"
-    return 0
-  fi
-  if looks_like_example "$SCRIPT_DIR"; then
-    SOURCE="$SCRIPT_DIR"
-    return 0
-  fi
-  if looks_like_example "$CWD"; then
-    SOURCE="$CWD"
-    return 0
-  fi
-  if looks_like_example "$CWD/orchestration-example"; then
-    SOURCE=$(abs_dir "$CWD/orchestration-example")
-    return 0
-  fi
-  gh=$(guess_git_home_for_discovery || true)
-  if [ -n "$gh" ] && looks_like_example "$gh/orchestration-example"; then
-    SOURCE=$(abs_dir "$gh/orchestration-example")
-    return 0
-  fi
-  die "cannot detect orchestration-example source (pass --source DIR)"
+  # One source: --source DIR, else the directory holding this script.
+  local cand="${SOURCE_ARG:-$SCRIPT_DIR}"
+  cand=$(abs_dir "$cand") || die "source is not a directory: $cand"
+  looks_like_example "$cand" || die "source is not orchestration-example (needs run-grok-orchestrator, setup_agent.sh, AGENT_MANDATES.md, project.config sandbox_dir): $cand"
+  SOURCE="$cand"
 }
 
 resolve_git_home() {
   local v=""
   if [ -n "$GIT_HOME_ARG" ]; then
     v="$GIT_HOME_ARG"
-  elif v=$(read_config_key "$SOURCE/project.config" git_home 2>/dev/null); then
-    :
   else
-    v=$(dirname "$SOURCE")
+    v=$(read_config_key "$SOURCE/project.config" git_home) || die "git_home has no value in $SOURCE/project.config (or pass --git-home)"
   fi
   case "$v" in
     ''|@@*) die "git_home unset or still a @@ token" ;;
@@ -203,23 +141,14 @@ validate_name() {
 }
 
 load_source_config() {
-  PRIMARY_USER=$(read_config_key "$SOURCE/project.config" primary_user 2>/dev/null || true)
-  PLANNING_USER=$(read_config_key "$SOURCE/project.config" planning_user 2>/dev/null || true)
-  CODER_USER=$(read_config_key "$SOURCE/project.config" coder_user 2>/dev/null || true)
-  ORCHESTRATOR_USER=$(read_config_key "$SOURCE/project.config" orchestrator_user 2>/dev/null || true)
-  SANDBOX_REL=$(read_config_key "$SOURCE/project.config" sandbox_dir 2>/dev/null || true)
-  if [ -z "${SANDBOX_REL:-}" ]; then
-    SANDBOX_REL=$(read_config_key "$SOURCE/project.config" sandbox_path 2>/dev/null || true)
-  fi
-  SPECIAL_PATHS=$(read_config_key "$SOURCE/project.config" sandbox_special_paths 2>/dev/null || true)
-  CODE_GROUP=$(read_config_key "$SOURCE/project.config" code_group 2>/dev/null || true)
-  PRIMARY_USER="${PRIMARY_USER:-dlang}"
-  PLANNING_USER="${PLANNING_USER:-ai-planner}"
-  CODER_USER="${CODER_USER:-ai-coder}"
-  ORCHESTRATOR_USER="${ORCHESTRATOR_USER:-ai-orchestrator}"
-  CODE_GROUP="${CODE_GROUP:-ai-code}"
-  SANDBOX_REL="${SANDBOX_REL:-sandbox}"
-  SPECIAL_PATHS="${SPECIAL_PATHS:-plans,historical-plans,implementation-failure-logs,PRs,research}"
+  local c="$SOURCE/project.config"
+  PRIMARY_USER=$(read_config_key "$c" primary_user) || die "primary_user has no value in $c"
+  PLANNING_USER=$(read_config_key "$c" planning_user) || die "planning_user has no value in $c"
+  CODER_USER=$(read_config_key "$c" coder_user) || die "coder_user has no value in $c"
+  ORCHESTRATOR_USER=$(read_config_key "$c" orchestrator_user) || die "orchestrator_user has no value in $c"
+  SANDBOX_REL=$(read_config_key "$c" sandbox_dir) || die "sandbox_dir has no value in $c"
+  SPECIAL_PATHS=$(read_config_key "$c" sandbox_special_paths) || die "sandbox_special_paths has no value in $c"
+  CODE_GROUP=$(read_config_key "$c" code_group) || die "code_group has no value in $c"
 }
 
 require_users() {
@@ -721,14 +650,8 @@ do_clone_layout() {
 
   step primary "install hooks/post-checkout -> $DEST/.git/hooks/post-checkout (775)"
   if [ "$DRY" -eq 0 ]; then
-    local hook_src=""
-    if [ -f "$DEST/hooks/post-checkout" ]; then
-      hook_src="$DEST/hooks/post-checkout"
-    elif [ -f "$SOURCE/hooks/post-checkout" ]; then
-      hook_src="$SOURCE/hooks/post-checkout"
-    fi
-    [ -n "$hook_src" ] || die "hooks/post-checkout missing in dest and source"
-    as_primary cp "$hook_src" "$DEST/.git/hooks/post-checkout"
+    [ -f "$DEST/hooks/post-checkout" ] || die "hooks/post-checkout not tracked in $DEST (publish rules to the source first)"
+    as_primary cp "$DEST/hooks/post-checkout" "$DEST/.git/hooks/post-checkout"
     as_primary chmod 775 "$DEST/.git/hooks/post-checkout"
   fi
 

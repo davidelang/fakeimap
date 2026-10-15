@@ -28,36 +28,21 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Stamped defaults (manage-configs smudge from project.config)
-sandbox_path=@@SANDBOX_PATH@@
-antigravity_bin=@@ANTIGRAVITY_BIN@@
-
-if [ -f project.config ]; then
-  while IFS= read -r _line || [ -n "$_line" ]; do
-    _line="${_line%%#*}"
-    _line="${_line#"${_line%%[![:space:]]*}"}"
-    [ -z "$_line" ] && continue
-    [[ "$_line" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]] || continue
-    export "$_line"
-  done < project.config || true
-fi
-
-SANDBOX_REL="${sandbox_dir:-${sandbox_path:-}}"
-if [[ -z "$SANDBOX_REL" || "$SANDBOX_REL" == @@* ]]; then
-  if [[ -d "$SCRIPT_DIR/dev-ai-interaction" || -L "$SCRIPT_DIR/dev-ai-interaction" ]]; then
-    SANDBOX_REL="dev-ai-interaction"
-  elif [[ -d "$SCRIPT_DIR/sandbox" || -L "$SCRIPT_DIR/sandbox" ]]; then
-    SANDBOX_REL="sandbox"
-  else
-    SANDBOX_REL="dev-ai-interaction"
-  fi
-fi
+# Config: project.config next to this script is the one source; missing values fail.
+_cfg="$SCRIPT_DIR/project.config"
+[ -f "$_cfg" ] || { echo "ERROR: $_cfg missing" >&2; exit 1; }
+while IFS= read -r _line || [ -n "$_line" ]; do
+  _line="${_line%%#*}"
+  _line="${_line#"${_line%%[![:space:]]*}"}"
+  [[ "$_line" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]] || continue
+  export "$_line"
+done < "$_cfg"
+need_cfg() { local v; v=$(sed -n "s/^$1=//p" "$_cfg" | tr -d '\r' | tail -1); [[ -n "$v" && "$v" != *@@* ]] || { echo "ERROR: $1 has no value in $_cfg" >&2; exit 1; }; printf '%s' "$v"; }
+SANDBOX_REL=$(need_cfg sandbox_dir) || exit 1
 SANDBOX_DIR="$SCRIPT_DIR/$SANDBOX_REL"
-PLANNING_USER=${planning_user:-ai-planner}
-ANTIGRAVITY_BIN="${ANTIGRAVITY_BIN:-${antigravity_bin:-}}"
-if [[ -z "$ANTIGRAVITY_BIN" || "$ANTIGRAVITY_BIN" == @@* ]]; then
-  ANTIGRAVITY_BIN="${HOME}/git/antigravity/agy"
-fi
+[ -d "$SANDBOX_DIR" ] || { echo "ERROR: sandbox_dir=$SANDBOX_REL is not a directory under $SCRIPT_DIR" >&2; exit 1; }
+PLANNING_USER=$(need_cfg planning_user) || exit 1
+ANTIGRAVITY_BIN=$(need_cfg antigravity_bin) || exit 1
 ANTIGRAVITY_BIN="${ANTIGRAVITY_BIN//\$HOME/$HOME}"
 
 # Ensure all files created during this session are group-writable (multi-user env)

@@ -1,12 +1,5 @@
-# landlock.config.example — same tokens as landlock.config (reference copy).
-# See landlock.config. project.config supplies real git_home= / sandbox_path= for smudge.
-# Copy not required if landlock.config is tracked and smudged; keep as docs twin.
-
-# Host clone root (absolute after smudge)
-git_home=@@GIT_HOME@@
-
-# Default sandbox dirname under worktree
-sandbox_path=@@SANDBOX_PATH@@
+# landlock.config.example: reference twin of landlock.config (same grants).
+# git_home, orch_root and sandbox_dir come from project.config only.
 
 # Live writes: worktree .gradle-home (GRADLE_USER_HOME), .gradle (project),
 # .android-shared. Do not set GRADLE_USER_HOME to $orch_root/.gradle-shared.

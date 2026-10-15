@@ -119,16 +119,8 @@ _cfg_nonempty code_group "$CODE_GROUP"
 _cfg_nonempty sandbox_group "$SANDBOX_GROUP"
 _cfg_nonempty shared_group "$SHARED_GROUP"
 
-_sd=${sandbox_dir:-}
-_sp=${sandbox_path:-}
-[[ "$_sd" == @@* ]] && _sd=""
-[[ "$_sp" == @@* ]] && _sp=""
-if [ -n "$_sd" ] && [ -n "$_sp" ] && [ "$_sd" != "$_sp" ]; then
-  echo "ERROR: $_CFG sandbox_dir=$_sd differs from sandbox_path=$_sp" >&2
-  exit 1
-fi
-SANDBOX="${_sd:-$_sp}"
-_cfg_nonempty sandbox_dir/sandbox_path "$SANDBOX"
+SANDBOX=${sandbox_dir:-}
+_cfg_nonempty sandbox_dir "$SANDBOX"
 
 _sandbox_under() {
   local root="$1"
@@ -563,7 +555,7 @@ fix_sandbox() {
   local sb
   sb="$(_sandbox_under "$SCRIPT_DIR")"
   if [ ! -d "$sb" ]; then
-    echo "ERROR: sandbox is not a directory: $sb (from $_CFG sandbox_dir/sandbox_path=$SANDBOX)" >&2
+    echo "ERROR: sandbox is not a directory: $sb (from $_CFG sandbox_dir=$SANDBOX)" >&2
     exit 1
   fi
   if $VERBOSE; then echo "  Applying to sandbox: $sb (group=$SANDBOX_GROUP)"; fi

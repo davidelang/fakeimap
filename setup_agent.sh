@@ -176,46 +176,22 @@ ensure_common_hooks_executable() {
     /*) hooks="$common/hooks" ;;
     *) hooks="$ORCH_ROOT/$common/hooks" ;;
   esac
-  if [ ! -d "$hooks" ]; then
-    return 0
-  fi
-  # Install/refresh post-checkout from tracked template (hooks/post-checkout)
-  if [ -f "$ORCH_ROOT/hooks/post-checkout" ]; then
-    cp "$ORCH_ROOT/hooks/post-checkout" "$hooks/post-checkout"
-  elif [ ! -f "$hooks/post-checkout" ]; then
-    local sb_dir
-    sb_dir="$(read_sandbox_dir "$ORCH_ROOT/project.config" || true)"
-    if [ -n "$sb_dir" ] && [ -f "$ORCH_ROOT/$sb_dir/new-project-template/post-checkout" ]; then
-      cp "$ORCH_ROOT/$sb_dir/new-project-template/post-checkout" "$hooks/post-checkout"
-    fi
-  fi
+  [ -d "$hooks" ] || _setup_die "git hooks dir missing: $hooks"
+  # One source: the tracked hooks/post-checkout
+  [ -f "$ORCH_ROOT/hooks/post-checkout" ] || _setup_die "missing $ORCH_ROOT/hooks/post-checkout (run deploy-orchestration)"
+  cp "$ORCH_ROOT/hooks/post-checkout" "$hooks/post-checkout" || _setup_die "cannot install $hooks/post-checkout"
   # Active hooks only (not *.sample)
   find "$hooks" -maxdepth 1 -type f ! -name '*.sample' -exec chmod 775 {} + 2>/dev/null || true
-  if [ -f "$hooks/post-checkout" ] && [ ! -x "$hooks/post-checkout" ]; then
-    chmod 775 "$hooks/post-checkout" 2>/dev/null || true
-  fi
-  if [ -f "$hooks/post-checkout" ] && [ ! -x "$hooks/post-checkout" ]; then
-    echo "WARNING: $hooks/post-checkout is still not executable (check ownership)."
-  fi
+  [ -x "$hooks/post-checkout" ] || _setup_die "$hooks/post-checkout is not executable (check ownership)"
 }
 
-# sandbox_dir wins; sandbox_path is the legacy alias. Empty if unset.
+# sandbox_dir from the given project.config; fails if missing.
 read_sandbox_dir() {
-  local cfg="$1" key val from_dir="" from_path=""
-  [ -f "$cfg" ] || return 1
-  while IFS='=' read -r key val; do
-    case "$key" in
-      sandbox_dir) [ -n "$val" ] && from_dir="$val" ;;
-      sandbox_path) [ -n "$val" ] && from_path="$val" ;;
-    esac
-  done < "$cfg"
-  if [ -n "$from_dir" ]; then
-    printf '%s' "$from_dir"
-  elif [ -n "$from_path" ]; then
-    printf '%s' "$from_path"
-  else
-    return 1
-  fi
+  local v
+  [ -f "$1" ] || _setup_die "missing $1"
+  v=$(sed -n 's/^sandbox_dir=//p' "$1" | tr -d '\r' | tail -1)
+  [ -n "$v" ] && [[ "$v" != *@@* ]] || _setup_die "sandbox_dir has no value in $1"
+  printf '%s' "$v"
 }
 
 ensure_common_hooks_executable
@@ -435,12 +411,8 @@ mkdir -p .gemini/policies
 mkdir -p .gemini/plans
 touch .gemini/plans/.gitkeep
 
-# 6. Setup Sandbox (symlink named by project.config sandbox_dir, else sandbox_path)
-SANDBOX_DIR="$(read_sandbox_dir ./project.config || read_sandbox_dir "$ORCH_ROOT/project.config" || true)"
-if [ -z "$SANDBOX_DIR" ]; then
-  echo "Error: project.config has neither sandbox_dir nor sandbox_path."
-  exit 1
-fi
+# 6. Setup Sandbox (symlink named by project.config sandbox_dir)
+SANDBOX_DIR="$(read_sandbox_dir ./project.config)" || exit 1
 if [ "$SANDBOX_DIR" != "dev-ai-interaction" ] && [ -L "dev-ai-interaction" ]; then
   rm -f "dev-ai-interaction"
 fi
