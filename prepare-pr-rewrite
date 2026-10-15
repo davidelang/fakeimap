@@ -1,21 +1,75 @@
 #!/bin/bash
 # prepare-pr-rewrite [TARGET] — start the /prepare-local-pr history rewrite on this branch.
-# Refuses unless the worktree is clean. Tags the tip backup-<branch> (the safety copy and the
-# reference for the final diff), verifies the tag, then resets this branch to
-# merge-base(TARGET, HEAD). TARGET defaults to master. Never deletes or moves the tag.
+# prepare-pr-rewrite --check  — final check: record files equal backup-<branch>.
+#
+# Start: refuses unless the worktree is clean. Tags the tip backup-<branch> (the safety copy
+# and the reference for the final diff), verifies the tag, then resets this branch to
+# merge-base(TARGET, HEAD) (TARGET defaults to master). Never deletes or moves the tag.
+# Record files keep their tip content in the worktree through the reset (never written);
+# they are committed verbatim later. Record files = paths with merge=ve-englog or
+# merge=ve-special-ours in .gitattributes that are tracked at the tip.
 set -euo pipefail
-[ $# -le 1 ] || { echo "usage: ./prepare-pr-rewrite [TARGET]" >&2; exit 2; }
-target=${1:-master}
 branch=$(git symbolic-ref --short HEAD) || { echo "ERROR: detached HEAD" >&2; exit 1; }
+tag=backup-$branch
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+records() {  # $1 = commit [$2 = all]; list from that commit's .gitattributes; tracked at $1 unless all
+  local f ga listed
+  ga=$(git show "$1:.gitattributes" 2>/dev/null) || { echo "ERROR: no .gitattributes at $1 (record file list)" >&2; exit 1; }
+  listed=$(awk '$1 !~ /^#/ && ($2 == "merge=ve-englog" || $2 == "merge=ve-special-ours") { print $1 }' <<< "$ga")
+  [ -n "$listed" ] || { echo "ERROR: .gitattributes names no record files (merge=ve-englog / ve-special-ours)" >&2; exit 1; }
+  for f in $listed; do
+    if [ "${2:-}" = all ] || git cat-file -e "$1:$f" 2>/dev/null; then printf '%s\n' "$f"; fi
+  done
+}
+
+if [ "${1:-}" = --check ]; then
+  [ $# -eq 1 ] || { echo "usage: ./prepare-pr-rewrite --check" >&2; exit 2; }
+  git rev-parse -q --verify "$tag^{commit}" >/dev/null || { echo "ERROR: no tag $tag" >&2; exit 1; }
+  recs=$(records "$tag" all)
+  rec=()
+  [ -z "$recs" ] || mapfile -t rec <<< "$recs"
+  echo "RECORDS ${rec[*]:-(none)}"
+  if [ ${#rec[@]} -gt 0 ] && ! git diff --quiet "$tag" HEAD -- "${rec[@]}"; then
+    echo "ERROR: record files differ from $tag (they must be committed verbatim):" >&2
+    git diff --stat "$tag" HEAD -- "${rec[@]}" >&2
+    exit 1
+  fi
+  echo "RECORDS-OK"
+  echo "deviations to review hunk by hunk (git diff $tag HEAD):"
+  git diff --stat "$tag" HEAD
+  exit 0
+fi
+
+[ $# -le 1 ] || { echo "usage: ./prepare-pr-rewrite [TARGET] | --check" >&2; exit 2; }
+target=${1:-master}
 case "$branch" in master|orchestration) echo "ERROR: refusing to rewrite $branch" >&2; exit 1 ;; esac
 dirty=$(git status --porcelain)
 [ -z "$dirty" ] || { printf 'ERROR: uncommitted changes; commit or remove them first:\n%s\n' "$dirty" >&2; exit 1; }
 tip=$(git rev-parse HEAD)
 base=$(git merge-base "$target" HEAD) || { echo "ERROR: no merge-base with $target" >&2; exit 1; }
 [ "$base" != "$tip" ] || { echo "ERROR: nothing to rewrite: HEAD is the merge-base with $target" >&2; exit 1; }
-tag=backup-$branch
+recs=$(records "$tip")
+rec=()
+[ -z "$recs" ] || mapfile -t rec <<< "$recs"
+
 git tag "$tag" "$tip" || { echo "ERROR: cannot create tag $tag (it exists?); nothing changed" >&2; exit 1; }
 [ "$(git rev-parse "$tag^{commit}")" = "$tip" ] || { echo "ERROR: $tag does not point at $tip; nothing reset" >&2; exit 1; }
-git reset --hard "$base"
+
+# Record files (append-only ENGINEERING_LOG.md included) are never written: a mixed reset moves
+# the branch and index only, then every other changed path is put back to base.
+git reset -q "$base"
+is_record() { local r; for r in ${rec[@]+"${rec[@]}"}; do [ "$r" = "$1" ] && return 0; done; return 1; }
+while IFS= read -r -d '' f; do
+  is_record "$f" && continue
+  if git cat-file -e "$base:$f" 2>/dev/null; then git checkout -q "$base" -- "$f"; else rm -f -- "$f"; fi
+done < <(git diff --name-only -z --no-renames "$base" "$tip")
+left=$(git status --porcelain --untracked-files=all | while IFS= read -r l; do is_record "${l:3}" || printf '%s\n' "$l"; done)
+[ -z "$left" ] || { printf 'ERROR: tree is not base + record files after the reset (tag %s keeps the tip):\n%s\n' "$tag" "$left" >&2; exit 1; }
+for f in ${rec[@]+"${rec[@]}"}; do
+  git show "$tag:$f" | cmp -s - "$f" || { echo "ERROR: $f is not the tip content after the reset" >&2; exit 1; }
+done
 echo "REWRITE-START branch=$branch tag=$tag tip=$tip base=$base target=$target"
-echo "final check: git diff $tag HEAD (only listed deviations)"
+echo "RECORDS ${rec[*]:-(none)} (worktree holds the tip content; commit verbatim, never edit)"
+echo "final check: ./prepare-pr-rewrite --check"
