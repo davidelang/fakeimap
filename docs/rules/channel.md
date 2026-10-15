@@ -15,6 +15,6 @@ Run the Go binaries from the repo root: `third_party/agent-coordination-tickets/
 - Report a failure on the channel too.
 - A node may move a message it is working on into `inbox/claimed/` (the watch ignores subfolders); rm it only after the reply is sent.
 - Bodies: BODYFILE, `-m 'TEXT'` (repeatable), or stdin (`-` or none). A message may carry several REF files.
-- PING/PONG are built in on every arrow; `channel-arm` answers PING. `channel-ping PLAN NODE` tests your arrows (skipped within 30 min unless `--force`). `channel-status PLAN` shows inbox counts, oldest age, and claims.
+- PING/PONG are built in on every arrow; `channel-arm` answers PING. `channel-ping PLAN NODE` tests your arrows (always sends); `channel-ping --all PLAN NODE` checks every reachable link: each node that gets a `SCOPE: all` PING passes it on via `channel-ping --run <id>` (`channel-arm` does this; skipped for a run already handled or within 30 min). `channel-status PLAN` shows inbox counts, oldest age, and claims.
 - On start or after a compaction, review `inbox/claimed/` first (work already started; check whether the reply went out before redoing). Claims are never reclaimed by age; report stale ones.
-- Events go to syslog (tag `agent-channel`), including webhook failures (retried with backoff).
+- Events go to syslog (tag `agent-channel`), including webhook results (failed posts are retried in the background with backoff up to 30m; the send does not wait).
