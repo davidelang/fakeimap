@@ -4,7 +4,7 @@ Channel programs for passing one file from one agent to the next.
 
 | | |
 |--|--|
-| **Upstream** | `davidelang/agent-coordination-tickets` @ `e9e8d6cac3f1d75d4df626464ce3e150c1daeff3` (`master`) |
+| **Upstream** | `davidelang/agent-coordination-tickets` @ `da1d5ff707ecd29dad5295ab123c87a383a788e9` (`master`) |
 | **Profile** | Source plus one build step: `go build` of `src/go/channel` (static, stdlib only). |
 | **Host clone** | `/home/dlang/git/agent-coordination-tickets` |
 
@@ -14,5 +14,7 @@ Channel programs for passing one file from one agent to the next.
 ```
 
 When that host clone contains the pin SHA, `src/` is a linked worktree of it.
-Agents run the Go binary `src/go/channel` (built by the step above); `src/bin/channel` (shell) is the fallback. The names
-`channel-setup`, `channel-arm`, and `channel-send` are the same program.
+Agents run only the Go binary `src/go/channel` (built by the step above), through its links `channel-setup`,
+`channel-arm`, `channel-send`, `channel-ping`, and `channel-status`; there is no other location. `src/bin/channel` (POSIX sh)
+and `src/bin/channel.py` are alternative implementations of the same tool, kept in step by the connector's tests;
+agents do not run them.

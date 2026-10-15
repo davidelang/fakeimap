@@ -1,11 +1,11 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "e9e8d6cac3f1d75d4df626464ce3e150c1daeff3"
-git_describe = "e9e8d6c"
+git_sha = "da1d5ff707ecd29dad5295ab123c87a383a788e9"
+git_describe = "da1d5ff"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
 requires_writable_src = false
 build = ["cd src/go && d=$(mktemp -d) && GOCACHE=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
-consumer_note = "Channel handoff tools (shell and Go). Build go/channel; agents run src/go/channel-{setup,arm,send} (shell src/bin/channel is the fallback)."
+consumer_note = "Channel handoff tools. Build go/channel; agents run only src/go/channel-{setup,arm,send,ping,status} from the repo root. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them."
