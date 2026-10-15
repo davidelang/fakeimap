@@ -491,8 +491,6 @@ seed_sandbox_repo() {
   local sandbox="$DEST/$SANDBOX_REL"
   local meta="${GIT_HOME}/${NAME}.sandboxmetadata"
   local gitdir="$meta/git"
-  local guide_src="$SOURCE/$SANDBOX_REL/research/plan-style-guide.md"
-  local guide_dst="$sandbox/research/plan-style-guide.md"
 
   # /sandbox: dir in root, symlink in master/. /master/ and /agent-*/: worktrees inside the root tree.
   step primary "ensure $DEST/.gitignore ignores /${SANDBOX_REL} /master/ /agent-*/"
@@ -508,14 +506,6 @@ seed_sandbox_repo() {
         printf "%s\n" "$line" >> "$file"
       done
     ' bash "$DEST/.gitignore" "/${SANDBOX_REL}" "/master/" "/agent-*/"
-  fi
-
-  if [ -f "$guide_src" ] && [ ! -e "$guide_dst" ]; then
-    step primary "cp plan-style-guide.md into $guide_dst"
-    if [ "$DRY" -eq 0 ]; then
-      as_primary mkdir -p "$(dirname "$guide_dst")"
-      as_primary cp "$guide_src" "$guide_dst"
-    fi
   fi
 
   step primary "stop tracking ${SANDBOX_REL}/ in the product repository"

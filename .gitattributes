@@ -60,4 +60,3 @@ AGENT_CONTEXT.md filter=manage-configs
 .grok/prompts/planning-subagent.md filter=manage-configs
 .grok/agents/plan.md filter=manage-configs
 .grok/agents/explore.md filter=manage-configs
-sandbox/research/plan-style-guide.md filter=manage-configs
