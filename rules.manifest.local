@@ -1,0 +1,28 @@
+# rules.manifest.local: files local to this project (not to one worktree).
+# Files local to this PROJECT: the root's version is published into every worktree;
+# a worktree's own modification of a file skips just that file. Seeded from the legacy
+# update-rules.sh FILES lists. Format: local <path>
+local .gemini/policies/plans.toml
+local .gemini/policies/auto-saved.toml
+local agent_reminder
+local .gitignore
+local docs/specs/OPERATIONAL_HANDBOOK.md
+local docs/ENVIRONMENT_SETUP.md
+local docs/reference/ORCHESTRATION_MERGE_INFRA_SYNC.md
+local docs/reference/MERGE_POSTMORTEM_IMPROVE_PUMP_CLASSIFICATION.md
+local new_grok_agent_prompt
+local env
+local refresh-shell.c
+local install-refresh-shell.sh
+local generate_pr.sh
+local setup-project
+local fix-android-sdk-perms
+local sync-debug-keystores
+local project.config.example
+local .gitattributes
+local enable-full-orchestration.sh
+local deploy
+local build_app
+local sync_infrastructure.sh
+local run-as-primary.c
+local ve-resolve-orch
