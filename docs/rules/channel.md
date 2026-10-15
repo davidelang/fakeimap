@@ -14,3 +14,7 @@ Run the Go binaries from the repo root: `third_party/agent-coordination-tickets/
 - Roadmap dispatch: after David says `<roadmap> planned`, the planner sends each plan to its node. Nodes may be non-grok agents.
 - Report a failure on the channel too.
 - A node may move a message it is working on into `inbox/claimed/` (the watch ignores subfolders); rm it only after the reply is sent.
+- Bodies: BODYFILE, `-m 'TEXT'` (repeatable), or stdin (`-` or none). A message may carry several REF files.
+- PING/PONG are built in on every arrow; `channel-arm` answers PING. `channel-ping PLAN NODE` tests your arrows (skipped within 30 min unless `--force`). `channel-status PLAN` shows inbox counts, oldest age, and claims.
+- On start or after a compaction, review `inbox/claimed/` first (work already started; check whether the reply went out before redoing). Claims are never reclaimed by age; report stale ones.
+- Events go to syslog (tag `agent-channel`), including webhook failures (retried with backoff).
