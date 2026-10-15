@@ -20,7 +20,13 @@ Kinds of paths:
          the first commit.
   product everything else. Expected: the reference copy if the branch changed it since the fork
          (merge-base(TARGET, reference)), else the base copy.
-Untracked files are left alone; one that is tracked at the base is an error. Errors never reset.
+Untracked files are left alone; one that is tracked at the base is an error.
+Preflight (before the tag or any change): every path the reset writes must be replaceable by this
+user (writable parent dir, no a/i attribute); offenders are listed with the fix and nothing changes.
+Resume: start/redo record the pre-reset tip in $GIT_DIR/prepare-pr-rewrite.state until they finish.
+After an interrupted run, ./prepare-pr-rewrite --redo finishes it: uncommitted changes in paths the
+reset sets (log, infra, the reset product paths) are allowed; the log is never written, the tag
+never touched.
 """
 import datetime, os, re, subprocess, sys
 
@@ -115,7 +121,18 @@ class Ctx:
             die("%s exists: to rewrite again use ./prepare-pr-rewrite --redo %s (the tag stays)" % (self.tag, target))
         self.head = git("rev-parse", "HEAD").strip()
         self.ref = git("rev-parse", self.tag + "^{commit}").strip() if self.has_tag else self.head
-        self.base = git("merge-base", target, "HEAD", check=False).strip() or die("no merge-base of HEAD with " + target)
+        self.state = os.path.abspath(git("rev-parse", "--git-path", "prepare-pr-rewrite.state").strip())
+        self.resume, self.state_bad = None, None  # pre-reset tip of an interrupted run
+        if os.path.isfile(self.state):
+            v = open(self.state).read().split()
+            if len(v) != 2 or not all(ok("rev-parse", "-q", "--verify", x + "^{commit}") for x in v):
+                self.state_bad = "%s is unreadable; inspect it, then remove it" % self.state
+            elif self.head not in v:
+                self.state_bad = "%s names tip %s / base %s but HEAD is %s; inspect it, then remove it" % (self.state, v[0][:9], v[1][:9], self.head[:9])
+            else:
+                self.resume = v[0]
+        self.tip = self.resume or self.head  # the commit the reset starts from
+        self.base = git("merge-base", target, self.tip, check=False).strip() or die("no merge-base of HEAD with " + target)
         self.fork = git("merge-base", target, self.ref, check=False).strip() or die("no merge-base of %s with %s" % (self.ref[:9], target))
         self.tgt = git("rev-parse", target + "^{commit}").strip()
         self.logs = log_paths(self.ref)
@@ -168,18 +185,44 @@ def log_prefix_ok(c, data_by_path):
 def read(p):
     return open(p, "rb").read() if os.path.isfile(p) else b""
 
+def preflight(c, paths):
+    """Every path the reset may write must be replaceable by this user; report all offenders at once."""
+    bad, dirs = [], set()
+    for p in paths:
+        d = os.path.dirname(p) or "."
+        while not os.path.isdir(d):
+            d = os.path.dirname(d) or "."
+        dirs.add(d)
+        if p in c.merged and os.path.isfile(p) and not os.access(p, os.W_OK):
+            bad.append("%s: file not writable" % p)
+    for d in sorted(dirs):
+        if not os.access(d, os.W_OK | os.X_OK):
+            bad.append("%s/: dir not writable (%s)" % (d, subprocess.run(["stat", "-c", "%U:%G %A", d], capture_output=True, text=True).stdout.strip()))
+    check = [p for p in paths if os.path.isfile(p) and not os.path.islink(p)] + sorted(dirs)
+    for i in range(0, len(check), 200):
+        out = subprocess.run(["lsattr", "-d", "--", *check[i:i + 200]], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            flags, _, name = line.partition(" ")
+            if re.search(r"[ai]", flags):
+                bad.append("%s: attribute %s" % (name.strip(), flags))
+    if bad:
+        die("preflight: %d path(s) this user (%s) cannot replace; nothing changed:\n  %s\n"
+            "fix: sudo ./fix-perms %s   (or, as the owner: chmod g+w on the dirs; chattr -a/-i needs root)"
+            % (len(bad), os.environ.get("USER") or subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip(),
+               "\n  ".join(bad), c.root))
+
 def reset(c, redo):
     if c.branch in ("master", "orchestration"):
         die("refusing to rewrite " + c.branch)
-    dirty = [l for l in git("status", "--porcelain", "--untracked-files=no").splitlines() if l]
-    def settled(f):  # redo: the log, or an infra path already at its expected version
-        if f in c.logs:
-            return True
-        if f not in c.infra:
-            return False
-        want = c.expect[f][1]
-        return (not os.path.lexists(f)) if want is None else (os.path.isfile(f) and git("hash-object", "--", f).strip() == want)
-    bad = [l for l in dirty if not (redo and settled(l[3:]))]
+    if c.state_bad:
+        die(c.state_bad)
+    if c.resume and not redo:
+        die("an interrupted run left %s: finish it with ./prepare-pr-rewrite --redo %s" % (c.state, c.target))
+    dirty = [l for l in git("status", "--porcelain", "--untracked-files=no", "--no-renames").splitlines() if l]
+    product = set(git("diff", "--name-only", "-z", "--no-renames", c.base, c.tip).split("\0")) - {""} - set(c.logs) - set(c.infra)
+    # redo: the log and infra are set by the reset; an interrupted run may also leave its product paths.
+    settled = set(c.logs) | set(c.infra) | (product if c.resume and c.head == c.base else set())
+    bad = [l for l in dirty if not (redo and l[3:] in settled)]
     if bad:
         die("uncommitted tracked changes; commit or remove them first:\n" + "\n".join(bad))
     if not redo and c.base == c.head:
@@ -192,15 +235,18 @@ def reset(c, redo):
         print("NOTE: also changed on %s since the fork (their steps must keep %s's change): %s" % (c.target, c.target, ", ".join(c.conflict)))
     logs0 = {lp: read(lp) for lp in c.logs}
     log_prefix_ok(c, logs0)
+    preflight(c, sorted(product | set(c.infra)))
     if not redo:
         git("tag", c.tag, c.head)
         if git("rev-parse", c.tag + "^{commit}").strip() != c.head:
             die("%s does not point at %s; nothing reset" % (c.tag, c.head))
     # Mixed reset: moves the branch and index only. The log is never written (same guarantee as
     # reset-to-builds.sh's skip-worktree handling); every other path is set explicitly below.
+    if not c.resume:
+        with open(c.state, "w") as f:
+            f.write("%s %s\n" % (c.head, c.base))
     git("reset", "-q", c.base)
-    paths = set(git("diff", "--name-only", "-z", "--no-renames", c.base, c.head).split("\0")) - {""}
-    for p in sorted(paths - set(c.logs) - set(c.infra)):
+    for p in sorted(product):
         if blob(c.base, p):
             git("checkout", "-q", c.base, "--", p)
         elif os.path.lexists(p):
@@ -237,6 +283,7 @@ def reset(c, redo):
     append_log("## %s - history rewrite %s\n\n- Branch %s, reference %s (%s)." % (today, what, c.branch, c.tag, c.ref[:9]))
     append_log("## %s - reset to %s done\n\n- Reset to merge-base with %s; log kept; infra kept: %d path(s)." % (today, c.base[:9], c.target, len(kept)))
     log_prefix_ok(c, {lp: read(lp) for lp in c.logs})
+    os.remove(c.state)
     print("REWRITE-%s branch=%s tag=%s ref=%s base=%s target=%s" % ("REDO" if redo else "START", c.branch, c.tag, c.ref[:9], c.base[:9], c.target))
     print("FIRST COMMIT (commit path, before any product step): %s" % " ".join(c.logs + kept))
     for p in kept:

@@ -292,6 +292,16 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label, purge_pats=())
                 rep.warn.append("%s: kept retired %s (local-only version)" % (label, p))
     return acts, None
 
+def make_dirs(wt, rel):
+    """Create missing dirs group-writable (2775) whatever the umask: agents in the group must be able to
+    replace files in them (a 755 dir made by this run blocked prepare-pr-rewrite in an agent tree)."""
+    d = wt
+    for part in [x for x in rel.split("/") if x]:
+        d = os.path.join(d, part)
+        if not os.path.isdir(d):
+            os.mkdir(d)
+            os.chmod(d, 0o2775)
+
 def apply_target(src, wt, acts, msg):
     paths = []
     for kind, p, mode, blob in acts:
@@ -300,7 +310,7 @@ def apply_target(src, wt, acts, msg):
             git(wt, "rm", "-q", "--", p)
             paths.append(p)
             continue
-        os.makedirs(os.path.dirname(fp) or wt, exist_ok=True)
+        make_dirs(wt, os.path.dirname(p))
         data = git(src, "cat-file", "blob", blob, binary=True)
         if os.path.lexists(fp):
             os.remove(fp)
