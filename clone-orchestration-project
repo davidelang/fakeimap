@@ -406,11 +406,11 @@ warn_sudoers_coverage() {
 
 write_identity_files() {
   write_as_primary "$DEST/AGENT_CONTEXT.md" <<EOF
-# AGENT_CONTEXT.md
+# AGENT_CONTEXT.md — master
 
 - **Agent ID:** master
 - **Current Branch:** master
-- **Role:** template / drift SoT
+- **Role:** Master
 - **Sandbox:** ${DEST}/sandbox/
 - **Status:** ACTIVE
 EOF
@@ -450,7 +450,7 @@ Landlock (mutation-only) wraps agents via \`agent-landlock\` from \`run-grok*\`.
 EOF
 }
 
-write_worktree_contexts() {
+write_orchestration_context() {
   write_as_primary "$DEST/AGENT_CONTEXT.md" <<EOF
 # AGENT_CONTEXT.md — orchestration
 
@@ -460,16 +460,16 @@ write_worktree_contexts() {
 - **Sandbox:** ${DEST}/sandbox/
 - **Status:** ACTIVE
 EOF
+}
 
-  write_as_primary "$DEST/master/AGENT_CONTEXT.md" <<EOF
-# AGENT_CONTEXT.md — master
-
-- **Agent ID:** master
-- **Current Branch:** master
-- **Role:** Master
-- **Sandbox:** ${DEST}/sandbox/
-- **Status:** ACTIVE
-EOF
+# A fresh clone must be clean in both trees: a dirty master/ makes ./build_app refuse.
+require_clean() {
+  local wt="$1" st
+  step check "git -C $wt status --porcelain is empty"
+  [ "$DRY" -eq 0 ] || return 0
+  st=$(git_primary -C "$wt" status --porcelain) || die "git status failed in $wt"
+  [ -z "$st" ] || die "$wt is not clean after clone:
+$st"
 }
 
 print_header() {
@@ -512,17 +512,20 @@ seed_sandbox_repo() {
   local guide_src="$SOURCE/$SANDBOX_REL/research/plan-style-guide.md"
   local guide_dst="$sandbox/research/plan-style-guide.md"
 
-  step primary "ensure $DEST/.gitignore ignores ${SANDBOX_REL}/"
+  # /sandbox: dir in root, symlink in master/. /master/ and /agent-*/: worktrees inside the root tree.
+  step primary "ensure $DEST/.gitignore ignores /${SANDBOX_REL} /master/ /agent-*/"
   if [ "$DRY" -eq 0 ]; then
     as_primary bash -c '
-      file="$1"; line="$2"
+      file="$1"; shift
       touch "$file"
-      grep -qxF "$line" "$file" && exit 0
-      if [ -s "$file" ] && [ -n "$(tail -c1 "$file" 2>/dev/null || true)" ]; then
-        printf "\n" >> "$file"
-      fi
-      printf "%s\n" "$line" >> "$file"
-    ' bash "$DEST/.gitignore" "${SANDBOX_REL}/"
+      for line in "$@"; do
+        grep -qxF "$line" "$file" && continue
+        if [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ]; then
+          printf "\n" >> "$file"
+        fi
+        printf "%s\n" "$line" >> "$file"
+      done
+    ' bash "$DEST/.gitignore" "/${SANDBOX_REL}" "/master/" "/agent-*/"
   fi
 
   if [ -f "$guide_src" ] && [ ! -e "$guide_dst" ]; then
@@ -567,6 +570,11 @@ do_clone_layout() {
   if [ "$DRY" -eq 0 ]; then
     git_primary clone --no-hardlinks -- "$SOURCE" "$DEST"
   fi
+  # The template is not the new project's remote: its refs block history rewrites and invite pushes to canon.
+  step primary "git remote remove origin"
+  if [ "$DRY" -eq 0 ]; then
+    git_primary -C "$DEST" remote remove origin
+  fi
 
   [ -f "$SOURCE/project.config" ] || die "$SOURCE/project.config missing (copy project.config.example and fill it first)"
   step primary "cp $SOURCE/project.config $DEST/project.config"
@@ -599,7 +607,7 @@ do_clone_layout() {
   seed_sandbox_repo
 
   step primary "git branch orchestration (if missing)"
-  step primary "git checkout orchestration"
+  step primary "git checkout orchestration; commit AGENT_CONTEXT.md (orchestration)"
   step primary "git worktree add --no-checkout $DEST/master master"
   if [ "$DRY" -eq 0 ]; then
     if ! git_primary -C "$DEST" show-ref --verify --quiet refs/heads/orchestration; then
@@ -610,6 +618,8 @@ do_clone_layout() {
     if [ "$cur" != "orchestration" ]; then
       git_primary -C "$DEST" checkout orchestration
     fi
+    write_orchestration_context
+    git_primary -C "$DEST" commit -m "Orchestration identity for $NAME" -- AGENT_CONTEXT.md
     git_primary -C "$DEST" worktree add --no-checkout "$DEST/master" master
   fi
 
@@ -623,9 +633,6 @@ do_clone_layout() {
   fi
   smudge_and_verify "$DEST/master"
   verify_dest_orch_root
-
-  step primary "write AGENT_CONTEXT.md in dest root (orchestration) and master/ (master)"
-  write_worktree_contexts
 
   step primary "ln -sfn ../sandbox $DEST/master/sandbox"
   if [ "$DRY" -eq 0 ]; then
@@ -658,6 +665,8 @@ do_clone_layout() {
   # Hook installed: from now on every checkout runs ./verify-smudge.
   smudge_and_verify "$DEST"
   smudge_and_verify "$DEST/master"
+  require_clean "$DEST"
+  require_clean "$DEST/master"
 }
 
 do_perms() {
