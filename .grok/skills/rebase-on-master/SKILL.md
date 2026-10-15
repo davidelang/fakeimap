@@ -93,7 +93,7 @@ files. Restore only the three paths from `$FEAT` (below).
 7. Do not commit specials "to match master". A commit is needed only if
    step 5 dirtied the tree; message: keep branch specials after rebase.
 
-8. `./build_app` if this is an app worktree and the rebase changed product
+8. Build with the project-facts.md Build path if the rebase changed product
    files.
 
 ## Forbidden

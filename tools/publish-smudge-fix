@@ -139,8 +139,11 @@ def plan_tree(wt, tok, pub, canon_cfg):
     if not files:
         t["blockers"].append("no filter=manage-configs files (.gitattributes)")
     t["filtered"] = len(files)
-    if not os.path.isfile(os.path.join(wt, "build_app")):
-        t["notes"].append("no ./build_app (adopt tools/build_app.template + build_command)")
+    pf = os.path.join(wt, "project-facts.md")
+    facts = open(pf, encoding="utf-8", errors="replace").read() if os.path.isfile(pf) else ""
+    sec = facts.split("## Build and commit", 1)[1].split("\n## ", 1)[0] if "## Build and commit" in facts else ""
+    if not (re.search(r"^- Build:", sec, re.M) and re.search(r"^- Commit:", sec, re.M)):
+        t["notes"].append("project-facts.md has no '## Build and commit' Build:/Commit: lines (agents stop BLOCKED)")
     return t
 
 def plan_host(host):

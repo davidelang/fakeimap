@@ -68,7 +68,6 @@ shared README-multi-agent.md
 shared tools/upgrade-scan
 shared tools/upgrade-probe
 shared tools/upgrade-map.tsv
-shared tools/build_app.template
 shared probes/README.md
 shared probes/general/*.md
 shared probes/protected/*.md

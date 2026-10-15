@@ -60,7 +60,7 @@ pretool)
   fpath="$(j '.toolInput.file_path // .toolInput.path // .toolInput.target_file // empty')"
   cmd="$(j '.toolInput.command // empty')"
   is_edit=0; case "$tool" in search_replace|write|write_file|Edit|Write|MultiEdit|Delete|StrReplace) is_edit=1 ;; esac
-  is_build=0; [[ "$cmd" =~ (^|[[:space:];&|])\./build_app ]] && is_build=1
+  is_build=0; [[ "$cmd" =~ (^|[[:space:];&|])\./(build_app|commit-build) ]] && is_build=1
   deny() { jq -cn --arg r "$1" '{decision:"deny",reason:$r}'; exit 0; }
   sandbox_dir
   case "$role" in

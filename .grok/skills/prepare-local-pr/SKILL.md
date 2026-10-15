@@ -12,7 +12,7 @@ when-to-use: "prepare PR, generate PR, cleanup history, local PR, /prepare-local
 
 # prepare-local-pr (Grok, Coder)
 
-Read `docs/rules/prepare-local-pr.md` and follow it exactly; it is the whole procedure. Helpers: `./prepare-pr-rewrite`, `./build_app`, `./generate_pr.sh`, `./append-to-engineering-log`.
+Read `docs/rules/prepare-local-pr.md` and follow it exactly; it is the whole procedure. Helpers: `./prepare-pr-rewrite`, the project-facts.md Build and Commit path, `./generate_pr.sh`, `./append-to-engineering-log`.
 
 - Master launcher: `./run-grok-master`.
 - Permissions (`.grok/config.toml`): the helpers are allowed; `git add`, `git commit`, `git reset`, `git tag`, `git rebase`, `git push` are denied. Use the helpers, never raw git writes.

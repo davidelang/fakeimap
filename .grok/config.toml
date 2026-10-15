@@ -1,6 +1,6 @@
 # Project Grok config (tracked; published by deploy-orchestration via rules.manifest).
 # Role tightening is done by Landlock (agent-landlock) and ROLE_KEY hooks in .grok/hooks/.
-# deny > ask > allow across all scopes. Agents commit only through ./build_app.
+# deny > ask > allow across all scopes. Agents commit only through the project-facts.md Commit path (./build_app or ./commit-build).
 
 [permission]
 rules = [
@@ -25,6 +25,7 @@ rules = [
   { action = "allow", tool = "bash", pattern = "true" },
   { action = "allow", tool = "bash", pattern = "adb logcat*" },
   { action = "allow", tool = "bash", pattern = "./build_app*" },
+  { action = "allow", tool = "bash", pattern = "./commit-build*" },
   { action = "allow", tool = "bash", pattern = "./exec-preflight*" },
   { action = "allow", tool = "bash", pattern = "./append-to-engineering-log*" },
   { action = "allow", tool = "bash", pattern = "./todo-append*" },

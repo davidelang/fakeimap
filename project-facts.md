@@ -6,3 +6,7 @@
 - Launch: `./run-grok-*` via `.grok/lib/grok-launch-common.sh` + `agent-landlock`
 - Groups: source `./env` (refresh-shell setuid)
 - Clone a sibling host: `./clone-orchestration-project <new-name>` → `git_home/<name>/` (branch `orchestration`) + `master/` worktree
+
+## Build and commit
+- Build: none (template host, no product)
+- Commit: none (David commits canon)

@@ -20,6 +20,7 @@
       "Shell(true)",
       "Shell(adb:logcat*)",
       "Shell(./build_app)",
+      "Shell(./commit-build)",
       "Shell(./exec-preflight)",
       "Shell(./append-to-engineering-log)",
       "Shell(./todo-append)",

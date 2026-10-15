@@ -11,7 +11,7 @@ description: >
 
 # prepare-local-pr (Cursor, Coder)
 
-Read `docs/rules/prepare-local-pr.md` and follow it exactly; it is the whole procedure. Helpers: `./prepare-pr-rewrite`, `./build_app`, `./generate_pr.sh`, `./append-to-engineering-log`.
+Read `docs/rules/prepare-local-pr.md` and follow it exactly; it is the whole procedure. Helpers: `./prepare-pr-rewrite`, the project-facts.md Build and Commit path, `./generate_pr.sh`, `./append-to-engineering-log`.
 
 - Master launcher: `./run-cursor-master`.
 - Permissions (`.cursor/cli.json` `Shell(...)` allow list): the helpers are allowed. Never run raw `git add`, `git commit`, `git reset`, `git tag`, `git rebase` or `git push`; use the helpers.

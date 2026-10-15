@@ -1,0 +1,30 @@
+#!/bin/bash
+# commit-build: generic Commit+Build path for non-Android projects (Android apps keep their ./build_app).
+# Adopt: copy to ./commit-build, list it in rules.manifest.local, set project.config build_command,
+# and in project-facts.md `## Build and commit` write: Build: ./commit-build / Commit: ./commit-build "msg" paths…
+# Usage: ./commit-build ["msg" | @msgfile] [paths…]
+#   Commits exactly the named paths, refuses any other uncommitted tracked change, runs
+#   project.config build_command (required), then tags <branch>/builds (master: builds).
+set -euo pipefail
+cd "$(dirname "$0")"
+cmd=$(sed -n 's/^build_command=//p' project.config | tail -1)
+[ -n "$cmd" ] || { echo "commit-build: ERROR: build_command has no value in project.config" >&2; exit 1; }
+if [ $# -ge 1 ]; then
+  msg="$1"; shift
+  if [[ "$msg" == @* ]]; then
+    [ -f "${msg#@}" ] || { echo "commit-build: ERROR: message file ${msg#@} not found" >&2; exit 1; }
+    msg=$(cat "${msg#@}")
+  fi
+  [ -n "$msg" ] || { echo "commit-build: ERROR: empty commit message" >&2; exit 1; }
+  [ $# -gt 0 ] || { echo "commit-build: ERROR: a message needs the paths to commit" >&2; exit 1; }
+  git add -A -- "$@"
+  git diff --cached --quiet && { echo "commit-build: ERROR: nothing to commit in: $*" >&2; exit 1; }
+  git commit -q -m "$msg" -- "$@"
+fi
+dirty=$(git status --porcelain -uno)
+[ -z "$dirty" ] || { printf 'commit-build: ERROR: uncommitted tracked changes (name every changed file):\n%s\n' "$dirty" >&2; exit 1; }
+bash -c "$cmd" || { echo "commit-build: ERROR: build failed: $cmd" >&2; exit 1; }
+branch=$(git rev-parse --abbrev-ref HEAD)
+tag=builds; [ "$branch" = master ] || tag="$branch/builds"
+git tag -f "$tag" >/dev/null
+echo "commit-build: OK $(git rev-parse --short HEAD) tagged $tag"
