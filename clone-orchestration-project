@@ -686,8 +686,10 @@ do_clone_layout() {
 
   # project.config before checkout: the smudge filter needs it.
   seed_dest_project_configs
-  step primary "git -C $DEST/master checkout HEAD -- ."
+  # The filter scripts first: git runs ./filter-*-config from the worktree being populated.
+  step primary "git -C $DEST/master checkout HEAD -- filter-apply-config filter-clean-config && checkout HEAD -- ."
   if [ "$DRY" -eq 0 ]; then
+    git_primary -C "$DEST/master" checkout HEAD -- filter-apply-config filter-clean-config
     git_primary -C "$DEST/master" checkout HEAD -- .
   fi
   smudge_and_verify "$DEST/master"
