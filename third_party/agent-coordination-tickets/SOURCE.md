@@ -4,7 +4,7 @@ Channel programs for passing one file from one agent to the next.
 
 | | |
 |--|--|
-| **Upstream** | `davidelang/agent-coordination-tickets` @ `da1d5ff707ecd29dad5295ab123c87a383a788e9` (`master`) |
+| **Upstream** | `davidelang/agent-coordination-tickets` @ `d1b56b3f17fbd5f664ac40db9c1ad687a8e5797e` (`master`) |
 | **Profile** | Source plus one build step: `go build` of `src/go/channel` (static, stdlib only). |
 | **Host clone** | `/home/dlang/git/agent-coordination-tickets` |
 
