@@ -14,6 +14,7 @@
 Never pushes. Trees under grok-worktrees/ and third_party/*/src are excluded (deploy rule).
 """
 import argparse, datetime, importlib.machinery, importlib.util, os, re, shutil, subprocess, sys
+sys.dont_write_bytecode = True  # loading deploy-orchestration must not leave __pycache__ in canon
 
 CANON = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORT = os.path.join(CANON, "sandbox", "publish-smudge-fix-report.md")
