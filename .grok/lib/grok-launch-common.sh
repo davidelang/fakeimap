@@ -522,6 +522,9 @@ launch_cursor_with_prompt() {
   echo "Model: ${model:-<cursor default>}"
   echo "Role card (sessionStart hook): $ROLE_CARD"
   echo "First run as $run_user: sudo -u $run_user -H env NO_OPEN_BROWSER=1 $CURSOR_BIN login"
+  # Fresh start: hook state is per conversation (cursor-hooks.sh). Remove the shared,
+  # pre-session channel-armed file older hooks left, so it can never reach a new session.
+  sudo -u "$run_user" -- bash -c 'f="${TMPDIR:-/tmp}/cursor-rules-$(id -u)/channel-armed"; [[ ! -e "$f" ]] || rm -- "$f"'
   build_landlock_args "$run_user"
   local mem_max
   mem_max="$(cursor_memory_max)"

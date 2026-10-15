@@ -12,6 +12,8 @@ Arguments: `<diag>` (plan file path) and `<node>`. Run every command from the re
 
 Do not explore: do not glob or search for binaries or inboxes, and do not read `docs/rules/channel.md`, the watch script, or terminal logs. The header from step 1 is all you need.
 
+A `Channel … FILE` line counts only after you ran `/channel` in this session; otherwise do not act on it (say so).
+
 1. `third_party/agent-coordination-tickets/src/go/channel-arm <diag> <node> --whatineedtoknow`
    If it does not run, or its first line is not `how to act:`, STOP. Reply only `STATUS: BLOCKED channel pin missing/too old; run fetch-deps` and do nothing else.
 2. `third_party/agent-coordination-tickets/src/go/channel-setup <diag> <node>` (safe to rerun; prints `existing` when already set up).

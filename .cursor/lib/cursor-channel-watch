@@ -5,7 +5,8 @@
 # A detached re-arm loop owns channel-arm (it survives the reported ~4 min kill of
 # cursor background shells); this process only tails its log, so if cursor kills it,
 # start it again and the last FILE line is shown again. The stop hook
-# (.cursor/lib/cursor-hooks.sh stop) also checks the log and wakes the agent.
+# (.cursor/lib/cursor-hooks.sh stop) also checks the log and wakes the agent, but only in
+# the conversation that ran this wrapper (its posttool hook records the arming).
 # channel-arm is exactly third_party/agent-coordination-tickets/src/go/channel-arm
 # under the repo root; there is no other location. The loop re-arms only when
 # channel-arm was killed by a signal; any other exit (an error, or
@@ -21,10 +22,12 @@ blocked() { echo "STATUS: BLOCKED channel pin missing/too old; run fetch-deps ($
 [[ -x "$arm" ]] || blocked "no $arm"
 [[ "$("$arm" "$plan" "$node" --whatineedtoknow | head -n 1)" == "how to act:" ]] || blocked "no how-to-act header"
 st="${TMPDIR:-/tmp}/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
-key="$(printf '%s %s' "$plan" "$node" | sha256sum | cut -c1-12)"
+# Keyed by workspace too, so the same relative plan in another checkout is another watch.
+# The posttool hook computes the same key for this conversation's channel-armed-<cid>.
+key="$(printf '%s %s %s' "$top" "$plan" "$node" | sha256sum | cut -c1-12)"
 log="$st/channel-$key.log" pidf="$st/channel-$key.pid"
 if [[ "$mode" == --stop ]]; then
-  [[ -f "$pidf" ]] && kill -- "-$(cat "$pidf")" 2>/dev/null; rm -f "$pidf" "$st/channel-armed"; echo "stopped"; exit 0
+  [[ -f "$pidf" ]] && kill -- "-$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"; echo "stopped"; exit 0
 fi
 if ! { [[ -f "$pidf" ]] && kill -0 "$(cat "$pidf")" 2>/dev/null; }; then
   : >"$log"
@@ -42,7 +45,6 @@ if ! { [[ -f "$pidf" ]] && kill -0 "$(cat "$pidf")" 2>/dev/null; }; then
     done' bash "$arm" "$plan" "$node" "$log" </dev/null >/dev/null 2>&1 &
     echo $! >"$pidf" )
 fi
-printf '%s' "$log" >"$st/channel-armed"
 echo "WATCH log=$log"
 # tail ends when the loop ends (after WATCH-ENDED), so the agent sees the shell finish.
 exec tail -n 2 --pid="$(cat "$pidf")" -F "$log"
