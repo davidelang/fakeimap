@@ -77,12 +77,9 @@ shared probes/protected/COUNT
 
 # Connector pin: docs/rules/channel.md and the /channel skills run artifact/channel-*, so the pin
 # travels with them in the same per-tree commit (the library checkout is never needed).
-# The pin tooling (fetch-deps and its helpers) travels with the pins it reads.
+# fetch-deps travels with the pins it reads. get-artifacts and libpin-* are not shared: some trees
+# carry their own older get-artifacts history (it would make deploy skip the whole tree).
 shared third_party/fetch-deps
-shared third_party/get-artifacts
-shared third_party/libpin-bwrap
-shared third_party/libpin-landlock
-shared third_party/libpin-sandbox
 shared third_party/agent-coordination-tickets/libpin.toml
 shared third_party/agent-coordination-tickets/SOURCE.md
 shared third_party/agent-coordination-tickets/artifact/*
