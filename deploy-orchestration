@@ -325,11 +325,18 @@ def apply_target(src, wt, acts, msg):
     if adds:
         git(wt, "add", "-f", "--", *adds)
     git(wt, "commit", "-q", "--only", "-m", msg, "--", *paths)
-    for p in adds:
-        fp = os.path.join(wt, p)
-        if is_managed(wt, p) and not os.path.islink(fp):
-            os.remove(fp)
-            git(wt, "checkout", "--", p)
+    # Re-smudge all managed files in ONE checkout with hooks off, then verify once: the
+    # post-checkout hook runs ./verify-smudge over the whole tree, so a per-file checkout fails
+    # while the other just-written managed files are still clean (unsmudged).
+    smudge = [p for p in adds if is_managed(wt, p) and not os.path.islink(os.path.join(wt, p))]
+    for p in smudge:
+        os.remove(os.path.join(wt, p))
+    if smudge:
+        git(wt, "-c", "core.hooksPath=/dev/null", "checkout", "--", *smudge)
+        if os.path.isfile(os.path.join(wt, "verify-smudge")):
+            r = subprocess.run(["bash", "./verify-smudge"], cwd=wt, capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError("./verify-smudge in %s after re-smudge: %s" % (wt, (r.stderr or r.stdout).strip()))
     left = git(wt, "status", "--porcelain", "--", *paths, check=False).strip()
     return git(wt, "rev-parse", "--short", "HEAD").strip(), left
 
