@@ -432,12 +432,17 @@ elif [ -f "../local.properties" ]; then
     cp ../local.properties local.properties
 fi
 
-# 7. Fork anchor for git describe. Not a role and not the checked-out branch.
-# Start-branch owns the -start tag. Forked-from is the parent branch name.
+# 7. Identity and fork anchor. exec-preflight reads "- **Agent ID:** " (plans' Worktree:);
+# Start-branch owns the -start tag (git describe); Forked-from is the parent branch name.
+[[ -n "${AGENT_ID:-}" ]] || _setup_die "AGENT_ID is empty; cannot write AGENT_CONTEXT.md"
 cat > AGENT_CONTEXT.md <<EOF
+- **Agent ID:** $AGENT_ID
+- **Current Branch:** $BRANCH_NAME
 Forked-from: master
 Start-branch: $BRANCH_NAME
 EOF
+_ctx_id="$(sed -n 's/^- \*\*Agent ID:\*\* //p' AGENT_CONTEXT.md | head -1 | tr -d '\r')"
+[[ "$_ctx_id" == "$AGENT_ID" ]] || _setup_die "AGENT_CONTEXT.md Agent ID is '$_ctx_id', expected '$AGENT_ID'"
 
 # 8. Make this a *fully working* tree with all correct permissions.
 #    Since we are always run from the orchestration root (which has the
