@@ -14,6 +14,21 @@
 # channel-arm was killed by a signal; any other exit (an error, or
 # ALREADY-WATCHING when another watch has the node) prints WATCH-ENDED and this
 # command ends.
+# Races (tests: tools/test-cursor-channel-watch). No locks; every shared step is one atomic
+# filesystem operation:
+#  - Start: the log is read from its first line (tail -n +1 -F) before any waiting, so a
+#    message that arrived while no wrapper ran ends this command at once, and a line written
+#    while it starts cannot be missed (no check-then-wait gap).
+#  - Two wrappers: each starts a candidate loop and publishes its pid with ln (fails if the
+#    pid file exists), so exactly one wins; a losing candidate sees another pid there and
+#    exits without arming. A dead loop's pid file is moved aside with one rename (mv -T); a
+#    live one moved aside by a racing wrapper is put back with ln. A loop whose pid file
+#    names another loop stops its channel-arm, and WATCH-ENDED lines carry the loop pid, so
+#    only the current loop's end ends this command.
+#  - FILE is printed only if that file is still in the inbox; channel-arm moves a PONG to
+#    nodes/NODE/pong-* in the same pass that lists the inbox, so a PONG is never a FILE.
+#    Every wrapper waiting on the node prints the same FILE (at least once, never lost);
+#    the agent rm's it, and a FILE that is already gone is skipped.
 #   --stop   end the re-arm loop for PLAN NODE
 set -uo pipefail
 [[ $# -ge 2 ]] || { echo "usage: $0 PLAN NODE [--stop]" >&2; exit 2; }
@@ -23,42 +38,82 @@ arm="$top/third_party/agent-coordination-tickets/artifact/channel-arm"
 blocked() { echo "STATUS: BLOCKED channel artifact missing/too old in third_party/agent-coordination-tickets/artifact ($1)"; exit 1; }
 [[ -x "$arm" ]] || blocked "no $arm"
 [[ "$("$arm" "$plan" "$node" --whatineedtoknow | head -n 1)" == "how to act:" ]] || blocked "no how-to-act header"
+command -v inotifywait >/dev/null 2>&1 || { echo "WATCH-ENDED inotifywait (inotify-tools) not installed"; exit 1; }
 st="/tmp/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
 # Keyed by workspace too, so the same relative plan in another checkout is another watch.
 # The posttool hook computes the same key for this conversation's channel-armed-<cid>.
 key="$(printf '%s %s %s' "$top" "$plan" "$node" | sha256sum | cut -c1-12)"
 log="$st/channel-$key.log" pidf="$st/channel-$key.pid"
+current() { local p=""; read -r p <"$pidf" 2>/dev/null; echo "$p"; }
 if [[ "$mode" == --stop ]]; then
-  [[ -f "$pidf" ]] && kill -- "-$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"; echo "stopped"; exit 0
+  p="$(current)"; [[ -n "$p" ]] && kill -- "-$p" 2>/dev/null; rm -f "$pidf"; echo "stopped"; exit 0
 fi
-if ! { [[ -f "$pidf" ]] && kill -0 "$(cat "$pidf")" 2>/dev/null; }; then
-  : >"$log"
-  # Started from a subshell so the loop is not this process's child: tail --pid
-  # must see it gone (a child would linger as a zombie of tail).
+
+start_candidate() {
+  # Started from a subshell so the loop is not this process's child, in its own session.
   ( setsid bash -c '
+    me=$$ arm=$1 plan=$2 node=$3 log=$4 pidf=$5
+    owner() { local p=""; read -r p <"$pidf" 2>/dev/null; echo "$p"; }
+    for _ in $(seq 100); do [[ -n "$(owner)" ]] && break; sleep 0.05; done
+    [[ "$(owner)" == "$me" ]] || exit 0
+    : >"$log"
     n=0
     while :; do
-      rc=0; "$1" "$2" "$3" >>"$4" 2>&1 || rc=$?
-      if [[ $rc -lt 128 ]]; then echo "WATCH-ENDED channel-arm exit $rc" >>"$4"; break; fi
+      "$arm" "$plan" "$node" >>"$log" 2>&1 & a=$!
+      while kill -0 "$a" 2>/dev/null; do
+        o="$(owner)"
+        if [[ -n "$o" && "$o" != "$me" ]]; then kill "$a" 2>/dev/null; wait "$a"; exit 0; fi
+        sleep 1
+      done
+      rc=0; wait "$a" || rc=$?
+      if [[ $rc -lt 128 ]]; then echo "WATCH-ENDED loop=$me channel-arm exit $rc" >>"$log"; break; fi
       n=$((n+1))
-      if [[ $n -ge ${CHANNEL_REARM_MAX:-1000} ]]; then echo "WATCH-ENDED re-armed $n times" >>"$4"; break; fi
-      echo "REARM $n $(date -Is) (channel-arm killed, exit $rc)" >>"$4"
+      if [[ $n -ge ${CHANNEL_REARM_MAX:-1000} ]]; then echo "WATCH-ENDED loop=$me re-armed $n times" >>"$log"; break; fi
+      echo "REARM $n $(date -Is) (channel-arm killed, exit $rc)" >>"$log"
       sleep 1
-    done' bash "$arm" "$plan" "$node" "$log" </dev/null >/dev/null 2>&1 &
-    echo $! >"$pidf" )
-fi
+    done' bash "$arm" "$plan" "$node" "$log" "$pidf" </dev/null >/dev/null 2>&1 &
+    echo $! )
+}
+
+# Attach to the live loop, or start one. Each step is a single rename/link.
+for try in $(seq 50); do
+  p="$(current)"
+  if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then break; fi
+  if [[ -e "$pidf" ]]; then
+    aside="$pidf.aside.$$"
+    if mv -T "$pidf" "$aside" 2>/dev/null; then
+      q=""; read -r q <"$aside" 2>/dev/null
+      if [[ -n "$q" ]] && kill -0 "$q" 2>/dev/null; then ln "$aside" "$pidf" 2>/dev/null; fi
+      rm -f "$aside"
+    fi
+    continue
+  fi
+  c="$(start_candidate)"
+  tmp="$pidf.new.$$"; echo "$c" >"$tmp"
+  ln "$tmp" "$pidf" 2>/dev/null   # wins only if no pid file exists; a losing candidate exits
+  rm -f "$tmp"
+done
+loop="$(current)"
+[[ -n "$loop" ]] && kill -0 "$loop" 2>/dev/null || { echo "WATCH-ENDED could not start or find the re-arm loop ($pidf)"; exit 1; }
 echo "WATCH log=$log"
-command -v inotifywait >/dev/null 2>&1 || { echo "WATCH-ENDED inotifywait (inotify-tools) not installed"; exit 1; }
-loop="$(cat "$pidf")"
-# End with the newest FILE line whose file is still in the inbox (channel-arm shows the next
-# oldest only after that one is removed), or with WATCH-ENDED when the loop stops.
+for _ in $(seq 100); do [[ -e "$log" ]] && break; sleep 0.05; done
+
+# Read the log from its first line; waiting happens only inside tail, so nothing is missed.
+exec 3< <(exec tail -n +1 --pid=$$ -F "$log" 2>/dev/null)
 while :; do
-  f="$(grep '^FILE ' "$log" | tail -n 1)"
-  if [[ -n "$f" && -f "${f#FILE }" ]]; then echo "$f"; exit 0; fi
-  if grep -q '^WATCH-ENDED' "$log"; then grep -B1 '^WATCH-ENDED' "$log" | tail -n 2; exit 1; fi
-  kill -0 "$loop" 2>/dev/null || { echo "WATCH-ENDED re-arm loop $loop is gone"; exit 1; }
-  # Wake on the next log write; the 60 s limit only re-checks the loop and the inbox file.
-  inotifywait -qq -t 60 -e modify -e close_write "$log" >/dev/null 2>&1
-  rc=$?
-  [[ $rc -eq 0 || $rc -eq 2 ]] || { echo "WATCH-ENDED inotifywait failed (exit $rc) on $log"; exit 1; }
+  if IFS= read -r -t 30 line <&3; then
+    case "$line" in
+      "FILE "*) [[ -f "${line#FILE }" ]] && { echo "$line"; exit 0; } ;;
+      "WATCH-ENDED loop="*)   # only the current loop's end counts (a superseded loop's does not)
+        e="${line#WATCH-ENDED loop=}"
+        [[ "${e%% *}" == "$(current)" ]] && { [[ -n "${last_aw:-}" ]] && echo "$last_aw"; echo "$line"; exit 1; } ;;
+      "ALREADY-WATCHING "*) last_aw="$line" ;;
+    esac
+  else
+    [[ $? -gt 128 ]] || { echo "WATCH-ENDED log reader stopped ($log)"; exit 1; }
+  fi
+  loop="$(current)"
+  if [[ -z "$loop" ]] || ! kill -0 "$loop" 2>/dev/null; then
+    [[ -n "${last_aw:-}" ]] && echo "$last_aw"; echo "WATCH-ENDED re-arm loop ${loop:-?} is gone"; exit 1
+  fi
 done

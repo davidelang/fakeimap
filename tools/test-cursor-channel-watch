@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Race tests for .cursor/lib/cursor-channel-watch (run from the canon checkout; uses a
+# throwaway git repo in /tmp and the pinned artifact; touches no live inbox).
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/ccw-test.XXXXXX)"
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+cleanup() { (cd "$T/repo" && "$W" "$P" b --stop >/dev/null 2>&1); pkill -f "ccw-test" 2>/dev/null; rm -rf "$T"; }
+trap cleanup EXIT
+mkdir -p "$T/repo/.cursor/lib" "$T/repo/third_party/agent-coordination-tickets"
+cp "$canon/.cursor/lib/cursor-channel-watch" "$T/repo/.cursor/lib/"
+cp -a "$canon/third_party/agent-coordination-tickets/artifact" "$T/repo/third_party/agent-coordination-tickets/"
+git -C "$T/repo" init -q
+P="$T/repo/t.diag" W="$T/repo/.cursor/lib/cursor-channel-watch" A="$T/repo/third_party/agent-coordination-tickets/artifact"
+cat >"$P" <<D
+blockdiag {
+  a <-> b;
+}
+/*
+node a $T/repo/nodes/a/inbox
+node b $T/repo/nodes/b/inbox
+verb a b NOTE
+verb b a NOTE
+message NOTE {
+A note.
+body: {
+NOTE: <text>
+}
+}
+*/
+D
+export CHANNEL_SYSLOG=0 CHANNEL_LOG_FILE="$T/log.txt" CHANNEL_AGENT=cursor CHANNEL_SEND_WAIT=0
+cd "$T/repo"
+for n in a b; do "$A/channel-setup" "$P" $n >/dev/null || { echo "setup failed"; exit 1; }; done
+inbox="$T/repo/nodes/b/inbox"
+key="$(printf '%s %s %s' "$T/repo" "$P" b | sha256sum | cut -c1-12)"
+pidf="/tmp/cursor-rules-$(id -u)/channel-$key.pid" log="/tmp/cursor-rules-$(id -u)/channel-$key.log"
+send() { "$A/channel-send" "$P" a b NOTE -m "NOTE: $1" 2>&1 | sed -n 's/^SENT //p'; }
+# watch OUT: start the wrapper in the background; its pid is in $wp
+watch() { "$W" "$P" b >"$1" 2>&1 & wp=$!; }
+# done_within SEC PID: did PID end within SEC seconds
+done_within() { local i; for i in $(seq $(( $1 * 20 ))); do kill -0 "$2" 2>/dev/null || return 0; sleep 0.05; done; return 1; }
+arms() { pgrep -u "$(id -u)" -f "channel-arm $P b\$" | wc -l; }
+lastfile() { sed -n 's/^FILE //p' "$1" | tail -n 1; }
+
+# 1. A message waiting before the wrapper starts ends it at once (inbox checked before waiting).
+f1="$(send one)"
+watch "$T/o1"; if done_within 5 $wp && [[ "$(lastfile "$T/o1")" == "$f1" ]]; then ok "start: waiting message ends the wrapper at once"; else bad "start: $(cat "$T/o1")"; fi
+
+# 2. Same FILE again if restarted before rm (cursor killed it): nothing lost.
+watch "$T/o2"; if done_within 5 $wp && [[ "$(lastfile "$T/o2")" == "$f1" ]]; then ok "restart before rm shows the same FILE"; else bad "restart before rm: $(cat "$T/o2")"; fi
+
+# 3. Message arriving between exit and restart: rm, send, then restart -> immediate FILE.
+rm -f "$f1"; f3="$(send three)"
+watch "$T/o3"; if done_within 5 $wp && [[ "$(lastfile "$T/o3")" == "$f3" ]]; then ok "message between exit and restart is shown on restart"; else bad "between exit and restart: $(cat "$T/o3")"; fi
+rm -f "$f3"
+
+# 4. No lost wakeup: messages sent at staggered moments around the wrapper's start.
+lost=0
+for i in $(seq 12); do
+  watch "$T/o4"; d=$(( (i*37) % 400 )); sleep "$(printf '0.%03d' $d)"; f="$(send "four $i")"
+  if done_within 8 $wp && [[ "$(lastfile "$T/o4")" == "$f" ]]; then :; else lost=$((lost+1)); kill $wp 2>/dev/null; echo "  lost $i (delay ${d}ms): $(tail -n 2 "$T/o4")"; fi
+  rm -f "$inbox"/*.md
+done
+[[ $lost -eq 0 ]] && ok "no lost wakeup in 12 staggered sends" || bad "$lost lost wakeups"
+
+# 5. Two (five) wrappers started at once with no loop: one loop, one channel-arm, all see the same FILE.
+"$W" "$P" b --stop >/dev/null; sleep 1.5
+ps=(); for i in 1 2 3 4 5; do "$W" "$P" b >"$T/o5.$i" 2>&1 & ps+=($!); done
+sleep 3
+n="$(arms)"; [[ "$n" -eq 1 ]] && ok "concurrent start: exactly one channel-arm" || bad "concurrent start: $n channel-arm processes"
+alive=0; for p in "${ps[@]}"; do kill -0 $p 2>/dev/null && alive=$((alive+1)); done
+[[ $alive -eq 5 ]] && ok "concurrent start: all 5 wrappers waiting (no spurious WATCH-ENDED)" || bad "concurrent start: only $alive waiting: $(cat "$T"/o5.* | grep -v '^WATCH log')"
+f5="$(send five)"; same=0
+for i in 1 2 3 4 5; do done_within 5 ${ps[$((i-1))]} && [[ "$(lastfile "$T/o5.$i")" == "$f5" ]] && same=$((same+1)); done
+[[ $same -eq 5 ]] && ok "concurrent start: each wrapper ends with the one FILE" || bad "concurrent start: $same/5 got the FILE"
+rm -f "$f5"
+
+# 6. Stale pid file (loop gone) raced by 4 wrappers: one new loop.
+loop="$(cat "$pidf")"; kill -- "-$loop"; sleep 1.5
+ps=(); for i in 1 2 3 4; do "$W" "$P" b >"$T/o6.$i" 2>&1 & ps+=($!); done
+sleep 3; n="$(arms)"; np="$(cat "$pidf")"
+[[ "$n" -eq 1 && "$np" != "$loop" ]] && kill -0 "$np" && ok "stale pid file: one new loop" || bad "stale pid file: $n channel-arm, pid $np"
+f6="$(send six)"; same=0
+for i in 1 2 3 4; do done_within 5 ${ps[$((i-1))]} && [[ "$(lastfile "$T/o6.$i")" == "$f6" ]] && same=$((same+1)); done
+[[ $same -eq 4 ]] && ok "stale pid file: all wrappers got the FILE" || bad "stale pid file: $same/4"
+
+# 7. File removed mid-read (retracted / already handled): restart skips it and waits.
+rm -f "$f6"; watch "$T/o7"
+if ! done_within 3 $wp; then ok "removed FILE is not shown again"; else bad "removed FILE shown: $(cat "$T/o7")"; fi
+f7="$(send seven)"; if done_within 5 $wp && [[ "$(lastfile "$T/o7")" == "$f7" ]]; then ok "then the next message ends it"; else bad "after removal: $(cat "$T/o7")"; fi
+# (channel-send waits while a's earlier message is still in b's inbox, so the second one is put by hand)
+f7b="$inbox/$(date +%Y%m%d-%H%M%S).999__a__9999.md"; printf 'FROM: a\nTO: b\nVERB: NOTE\n---\nNOTE: seven-b\n' >"$inbox/.n"; mv "$inbox/.n" "$f7b"; rm -f "$f7"; watch "$T/o7b"
+if done_within 5 $wp && [[ "$(lastfile "$T/o7b")" == "$f7b" ]]; then ok "rm then restart shows the next oldest"; else bad "next oldest: $(cat "$T/o7b")"; fi
+rm -f "$f7b"
+
+rm -f "$T/repo/nodes/b"/pong-*
+# 8. PONG filed concurrently with a message: the PONG is never a FILE, the message is.
+watch "$T/o8"; sleep 0.5
+for i in $(seq 5); do
+  n="nonce-$i"; tmp="$inbox/.p$i"
+  printf 'FROM: a\nTO: b\nVERB: PONG\n---\nACTION: PONG\nNONCE: %s\n' "$n" >"$tmp"; mv "$tmp" "$inbox/$(date +%Y%m%d-%H%M%S).00${i}__a__900${i}.md"
+done
+if ! done_within 3 $wp; then ok "PONGs alone do not end the wrapper"; else bad "PONG ended the wrapper: $(cat "$T/o8")"; fi
+pongs="$(ls "$T/repo/nodes/b"/pong-* 2>/dev/null | wc -l)"
+[[ "$pongs" -ge 5 ]] && ok "all 5 PONGs filed as pong-*" || bad "$pongs PONGs filed: $(ls "$inbox")"
+for i in $(seq 3); do printf 'FROM: a\nTO: b\nVERB: PONG\n---\nACTION: PONG\nNONCE: x%s\n' $i >"$inbox/.q"; mv "$inbox/.q" "$inbox/$(date +%Y%m%d-%H%M%S).10${i}__a__910$i.md"; done & f8="$(send eight)"; wait
+if done_within 5 $wp && [[ "$(lastfile "$T/o8")" == "$f8" ]]; then ok "message sent together with PONGs is the FILE"; else bad "PONG+message: $(cat "$T/o8")"; fi
+rm -f "$f8"
+
+# 9. A superseded loop (its pid file names another loop) stops its channel-arm without WATCH-ENDED.
+watch "$T/o9"; sleep 0.5; old="$(cat "$pidf")"
+echo $$ >"$pidf.x"; mv -T "$pidf.x" "$pidf"; sleep 2.5
+kill -0 "$old" 2>/dev/null && bad "superseded loop still running" || ok "superseded loop stopped itself"
+grep -q "^WATCH-ENDED loop=$old" "$log" && bad "superseded loop wrote WATCH-ENDED" || ok "superseded loop wrote no WATCH-ENDED"
+kill $wp 2>/dev/null; rm -f "$pidf"
+
+# 10. --stop ends the loop; a wrapper then reports WATCH-ENDED.
+watch "$T/o10"; sleep 1; "$W" "$P" b --stop >/dev/null
+if done_within 35 $wp && grep -q '^WATCH-ENDED' "$T/o10"; then ok "--stop ends a waiting wrapper with WATCH-ENDED"; else bad "--stop: $(cat "$T/o10")"; fi
+
+echo "passed $pass failed $fail"
+[[ $fail -eq 0 ]]
