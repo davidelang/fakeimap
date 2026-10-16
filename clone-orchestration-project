@@ -261,16 +261,16 @@ verify_dest_orch_root() {
 
 do_fix_perms() {
   # Use this example's fix-perms (not dest's stale copy) with explicit worktrees.
-  step root "$SCRIPT_DIR/fix-perms --skip-sudoers $DEST"
-  step root "$SCRIPT_DIR/fix-perms --skip-sudoers $DEST/master"
+  step root "$SCRIPT_DIR/fix-perms $DEST"
+  step root "$SCRIPT_DIR/fix-perms $DEST/master"
   if [ "$DRY" -eq 1 ]; then
     return 0
   fi
-  if ! as_root "$SCRIPT_DIR/fix-perms" --skip-sudoers "$DEST"; then
-    die "fix-perms failed: $SCRIPT_DIR/fix-perms --skip-sudoers $DEST"
+  if ! as_root "$SCRIPT_DIR/fix-perms" "$DEST"; then
+    die "fix-perms failed: $SCRIPT_DIR/fix-perms $DEST"
   fi
-  if ! as_root "$SCRIPT_DIR/fix-perms" --skip-sudoers "$DEST/master"; then
-    die "fix-perms failed: $SCRIPT_DIR/fix-perms --skip-sudoers $DEST/master"
+  if ! as_root "$SCRIPT_DIR/fix-perms" "$DEST/master"; then
+    die "fix-perms failed: $SCRIPT_DIR/fix-perms $DEST/master"
   fi
 }
 

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Tests for fix-perms (run from the canon checkout as a normal user; uses a throwaway repo
+# in /tmp). fix-perms must only set ownership/modes: it never writes a tracked file or
+# sudoers, a missing tracked wrapper/log is an error, and unknown arguments are an error.
+# As non-root its chown/chattr steps cannot apply; content and exit codes are what is tested.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/fixperms-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+
+# static: no embedded wrapper copy, no sudoers writing
+grep -q 'WRAPPER_EOF\|CANONICAL_APPEND_WRAPPER' "$canon/fix-perms" && bad "fix-perms embeds a wrapper copy" || ok "no embedded wrapper copy"
+grep -q '/etc/sudoers' "$canon/fix-perms" && bad "fix-perms writes sudoers" || ok "no sudoers writing"
+grep -qi 'VehicleExpenses' "$canon/fix-perms" && bad "fix-perms hard-codes VehicleExpenses" || ok "no VehicleExpenses paths"
+grep -q 'fix-perms --skip-sudoers\|fix-perms" --skip-sudoers' "$canon/clone-orchestration-project" && bad "clone-orchestration-project passes --skip-sudoers" || ok "callers do not pass --skip-sudoers"
+
+R="$T/repo"; mkdir -p "$R"
+cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/append-to-engineering-log" "$R/"
+printf '## 2026-01-01 init\n' >"$R/ENGINEERING_LOG.md"
+g="$(id -gn)"
+cat >"$R/project.config" <<C
+primary_user=$(id -un)
+planning_user=$(id -un)
+coder_user=$(id -un)
+orchestrator_user=$(id -un)
+code_group=$g
+sandbox_group=$g
+shared_group=$g
+sandbox_dir=sandbox
+orch_root=$R
+C
+mkdir -p "$R/sandbox"
+git -C "$R" init -q && git -C "$R" add -A && git -C "$R" -c user.name=t -c user.email=t@t commit -qm init
+before="$(git -C "$R" rev-parse HEAD:append-to-engineering-log)"
+
+(cd "$R" && ./fix-perms "$R") >"$T/run1" 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ok "runs on a worktree (rc 0)" || bad "run rc=$rc: $(cat "$T/run1")"
+[[ "$(git -C "$R" hash-object append-to-engineering-log)" == "$before" ]] && ok "wrapper content untouched" || bad "wrapper rewritten: $(git -C "$R" diff --stat)"
+[[ -z "$(git -C "$R" status --porcelain)" ]] && ok "no tracked file changed" || bad "tracked changes: $(git -C "$R" status --porcelain)"
+
+# a stale (old sudo) wrapper is left as is: fix-perms reports nothing to fix in content
+printf '#!/bin/bash\necho old\n' >"$R/append-to-engineering-log"
+(cd "$R" && ./fix-perms "$R") >/dev/null 2>&1
+grep -q 'echo old' "$R/append-to-engineering-log" && ok "never overwrites the wrapper" || bad "overwrote the wrapper"
+git -C "$R" checkout -q -- append-to-engineering-log
+
+rm "$R/ENGINEERING_LOG.md"
+(cd "$R" && ./fix-perms "$R") >"$T/run2" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'ENGINEERING_LOG.md is missing' "$T/run2" && ok "missing log fails loudly" || bad "missing log: rc=$rc $(cat "$T/run2")"
+[[ ! -e "$R/ENGINEERING_LOG.md" ]] && ok "missing log is not created" || bad "log was created"
+git -C "$R" checkout -q -- ENGINEERING_LOG.md
+
+rm "$R/append-to-engineering-log"
+(cd "$R" && ./fix-perms "$R") >"$T/run3" 2>&1; rc=$?
+[[ $rc -ne 0 && ! -e "$R/append-to-engineering-log" ]] && grep -q 'append-to-engineering-log is missing' "$T/run3" && ok "missing wrapper fails loudly, not recreated" || bad "missing wrapper: rc=$rc $(cat "$T/run3")"
+git -C "$R" checkout -q -- append-to-engineering-log
+
+(cd "$R" && ./fix-perms --skip-sudoers "$R") >"$T/run4" 2>&1; rc=$?
+[[ $rc -eq 2 ]] && grep -q 'unknown option --skip-sudoers' "$T/run4" && ok "unknown option is an error" || bad "unknown option: rc=$rc $(cat "$T/run4")"
+(cd "$R" && ./fix-perms "$R/nope") >"$T/run5" 2>&1; rc=$?
+[[ $rc -eq 2 ]] && ok "non-directory argument is an error" || bad "non-directory: rc=$rc $(cat "$T/run5")"
+
+echo "passed $pass failed $fail"
+[[ $fail -eq 0 ]]
