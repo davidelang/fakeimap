@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # cursor-channel-watch PLAN NODE : channel watch for cursor-agent. Use only when David
 # names the plan/node (docs/rules/channel.md).
-# Run it as a BACKGROUND shell that wakes the agent on output matching ^FILE .
-# A detached re-arm loop owns channel-arm (it survives the reported ~4 min kill of
-# cursor background shells); this process only tails its log, so if cursor kills it,
-# start it again and the last FILE line is shown again. The stop hook
+# Run it as a BACKGROUND shell (block_until_ms: 0). cursor-agent wakes an idle agent only
+# when a background shell FINISHES (output alone wakes nothing), so this command ENDS as soon
+# as a message is waiting: its last line is FILE <path>. The agent handles that file, rm's it,
+# and starts this same command again. A detached re-arm loop owns channel-arm (it survives
+# cursor killing background shells, reported after ~4 min); this process only reads its log,
+# so if cursor kills it, start it again (a waiting FILE is shown again at once). The stop hook
 # (.cursor/lib/cursor-hooks.sh stop) also checks the log and wakes the agent, but only in
 # the conversation that ran this wrapper (its posttool hook records the arming).
 # channel-arm is exactly third_party/agent-coordination-tickets/artifact/channel-arm
@@ -46,5 +48,17 @@ if ! { [[ -f "$pidf" ]] && kill -0 "$(cat "$pidf")" 2>/dev/null; }; then
     echo $! >"$pidf" )
 fi
 echo "WATCH log=$log"
-# tail ends when the loop ends (after WATCH-ENDED), so the agent sees the shell finish.
-exec tail -n 2 --pid="$(cat "$pidf")" -F "$log"
+command -v inotifywait >/dev/null 2>&1 || { echo "WATCH-ENDED inotifywait (inotify-tools) not installed"; exit 1; }
+loop="$(cat "$pidf")"
+# End with the newest FILE line whose file is still in the inbox (channel-arm shows the next
+# oldest only after that one is removed), or with WATCH-ENDED when the loop stops.
+while :; do
+  f="$(grep '^FILE ' "$log" | tail -n 1)"
+  if [[ -n "$f" && -f "${f#FILE }" ]]; then echo "$f"; exit 0; fi
+  if grep -q '^WATCH-ENDED' "$log"; then grep -B1 '^WATCH-ENDED' "$log" | tail -n 2; exit 1; fi
+  kill -0 "$loop" 2>/dev/null || { echo "WATCH-ENDED re-arm loop $loop is gone"; exit 1; }
+  # Wake on the next log write; the 60 s limit only re-checks the loop and the inbox file.
+  inotifywait -qq -t 60 -e modify -e close_write "$log" >/dev/null 2>&1
+  rc=$?
+  [[ $rc -eq 0 || $rc -eq 2 ]] || { echo "WATCH-ENDED inotifywait failed (exit $rc) on $log"; exit 1; }
+done
