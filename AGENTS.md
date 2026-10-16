@@ -34,7 +34,7 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - Files David names in chat (screenshots etc.) are in the sandbox (`project.config` `sandbox_dir`, `@@SANDBOX_PATH@@/`; same dir from any worktree): read `<sandbox>/<name>` directly. No ls/find. If it is not there, say so and ask; don't search.
 
 ## Channel
-- To join a channel, run the `/channel <diag path> <node>` skill. Underneath are `channel-setup`, `channel-send`, `channel-arm PLAN NODE`, and `channel-arm PLAN NODE --whatineedtoknow`. The skill and that header have every step; `docs/rules/channel.md` is the reference for humans.
+- To join a channel, run the `/channel <diag path> <node>` skill: it runs `third_party/agent-coordination-tickets/artifact/channel-arm <diag> <node> --whatineedtoknow`, and you follow that output; it has every step for your agent tool.
 - Use them only when David explicitly directs you to and names the plan or node. Never look for inbox or channel files on your own.
 
 ## Ending a turn

@@ -464,6 +464,7 @@ launch_grok_with_prompt() {
     ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
     GROK_PROMPT_ROOT="$SCRIPT_DIR" \
     ROLE_KEY="$ROLE_KEY" \
+    CHANNEL_AGENT=grok \
     GIT_HOME="$GIT_HOME" \
     ${grok_role_env[@]+"${grok_role_env[@]}"} \
     bash -c "$(role_exec_bash "$LAUNCH_UMASK")" bash \
@@ -526,7 +527,7 @@ launch_cursor_with_prompt() {
     ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
     GROK_PROMPT_ROOT="$SCRIPT_DIR" \
     ROLE_KEY="$ROLE_KEY" \
-    RULES_AGENT=cursor \
+    CHANNEL_AGENT=cursor \
     GIT_HOME="$GIT_HOME" \
     bash -c "$(role_exec_bash "$LAUNCH_UMASK")" bash \
       ${LANDLOCK_ARGS[@]+"${LANDLOCK_ARGS[@]}"} \

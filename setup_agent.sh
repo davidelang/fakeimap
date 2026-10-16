@@ -566,6 +566,13 @@ for pin in sorted(glob.glob(os.path.join(root, "third_party/*/libpin.toml"))):
         full = p if os.path.isabs(p) else os.path.join(root, p) if p.startswith("app/") else os.path.join(lib, p)
         if not os.path.exists(full):
             missing.append(os.path.relpath(full, root))
+            continue
+        h = re.search(r'(?m)^sha256\s*=\s*"([0-9a-f]{64})"', blk)
+        if h:
+            import hashlib
+            got = hashlib.sha256(open(full, "rb").read()).hexdigest()
+            if got != h.group(1):
+                missing.append("%s (sha256 %s, pinned %s)" % (os.path.relpath(full, root), got, h.group(1)))
 print("third_party: %d pinned artifact(s) present" % (n - len(missing)))
 for x in missing:
     print("ERROR: missing pinned artifact " + x, file=sys.stderr)

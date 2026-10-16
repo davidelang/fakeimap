@@ -1,20 +1,13 @@
-# Channel (file inbox between agents of any type)
+# Channel (file inbox between agents)
 
-Use it only when David names the plan or node. Never search for inbox files.
+Use it only when David names the plan and node; never look for inbox or channel files on your own.
 
-To join as a node, use the `/channel <diag path> <node>` skill (grok `.grok/skills/channel`, cursor `.cursor/skills/channel`).
+To join, David runs `/channel <diag path> <node>`. The skill runs, from the repo root:
 
-Run the committed pin artifacts from the repo root: `third_party/agent-coordination-tickets/artifact/channel-{setup,arm,send,ping,status}`. There is no other location; never fetch, build, or check out the library for this. If they are missing, or `--whatineedtoknow` does not start with `how to act:`, report `STATUS: BLOCKED channel artifact missing/too old in third_party/agent-coordination-tickets/artifact` and stop.
+`third_party/agent-coordination-tickets/artifact/channel-arm <diag> <node> --whatineedtoknow`
 
-- `channel-setup PLAN NODE`: creates the inbox (mode 2775). Safe to rerun; on an existing node it reports `existing` and changes nothing.
-- `channel-send`: deliver a message.
-- `channel-arm PLAN NODE`: the watch. It stays running, prints `READY`, then `FILE <path>` for the oldest inbox file. An empty inbox means the watch is waiting. In grok, run it with the `monitor` tool (`persistent: true`). A second `channel-arm` for the same node prints `ALREADY-WATCHING` and exits; do not start another. In cursor-agent, run exactly `.cursor/lib/cursor-channel-watch PLAN NODE` (never `channel-arm` directly) as a background shell (`block_until_ms: 0`) that wakes you on output matching `^FILE `; if that shell ends after `WATCH-ENDED`, report the message before it; if it ends without one, start it again (it re-shows the last FILE). The stop hook also wakes you with the newest FILE. `--stop` ends the watch.
-- `channel-arm PLAN NODE --whatineedtoknow`: prints a how-to-act header (paths, send command, BODYFILE rules, rm when done) and the message rules, then exits. Run it at start and after a compaction when you have a node.
-- If the inbox directory is gone or unreadable, the series stops. Wait.
-- Roadmap dispatch: after David says `<roadmap> planned`, the planner sends each plan to its node. Nodes may be non-grok agents.
-- Report a failure on the channel too.
-- A node may move a message it is working on into `inbox/claimed/` (the watch ignores subfolders); rm it only after the reply is sent.
-- Bodies: BODYFILE, `-m 'TEXT'` (repeatable), or stdin (`-` or none). A message may carry several REF files.
-- PING/PONG are built in on every arrow; `channel-arm` answers PING. `channel-ping PLAN NODE` tests your arrows (always sends); `channel-ping --all PLAN NODE` checks every reachable link: each node that gets a `SCOPE: all` PING passes it on via `channel-ping --run <id>` (`channel-arm` does this; skipped for a run already handled or within 30 min). `channel-status PLAN` shows inbox counts, oldest age, and claims.
-- On start or after a compaction, review `inbox/claimed/` first (work already started; check whether the reply went out before redoing). Claims are never reclaimed by age; report stale ones.
-- Events go to syslog (tag `agent-channel`), including webhook results (failed posts are retried in the background with backoff up to 30m; the send does not wait).
+and you follow its output. It is the whole instruction set: it detects the agent tool from `CHANNEL_AGENT` (set by the `run-cursor-*` / `run-grok-*` launchers; anything else fails loudly) and gives the exact watch, PING/PONG, send, reply, and BLOCKED steps and your duties on each arrow of the diag. Run it again after a compaction.
+
+If it does not run, or its first line is not `how to act:`, reply `STATUS: BLOCKED <its error>` and stop. Never fetch, build, or check out the library for this; the binaries are the committed pin artifacts in `third_party/agent-coordination-tickets/artifact/`.
+
+Reference for humans: the connector's `README.md` and `bin/README.md` in the pinned library (`channel-setup`, `-arm`, `-send`, `-ping`, `-status`); events go to syslog tag `agent-channel`.

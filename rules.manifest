@@ -75,6 +75,18 @@ shared probes/general/*.md
 shared probes/protected/*.md
 shared probes/protected/COUNT
 
+# Connector pin: docs/rules/channel.md and the /channel skills run artifact/channel-*, so the pin
+# travels with them in the same per-tree commit (the library checkout is never needed).
+# The pin tooling (fetch-deps and its helpers) travels with the pins it reads.
+shared third_party/fetch-deps
+shared third_party/get-artifacts
+shared third_party/libpin-bwrap
+shared third_party/libpin-landlock
+shared third_party/libpin-sandbox
+shared third_party/agent-coordination-tickets/libpin.toml
+shared third_party/agent-coordination-tickets/SOURCE.md
+shared third_party/agent-coordination-tickets/artifact/*
+
 opt run-antigravity
 opt run-antigravity-master
 opt run-antigravity-planner

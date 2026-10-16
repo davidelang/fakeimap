@@ -1,8 +1,8 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "d1b56b3f17fbd5f664ac40db9c1ad687a8e5797e"
-git_describe = "d1b56b3"
+git_sha = "f955af5fb2b5d192444640f44e0d1011c71d44e4"
+git_describe = "f955af5"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
@@ -14,4 +14,4 @@ consumer_note = "Channel handoff tools. The built go/channel is committed as art
 # Static Go binary (CGO_ENABLED=0, -trimpath, -buildvcs=false: same bytes from any checkout): committed, so a new worktree needs no library checkout.
 path = "artifact/channel"
 from = "src/go/channel"
-sha256 = "0f12d1cbd7258efe48667eddf385ae706639f65b0089ae1ab61d79e37c72d9ac"
+sha256 = "2afdea5d55b82919a04be16600ee53b6ca05e65c2fec5e6595f4980b16320071"

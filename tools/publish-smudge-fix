@@ -10,6 +10,10 @@
   1 project.config per tree: add missing keys from their one source
       sandbox_dir <- that tree's sandbox_path; git_home, *_bin <- canon project.config
   2 ./deploy-orchestration --apply (publish + one commit per changed tree; no push)
+      The connector pin (third_party/agent-coordination-tickets/{libpin.toml,SOURCE.md,artifact/*})
+      is in rules.manifest, so it lands in that same one commit with the channel rule and skills
+      that run it. A tree whose pin or rules diverged is skipped whole by deploy (a BLOCKER here),
+      never published half.
   3 per host: ./install-merge-drivers.sh (filter required=true) + .git/hooks/post-checkout
   4 per tree: ./verify-smudge --fix (re-smudge), then ./verify-smudge (must be OK)
   5 per tree: filtered files must show no diff (else fail; nothing is committed blind)
