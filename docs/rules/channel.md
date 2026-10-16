@@ -4,7 +4,7 @@ Use it only when David names the plan or node. Never search for inbox files.
 
 To join as a node, use the `/channel <diag path> <node>` skill (grok `.grok/skills/channel`, cursor `.cursor/skills/channel`).
 
-Run the Go binaries from the repo root: `third_party/agent-coordination-tickets/src/go/channel-{setup,arm,send,ping,status}`. There is no other location. If they are missing, or `--whatineedtoknow` does not start with `how to act:`, the pin is missing or too old: report `STATUS: BLOCKED channel pin missing/too old; run fetch-deps` and stop.
+Run the committed pin artifacts from the repo root: `third_party/agent-coordination-tickets/artifact/channel-{setup,arm,send,ping,status}`. There is no other location; never fetch, build, or check out the library for this. If they are missing, or `--whatineedtoknow` does not start with `how to act:`, report `STATUS: BLOCKED channel artifact missing/too old in third_party/agent-coordination-tickets/artifact` and stop.
 
 - `channel-setup PLAN NODE`: creates the inbox (mode 2775). Safe to rerun; on an existing node it reports `existing` and changes nothing.
 - `channel-send`: deliver a message.

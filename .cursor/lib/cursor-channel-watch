@@ -7,7 +7,7 @@
 # start it again and the last FILE line is shown again. The stop hook
 # (.cursor/lib/cursor-hooks.sh stop) also checks the log and wakes the agent, but only in
 # the conversation that ran this wrapper (its posttool hook records the arming).
-# channel-arm is exactly third_party/agent-coordination-tickets/src/go/channel-arm
+# channel-arm is exactly third_party/agent-coordination-tickets/artifact/channel-arm
 # under the repo root; there is no other location. The loop re-arms only when
 # channel-arm was killed by a signal; any other exit (an error, or
 # ALREADY-WATCHING when another watch has the node) prints WATCH-ENDED and this
@@ -17,8 +17,8 @@ set -uo pipefail
 [[ $# -ge 2 ]] || { echo "usage: $0 PLAN NODE [--stop]" >&2; exit 2; }
 plan="$1" node="$2" mode="${3:-}"
 top="$(git rev-parse --show-toplevel)" || { echo "cursor-channel-watch: run it inside the project repo" >&2; exit 1; }
-arm="$top/third_party/agent-coordination-tickets/src/go/channel-arm"
-blocked() { echo "STATUS: BLOCKED channel pin missing/too old; run fetch-deps ($1)"; exit 1; }
+arm="$top/third_party/agent-coordination-tickets/artifact/channel-arm"
+blocked() { echo "STATUS: BLOCKED channel artifact missing/too old in third_party/agent-coordination-tickets/artifact ($1)"; exit 1; }
 [[ -x "$arm" ]] || blocked "no $arm"
 [[ "$("$arm" "$plan" "$node" --whatineedtoknow | head -n 1)" == "how to act:" ]] || blocked "no how-to-act header"
 st="/tmp/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
