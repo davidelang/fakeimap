@@ -40,6 +40,16 @@ sandbox_dir() {  # sets sb
   [[ "$d" = /* ]] || d="$root/$d"
   sb="$d"
 }
+# build_cmd CMD: exit 1 when a command word of CMD is build_app/commit-build (cmd-words.py;
+# arguments such as channel-send message text are never matched). Unparsable = hook ERROR.
+build_cmd() {
+  command -v python3 >/dev/null 2>&1 || hook_error "python3 not installed (build guard)"
+  [[ -f "$root/.grok/hooks/cmd-words.py" ]] || hook_error "$root/.grok/hooks/cmd-words.py missing (build guard)"
+  local rc=0 err
+  err="$(python3 "$root/.grok/hooks/cmd-words.py" build "$1" 2>&1)" || rc=$?
+  [[ $rc == 2 ]] && hook_error "build guard: $err"
+  return $rc
+}
 sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 
 inject_facts() {  # $1 = hook event name
@@ -60,7 +70,7 @@ pretool)
   fpath="$(j '.toolInput.file_path // .toolInput.path // .toolInput.target_file // empty')"
   cmd="$(j '.toolInput.command // empty')"
   is_edit=0; case "$tool" in search_replace|write|write_file|Edit|Write|MultiEdit|Delete|StrReplace) is_edit=1 ;; esac
-  is_build=0; [[ "$cmd" =~ (^|[[:space:];&|])\./(build_app|commit-build) ]] && is_build=1
+  is_build=0; [[ -n "$cmd" ]] && { build_cmd "$cmd"; is_build=$?; }
   deny() { jq -cn --arg r "$1" '{decision:"deny",reason:$r}'; exit 0; }
   sandbox_dir
   case "$role" in

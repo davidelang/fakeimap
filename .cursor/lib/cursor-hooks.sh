@@ -63,9 +63,16 @@ posttool)
   if [[ "$(j '.tool_name // empty')" == Shell ]]; then
     cmd="$(j '.tool_input.command // empty')"
     armf="$st/channel-armed-${cid//\//_}"
-    if [[ "$cmd" =~ (^|[[:space:];&|/])\.cursor/lib/cursor-channel-watch[[:space:]]+([^[:space:];&|]+)[[:space:]]+([^[:space:];&|]+)([[:space:]]+(--stop))? ]]; then
-      cplan="${BASH_REMATCH[2]}" cnode="${BASH_REMATCH[3]}"
-      if [[ -n "${BASH_REMATCH[5]}" ]]; then
+    # Only a command word counts (cmd-words.py), never the wrapper's path inside message text.
+    cw="$root/.grok/hooks/cmd-words.py"
+    if ! watch="$(python3 "$cw" channel-watch "$cmd" 2>&1)"; then
+      jq -cn --arg e "$watch" '{additional_context:("CHANNEL-ARM-NOT-RECORDED: cannot read the shell command: "+$e)}'
+      exit 0
+    fi
+    watch="$(printf '%s\n' "$watch" | sed -n '$p')"
+    if [[ -n "$watch" ]]; then
+      IFS=$'\t' read -r cplan cnode cact <<<"$watch"
+      if [[ "$cact" == stop ]]; then
         rm -f -- "$armf"
       else
         if ! top="$(git -C "$ws" rev-parse --show-toplevel 2>&1)"; then

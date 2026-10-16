@@ -30,6 +30,7 @@ shared roles.config
 shared .grok/config.toml
 shared .grok/hooks/rules-hooks.json
 shared .grok/hooks/rules-hooks.sh
+shared .grok/hooks/cmd-words.py
 shared .grok/roles/*.toml
 shared .grok/agents/*.md
 shared .grok/lib/grok-launch-common.sh
