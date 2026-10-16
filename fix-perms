@@ -13,10 +13,19 @@
 #
 # It only sets ownership, groups and modes. It never writes a tracked file (the
 # append-to-engineering-log wrapper and ENGINEERING_LOG.md come from git; a missing one is
-# an error, restore it with git checkout) and never writes sudoers (the launchers' sudo rule
-# is set up by hand, see setup-project). Unknown arguments are an error.
+# an error, restore it with git checkout) and never touches sudoers (passwordless sudo to the
+# ai-* users lives in David's global sudoers, not in any project). Unknown arguments are an
+# error. Every chown/chmod/chattr/setfacl/git step runs under set -e with its errors shown:
+# nothing is swallowed, so the first failure stops the run with its message. Steps that may
+# not apply are guarded by an explicit check (file exists, ACL present, group membership).
+# Must run as root (sudo).
 
 set -euo pipefail
+
+if [ "$EUID" -ne 0 ]; then
+  echo "ERROR: fix-perms must run as root: sudo $0 $*" >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CURRENT_DIR="$(pwd)"
@@ -152,18 +161,25 @@ git_config_as_primary() {
   # non-root users when supplementary group membership is not active in the shell.
   local repo_path="$1"
   shift
-  if [ "$EUID" -eq 0 ]; then
-    sudo -u "$PRIMARY_USER" git -C "$repo_path" "$@" 2>/dev/null || true
+  if [ "$(id -un)" = "$PRIMARY_USER" ]; then
+    git -C "$repo_path" "$@"
   else
-    git -C "$repo_path" "$@" 2>/dev/null || true
+    sudo -u "$PRIMARY_USER" git -C "$repo_path" "$@"
   fi
 }
 
-fix_main_git_config_ownership() {
-  local cfg="$SCRIPT_DIR/.git/config"
-  [ -f "$cfg" ] || return 0
-  chown "$PRIMARY_USER:$SHARED_GROUP" "$cfg" 2>/dev/null || true
-  chmod 660 "$cfg" 2>/dev/null || true
+# Remove extended ACL entries only where a file has them (getfacl -s lists only such files),
+# so a filesystem or file without ACLs needs no setfacl call at all.
+strip_acl() {
+  local f="$1"
+  if [ -n "$(getfacl -s -p -- "$f")" ]; then
+    setfacl -b -- "$f"
+  fi
+}
+
+# True when user $1 is in group $2.
+in_group() {
+  id -nG "$1" | tr ' ' '\n' | grep -qx -- "$2"
 }
 
 ensure_shared_build_homes() {
@@ -176,36 +192,46 @@ ensure_shared_build_homes() {
   fi
   GRADLE_SHARED="$target_root/.gradle-shared"
   mkdir -p "$GRADLE_SHARED"
-  chown -R "$PRIMARY_USER:$SHARED_GROUP" "$GRADLE_SHARED" 2>/dev/null || true
-  find "$GRADLE_SHARED" -type d -exec chmod 2770 {} + 2>/dev/null || true
-  chmod -R ug+rwX,o-rwx "$GRADLE_SHARED" 2>/dev/null || true
+  chown -R "$PRIMARY_USER:$SHARED_GROUP" "$GRADLE_SHARED"
+  find "$GRADLE_SHARED" -type d -exec chmod 2770 {} +
+  chmod -R ug+rwX,o-rwx "$GRADLE_SHARED"
 
   ANDROID_SHARED="$target_root/.android-shared"
   mkdir -p "$ANDROID_SHARED/cache"
-  if [ ! -f "$ANDROID_SHARED/debug.keystore" ] && \
-     [ -f "/home/$PRIMARY_USER/.android/debug.keystore" ]; then
-    cp "/home/$PRIMARY_USER/.android/debug.keystore" "$ANDROID_SHARED/"
-    cp "/home/$PRIMARY_USER/.android/debug.keystore.lock" "$ANDROID_SHARED/" 2>/dev/null || true
+  local ks="/home/$PRIMARY_USER/.android/debug.keystore"
+  if [ ! -f "$ANDROID_SHARED/debug.keystore" ] && [ -f "$ks" ]; then
+    cp "$ks" "$ANDROID_SHARED/"
+    if [ -f "$ks.lock" ]; then
+      cp "$ks.lock" "$ANDROID_SHARED/"
+    fi
   fi
-  chown -R "$PRIMARY_USER:$SHARED_GROUP" "$ANDROID_SHARED" 2>/dev/null || true
-  find "$ANDROID_SHARED" -type d -exec chmod 2770 {} + 2>/dev/null || true
-  chmod -R ug+rwX,o-rwx "$ANDROID_SHARED" 2>/dev/null || true
+  chown -R "$PRIMARY_USER:$SHARED_GROUP" "$ANDROID_SHARED"
+  find "$ANDROID_SHARED" -type d -exec chmod 2770 {} +
+  chmod -R ug+rwX,o-rwx "$ANDROID_SHARED"
 }
 
 ensure_groups() {
   if $VERBOSE; then
     echo "Ensuring group memberships for $SHARED_GROUP ..."
   fi
-  for u in dlang "$PLANNING_USER" "$CODER_USER" "$ORCHESTRATOR_USER"; do
-    if id "$u" >/dev/null 2>&1; then
-      usermod -aG "$SHARED_GROUP" "$u" 2>/dev/null || true
+  local u
+  for u in "$PRIMARY_USER" "$PLANNING_USER" "$CODER_USER" "$ORCHESTRATOR_USER"; do
+    if ! id "$u" >/dev/null; then
+      echo "ERROR: user $u (project.config) does not exist" >&2
+      exit 1
+    fi
+    if ! in_group "$u" "$SHARED_GROUP"; then
+      usermod -aG "$SHARED_GROUP" "$u"
       if $VERBOSE; then echo "  + $u -> $SHARED_GROUP"; fi
     fi
   done
-  gpasswd -d "$PLANNING_USER" "$CODE_GROUP" 2>/dev/null || true
-  # dlang needs sandbox access too (for reading/interacting with plans)
-  if id "$PRIMARY_USER" >/dev/null 2>&1; then
-    usermod -aG "$SANDBOX_GROUP" "$PRIMARY_USER" 2>/dev/null || true
+  # The planner never builds: it must not be in the code group.
+  if in_group "$PLANNING_USER" "$CODE_GROUP"; then
+    gpasswd -d "$PLANNING_USER" "$CODE_GROUP"
+  fi
+  # The primary user needs sandbox access too (for reading/interacting with plans)
+  if ! in_group "$PRIMARY_USER" "$SANDBOX_GROUP"; then
+    usermod -aG "$SANDBOX_GROUP" "$PRIMARY_USER"
   fi
   # Clean up rogue build caches from planner (should never build)
   if [ -d "/home/$PLANNING_USER/.gradle" ]; then
@@ -223,25 +249,18 @@ ensure_git_hooks_executable() {
     [ -d "$hooks_dir" ] || continue
     if $VERBOSE; then echo "  Ensuring git hooks executable under $hooks_dir"; fi
     # Active hooks only (not the stock *.sample templates)
-    find "$hooks_dir" -maxdepth 1 -type f ! -name '*.sample' -exec chmod 775 {} + 2>/dev/null || true
-    chown :"$SHARED_GROUP" "$hooks_dir"/* 2>/dev/null || true
+    find "$hooks_dir" -maxdepth 1 -type f ! -name '*.sample' -exec chmod 775 {} +
+    find "$hooks_dir" -mindepth 1 -maxdepth 1 -exec chown ":$SHARED_GROUP" {} +
   done
 }
 
-# Resolve absolute common git directory for a worktree/repo root.
+# Absolute common git directory for a worktree/repo root (fails if it is not a git tree).
 # Multi-user DAC model: this store must stay SHARED_GROUP (ai-shared), never CODE_GROUP.
 resolve_common_gitdir() {
-  local base="$1"
-  local g
-  [ -n "$base" ] && [ -d "$base" ] || return 0
-  g=$(git -C "$base" rev-parse --git-common-dir 2>/dev/null || true)
+  local base="$1" g
+  g=$(git -C "$base" rev-parse --git-common-dir)
   case "$g" in
     /*) printf '%s\n' "$g" ;;
-    "")
-      if [ -d "$base/.git" ]; then
-        printf '%s\n' "$base/.git"
-      fi
-      ;;
     *) printf '%s\n' "$base/$g" ;;
   esac
 }
@@ -249,24 +268,24 @@ resolve_common_gitdir() {
 # Repair common/core .git store only (objects/refs/HEAD/config/hooks/worktrees).
 # Never use CODE_GROUP here. Never chmod 660 on the top directory before descend.
 repair_common_gitdir() {
-  local gdir="$1"
-  [ -d "$gdir" ] || return 0
+  local gdir="$1" hd
+  [ -d "$gdir" ] || { echo "ERROR: common git dir $gdir is not a directory" >&2; exit 1; }
   if $VERBOSE; then echo "  Repairing common git dir under $SHARED_GROUP: $gdir"; fi
   # Ensure top dir is searchable before recursive ops (legacy bug: chmod 660 stripped +x).
-  chown :"$SHARED_GROUP" "$gdir" 2>/dev/null || true
-  chmod 2770 "$gdir" 2>/dev/null || true
-  chown -R :"$SHARED_GROUP" "$gdir" 2>/dev/null || true
-  find "$gdir" -type d -exec chmod 2770 {} + 2>/dev/null || true
-  find "$gdir" -type f -exec chmod 660 {} + 2>/dev/null || true
+  chown ":$SHARED_GROUP" "$gdir"
+  chmod 2770 "$gdir"
+  chown -R ":$SHARED_GROUP" "$gdir"
+  find "$gdir" -type d -exec chmod 2770 {} +
+  find "$gdir" -type f -exec chmod 660 {} +
   if [ -d "$gdir/worktrees" ]; then
-    find "$gdir/worktrees" -type d -name hooks 2>/dev/null | while read -r hd; do
+    while read -r hd; do
       ensure_git_hooks_executable "$hd"
-    done
+    done < <(find "$gdir/worktrees" -type d -name hooks)
   fi
   ensure_git_hooks_executable "$gdir/hooks"
   if [ -f "$gdir/config" ]; then
-    chown "$PRIMARY_USER:$SHARED_GROUP" "$gdir/config" 2>/dev/null || true
-    chmod 660 "$gdir/config" 2>/dev/null || true
+    chown "$PRIMARY_USER:$SHARED_GROUP" "$gdir/config"
+    chmod 660 "$gdir/config"
   fi
 }
 
@@ -275,8 +294,7 @@ chown_worktree_code_group() {
   local wt="$1"
   local spec="$2" # "user:group" or ":group"
   # Top-level entries except .git (directory = common store; file = gitdir pointer)
-  find "$wt" -mindepth 1 -maxdepth 1 ! -name '.git' -exec chown -R $spec {} + 2>/dev/null || true
-  # Linked worktree: leave .git file for SHARED_GROUP handling below (do not CODE_GROUP it)
+  find "$wt" -mindepth 1 -maxdepth 1 ! -name '.git' -exec chown -R "$spec" {} +
 }
 
 # Worktree scripts humans/agents run by path (./deploy, ./build_app, …).
@@ -299,32 +317,47 @@ ensure_worktree_scripts_executable() {
   )
   for f in "${scripts[@]}"; do
     if [ -f "$wt/$f" ]; then
-      chown "$PRIMARY_USER:$CODE_GROUP" "$wt/$f" 2>/dev/null || true
-      chmod 2775 "$wt/$f" 2>/dev/null || chmod 775 "$wt/$f" 2>/dev/null || true
+      chown "$PRIMARY_USER:$CODE_GROUP" "$wt/$f"
+      chmod 2775 "$wt/$f"
     fi
   done
   # Shell helpers under git-merge-drivers/
   if [ -d "$wt/git-merge-drivers" ]; then
-    find "$wt/git-merge-drivers" -type f -exec chown "$PRIMARY_USER:$CODE_GROUP" {} + 2>/dev/null || true
-    find "$wt/git-merge-drivers" -type f -exec chmod 775 {} + 2>/dev/null || true
+    find "$wt/git-merge-drivers" -type f -exec chown "$PRIMARY_USER:$CODE_GROUP" {} +
+    find "$wt/git-merge-drivers" -type f -exec chmod 775 {} +
   fi
   # Named *.sh at worktree root
-  find "$wt" -maxdepth 1 -type f -name '*.sh' -exec chown "$PRIMARY_USER:$CODE_GROUP" {} + 2>/dev/null || true
-  find "$wt" -maxdepth 1 -type f -name '*.sh' -exec chmod 2775 {} + 2>/dev/null || true
+  find "$wt" -maxdepth 1 -type f -name '*.sh' -exec chown "$PRIMARY_USER:$CODE_GROUP" {} +
+  find "$wt" -maxdepth 1 -type f -name '*.sh' -exec chmod 2775 {} +
   # Tracked 100755 (agent-landlock is Python, not *.sh). Planner is not in ai-code.
   ve_ensure_tracked_exec_other_x "$wt"
 }
 
+# The tracked wrapper and log must exist before anything is changed; fix-perms never writes them.
+require_log_files() {
+  local wt="$1" f
+  for f in append-to-engineering-log ENGINEERING_LOG.md; do
+    if [ ! -f "$wt/$f" ]; then
+      echo "ERROR: $wt/$f is missing (tracked file; restore it: git -C $wt checkout -- $f). fix-perms never writes it." >&2
+      exit 1
+    fi
+  done
+}
+
 fix_worktree() {
   local wt="$1"
-  if [ ! -d "$wt" ]; then return; fi
+  [ -d "$wt" ] || { echo "ERROR: worktree $wt is not a directory" >&2; exit 1; }
+  require_log_files "$wt"
   if $VERBOSE; then echo "  Applying to worktree: $wt"; fi
+
+  # The log is append-only (chattr +a), which also refuses chown/chmod: lift it for this run;
+  # fix_log_wrapper sets it again at the end.
+  chattr -a "$wt/ENGINEERING_LOG.md"
 
   # chown worktree to code group — NEVER assign CODE_GROUP to common .git store
   # (chown -R on main worktree used to poison objects/refs/HEAD → planner lockout).
   if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-    TARGET_OWNER="$SUDO_USER"
-    chown_worktree_code_group "$wt" "$TARGET_OWNER:$CODE_GROUP"
+    chown_worktree_code_group "$wt" "$SUDO_USER:$CODE_GROUP"
   else
     chown_worktree_code_group "$wt" ":$CODE_GROUP"
   fi
@@ -332,127 +365,107 @@ fix_worktree() {
   # Re-apply sandbox if present
   _wt_sb="$(_sandbox_under "$wt")"
   if [ -d "$_wt_sb" ]; then
-    chown -R :$SANDBOX_GROUP "$_wt_sb" 2>/dev/null || true
-    find "$_wt_sb" -type d -exec chmod u+rwx,g+rwxs,o+rx {} + 2>/dev/null || true
+    chown -R ":$SANDBOX_GROUP" "$_wt_sb"
+    find "$_wt_sb" -type d -exec chmod u+rwx,g+rwxs,o+rx {} +
   fi
 
   git_config_as_primary "$wt" config core.sharedRepository group
 
-  # Log
-  if [ -f "$wt/ENGINEERING_LOG.md" ]; then
-    chattr -a "$wt/ENGINEERING_LOG.md" 2>/dev/null || true
-    chown root:$SHARED_GROUP "$wt/ENGINEERING_LOG.md" 2>/dev/null || true
-    chmod 660 "$wt/ENGINEERING_LOG.md" 2>/dev/null || true
-    chattr +a "$wt/ENGINEERING_LOG.md" 2>/dev/null || true
-  fi
-
-  # Wrapper
-  if [ -f "$wt/append-to-engineering-log" ]; then
-    chown root:$SHARED_GROUP "$wt/append-to-engineering-log" 2>/dev/null || true
-    chmod 2755 "$wt/append-to-engineering-log" 2>/dev/null || true
-  fi
-
   # Broad Unix perms on worktree only — prune .git so we never chmod common store here
-  find "$wt" -name .git -prune -o -type f -exec chmod u+rw,g+rw,o+r {} + 2>/dev/null || true
-  find "$wt" -name .git -prune -o -type d -exec chmod u+rwx,g+rwxs,o+rx {} + 2>/dev/null || true
+  find "$wt" -name .git -prune -o -type f -exec chmod u+rw,g+rw,o+r {} +
+  find "$wt" -name .git -prune -o -type d -exec chmod u+rwx,g+rwxs,o+rx {} +
 
   # Planner writes via ai-shared group rw (664), not other-write. 666 is a bug.
-  chown :"$SHARED_GROUP" "$wt/TODO.md" 2>/dev/null || true
-  chmod 664 "$wt/TODO.md" 2>/dev/null || true
-  chown :"$SHARED_GROUP" "$wt/project-facts.md" 2>/dev/null || true
-  chmod 664 "$wt/project-facts.md" 2>/dev/null || true
+  local f
+  for f in TODO.md project-facts.md; do
+    if [ -f "$wt/$f" ]; then
+      chown ":$SHARED_GROUP" "$wt/$f"
+      chmod 664 "$wt/$f"
+    fi
+  done
 
   # .git handling (linked worktree file vs main common dir).
   # NEVER chmod 660 a .git *directory* (strips search bit → recursive heal cannot descend).
   WT_GITDIR=""
   if [ -f "$wt/.git" ]; then
     # Pointer file only
-    chown :$SHARED_GROUP "$wt/.git" 2>/dev/null || true
-    chmod 660 "$wt/.git" 2>/dev/null || true
-    WT_GITDIR=$(sed -n 's/^gitdir: //p' "$wt/.git" 2>/dev/null | head -1)
-    if [ -n "$WT_GITDIR" ] && [ -d "$WT_GITDIR" ]; then
-      # Per-worktree admin under common .git/worktrees/<name> only (not objects/refs)
-      chown -R :$SHARED_GROUP "$WT_GITDIR" 2>/dev/null || true
-      find "$WT_GITDIR" -type d -exec chmod 2770 {} + 2>/dev/null || true
-      find "$WT_GITDIR" -type f -exec chmod 660 {} + 2>/dev/null || true
-      ensure_git_hooks_executable "$WT_GITDIR/hooks"
+    chown ":$SHARED_GROUP" "$wt/.git"
+    chmod 660 "$wt/.git"
+    WT_GITDIR=$(sed -n 's/^gitdir: //p' "$wt/.git" | head -1)
+    if [ -z "$WT_GITDIR" ] || [ ! -d "$WT_GITDIR" ]; then
+      echo "ERROR: $wt/.git names no existing gitdir ($WT_GITDIR)" >&2
+      exit 1
     fi
+    # Per-worktree admin under common .git/worktrees/<name> only (not objects/refs)
+    chown -R ":$SHARED_GROUP" "$WT_GITDIR"
+    find "$WT_GITDIR" -type d -exec chmod 2770 {} +
+    find "$WT_GITDIR" -type f -exec chmod 660 {} +
+    ensure_git_hooks_executable "$WT_GITDIR/hooks"
   elif [ -d "$wt/.git" ]; then
     # Main worktree: repair common store with SHARED_GROUP only
     repair_common_gitdir "$wt/.git"
   fi
   # Hook +x on common store (shared by all worktrees)
-  local common_hooks
-  common_hooks=$(resolve_common_gitdir "$wt")
-  if [ -n "$common_hooks" ] && [ -d "$common_hooks/hooks" ]; then
-    ensure_git_hooks_executable "$common_hooks/hooks"
-  fi
+  local common
+  common=$(resolve_common_gitdir "$wt")
+  ensure_git_hooks_executable "$common/hooks"
 
   # build run-as if needed
   if [ -f "$wt/run-as-primary.c" ] && [ ! -x "$wt/run-as-primary" ]; then
     if $VERBOSE; then echo "  Compiling run-as-primary in $wt ..."; fi
-    (cd "$wt" && gcc -O2 -Wall -o run-as-primary run-as-primary.c 2>/dev/null && chmod 4755 run-as-primary && chown "$PRIMARY_USER:$CODE_GROUP" run-as-primary) || true
+    (cd "$wt" && gcc -O2 -Wall -o run-as-primary run-as-primary.c)
   fi
   if [ -f "$wt/run-as-primary" ]; then
-    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/run-as-primary" 2>/dev/null || true
-    chmod 4755 "$wt/run-as-primary" 2>/dev/null || true
+    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/run-as-primary"
+    chmod 4755 "$wt/run-as-primary"
   fi
 
   # ve-refresh-shell: setuid root per worktree (binary not in git; .c is tracked).
-  # Prefer shared installer; never leave setuid on non-root owner.
   if [ -x "$SCRIPT_DIR/install-ve-refresh-shell.sh" ]; then
     if $VERBOSE; then echo "  install-ve-refresh-shell for $wt"; fi
-    "$SCRIPT_DIR/install-ve-refresh-shell.sh" "$wt" 2>/dev/null || true
+    "$SCRIPT_DIR/install-ve-refresh-shell.sh" "$wt"
   else
     if [ -f "$wt/ve-refresh-shell.c" ]; then
       if $VERBOSE; then echo "  Compiling ve-refresh-shell in $wt ..."; fi
-      (cd "$wt" && gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c 2>/dev/null) || true
+      (cd "$wt" && gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c)
     fi
     if [ -f "$wt/ve-refresh-shell" ]; then
-      if chown root:root "$wt/ve-refresh-shell" 2>/dev/null; then
-        chmod 4755 "$wt/ve-refresh-shell" 2>/dev/null || true
-      else
-        chmod 755 "$wt/ve-refresh-shell" 2>/dev/null || true
-        if $VERBOSE; then
-          echo "  WARN: could not chown ve-refresh-shell root (need sudo); left non-setuid"
-        fi
-      fi
+      chown root:root "$wt/ve-refresh-shell"
+      chmod 4755 "$wt/ve-refresh-shell"
     fi
   fi
 
   # Critical agent/human scripts: must be executable by primary + ai-code after any
   # update-rules cp (often creates 664 owned by whoever ran sync) and after the
   # broad "chmod u+rw,g+rw,o+r" pass (does not strip x, but never *adds* it).
-  # Only g+s without u+x/g+x leaves 2664 (rw-rwSr--) → dlang cannot ./deploy when
-  # owner is ai-orchestrator and session groups are stale/missing.
   ensure_worktree_scripts_executable "$wt"
 
   # gradlew executable only by ai-code group (prevents planner)
   if [ -f "$wt/gradlew" ]; then
-    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/gradlew" 2>/dev/null || true
-    chmod 2750 "$wt/gradlew" 2>/dev/null || true
+    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/gradlew"
+    chmod 2750 "$wt/gradlew"
   fi
 
   # Build config must stay group-readable (Gradle wrapper opens as deploying user)
   if [ -f "$wt/gradle.properties" ]; then
-    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/gradle.properties" 2>/dev/null || true
-    chmod 664 "$wt/gradle.properties" 2>/dev/null || true
+    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/gradle.properties"
+    chmod 664 "$wt/gradle.properties"
   fi
 
   # .gradle etc (basic)
   if [ -d "$wt/.gradle" ]; then
-    find "$wt/.gradle" -type d -exec chmod 2770 {} + 2>/dev/null || true
-    find "$wt/.gradle" -type f -exec chmod u+rw,g+rw,o-rwx {} + 2>/dev/null || true
+    find "$wt/.gradle" -type d -exec chmod 2770 {} +
+    find "$wt/.gradle" -type f -exec chmod u+rw,g+rw,o-rwx {} +
   fi
 
   # app/build (gradle, cxx/CMake logs, etc.) - aggressively fix to prevent permission thrashing
   if [ -d "$wt/app/build" ]; then
     if $VERBOSE; then echo "    Fixing app/build for $PRIMARY_USER:$CODE_GROUP"; fi
-    chown -R "$PRIMARY_USER:$CODE_GROUP" "$wt/app/build" 2>/dev/null || true
-    find "$wt/app/build" -type d -exec chmod 2770 {} + 2>/dev/null || true
-    find "$wt/app/build" -type f -exec chmod 660 {} + 2>/dev/null || true
+    chown -R "$PRIMARY_USER:$CODE_GROUP" "$wt/app/build"
+    find "$wt/app/build" -type d -exec chmod 2770 {} +
+    find "$wt/app/build" -type f -exec chmod 660 {} +
     # Also clean bad cxx state if present
-    rm -rf "$wt/app/build/intermediates/cxx" 2>/dev/null || true
+    rm -rf "$wt/app/build/intermediates/cxx"
   fi
 }
 
@@ -464,39 +477,32 @@ fix_sandbox() {
     exit 1
   fi
   if $VERBOSE; then echo "  Applying to sandbox: $sb (group=$SANDBOX_GROUP)"; fi
-  chown -R :$SANDBOX_GROUP "$sb" 2>/dev/null || true
-  chmod -R g+rwX "$sb" 2>/dev/null || true
-  find "$sb" -type d -exec chmod u+rwx,g+rwxs,o+rx {} + 2>/dev/null || true
+  chown -R ":$SANDBOX_GROUP" "$sb"
+  chmod -R g+rwX "$sb"
+  find "$sb" -type d -exec chmod u+rwx,g+rwxs,o+rx {} +
   # NOTE: Do NOT chown to ai-shared here. The sandbox group is ai-sandbox.
   # ai-shared is for AI engine configs (.gemini/, .grok/), not for sandbox files.
 }
 
 fix_log_wrapper() {
   # Permissions only: both files are tracked and come from git, never from this script.
-  local wt="$1" f
-  [ -d "$wt" ] || return 0
-  for f in append-to-engineering-log ENGINEERING_LOG.md; do
-    if [ ! -f "$wt/$f" ]; then
-      echo "ERROR: $wt/$f is missing (tracked file; restore it: git -C $wt checkout -- $f). fix-perms never writes it." >&2
-      exit 1
-    fi
-  done
+  local wt="$1"
+  require_log_files "$wt"
 
   WRAPPER="$wt/append-to-engineering-log"
-  chown root:"$SHARED_GROUP" "$WRAPPER" 2>/dev/null || true
-  chattr -a "$WRAPPER" 2>/dev/null || true
-  setfacl -b "$WRAPPER" 2>/dev/null || true
-  chmod 2755 "$WRAPPER" 2>/dev/null || true
+  chown root:"$SHARED_GROUP" "$WRAPPER"
+  strip_acl "$WRAPPER"
+  chmod 2755 "$WRAPPER"
   if $VERBOSE; then
     echo "    wrapper: root:$SHARED_GROUP 2755 (content from git, not touched)"
   fi
 
   LOG="$wt/ENGINEERING_LOG.md"
-  chattr -a "$LOG" 2>/dev/null || true
-  chown root:"$SHARED_GROUP" "$LOG" 2>/dev/null || true
-  chmod 660 "$LOG" 2>/dev/null || true
-  setfacl -b "$LOG" 2>/dev/null || true
-  chattr +a "$LOG" 2>/dev/null || true
+  chattr -a "$LOG"
+  chown root:"$SHARED_GROUP" "$LOG"
+  chmod 660 "$LOG"
+  strip_acl "$LOG"
+  chattr +a "$LOG"
   if $VERBOSE; then
     echo "    log: root:$SHARED_GROUP 660 + chattr +a (pure Unix, no ACLs)"
   fi
@@ -506,44 +512,30 @@ fix_log_wrapper() {
 
 ensure_groups
 
-
 if [ -n "$TARGET_SPECIFIC" ]; then
   fix_worktree "$TARGET_SPECIFIC"
   fix_log_wrapper "$TARGET_SPECIFIC"
 elif $DO_ALL || $AT_ORCHESTRATION; then
   ensure_shared_build_homes
-  mapfile -t WORKTREES < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print $2}')
+  mapfile -t WORKTREES < <(git -C "$SCRIPT_DIR" worktree list --porcelain | awk '/^worktree / {print $2}')
+  [ "${#WORKTREES[@]}" -gt 0 ] || { echo "ERROR: git worktree list found no worktrees in $SCRIPT_DIR" >&2; exit 1; }
   for wt in "${WORKTREES[@]}"; do
     fix_worktree "$wt"
     fix_log_wrapper "$wt"
   done
   fix_sandbox
 
-  # Common/core .git: SHARED_GROUP only. Resolve via --git-common-dir so a run from
-  # a linked worktree (SCRIPT_DIR/.git is a file) still repairs the real store.
-  # Prefer multiuser script for host-wide DAC; this path is intentional recovery.
+  # Common/core .git: SHARED_GROUP only (resolved via --git-common-dir, so a run from a
+  # linked worktree, where SCRIPT_DIR/.git is a file, still repairs the real store).
   COMMON_GDIR=$(resolve_common_gitdir "$SCRIPT_DIR")
-  if [ -z "$COMMON_GDIR" ] || [ ! -d "$COMMON_GDIR" ]; then
-    COMMON_GDIR=$(resolve_common_gitdir "$CURRENT_DIR")
-  fi
-  if [ -n "$COMMON_GDIR" ] && [ -d "$COMMON_GDIR" ]; then
-    if $VERBOSE; then echo "  Fixing common git dir under ai-shared: $COMMON_GDIR"; fi
-    repair_common_gitdir "$COMMON_GDIR"
-    git_config_as_primary "$SCRIPT_DIR" config core.sharedRepository group
-    # config ownership on common store
-    if [ -f "$COMMON_GDIR/config" ]; then
-      chown "$PRIMARY_USER:$SHARED_GROUP" "$COMMON_GDIR/config" 2>/dev/null || true
-      chmod 660 "$COMMON_GDIR/config" 2>/dev/null || true
-    fi
-  fi
+  if $VERBOSE; then echo "  Fixing common git dir under $SHARED_GROUP: $COMMON_GDIR"; fi
+  repair_common_gitdir "$COMMON_GDIR"
+  git_config_as_primary "$SCRIPT_DIR" config core.sharedRepository group
 else
   fix_worktree "$CURRENT_DIR"
   fix_log_wrapper "$CURRENT_DIR"
-  # Even single-worktree recovery: heal common store if resolvable (never CODE_GROUP)
-  COMMON_GDIR=$(resolve_common_gitdir "$CURRENT_DIR")
-  if [ -n "$COMMON_GDIR" ] && [ -d "$COMMON_GDIR" ]; then
-    repair_common_gitdir "$COMMON_GDIR"
-  fi
+  # Even single-worktree recovery: heal common store (never CODE_GROUP)
+  repair_common_gitdir "$(resolve_common_gitdir "$CURRENT_DIR")"
 fi
 
 if $VERBOSE; then

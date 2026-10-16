@@ -1,66 +1,96 @@
 #!/usr/bin/env bash
-# Tests for fix-perms (run from the canon checkout as a normal user; uses a throwaway repo
-# in /tmp). fix-perms must only set ownership/modes: it never writes a tracked file or
-# sudoers, a missing tracked wrapper/log is an error, and unknown arguments are an error.
-# As non-root its chown/chattr steps cannot apply; content and exit codes are what is tested.
+# Tests for fix-perms (run from the canon checkout as a normal user; throwaway repo in /tmp).
+# fix-perms must only set ownership/modes, never write a tracked file or sudoers, refuse a
+# missing tracked wrapper/log and unknown arguments, and surface every failing step.
+# The run-as-root cases use an unprivileged user namespace (unshare -r: you are uid 0 there,
+# only uid/gid 0 are mapped). usermod/gpasswd/chattr need real root, so they are replaced by
+# recording shims; chown/chmod/setfacl/getfacl/git are the real ones unless a case says so.
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
 T="$(mktemp -d /tmp/fixperms-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
+unshare -r true || { echo "FAIL unshare -r (user namespaces) not available"; exit 1; }
 
-# static: no embedded wrapper copy, no sudoers writing
+# static
+grep -n -e '|| *true' -e '2>/dev/null' "$canon/fix-perms" >"$T/swallow" && bad "fix-perms still swallows errors: $(cat "$T/swallow")" || ok "no '|| true' or '2>/dev/null' in fix-perms"
 grep -q 'WRAPPER_EOF\|CANONICAL_APPEND_WRAPPER' "$canon/fix-perms" && bad "fix-perms embeds a wrapper copy" || ok "no embedded wrapper copy"
-grep -q '/etc/sudoers' "$canon/fix-perms" && bad "fix-perms writes sudoers" || ok "no sudoers writing"
+grep -q '/etc/sudoers\|visudo' "$canon/fix-perms" && bad "fix-perms writes sudoers" || ok "no sudoers handling"
 grep -qi 'VehicleExpenses' "$canon/fix-perms" && bad "fix-perms hard-codes VehicleExpenses" || ok "no VehicleExpenses paths"
 grep -q 'fix-perms --skip-sudoers\|fix-perms" --skip-sudoers' "$canon/clone-orchestration-project" && bad "clone-orchestration-project passes --skip-sudoers" || ok "callers do not pass --skip-sudoers"
 
-R="$T/repo"; mkdir -p "$R"
-cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/append-to-engineering-log" "$R/"
-printf '## 2026-01-01 init\n' >"$R/ENGINEERING_LOG.md"
-g="$(id -gn)"
-cat >"$R/project.config" <<C
-primary_user=$(id -un)
-planning_user=$(id -un)
-coder_user=$(id -un)
-orchestrator_user=$(id -un)
-code_group=$g
-sandbox_group=$g
-shared_group=$g
+S="$T/shims"; mkdir -p "$S"
+for c in usermod gpasswd chattr; do printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$T" >"$S/$c"; chmod +x "$S/$c"; done
+mk() {  # mk SHARED_GROUP : fresh repo in $R
+  R="$T/repo"; rm -rf "$R"; mkdir -p "$R/sandbox"
+  cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/append-to-engineering-log" "$R/"
+  printf '## 2026-01-01 init\n' >"$R/ENGINEERING_LOG.md"
+  cat >"$R/project.config" <<C
+primary_user=root
+planning_user=root
+coder_user=root
+orchestrator_user=root
+code_group=root
+sandbox_group=root
+shared_group=$1
 sandbox_dir=sandbox
 orch_root=$R
 C
-mkdir -p "$R/sandbox"
-git -C "$R" init -q && git -C "$R" add -A && git -C "$R" -c user.name=t -c user.email=t@t commit -qm init
+  git -C "$R" init -q && git -C "$R" add -A && git -C "$R" -c user.name=t -c user.email=t@t commit -qm init
+  : >"$T/calls"
+}
+asroot() { (cd "$R" && unshare -r env PATH="$S:$PATH" "$@"); }
+
+mk root
+(cd "$R" && ./fix-perms "$R") >"$T/r0" 2>&1; rc=$?
+[[ $rc -eq 1 ]] && grep -q 'must run as root' "$T/r0" && ok "refuses to run as non-root" || bad "non-root: rc=$rc $(cat "$T/r0")"
+
 before="$(git -C "$R" rev-parse HEAD:append-to-engineering-log)"
-
-(cd "$R" && ./fix-perms "$R") >"$T/run1" 2>&1; rc=$?
-[[ $rc -eq 0 ]] && ok "runs on a worktree (rc 0)" || bad "run rc=$rc: $(cat "$T/run1")"
-[[ "$(git -C "$R" hash-object append-to-engineering-log)" == "$before" ]] && ok "wrapper content untouched" || bad "wrapper rewritten: $(git -C "$R" diff --stat)"
+asroot ./fix-perms "$R" >"$T/r1" 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ok "worktree run (rc 0)" || bad "worktree run rc=$rc: $(cat "$T/r1")"
+[[ "$(git -C "$R" hash-object append-to-engineering-log)" == "$before" ]] && ok "wrapper content untouched" || bad "wrapper rewritten"
 [[ -z "$(git -C "$R" status --porcelain)" ]] && ok "no tracked file changed" || bad "tracked changes: $(git -C "$R" status --porcelain)"
+grep -q "chattr +a $R/ENGINEERING_LOG.md" "$T/calls" && ok "log set append-only again" || bad "no chattr +a: $(cat "$T/calls")"
+[[ "$(stat -c %a "$R/append-to-engineering-log")" == 2755 ]] && ok "wrapper mode 2755" || bad "wrapper mode $(stat -c %a "$R/append-to-engineering-log")"
 
-# a stale (old sudo) wrapper is left as is: fix-perms reports nothing to fix in content
+asroot ./fix-perms >"$T/r1b" 2>&1; rc=$?
+[[ $rc -eq 0 ]] && [[ -d "$R/.gradle-shared" ]] && ok "orchestration-root run (all worktrees + sandbox + common .git) rc 0" || bad "root run rc=$rc: $(cat "$T/r1b")"
+
 printf '#!/bin/bash\necho old\n' >"$R/append-to-engineering-log"
-(cd "$R" && ./fix-perms "$R") >/dev/null 2>&1
+asroot ./fix-perms "$R" >/dev/null 2>&1
 grep -q 'echo old' "$R/append-to-engineering-log" && ok "never overwrites the wrapper" || bad "overwrote the wrapper"
 git -C "$R" checkout -q -- append-to-engineering-log
 
-rm "$R/ENGINEERING_LOG.md"
-(cd "$R" && ./fix-perms "$R") >"$T/run2" 2>&1; rc=$?
-[[ $rc -ne 0 ]] && grep -q 'ENGINEERING_LOG.md is missing' "$T/run2" && ok "missing log fails loudly" || bad "missing log: rc=$rc $(cat "$T/run2")"
+rm "$R/ENGINEERING_LOG.md"; : >"$T/calls"
+asroot ./fix-perms "$R" >"$T/r2" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'ENGINEERING_LOG.md is missing' "$T/r2" && ok "missing log fails loudly" || bad "missing log: rc=$rc $(cat "$T/r2")"
 [[ ! -e "$R/ENGINEERING_LOG.md" ]] && ok "missing log is not created" || bad "log was created"
+grep -q chattr "$T/calls" && bad "changes made before the missing-log error" || ok "missing log stops before any change"
 git -C "$R" checkout -q -- ENGINEERING_LOG.md
 
 rm "$R/append-to-engineering-log"
-(cd "$R" && ./fix-perms "$R") >"$T/run3" 2>&1; rc=$?
-[[ $rc -ne 0 && ! -e "$R/append-to-engineering-log" ]] && grep -q 'append-to-engineering-log is missing' "$T/run3" && ok "missing wrapper fails loudly, not recreated" || bad "missing wrapper: rc=$rc $(cat "$T/run3")"
+asroot ./fix-perms "$R" >"$T/r3" 2>&1; rc=$?
+[[ $rc -ne 0 && ! -e "$R/append-to-engineering-log" ]] && grep -q 'append-to-engineering-log is missing' "$T/r3" && ok "missing wrapper fails loudly, not recreated" || bad "missing wrapper: rc=$rc $(cat "$T/r3")"
 git -C "$R" checkout -q -- append-to-engineering-log
 
-(cd "$R" && ./fix-perms --skip-sudoers "$R") >"$T/run4" 2>&1; rc=$?
-[[ $rc -eq 2 ]] && grep -q 'unknown option --skip-sudoers' "$T/run4" && ok "unknown option is an error" || bad "unknown option: rc=$rc $(cat "$T/run4")"
-(cd "$R" && ./fix-perms "$R/nope") >"$T/run5" 2>&1; rc=$?
-[[ $rc -eq 2 ]] && ok "non-directory argument is an error" || bad "non-directory: rc=$rc $(cat "$T/run5")"
+asroot ./fix-perms --skip-sudoers "$R" >"$T/r4" 2>&1; rc=$?
+[[ $rc -eq 2 ]] && grep -q 'unknown option --skip-sudoers' "$T/r4" && ok "unknown option is an error" || bad "unknown option: rc=$rc $(cat "$T/r4")"
+asroot ./fix-perms "$R/nope" >"$T/r5" 2>&1; rc=$?
+[[ $rc -eq 2 ]] && ok "non-directory argument is an error" || bad "non-directory: rc=$rc $(cat "$T/r5")"
+
+# A failing chown surfaces: nogroup is not mapped in the namespace, so chown :nogroup fails.
+mk nogroup
+asroot ./fix-perms "$R" >"$T/r6" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q '^chown: ' "$T/r6" && ok "failing chown gives nonzero exit and its message (rc $rc)" || bad "failing chown: rc=$rc $(cat "$T/r6")"
+
+# A failing chmod surfaces (shim fails for one file; find -exec passes its status on).
+mk root
+printf '#!/bin/sh\ncase "$*" in *FAILME*) echo "chmod: forced failure on FAILME" >&2; exit 1;; esac\nexec /usr/bin/chmod "$@"\n' >"$S/chmod"; chmod +x "$S/chmod"
+: >"$R/FAILME"
+asroot ./fix-perms "$R" >"$T/r7" 2>&1; rc=$?
+rm -f "$S/chmod"
+[[ $rc -ne 0 ]] && grep -q 'forced failure on FAILME' "$T/r7" && ok "failing chmod gives nonzero exit and its message (rc $rc)" || bad "failing chmod: rc=$rc $(cat "$T/r7")"
 
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]
