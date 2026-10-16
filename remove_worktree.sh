@@ -141,15 +141,16 @@ if [ -d "$WORKTREE_DIR/third_party" ]; then
   for _src in "$WORKTREE_DIR"/third_party/*/src; do
     [ -e "$_src" ] || continue
     chmod -R u+w "$_src" 2>/dev/null || true
-    # If this is a linked worktree of a library host, remove via that repo
+    # A linked worktree of a library host is removed through that host, so its
+    # registration goes too (rm -rf alone left a dead entry and the next
+    # fetch-deps for this path failed).
     if [ -f "$_src/.git" ]; then
-      _gitdir=$(sed -n 's/^gitdir: //p' "$_src/.git" 2>/dev/null || true)
-      if [ -n "$_gitdir" ] && [ -d "$_gitdir" ]; then
-        _common=$(cd "$_gitdir/../.." 2>/dev/null && pwd)
-        if [ -n "$_common" ] && [ -d "$_common/.git" ] || [ -f "$_common/.git" ]; then
-          git -C "$_common" worktree remove --force "$_src" 2>/dev/null || true
-        fi
-      fi
+      _hostgit=$(git -C "$_src" rev-parse --path-format=absolute --git-common-dir) || {
+        echo "Error: $_src/.git names no readable library repo; fix it by hand." >&2; exit 1; }
+      _host=$(dirname "$_hostgit")
+      echo "  git -C $_host worktree remove --force $_src"
+      git -C "$_host" worktree remove --force "$_src" || {
+        echo "Error: could not remove library worktree $_src from $_host." >&2; exit 1; }
     fi
     rm -rf "$_src" 2>/dev/null || sudo rm -rf "$_src" 2>/dev/null || true
     mkdir -p "$_src" 2>/dev/null || true

@@ -702,13 +702,21 @@ materialize_at_sha() {
       rm -rf "$src"
     fi
     mkdir -p "$(dirname "$src")"
+    # A removed consumer tree can leave the host's registration for this exact path behind
+    # ("prunable"); git then refuses the add. Pruning it is the defined repair.
+    if git -C "$host" worktree list --porcelain | awk -v p="$src" '
+        /^worktree /{w=substr($0,10)} /^prunable/{if (w==p) f=1} END{exit !f}'; then
+      echo "    prune: $host has a dead worktree entry for $src (git worktree prune -v)"
+      git -C "$host" worktree prune -v || { echo "    FAIL: git -C $host worktree prune" >&2; return 1; }
+    fi
     echo "    worktree add --detach $src @ $sha (from $host)"
-    if git -C "$host" worktree add --detach "$src" "$sha" 2>/dev/null; then
+    local err
+    if err=$(git -C "$host" worktree add --detach "$src" "$sha" 2>&1); then
       echo "    linked worktree OK @ $sha"
       return 0
     fi
-    echo "    note: worktree add failed — falling back to clone/network" >&2
-    rm -rf "$src" 2>/dev/null || true
+    echo "    FAIL: worktree add from host $host: $err" >&2
+    return 1
   fi
 
   # --- Existing standalone .git (no usable host) ---
@@ -740,7 +748,7 @@ materialize_at_sha() {
     return 1
   fi
 
-  # --- Fresh clone (no host or worktree add failed) ---
+  # --- Fresh clone (no local host repo with the pin commit) ---
   rm -rf "$src"
   mkdir -p "$(dirname "$src")"
   if [[ -n "${GIT_HOME}" ]] && ! local_repo_for "$name" >/dev/null; then

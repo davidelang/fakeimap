@@ -7,5 +7,11 @@ track_branch = "master"
 reproducible = true
 build_time = "minutes"
 requires_writable_src = false
-build = ["cd src/go && d=$(mktemp -d) && GOCACHE=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
-consumer_note = "Channel handoff tools. Build go/channel; agents run only src/go/channel-{setup,arm,send,ping,status} from the repo root. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them. Consumers do not rerun the connector's tests."
+build = ["cd src/go && d=$(mktemp -d) && GOCACHE=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -buildvcs=false -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
+consumer_note = "Channel handoff tools. The built go/channel is committed as artifact/channel (multi-call: artifact/channel-{setup,arm,send,ping,status} are symlinks to it); agents run only those from the repo root and never need src/. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them. Consumers do not rerun the connector's tests."
+
+[[artifact]]
+# Static Go binary (CGO_ENABLED=0, -trimpath, -buildvcs=false: same bytes from any checkout): committed, so a new worktree needs no library checkout.
+path = "artifact/channel"
+from = "src/go/channel"
+sha256 = "0f12d1cbd7258efe48667eddf385ae706639f65b0089ae1ab61d79e37c72d9ac"
