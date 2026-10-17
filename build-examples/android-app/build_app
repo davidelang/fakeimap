@@ -430,9 +430,9 @@ GRADLE_BASE=( ./gradlew --no-daemon --no-configuration-cache
 repair_build_perms() {
 for gdir in .gradle app/build; do
   if [ -d "$gdir" ]; then
-    echo "Quick $gdir permission repair (group sync + setgid + ug+rwX)..."
+    echo "Quick $gdir permission repair (group sync + ug+rwX)..."
     chgrp -R ai-code "$gdir" 2>/dev/null || true
-    find "$gdir" -type d -exec chmod 2770 {} + 2>/dev/null || true
+    find "$gdir" -type d -exec chmod ug+rwx {} + 2>/dev/null || true
     chmod -R ug+rwX,o-rwx "$gdir" 2>/dev/null || true
   fi
 done
@@ -443,22 +443,23 @@ if [ -d app/build ]; then
   if [ -n "$BAD_DIRS" ]; then
     echo "Re-applying group-write on non-group-writable app/build dirs..."
     echo "$BAD_DIRS" | while read -r d; do chmod g+rwX "$d" 2>/dev/null || true; done
-    find app/build -type d -exec chmod 2770 {} + 2>/dev/null || true
+    find app/build -type d -exec chmod ug+rwx {} + 2>/dev/null || true
     BAD_DIRS=$(find app/build -type d ! -perm -g+w | head -10)
     if [ -n "$BAD_DIRS" ]; then
       echo "WARN: app/build dir(s) still lack group write (other users cannot wipe/deploy). Sample:"
       echo "$BAD_DIRS"
-      echo "  Fix as owner: find app/build -type d -exec chmod 2770 {} +"
+      echo "  Fix as owner: find app/build -type d -exec chmod ug+rwx {} +"
     else
       echo "Build tree group-writable: OK (after re-chmod)"
     fi
   fi
 fi
 
-# Source tree target modes: dirs 2775, files 664 (planner other-read + group write)
+# Source tree: add owner/group rw (dirs also x) without removing bits, so tracked exec bits
+# (e.g. 100755 jniLibs .so files) survive; absolute modes like 664 stripped them.
 if [ -d app/src ]; then
-  find app/src -type d -exec chmod 2775 {} + 2>/dev/null || true
-  find app/src -type f -exec chmod 664 {} + 2>/dev/null || true
+  find app/src -type d -exec chmod ug+rwx {} + 2>/dev/null || true
+  find app/src -type f -exec chmod ug+rw {} + 2>/dev/null || true
 fi
 }
 
