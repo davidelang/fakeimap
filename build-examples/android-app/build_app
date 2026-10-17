@@ -34,15 +34,16 @@
 # project.config keys (see project.config.example):
 #   coder_user          user every build runs as (required)
 #   java_home           JDK home for Gradle and keytool: absolute, with release file and bin/java, javac, keytool (required)
-#   apk_tasks           standard build: space-separated gradle tasks (unset: assembleDebug)
-#   apk_outputs         standard build: space-separated APKs that must exist afterwards
-#                       (unset: app/build/outputs/apk/debug/app-debug.apk)
+#   planning_user       planning agent user, which must never build (required)
+#   apk_tasks           standard build: space-separated gradle tasks (required when the standard build is selected)
+#   apk_outputs         standard build: space-separated APKs that must exist afterwards (required likewise)
 #   apk_test_tasks      test build: gradle tasks (required when the test build is selected)
 #   apk_test_outputs    test build: APKs that must exist afterwards (required likewise)
 #   release_keystore    Play build: absolute path of the app's upload keystore (required)
 #   release_key_alias   Play build: key alias in that keystore (required)
-#   release_bundle_task Play build: gradle task (unset: bundleRelease)
-#   release_bundle_path Play build: AAB it produces (unset: app/build/outputs/bundle/release/app-release.aab)
+#   release_bundle_task Play build: gradle task, e.g. bundlePlayRelease (required)
+#   release_bundle_path Play build: AAB that task produces, relative to the worktree (required)
+#   No key has a default: a selected build whose keys are unset stops before the commit phase.
 #   release_gradle_args Play build: extra space-separated gradle args (e.g. -Pfuelsmoothing.official=true)
 
 PRIMARY_USER=$(sed -n 's/^primary_user=//p' project.config 2>/dev/null | tr -d '\r' | head -1)
@@ -150,10 +151,16 @@ if [ "$BUILD_STANDARD" = true ]; then
   read -r -a STD_TASKS <<< "$(cfg apk_tasks)"
   read -r -a STD_OUTPUTS <<< "$(cfg apk_outputs)"
   if [ ${#STD_TASKS[@]} -eq 0 ]; then
-    STD_TASKS=( assembleDebug )
+    echo "ERROR: the standard build is selected but apk_tasks is unset in project.config." >&2
+    echo "  Example: apk_tasks=assembleDebug" >&2
+    echo "  Set it, or select builds explicitly (e.g. --test)." >&2
+    exit 1
   fi
   if [ ${#STD_OUTPUTS[@]} -eq 0 ]; then
-    STD_OUTPUTS=( app/build/outputs/apk/debug/app-debug.apk )
+    echo "ERROR: the standard build is selected but apk_outputs is unset in project.config." >&2
+    echo "  Example: apk_outputs=app/build/outputs/apk/debug/app-debug.apk" >&2
+    echo "  Set it, or select builds explicitly (e.g. --test)." >&2
+    exit 1
   fi
 fi
 if [ "$BUILD_TEST" = true ]; then
@@ -205,9 +212,19 @@ if [ "$BUILD_PLAY" = true ]; then
     echo "WARNING: $RELEASE_KEYSTORE is mode $KS_MODE (world-accessible). Fix: chmod 640 '$RELEASE_KEYSTORE'" >&2
   fi
   RELEASE_BUNDLE_TASK=$(cfg release_bundle_task)
-  RELEASE_BUNDLE_TASK=${RELEASE_BUNDLE_TASK:-bundleRelease}
+  if [ -z "$RELEASE_BUNDLE_TASK" ]; then
+    echo "ERROR: the Play build is selected but release_bundle_task is unset in project.config." >&2
+    echo "  Example: release_bundle_task=bundlePlayRelease" >&2
+    echo "  Or select builds explicitly (e.g. --standard --test)." >&2
+    exit 1
+  fi
   AAB=$(cfg release_bundle_path)
-  AAB=${AAB:-app/build/outputs/bundle/release/app-release.aab}
+  if [ -z "$AAB" ]; then
+    echo "ERROR: the Play build is selected but release_bundle_path is unset in project.config." >&2
+    echo "  Example: release_bundle_path=app/build/outputs/bundle/playRelease/app-play-release.aab" >&2
+    echo "  Or select builds explicitly (e.g. --standard --test)." >&2
+    exit 1
+  fi
   read -r -a RELEASE_GRADLE_ARGS <<< "$(cfg release_gradle_args)"
 fi
 
@@ -392,8 +409,12 @@ fi
 ve_reset_gradle_daemon_dir || exit 1
 ve_wipe_foreign_app_build_outputs || exit 1
 unset GRADLE_OPTS
-PLANNING_USER=$(sed -n 's/^planning_user=//p' project.config 2>/dev/null | tr -d '\r' | head -1)
-PLANNING_USER=${PLANNING_USER:-ai-planner}
+PLANNING_USER=$(cfg planning_user)
+if [ -z "$PLANNING_USER" ]; then
+  echo "ERROR: planning_user unset in project.config (the user that must never build)." >&2
+  echo "  Example: planning_user=ai-planner" >&2
+  exit 1
+fi
 if [ "$(id -un)" = "$PLANNING_USER" ]; then
   echo "ERROR: Planning agents must not run Gradle builds. Policy violation."
   exit 1
@@ -542,7 +563,12 @@ else
 fi
 echo "All selected builds succeeded:$SELECTED. Updating '$TAG_NAME' tag."
 git tag -f "$TAG_NAME"
-git describe --tags --match "${CURRENT_BRANCH}-start" 2>/dev/null || git describe
+# Same version string as the gradle versionName: BRANCH-start tag when it exists, else 'git describe --always'.
+if git rev-parse -q --verify "refs/tags/${CURRENT_BRANCH}-start" >/dev/null; then
+  git describe --tags --match "${CURRENT_BRANCH}-start"
+else
+  git describe --always
+fi
 if [ -n "$PLAY_SUMMARY" ]; then
   echo "=================================================================="
   echo "$PLAY_SUMMARY"
