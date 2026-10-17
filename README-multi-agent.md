@@ -84,7 +84,7 @@ If the Gemini CLI crashes with `An unexpected critical error occurred:Error: ioc
 ---
 
 ### 2.3. Merging and Cleanup
-Do **not** naive-merge or set `works` tags from agents. Follow **`/master-merge`** (`.grok/skills/master-merge/SKILL.md`) (local PR at `dev-ai-interaction/PRs/PR-<branch>.md`, special-file protocol for ENGINEERING_LOG / TODO / project-facts, `./build_app`). Prefer skill `/master-merge` or Master session. Coder prepares PR via `/prepare-local-pr` / `./generate_pr.sh`.
+Do **not** naive-merge or set `works` tags from agents. Follow **`/master-merge`** (`.grok/skills/master-merge/SKILL.md`) (local PR at `dev-ai-interaction/PRs/PR-<branch>.md`, special-file protocol for ENGINEERING_LOG / TODO / project-facts, `./build_app --standard --test`). Prefer skill `/master-merge` or Master session. Coder prepares PR via `/prepare-local-pr` / `./generate_pr.sh`.
 
 After Master merge is complete, from orchestration root:
 
@@ -102,7 +102,7 @@ After Master merge is complete, from orchestration root:
 - **Directory Naming:** Physical worktrees are named `agent-1`, `agent-2`, etc., to allow for re-use. Use the branch-name symlinks for navigation.
 - **Shared Infrastructure:** Agent rules and mandates are physical copies synced via `./update-rules.sh`.
 - **Sandbox Access:** Access the sandbox using the absolute path: `/home/dlang/git/VehicleExpenses-automated/dev-ai-interaction/`.
-- **Build/Deploy:** Always run `./build_app` and `./deploy` from **inside** the specific agent directory/symlink. They are branch-aware.
+- **Build/Deploy:** Always run `./build_app` and `./deploy` from **inside** the specific agent directory/symlink. They are branch-aware. Agents run `./build_app --standard --test ...`; never `--play` (bare `./build_app` includes the Play build, which needs David at a terminal for the signing passwords).
 
 ### 2.5. Infrastructure Constraints (CRITICAL)
 

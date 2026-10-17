@@ -43,6 +43,6 @@ if git rev-parse --verify "$TAG" >/dev/null 2>&1; then
     exit 0
 else
     echo "ERROR: Required builds tag '$TAG' does not exist on branch '$BRANCH'." >&2
-    echo "Run a successful ./build_app first (from inside the appropriate worktree) to create it." >&2
+    echo "Run a successful ./build_app --standard --test first (from inside the appropriate worktree) to create it." >&2
     exit 1
 fi

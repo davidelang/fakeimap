@@ -104,7 +104,7 @@ A formal sandbox plan document (using the standard structure + the exact verbati
 - You may also edit project-facts.md and TODO.md (the explicit planner exceptions).
 - Pure research questions do not require creating a plan file.
 
-When producing any implementation plan, you must follow the ultra-micro phased discipline that is now codified in the STANDARD BLOCK: decompose into as many named ultra-small phases as needed to keep each phase the smallest practical observable unit of work that can be forensically verified in isolation and completed with a successful ./build_app. Each phase performs the smallest observable edit followed immediately by forensic verification + git add + successful ./build_app (tag recorded). No edits for the next phase may begin until the current phase has succeeded.
+When producing any implementation plan, you must follow the ultra-micro phased discipline that is now codified in the STANDARD BLOCK: decompose into as many named ultra-small phases as needed to keep each phase the smallest practical observable unit of work that can be forensically verified in isolation and completed with a successful ./build_app --standard --test. Each phase performs the smallest observable edit followed immediately by forensic verification + git add + successful ./build_app --standard --test (tag recorded). No edits for the next phase may begin until the current phase has succeeded.
 
 **CRITICAL - DO NOT JUMP AHEAD ON MINIMAL TRIGGERS:**
 The high-level cycle trigger passed from the master is intentionally tiny. You must treat the user's first real message(s) in this planner session as the actual source of requirements. Solicit the problem statement from the user before producing any plan.
@@ -132,13 +132,13 @@ MANDATORY BUILD DISCIPLINE (non-negotiable):
 - Ultra-micro phased with per-phase success gates is mandatory:
   - Do only the minimal edit described for that specific phase.
   - Perform narrow forensic read_file + targeted grep before and after the edit.
-  - Call ./build_app directly (preferred: ./build_app @phase_summary.txt changed-file.kt TODO.md ...). Do not run manual git add, git commit, or raw gradle commands. ./build_app is the single authoritative gate.
-  - Only after a successful ./build_app for the current phase may you begin the next phase's edits.
+  - Call ./build_app --standard --test directly (preferred: ./build_app --standard --test @phase_summary.txt changed-file.kt TODO.md ...). Never pass --play (it needs David at a terminal for the signing passwords). Do not run manual git add, git commit, or raw gradle commands. ./build_app is the single authoritative gate.
+  - Only after a successful ./build_app --standard --test for the current phase may you begin the next phase's edits.
 - When appending to ENGINEERING_LOG.md: only append new dated entry at the end using the mandatory wrapper ./append-to-engineering-log '## DATE - Title\n\n...' (or @file). Direct writes will fail.
 - At the very end, after the final successful build + post-forensic verification, output the exact marker "**END OF EXECUTION TURN. Awaiting new directive or plan approval before any further source changes or investigation that leads to edits.**" followed by "results ready to test (new tag: XXX)" and then stop completely."
 
 **Monitoring, recovery, and checker:**
-- Monitor the execution sub-agent. Enforce the use of ./build_app for all git/build actions. If deviation is detected, halt, reset to last builds tag, and write logs.
+- Monitor the execution sub-agent. Enforce the use of ./build_app --standard --test (never --play) for all git/build actions. If deviation is detected, halt, reset to last builds tag, and write logs.
 - When execution reports completion, spawn a Compliance Checker sub-agent to verify that the code changes functionally solve the plan's stated problem (intent match). Write report to @@SANDBOX_PATH@@/compliance-report-[short-name].md.
 - If PASS: clean implementation-failure-logs, append to ENGINEERING_LOG.md using wrapper, and report success.
 - If FAIL: collect transcripts to @@SANDBOX_PATH@@/implementation-failure-logs/, reset, and prepare logs for recovery planning.

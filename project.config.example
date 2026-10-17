@@ -44,6 +44,35 @@ sandbox_special_paths=plans,historical-plans,implementation-failure-logs,PRs,res
 # Optional build gate for master-merge on non-Android hosts:
 # build_command=./build
 
+# Android build_app (authoritative copy: build-examples/android-app/build_app).
+# Every build runs as coder_user (above); other invokers are re-executed via
+# sudo -n -u <coder_user> /usr/bin/env. Required: the JDK for Gradle and keytool (sudo drops
+# JAVA_HOME; a JDK home with a release file and bin/java, bin/javac, bin/keytool):
+java_home=/usr/lib/jvm/java-17-openjdk-amd64
+#
+# ./build_app builds standard, test and Play by default; --standard / --test / --play select
+# them individually. The default needs the test keys and the release keys below, plus a
+# terminal for the Play passwords; agents and unattended runs pass --standard/--test explicitly.
+# APK builds keep one APK per ABI. Standard build (unset = assembleDebug and
+# app/build/outputs/apk/debug/app-debug.apk); the test build has no default.
+# Space-separated, e.g. for ABI flavors arm64/x86_64:
+# apk_tasks=assembleDebug
+# apk_outputs=app/build/outputs/apk/arm64/debug/app-arm64-debug.apk app/build/outputs/apk/x86_64/debug/app-x86_64-debug.apk
+# apk_test_tasks=assembleDebug assembleX86_64DebugAndroidTest
+# apk_test_outputs=app/build/outputs/apk/arm64/debug/app-arm64-debug.apk app/build/outputs/apk/x86_64/debug/app-x86_64-debug.apk app/build/outputs/apk/androidTest/x86_64/debug/app-x86_64-debug-androidTest.apk
+#
+# Play build (--play / --bundle, or the default): signed release AAB for Play upload. One upload key per app, outside
+# the repo, readable by coder_user through a dedicated group (e.g. ai-release, mode 640).
+# Both keys are required for the Play build; no default.
+# release_keystore=/home/@@PRIMARY_USER@@/keys/<app>-upload.jks
+# release_key_alias=upload
+# Optional (unset = bundleRelease and app/build/outputs/bundle/release/app-release.aab).
+# ABI-flavored apps with a "play" flavor:
+# release_bundle_task=bundlePlayRelease
+# release_bundle_path=app/build/outputs/bundle/playRelease/app-play-release.aab
+# Optional extra gradle args for the release build only, space-separated:
+# release_gradle_args=-Pfuelsmoothing.official=true
+
 # landlock.config is smudged separately (landlock.config.example); it may
 # reference @@GIT_HOME@@ for host .git allow paths.
 

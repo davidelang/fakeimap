@@ -1,0 +1,424 @@
+#!/bin/bash
+# Install the last-built APKs on connected devices. Human-only: agents must not run this.
+# Authoritative copy: orchestration-example/build-examples/android-app/deploy
+#
+# Usage: ./deploy [-h|--help] [--test] [--clean] [--rebuild] [--launch] [device...] [-- gradle-flag...]
+#
+# Which APKs: project.config apk_outputs (standard, the default) or apk_test_outputs (--test),
+# the same keys build_app builds. Each device gets the APK whose native code matches the
+# device's ro.product.cpu.abilist (first match in the device's preference order).
+# The app id comes from one place: the APKs themselves (SDK aapt2 dump packagename). Nothing
+# is hard-coded. Everything about the APKs is checked before the first adb call.
+
+set -euo pipefail
+
+if [ ! -f project.config ]; then
+  echo "ERROR: project.config missing in $(pwd); run deploy from the app worktree." >&2
+  exit 1
+fi
+# project.config value for key $1 (empty when unset).
+cfg() {
+  sed -n "/^$1=/{s/^$1=//;p;q}" project.config | tr -d '\r'
+}
+
+PRIMARY_USER=$(cfg primary_user)
+if [ -z "$PRIMARY_USER" ]; then
+  echo "ERROR: primary_user unset in project.config" >&2
+  exit 1
+fi
+# adb keys and the adb server belong to the human user, not root.
+if [ "$EUID" -eq 0 ]; then
+  echo "Re-executing as $PRIMARY_USER (not root)..."
+  exec sudo -E -u "$PRIMARY_USER" "$0" "$@"
+fi
+
+umask 002
+
+for _role in planning_user coder_user; do
+  _u=$(cfg "$_role")
+  if [ -z "$_u" ]; then
+    echo "ERROR: $_role unset in project.config" >&2
+    exit 1
+  fi
+  if [ "$(id -un)" = "$_u" ]; then
+    echo "ERROR: deploy is human-only; $_role ($_u) must not run it." >&2
+    exit 1
+  fi
+done
+
+# app/build is ai-code 2770 (build_app runs as coder_user); reading it needs the groups.
+MISSING=""
+for grp in ai-shared ai-code; do
+  if ! id -nG | grep -qw "$grp"; then MISSING="$MISSING $grp"; fi
+done
+if [ -n "$MISSING" ]; then
+  echo "ERROR: this shell is missing project group(s):$MISSING" >&2
+  echo "  Fix:  source ./env" >&2
+  exit 1
+fi
+
+usage() {
+  cat <<'USAGE'
+Usage: ./deploy [-h|--help] [--test] [--clean] [--rebuild] [--launch] [device...] [-- gradle-flag...]
+
+Install the last-built APKs with adb install -r. The default path does not compile.
+
+  --test       Install the test build (apk_test_outputs) instead of the standard build
+               (apk_outputs). Its app id is read from those APKs (e.g. a .test suffix).
+  --clean      Uninstall the APKs' own app id before install (UNINSTALL_FIRST=1). That
+               removes that app's data; no other package is touched. An app that is not
+               installed is reported and skipped; a failed uninstall stops that device.
+  --rebuild    Run ./build_app --standard (or --test) first (REBUILD=1). Gradle flags after
+               -- go to build_app.
+  --launch     Start the app's launcher activity after a successful install.
+  -h, --help   Print this usage and exit.
+
+Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
+anything else is an adb serial. With no device arguments, every online device.
+
+deploy stops before any adb call if aapt2 is missing or fails, if the APKs name different
+apps, or if they mix ABI-specific and universal APKs. After each install it checks
+(pm list packages, exact match) that the app id is installed. The deployed tag
+(deployed / <branch>/deployed; deployed-test for --test) moves only when every device
+succeeded. androidTest APKs in the outputs are not installed.
+USAGE
+}
+
+rebuild=0
+if [ "${REBUILD:-0}" = "1" ]; then rebuild=1; fi
+uninstall_first=0
+if [ "${UNINSTALL_FIRST:-0}" = "1" ]; then uninstall_first=1; fi
+mode="standard"
+launch=0
+device_args=()
+gradle_flags=()
+seen_dd=0
+for arg in "$@"; do
+  if [ "$seen_dd" -eq 1 ]; then
+    gradle_flags+=("$arg")
+    continue
+  fi
+  case "$arg" in
+    --) seen_dd=1 ;;
+    -h|--help) usage; exit 0 ;;
+    --test) mode="test" ;;
+    --clean) uninstall_first=1 ;;
+    --rebuild) rebuild=1 ;;
+    --launch) launch=1 ;;
+    -*)
+      echo "ERROR: unknown flag: $arg" >&2
+      usage >&2
+      exit 1
+      ;;
+    *) device_args+=("$arg") ;;
+  esac
+done
+if [ "$rebuild" -ne 1 ] && [ "${#gradle_flags[@]}" -gt 0 ]; then
+  echo "ERROR: gradle flags require --rebuild" >&2
+  exit 1
+fi
+
+# APK list for this mode (same keys and default as build_app).
+if [ "$mode" = test ]; then
+  read -r -a outputs <<< "$(cfg apk_test_outputs)"
+  if [ "${#outputs[@]}" -eq 0 ]; then
+    echo "ERROR: --test needs apk_test_outputs in project.config." >&2
+    exit 1
+  fi
+else
+  read -r -a outputs <<< "$(cfg apk_outputs)"
+  if [ "${#outputs[@]}" -eq 0 ]; then
+    outputs=( app/build/outputs/apk/debug/app-debug.apk )
+  fi
+fi
+
+if [ "$rebuild" -eq 1 ]; then
+  if [ "${#gradle_flags[@]}" -gt 0 ]; then
+    ./build_app "--$mode" -- "${gradle_flags[@]}"
+  else
+    ./build_app "--$mode"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# APK analysis (no adb yet).
+_DEPLOY_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "$_DEPLOY_HERE/ve-resolve-orch" ]; then
+  echo "ERROR: $_DEPLOY_HERE/ve-resolve-orch missing (needed to locate the SDK aapt2)" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$_DEPLOY_HERE/ve-resolve-orch"
+if ! AAPT2=$(ve_aapt2_from_sdk "$_DEPLOY_HERE"); then
+  echo "ERROR: cannot locate the SDK aapt2 (sdk.dir in local.properties) to read the APKs" >&2
+  exit 1
+fi
+
+apk_package() {
+  local apk="$1" out
+  if ! out=$("$AAPT2" dump packagename "$apk"); then
+    echo "ERROR: $AAPT2 dump packagename $apk failed; cannot determine the app id" >&2
+    return 1
+  fi
+  if ! [[ "$out" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$ ]]; then
+    echo "ERROR: $AAPT2 dump packagename $apk printed '$out', not one application id" >&2
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+apk_paths=()      # installable APKs (androidTest excluded)
+apk_abis=()       # space-separated native ABIs per APK; empty = universal (no native code)
+PKG=""
+PKG_FROM=""
+VERSION_NAME=""
+for apk in "${outputs[@]}"; do
+  if [[ "$apk" == */androidTest/* ]]; then
+    echo "Note: $apk is an androidTest APK; not installed by deploy."
+    continue
+  fi
+  if [ ! -f "$apk" ]; then
+    echo "ERROR: missing $apk; run ./build_app --$mode first, or pass --rebuild" >&2
+    exit 1
+  fi
+  pkg=$(apk_package "$apk")
+  if [ -z "$PKG" ]; then
+    PKG="$pkg"
+    PKG_FROM="$apk"
+  elif [ "$pkg" != "$PKG" ]; then
+    echo "ERROR: $PKG_FROM is $PKG but $apk is $pkg; rebuild so all APKs name the same app" >&2
+    exit 1
+  fi
+  if ! badging=$("$AAPT2" dump badging "$apk"); then
+    echo "ERROR: $AAPT2 dump badging $apk failed" >&2
+    exit 1
+  fi
+  abis=$(printf '%s\n' "$badging" | sed -n "s/^native-code: //p" | tr -d "'")
+  vname=$(printf '%s\n' "$badging" | sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p")
+  if [ -z "$VERSION_NAME" ]; then
+    VERSION_NAME="$vname"
+  elif [ "$vname" != "$VERSION_NAME" ]; then
+    echo "ERROR: $apk has versionName '$vname' but $PKG_FROM has '$VERSION_NAME'; rebuild" >&2
+    exit 1
+  fi
+  apk_paths+=("$apk")
+  apk_abis+=("$abis")
+done
+if [ "${#apk_paths[@]}" -eq 0 ]; then
+  echo "ERROR: no installable APK in the $mode outputs (${outputs[*]})" >&2
+  exit 1
+fi
+n_universal=0
+for abis in "${apk_abis[@]}"; do
+  if [ -z "$abis" ]; then n_universal=$((n_universal + 1)); fi
+done
+if [ "$n_universal" -gt 0 ] && [ "$n_universal" -ne "${#apk_paths[@]}" ]; then
+  echo "ERROR: the $mode outputs mix universal and ABI-specific APKs; list one kind in project.config" >&2
+  exit 1
+fi
+if [ "$n_universal" -gt 1 ]; then
+  echo "ERROR: the $mode outputs list $n_universal universal APKs; list exactly one" >&2
+  exit 1
+fi
+echo "App id: $PKG  versionName: $VERSION_NAME  ($mode build, from $PKG_FROM)"
+
+# APK for a device: $1 = comma-separated abilist in preference order.
+apk_for_abilist() {
+  local abilist="$1" abi i match n
+  if [ "$n_universal" -eq 1 ]; then
+    printf '%s\n' "${apk_paths[0]}"
+    return 0
+  fi
+  IFS=',' read -r -a dev_abis <<< "$abilist"
+  for abi in "${dev_abis[@]}"; do
+    match=""
+    n=0
+    for i in "${!apk_paths[@]}"; do
+      if [[ " ${apk_abis[$i]} " == *" $abi "* ]]; then
+        match="${apk_paths[$i]}"
+        n=$((n + 1))
+      fi
+    done
+    if [ "$n" -gt 1 ]; then
+      echo "ERROR: more than one APK contains ABI $abi; cannot choose" >&2
+      return 1
+    fi
+    if [ "$n" -eq 1 ]; then
+      printf '%s\n' "$match"
+      return 0
+    fi
+  done
+  echo "ERROR: no APK matches device ABIs '$abilist' (APK ABIs: ${apk_abis[*]})" >&2
+  return 1
+}
+
+# True when package $2 is installed on device $1 (exact name; pm list filters by substring).
+pkg_installed() {
+  local list
+  if ! list=$(adb -s "$1" shell pm list packages "$2"); then
+    echo "ERROR: adb -s $1 shell pm list packages $2 failed" >&2
+    return 2
+  fi
+  printf '%s\n' "$list" | tr -d '\r' | grep -qx -- "package:$2"
+}
+
+# ---------------------------------------------------------------------------
+# Devices.
+if ! devices_text=$(adb devices); then
+  echo "ERROR: adb devices failed" >&2
+  exit 1
+fi
+connected=()
+while read -r serial state _; do
+  serial=${serial//$'\r'/}
+  state=${state//$'\r'/}
+  if [ "$state" = "device" ]; then
+    connected+=("$serial")
+  fi
+done <<< "$devices_text"
+
+map_serial() {
+  local s
+  case "$1" in
+    tablet|emulator) printf '%s\n' "emulator-5554" ;;
+    phone)
+      s=$(cfg deploy_serial)
+      if [ -z "$s" ]; then
+        echo "ERROR: alias 'phone' requires deploy_serial= in project.config" >&2
+        return 1
+      fi
+      printf '%s\n' "$s"
+      ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+selected=()
+add_selected() {
+  local s
+  for s in "${selected[@]}"; do
+    [ "$s" = "$1" ] && return 0
+  done
+  selected+=("$1")
+}
+if [ "${#device_args[@]}" -eq 0 ]; then
+  for serial in "${connected[@]}"; do
+    add_selected "$serial"
+  done
+else
+  for name in "${device_args[@]}"; do
+    mapped=$(map_serial "$name")
+    add_selected "$mapped"
+  done
+fi
+if [ "${#selected[@]}" -eq 0 ]; then
+  echo "ERROR: no online adb devices. Pass a serial or alias (tablet/emulator/phone)." >&2
+  exit 1
+fi
+
+is_connected() {
+  local s
+  for s in "${connected[@]}"; do
+    [ "$s" = "$1" ] && return 0
+  done
+  return 1
+}
+
+failed=0
+for serial in "${selected[@]}"; do
+  if ! is_connected "$serial"; then
+    echo "ERROR: $serial is not an online adb device" >&2
+    failed=1
+    continue
+  fi
+  if ! abilist=$(adb -s "$serial" shell getprop ro.product.cpu.abilist); then
+    echo "ERROR: could not read ro.product.cpu.abilist on $serial" >&2
+    failed=1
+    continue
+  fi
+  abilist=$(printf '%s' "$abilist" | tr -d '[:space:]')
+  if [ -z "$abilist" ]; then
+    echo "ERROR: $serial reports an empty ro.product.cpu.abilist" >&2
+    failed=1
+    continue
+  fi
+  if ! apk=$(apk_for_abilist "$abilist"); then
+    echo "ERROR: no APK for $serial" >&2
+    failed=1
+    continue
+  fi
+  echo "== $serial ($abilist): $apk"
+
+  if [ "$uninstall_first" -eq 1 ]; then
+    if pkg_installed "$serial" "$PKG"; then
+      if ! adb -s "$serial" uninstall "$PKG"; then
+        echo "ERROR: adb uninstall $PKG failed on $serial" >&2
+        failed=1
+        continue
+      fi
+    else
+      rc=$?
+      if [ "$rc" -ne 1 ]; then failed=1; continue; fi
+      echo "$PKG is not installed on $serial; nothing to uninstall"
+    fi
+  fi
+
+  if ! adb -s "$serial" install -r "$apk"; then
+    echo "ERROR: adb install -r failed on $serial" >&2
+    failed=1
+    continue
+  fi
+  if ! pkg_installed "$serial" "$PKG"; then
+    echo "ERROR: after installing $apk, $PKG is not installed on $serial (app id mismatch)" >&2
+    failed=1
+    continue
+  fi
+
+  if ! adb -s "$serial" logcat -c; then
+    echo "WARNING: adb logcat -c failed on $serial" >&2
+  fi
+  if [ "$launch" -eq 1 ]; then
+    if ! resolved=$(adb -s "$serial" shell cmd package resolve-activity --brief \
+        -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PKG"); then
+      echo "ERROR: resolve-activity for $PKG failed on $serial" >&2
+      failed=1
+      continue
+    fi
+    component=$(printf '%s\n' "$resolved" | tr -d '\r' | sed -n '$p')
+    if [[ "$component" != "$PKG/"* ]]; then
+      echo "ERROR: no launcher activity for $PKG on $serial (got: $component)" >&2
+      failed=1
+      continue
+    fi
+    if ! started=$(adb -s "$serial" shell am start -n "$component"); then
+      echo "ERROR: am start -n $component failed on $serial" >&2
+      failed=1
+      continue
+    fi
+    printf '%s\n' "$started"
+    if printf '%s\n' "$started" | grep -q '^Error'; then
+      echo "ERROR: am start -n $component reported an error on $serial" >&2
+      failed=1
+      continue
+    fi
+    echo "Launched $component on $serial"
+  fi
+done
+
+if [ "$failed" -ne 0 ]; then
+  echo "ERROR: one or more devices failed; deployed tag left unchanged" >&2
+  exit 1
+fi
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+TAG_BASE="deployed"
+if [ "$mode" = test ]; then TAG_BASE="deployed-test"; fi
+if [ "$CURRENT_BRANCH" == "master" ]; then
+  TAG_NAME="$TAG_BASE"
+else
+  TAG_NAME="${CURRENT_BRANCH}/$TAG_BASE"
+fi
+echo "Install successful ($PKG $VERSION_NAME). Updating '$TAG_NAME' tag."
+git tag -f "$TAG_NAME"
+git describe --tags --always
+exit 0

@@ -1,0 +1,551 @@
+#!/bin/bash
+
+# THE ONLY WAY TO BUILD OR COMPILE.
+# Authoritative copy: orchestration-example/build-examples/android-app/build_app
+#
+# Usage:
+#   ./build_app [--standard] [--test] [--play|--bundle] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
+#
+#   Build selection (flags first, any order, combinable). No flag = all three:
+#     --standard        standard APKs     (apk_tasks / apk_outputs)
+#     --test            test APKs         (apk_test_tasks / apk_test_outputs)
+#     --play, --bundle  signed Play AAB   (release_* keys); needs a terminal for the passwords
+#
+#   Order of work:
+#     1. Check the config for every selected build. If the Play build is selected (also by
+#        default) and stdin is not a terminal, stop: pass --standard/--test explicitly.
+#     2. Commit phase: commit the named files (or nothing when no message is given).
+#     3. Integrity check: the tree must be clean; every build comes from that one commit.
+#     4. Play only: testing-version y/N check and password prompts, before any gradle work,
+#        so an unattended build never stalls part-way.
+#     5. Builds in sequence: standard, test, play. The first failure stops everything.
+#     6. The builds tag moves only after every selected build succeeded.
+#   A commit creates an untagged HEAD, so committing and building Play in one run always
+#   triggers the testing-version question. For a release: commit, tag, then ./build_app --play.
+#
+# Every build runs as coder_user (project.config), so all builds share one owner and one
+# environment. Anyone else (root, primary_user, ...) is re-executed as coder_user through
+# 'sudo -n -u <coder_user> /usr/bin/env ...', carrying the invoker's git identity for commits.
+#
+# NEVER run gradlew, gradlew.bat, or direct gradle commands (forbidden; this is the enforced gateway).
+# It handles: git commit, tag update, forensic checks, local .gradle repair, umask/sg enforcement.
+# Pass gradle options after -- (e.g. build_app "msg" file.kt -- --info --stacktrace).
+#
+# project.config keys (see project.config.example):
+#   coder_user          user every build runs as (required)
+#   java_home           JDK home for Gradle and keytool: absolute, with release file and bin/java, javac, keytool (required)
+#   apk_tasks           standard build: space-separated gradle tasks (unset: assembleDebug)
+#   apk_outputs         standard build: space-separated APKs that must exist afterwards
+#                       (unset: app/build/outputs/apk/debug/app-debug.apk)
+#   apk_test_tasks      test build: gradle tasks (required when the test build is selected)
+#   apk_test_outputs    test build: APKs that must exist afterwards (required likewise)
+#   release_keystore    Play build: absolute path of the app's upload keystore (required)
+#   release_key_alias   Play build: key alias in that keystore (required)
+#   release_bundle_task Play build: gradle task (unset: bundleRelease)
+#   release_bundle_path Play build: AAB it produces (unset: app/build/outputs/bundle/release/app-release.aab)
+#   release_gradle_args Play build: extra space-separated gradle args (e.g. -Pfuelsmoothing.official=true)
+
+PRIMARY_USER=$(sed -n 's/^primary_user=//p' project.config 2>/dev/null | tr -d '\r' | head -1)
+if [ -z "$PRIMARY_USER" ]; then
+  echo "ERROR: primary_user unset in project.config" >&2
+  echo "  Stamp project.config from project.config.example (or source ./env after setup)." >&2
+  exit 1
+fi
+
+# project.config value for key $1 (empty when unset). project.config exists: primary_user was read above.
+cfg() {
+  sed -n "s/^$1=//p" project.config | tr -d '\r' | head -1
+}
+
+# All builds run as coder_user: one owner for app/build and .gradle-home, one gradle/user
+# environment. sudoers grants primary_user NOPASSWD (coder_user) /usr/bin/env; root needs nothing.
+# sudo resets the environment, so the invoker's git identity is passed explicitly for the commit.
+CODER_USER=$(cfg coder_user)
+if [ -z "$CODER_USER" ]; then
+  echo "ERROR: coder_user unset in project.config" >&2
+  exit 1
+fi
+if [ "$(id -un)" != "$CODER_USER" ]; then
+  INVOKER_NAME=$(git config user.name)
+  INVOKER_EMAIL=$(git config user.email)
+  if [ -z "$INVOKER_NAME" ] || [ -z "$INVOKER_EMAIL" ]; then
+    echo "ERROR: git user.name/user.email unset for $(id -un); commits made as $CODER_USER would lose your identity." >&2
+    echo "  Fix: git config --global user.name '...'; git config --global user.email '...'" >&2
+    exit 1
+  fi
+  echo "Re-executing as $CODER_USER (invoked by $(id -un); commits as $INVOKER_NAME <$INVOKER_EMAIL>)..."
+  exec sudo -n -u "$CODER_USER" /usr/bin/env \
+    GIT_AUTHOR_NAME="$INVOKER_NAME" GIT_AUTHOR_EMAIL="$INVOKER_EMAIL" \
+    GIT_COMMITTER_NAME="$INVOKER_NAME" GIT_COMMITTER_EMAIL="$INVOKER_EMAIL" \
+    BUILD_APP_INVOKER="$(id -un)" \
+    "$0" "$@"
+fi
+
+# Source/docs: prefer 664/2775 → umask 002. Build outputs tightened after gradle.
+umask 002
+
+# sudo resets the environment, so the JDK running Gradle and keytool comes from project.config
+# (java_home=, required), never from the invoker's shell or coder_user's default java.
+JAVA_HOME_CFG=$(cfg java_home)
+if [ -z "$JAVA_HOME_CFG" ]; then
+  echo "ERROR: java_home unset in project.config (JDK for Gradle and keytool)." >&2
+  echo "  Example: java_home=/usr/lib/jvm/java-17-openjdk-amd64" >&2
+  exit 1
+fi
+if [[ "$JAVA_HOME_CFG" != /* ]]; then
+  echo "ERROR: java_home must be an absolute path: $JAVA_HOME_CFG" >&2
+  exit 1
+fi
+for _jdk_tool in java javac keytool; do
+  if [ ! -x "$JAVA_HOME_CFG/bin/$_jdk_tool" ]; then
+    echo "ERROR: java_home=$JAVA_HOME_CFG is not a JDK (no executable bin/$_jdk_tool)." >&2
+    exit 1
+  fi
+done
+# Every JDK home has a 'release' file; /usr (alternatives symlinks) does not, so it is rejected.
+if [ ! -f "$JAVA_HOME_CFG/release" ]; then
+  echo "ERROR: java_home=$JAVA_HOME_CFG is not a JDK home (no 'release' file)." >&2
+  exit 1
+fi
+JDK_VERSION=$(sed -n 's/^JAVA_VERSION="\(.*\)"$/\1/p' "$JAVA_HOME_CFG/release")
+if [ -z "$JDK_VERSION" ]; then
+  echo "ERROR: no JAVA_VERSION in $JAVA_HOME_CFG/release" >&2
+  exit 1
+fi
+export JAVA_HOME="$JAVA_HOME_CFG"
+export PATH="$JAVA_HOME/bin:$PATH"
+echo "Gradle JDK: $JAVA_HOME ($JDK_VERSION)"
+
+# Build-selection flags come first, before the commit message. No flag selects all three.
+BUILD_STANDARD=false
+BUILD_TEST=false
+BUILD_PLAY=false
+FLAG_SEEN=false
+while [ "$#" -ge 1 ]; do
+  case "$1" in
+    --standard) BUILD_STANDARD=true; FLAG_SEEN=true; shift ;;
+    --test) BUILD_TEST=true; FLAG_SEEN=true; shift ;;
+    --play|--bundle) BUILD_PLAY=true; FLAG_SEEN=true; shift ;;
+    --) break ;;
+    --*)
+      echo "ERROR: unknown flag '$1'. Build flags: --standard --test --play (--bundle)." >&2
+      exit 1
+      ;;
+    *) break ;;
+  esac
+done
+if [ "$FLAG_SEEN" = false ]; then
+  BUILD_STANDARD=true
+  BUILD_TEST=true
+  BUILD_PLAY=true
+fi
+SELECTED=""
+[ "$BUILD_STANDARD" = true ] && SELECTED="$SELECTED standard"
+[ "$BUILD_TEST" = true ] && SELECTED="$SELECTED test"
+[ "$BUILD_PLAY" = true ] && SELECTED="$SELECTED play"
+echo "Selected builds:$SELECTED"
+
+# Resolve every selected build's config before the commit, so a bad config commits nothing.
+if [ "$BUILD_STANDARD" = true ]; then
+  read -r -a STD_TASKS <<< "$(cfg apk_tasks)"
+  read -r -a STD_OUTPUTS <<< "$(cfg apk_outputs)"
+  if [ ${#STD_TASKS[@]} -eq 0 ]; then
+    STD_TASKS=( assembleDebug )
+  fi
+  if [ ${#STD_OUTPUTS[@]} -eq 0 ]; then
+    STD_OUTPUTS=( app/build/outputs/apk/debug/app-debug.apk )
+  fi
+fi
+if [ "$BUILD_TEST" = true ]; then
+  read -r -a TEST_TASKS <<< "$(cfg apk_test_tasks)"
+  read -r -a TEST_OUTPUTS <<< "$(cfg apk_test_outputs)"
+  if [ ${#TEST_TASKS[@]} -eq 0 ] || [ ${#TEST_OUTPUTS[@]} -eq 0 ]; then
+    echo "ERROR: the test build needs apk_test_tasks and apk_test_outputs in project.config." >&2
+    echo "  Set them, or select builds explicitly (e.g. --standard)." >&2
+    exit 1
+  fi
+fi
+if [ "$BUILD_PLAY" = true ]; then
+  if [ ! -t 0 ]; then
+    if [ "$FLAG_SEEN" = false ]; then
+      echo "ERROR: no build flags given, so all three builds are selected, including Play; stdin is not a terminal," >&2
+    else
+      echo "ERROR: the Play build is selected but stdin is not a terminal," >&2
+    fi
+    echo "  and it must prompt for the upload keystore passwords." >&2
+    echo "  Unattended or agent runs: select builds explicitly, e.g. ./build_app --standard --test ..." >&2
+    exit 1
+  fi
+  RELEASE_KEYSTORE=$(cfg release_keystore)
+  RELEASE_KEY_ALIAS=$(cfg release_key_alias)
+  if [ -z "$RELEASE_KEYSTORE" ] || [ -z "$RELEASE_KEY_ALIAS" ]; then
+    echo "ERROR: release_keystore and release_key_alias must both be set in project.config for the Play build." >&2
+    echo "  Example: release_keystore=/home/$PRIMARY_USER/keys/<app>-upload.jks" >&2
+    echo "           release_key_alias=upload" >&2
+    echo "  Or select builds explicitly (e.g. --standard --test)." >&2
+    exit 1
+  fi
+  if [[ "$RELEASE_KEYSTORE" != /* ]]; then
+    echo "ERROR: release_keystore must be an absolute path: $RELEASE_KEYSTORE" >&2
+    exit 1
+  fi
+  if [ ! -f "$RELEASE_KEYSTORE" ]; then
+    echo "ERROR: release_keystore not found: $RELEASE_KEYSTORE" >&2
+    exit 1
+  fi
+  if [ ! -r "$RELEASE_KEYSTORE" ]; then
+    echo "ERROR: $(id -un) cannot read $RELEASE_KEYSTORE." >&2
+    echo "  Give the release group read access (owner keeps write; not world-readable):" >&2
+    echo "    chgrp ai-release '$(dirname "$RELEASE_KEYSTORE")' '$RELEASE_KEYSTORE'" >&2
+    echo "    chmod 750 '$(dirname "$RELEASE_KEYSTORE")'; chmod 640 '$RELEASE_KEYSTORE'" >&2
+    exit 1
+  fi
+  KS_MODE=$(stat -c %a "$RELEASE_KEYSTORE") || exit 1
+  if [ "${KS_MODE: -1}" != "0" ]; then
+    echo "WARNING: $RELEASE_KEYSTORE is mode $KS_MODE (world-accessible). Fix: chmod 640 '$RELEASE_KEYSTORE'" >&2
+  fi
+  RELEASE_BUNDLE_TASK=$(cfg release_bundle_task)
+  RELEASE_BUNDLE_TASK=${RELEASE_BUNDLE_TASK:-bundleRelease}
+  AAB=$(cfg release_bundle_path)
+  AAB=${AAB:-app/build/outputs/bundle/release/app-release.aab}
+  read -r -a RELEASE_GRADLE_ARGS <<< "$(cfg release_gradle_args)"
+fi
+
+# ai-shared + ai-code required (agent caches are ai-coder:ai-code). Do not sg one group.
+MISSING=""
+for grp in ai-shared ai-code; do
+  if ! id -nG | grep -qw "$grp"; then MISSING="$MISSING $grp"; fi
+done
+if [ -n "$MISSING" ]; then
+  echo "ERROR: this shell is missing project group(s):$MISSING" >&2
+  echo "  Fix:  source ./env   (or use a setup_agent worktree shell)" >&2
+  exit 1
+fi
+
+if [ "$#" -ge 1 ]; then
+    MSG_ARG="$1"
+    shift
+
+    if [ "$MSG_ARG" = "--" ]; then
+        set -- -- "$@"
+        COMMIT_MSG=""
+        ADDED_COUNT=0
+    else
+        # 1. Parse Message Content
+        if [[ "$MSG_ARG" == @* ]]; then
+            MSG_FILE="${MSG_ARG#@}"
+            if [ -f "$MSG_FILE" ]; then
+                COMMIT_MSG=$(cat "$MSG_FILE")
+            else
+                echo "Error: Message file '$MSG_FILE' not found."
+                exit 1
+            fi
+        else
+            COMMIT_MSG="$MSG_ARG"
+        fi
+
+        # 2. Add Specified Files Explicitly (no implicit adds or wildcards).
+        # A tracked file that was deleted is staged as a deletion.
+        ADDED_COUNT=0
+        for file in "$@"; do
+            if [ "$file" = "--" ]; then
+                break
+            fi
+            if [ -e "$file" ]; then
+                git add "$file"
+                ADDED_COUNT=$((ADDED_COUNT + 1))
+            elif git ls-files --error-unmatch "$file" >/dev/null 2>&1; then
+                git add -u -- "$file"
+                ADDED_COUNT=$((ADDED_COUNT + 1))
+            else
+                echo "Warning: File '$file' not found. Skipping."
+            fi
+        done
+    fi
+
+    # 3. Commit Phase (staged changes from args above or pre-staged)
+    STAGED_CHANGES=$(git diff --cached --name-only)
+    if [ -n "$STAGED_CHANGES" ]; then
+        if [ -n "$COMMIT_MSG" ]; then
+            git commit -m "$COMMIT_MSG"
+            if [ $? -ne 0 ]; then
+                echo "Error: Git commit failed."
+                exit 1
+            fi
+        else
+            echo "Error: Staged changes exist but no commit message provided."
+            exit 1
+        fi
+    else
+        if [ "$ADDED_COUNT" -gt 0 ]; then
+            echo "Error: Files provided but nothing to commit (already matches repo?)."
+            exit 1
+        fi
+        echo "Info: No new changes to commit. Proceeding to integrity check."
+    fi
+else
+    echo "Info: No arguments provided. Skipping commit phase."
+fi
+
+# 4. Integrity Barrier: everything MUST be in git for accurate 'git describe' versioning.
+DIRTY_FILES=$(git status --porcelain -uno)
+if [ -n "$DIRTY_FILES" ]; then
+    echo "CRITICAL ERROR: Uncommitted tracked files detected:"
+    echo "$DIRTY_FILES"
+    echo "------------------------------------------------------------------"
+    echo "Every modified file MUST be explicitly added to the build command."
+    echo "Compile aborted to ensure accurate 'git describe' versioning."
+    exit 1
+fi
+
+# 5. Build Phase
+if [ ! -x ./gradlew ]; then
+    echo "ERROR: ./gradlew not found or not executable (this tree is an Android app; compile is required)." >&2
+    exit 1
+fi
+
+GRADLE_ARGS=()
+SEEN_DASHDASH=false
+for arg in "$@"; do
+  if [ "$SEEN_DASHDASH" = true ]; then
+    GRADLE_ARGS+=("$arg")
+  elif [ "$arg" = "--" ]; then
+    SEEN_DASHDASH=true
+  fi
+done
+if [ ${#GRADLE_ARGS[@]} -gt 0 ]; then
+  echo "Passing gradle flags: ${GRADLE_ARGS[*]}"
+fi
+
+# Play preflight on the committed HEAD: testing-version check and passwords, all before any
+# gradle work, so an unattended run never stops part-way waiting for input.
+if [ "$BUILD_PLAY" = true ]; then
+  # Runs as coder_user like every build. The upload keystore is group-readable by coder_user;
+  # what protects it is the password, which only the person at this terminal types.
+  # Same version string the gradle files compute for versionName:
+  # BRANCH-start tag when it exists, else 'git describe --always'.
+  BRANCH=$(git rev-parse --abbrev-ref HEAD) || exit 1
+  if git rev-parse -q --verify "refs/tags/${BRANCH}-start" >/dev/null; then
+    VERSION_DESC=$(git describe --tags --match "${BRANCH}-start") || exit 1
+  else
+    VERSION_DESC=$(git describe --always) || exit 1
+  fi
+  HEAD_SHORT=$(git rev-parse --short HEAD) || exit 1
+  if [[ "$VERSION_DESC" == *-* ]] || [ "$VERSION_DESC" = "$HEAD_SHORT" ]; then
+    echo "==================================================================" >&2
+    echo "WARNING: '$VERSION_DESC' is a TESTING version, not a release tag." >&2
+    if [ "$VERSION_DESC" = "$HEAD_SHORT" ]; then
+      echo "  No annotated tag is reachable from HEAD." >&2
+    else
+      echo "  It contains '-' (commits after the tag, or a branch -start tag)." >&2
+    fi
+    echo "  Tag HEAD (git tag -a vX.Y.Z) for a release build." >&2
+    echo "==================================================================" >&2
+    read -r -p "Build a release bundle from this testing version anyway? [y/N] " ANSWER
+    case "$ANSWER" in
+      y|Y|yes|YES) ;;
+      *) echo "Aborted: testing version." >&2; exit 1 ;;
+    esac
+  fi
+
+  # Passwords live only in this process's environment and gradle's; never on a command line or disk.
+  read -r -s -p "Upload keystore password ($RELEASE_KEYSTORE): " BA_STORE_PASSWORD
+  echo
+  read -r -s -p "Key password for alias '$RELEASE_KEY_ALIAS' (Enter = same as keystore password): " BA_KEY_PASSWORD
+  echo
+  if [ -z "$BA_STORE_PASSWORD" ]; then
+    echo "ERROR: empty keystore password." >&2
+    exit 1
+  fi
+  if [ -z "$BA_KEY_PASSWORD" ]; then
+    BA_KEY_PASSWORD="$BA_STORE_PASSWORD"
+  fi
+
+  # Check the store password and alias now, and record the upload cert to compare with the AAB.
+  if ! KS_LIST=$(BA_STORE_PASSWORD="$BA_STORE_PASSWORD" keytool -list -v -keystore "$RELEASE_KEYSTORE" -alias "$RELEASE_KEY_ALIAS" -storepass:env BA_STORE_PASSWORD 2>&1); then
+    echo "ERROR: keytool could not open alias '$RELEASE_KEY_ALIAS' in $RELEASE_KEYSTORE:" >&2
+    echo "$KS_LIST" >&2
+    exit 1
+  fi
+  UPLOAD_SHA256=$(printf '%s\n' "$KS_LIST" | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' | head -1)
+  if [ -z "$UPLOAD_SHA256" ]; then
+    echo "ERROR: no SHA256 fingerprint in keytool output for $RELEASE_KEYSTORE." >&2
+    exit 1
+  fi
+  echo "Upload key: $RELEASE_KEYSTORE alias $RELEASE_KEY_ALIAS (SHA256 $UPLOAD_SHA256)"
+fi
+
+# Homes under this worktree. orch_root is read/seed only (keystore copy).
+_BA_HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -f "$_BA_HERE/ve-resolve-orch" ]; then
+  echo "ERROR: missing $_BA_HERE/ve-resolve-orch (run ./update-rules.sh from orchestration root)." >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$_BA_HERE/ve-resolve-orch"
+ve_resolve_orch "$_BA_HERE" || exit 1
+ve_setup_worktree_build_homes "$_BA_HERE" || exit 1
+_AAPT2=$(ve_aapt2_from_sdk "$_BA_HERE") || exit 1
+if [ -n "${GRADLE_USER_HOME:-}" ] && [ -d "$GRADLE_USER_HOME" ]; then
+  find "$GRADLE_USER_HOME" -type f -name aapt2 -exec chmod u+rx,g+rx {} + 2>/dev/null || true
+fi
+ve_reset_gradle_daemon_dir || exit 1
+ve_wipe_foreign_app_build_outputs || exit 1
+unset GRADLE_OPTS
+PLANNING_USER=$(sed -n 's/^planning_user=//p' project.config 2>/dev/null | tr -d '\r' | head -1)
+PLANNING_USER=${PLANNING_USER:-ai-planner}
+if [ "$(id -un)" = "$PLANNING_USER" ]; then
+  echo "ERROR: Planning agents must not run Gradle builds. Policy violation."
+  exit 1
+fi
+
+GRADLE_BASE=( ./gradlew --no-daemon --no-configuration-cache
+  -Pandroid.aapt2FromMavenOverride="$_AAPT2"
+  -Pkotlin.compiler.execution.strategy=in-process
+  -Dkotlin.compiler.execution.strategy=in-process )
+
+# Post-build permission repair for this worktree only (not orch caches). Runs after every
+# gradle invocation, successful or not. (Legacy lines, kept verbatim.)
+repair_build_perms() {
+for gdir in .gradle app/build; do
+  if [ -d "$gdir" ]; then
+    echo "Quick $gdir permission repair (group sync + setgid + ug+rwX)..."
+    chgrp -R ai-code "$gdir" 2>/dev/null || true
+    find "$gdir" -type d -exec chmod 2770 {} + 2>/dev/null || true
+    chmod -R ug+rwX,o-rwx "$gdir" 2>/dev/null || true
+  fi
+done
+
+# Assert group-writable dirs under app/build (2755 blocks other users' deploy wipe).
+if [ -d app/build ]; then
+  BAD_DIRS=$(find app/build -type d ! -perm -g+w 2>/dev/null | head -20)
+  if [ -n "$BAD_DIRS" ]; then
+    echo "Re-applying group-write on non-group-writable app/build dirs..."
+    echo "$BAD_DIRS" | while read -r d; do chmod g+rwX "$d" 2>/dev/null || true; done
+    find app/build -type d -exec chmod 2770 {} + 2>/dev/null || true
+    BAD_DIRS=$(find app/build -type d ! -perm -g+w | head -10)
+    if [ -n "$BAD_DIRS" ]; then
+      echo "WARN: app/build dir(s) still lack group write (other users cannot wipe/deploy). Sample:"
+      echo "$BAD_DIRS"
+      echo "  Fix as owner: find app/build -type d -exec chmod 2770 {} +"
+    else
+      echo "Build tree group-writable: OK (after re-chmod)"
+    fi
+  fi
+fi
+
+# Source tree target modes: dirs 2775, files 664 (planner other-read + group write)
+if [ -d app/src ]; then
+  find app/src -type d -exec chmod 2775 {} + 2>/dev/null || true
+  find app/src -type f -exec chmod 664 {} + 2>/dev/null || true
+fi
+}
+
+# APK build: $1 = label; remaining args = tasks, then '::', then expected outputs.
+build_apks() {
+  local label="$1"
+  shift
+  local tasks=() outputs=() apk ret
+  while [ "$#" -ge 1 ] && [ "$1" != "::" ]; do tasks+=("$1"); shift; done
+  shift
+  outputs=( "$@" )
+  echo "=== $label build: ${tasks[*]} ==="
+  # No daemon: multi-worktree RAM; agent path does not keep Gradle daemons warm.
+  (umask 007; "${GRADLE_BASE[@]}" "${GRADLE_ARGS[@]}" "${tasks[@]}")
+  ret=$?
+  ve_reset_gradle_daemon_dir || exit 1
+  repair_build_perms
+  if [ "$ret" -ne 0 ]; then
+    echo "Build failed ($label)."
+    exit 1
+  fi
+  for apk in "${outputs[@]}"; do
+    if [ ! -f "$apk" ]; then
+      echo "ERROR: Gradle succeeded but expected $label APK missing: $apk" >&2
+      exit 1
+    fi
+  done
+  echo "=== $label build OK ==="
+}
+
+build_play() {
+  local ret cert aab_sha256 version_code
+  echo "=== play build: $RELEASE_BUNDLE_TASK ${RELEASE_GRADLE_ARGS[*]} ==="
+  # Signing via AGP's injected-signing properties (android.injected.signing.*), which override
+  # the build's own release signingConfig with no per-app gradle code. They are passed as
+  # ORG_GRADLE_PROJECT_* environment variables rather than -P so the passwords never appear in
+  # ps. Bash cannot export names containing '.', so python3 renames them and execs gradlew.
+  # gradlew is '#!/usr/bin/env sh' and dash silently drops such variables, so it runs under bash.
+  (umask 007
+   export BA_STORE_FILE="$RELEASE_KEYSTORE" BA_KEY_ALIAS="$RELEASE_KEY_ALIAS" BA_STORE_PASSWORD BA_KEY_PASSWORD
+   exec python3 -c '
+import os, sys
+e = os.environ
+for src, name in (("BA_STORE_FILE", "store.file"), ("BA_STORE_PASSWORD", "store.password"),
+                  ("BA_KEY_ALIAS", "key.alias"), ("BA_KEY_PASSWORD", "key.password")):
+    e["ORG_GRADLE_PROJECT_android.injected.signing." + name] = e.pop(src)
+os.execvp(sys.argv[1], sys.argv[1:])
+' bash "${GRADLE_BASE[@]}" "${GRADLE_ARGS[@]}" "${RELEASE_GRADLE_ARGS[@]}" "$RELEASE_BUNDLE_TASK")
+  ret=$?
+  unset BA_STORE_PASSWORD BA_KEY_PASSWORD
+  ve_reset_gradle_daemon_dir || exit 1
+  repair_build_perms
+  if [ "$ret" -ne 0 ]; then
+    echo "Build failed (play)."
+    exit 1
+  fi
+  if [ ! -f "$AAB" ]; then
+    echo "ERROR: Gradle succeeded but expected bundle missing: $AAB" >&2
+    exit 1
+  fi
+  cert=$(keytool -printcert -jarfile "$AAB" 2>&1) || { echo "ERROR: keytool -printcert failed on $AAB:" >&2; echo "$cert" >&2; exit 1; }
+  if printf '%s\n' "$cert" | grep -q "Not a signed jar file"; then
+    echo "ERROR: $AAB is NOT signed. Play will reject it." >&2
+    exit 1
+  fi
+  aab_sha256=$(printf '%s\n' "$cert" | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' | head -1)
+  if [ "$aab_sha256" != "$UPLOAD_SHA256" ]; then
+    echo "ERROR: $AAB is signed with SHA256 '$aab_sha256', not the upload key ($UPLOAD_SHA256)." >&2
+    exit 1
+  fi
+  if [ -f app/versionCode.txt ]; then
+    version_code=$(tr -d '[:space:]' < app/versionCode.txt)
+  else
+    version_code="(no app/versionCode.txt; see versionCode in app/build.gradle*)"
+  fi
+  PLAY_SUMMARY="Play bundle ready for upload:
+  Path:        $(pwd)/$AAB
+  File SHA256: $(sha256sum "$AAB" | cut -d' ' -f1)
+  Signed by:   SHA256 $aab_sha256 (upload key)
+  versionName: $VERSION_DESC
+  versionCode: $version_code"
+  echo "=== play build OK ==="
+}
+
+# Builds in a fixed sequence; any failure exits before the tag moves.
+PLAY_SUMMARY=""
+if [ "$BUILD_STANDARD" = true ]; then
+  build_apks standard "${STD_TASKS[@]}" :: "${STD_OUTPUTS[@]}"
+fi
+if [ "$BUILD_TEST" = true ]; then
+  build_apks test "${TEST_TASKS[@]}" :: "${TEST_OUTPUTS[@]}"
+fi
+if [ "$BUILD_PLAY" = true ]; then
+  build_play
+fi
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT_BRANCH" == "master" ]; then
+    TAG_NAME="builds"
+else
+    TAG_NAME="${CURRENT_BRANCH}/builds"
+fi
+echo "All selected builds succeeded:$SELECTED. Updating '$TAG_NAME' tag."
+git tag -f "$TAG_NAME"
+git describe --tags --match "${CURRENT_BRANCH}-start" 2>/dev/null || git describe
+if [ -n "$PLAY_SUMMARY" ]; then
+  echo "=================================================================="
+  echo "$PLAY_SUMMARY"
+  echo "=================================================================="
+fi
+exit 0

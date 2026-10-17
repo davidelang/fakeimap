@@ -26,7 +26,7 @@ disable-model-invocation: true
 4. `TODO.md` and `project-facts.md`: master's version stays (ve-special-ours). Then apply the branch delta with `./todo-close` / `./todo-append` and by editing facts by hand.
    **Before changing any Testing section (project-wide or `## Worktree:`) of `project-facts.md`, ask David and wait.**
 5. Post-merge gate: `git diff --cached --name-only` must list the feature paths, not just `ENGINEERING_LOG.md`. Otherwise the merge FAILED; do not build.
-6. Build gate: the project-facts.md Build path. If it has none, stop: `STATUS: BLOCKED no build/commit path in project-facts.md`.
+6. Build gate: the project-facts.md Build path (Android: `./build_app --standard --test @msg.txt files...`; never `--play`, which needs David at a terminal). If it has none, stop: `STATUS: BLOCKED no build/commit path in project-facts.md`.
 7. Never set or move `works`. Tell David he can run `./remove_worktree.sh <branch>`. Fixes to merge scripts land on the orchestration checkout first and are then published.
 
 End with the STATUS line.

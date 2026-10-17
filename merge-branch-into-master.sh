@@ -6,7 +6,7 @@
 #   ENGINEERING_LOG.md — chattr +a: never worktree-replace; ve-englog appends tail.
 #   TODO.md / project-facts.md — merge=ve-special-ours; restore_special enforces master.
 #
-# Leaves merge UNCOMMITTED. Master finishes special files, then ./build_app.
+# Leaves merge UNCOMMITTED. Master finishes special files, then ./build_app --standard --test.
 #
 # Paths (in order):
 #   1) Fast-forward: merge-base(HEAD,branch)==HEAD → index-first from branch tip (no git merge)
@@ -316,7 +316,7 @@ POST-MERGE CHECK (do this before ./build_app):
   → must include feature paths (e.g. .kt), not ONLY ENGINEERING_LOG.md
   If only eng-log is staged → FAILED. Do not build_app. See docs/obsolete/MERGE_POSTMORTEM_IMPROVE_PUMP_CLASSIFICATION.md
 
-Next: complete TODO + project-facts protocol → git status → ./build_app
+Next: complete TODO + project-facts protocol → git status → ./build_app --standard --test (never --play)
 ========================================================================
 EOF
 
@@ -324,5 +324,5 @@ if [ "$merge_rc" -ne 0 ]; then
   echo "merge-branch-into-master: FAILED (rc=$merge_rc)" >&2
   exit "$merge_rc"
 fi
-echo "merge-branch-into-master: staged (no commit). Complete special files, then build_app." >&2
+echo "merge-branch-into-master: staged (no commit). Complete special files, then ./build_app --standard --test." >&2
 exit 0

@@ -15,7 +15,7 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - A denial on a path your role may not write is the rules working: do your role's job instead (a planner writes the change into a plan). Only when a path your role should write is blocked: stop and report the command, the error, the path, and the user. Never work around a denial.
 
 ## Commits, tags, deploy
-- Build and commit only with the **Build** and **Commit** lines of `project-facts.md` `## Build and commit` (Android apps: `./build_app`; others: their own, e.g. `./commit-build`). Without them stop: `STATUS: BLOCKED no build/commit path in project-facts.md`. Do not `git add`, `git commit`, `git reset`, or `git push`.
+- Build and commit only with the **Build** and **Commit** lines of `project-facts.md` `## Build and commit` (Android apps: `./build_app --standard --test`, e.g. `./build_app --standard --test @msg.txt files...`; never `--play`, which needs David at a terminal; others: their own, e.g. `./commit-build`). Without them stop: `STATUS: BLOCKED no build/commit path in project-facts.md`. Do not `git add`, `git commit`, `git reset`, or `git push`.
 - Tags are `<branch>/builds|deployed|works`; on `master` they are unprefixed. `backup-<branch>` comes only from `./prepare-pr-rewrite`; never move or delete it. Agents do not deploy and do not move `works`.
 - Run helpers as `./helper` from your checkout. No `cd … && ./helper`.
 
