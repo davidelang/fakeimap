@@ -16,12 +16,16 @@
 #        default) and stdin is not a terminal, stop: pass --standard/--test explicitly.
 #     2. Commit phase: commit the named files (or nothing when no message is given).
 #     3. Integrity check: the tree must be clean; every build comes from that one commit.
-#     4. Play only: testing-version y/N check and password prompts, before any gradle work,
-#        so an unattended build never stalls part-way.
-#     5. Builds in sequence: standard, test, play. The first failure stops everything.
-#     6. The builds tag moves only after every selected build succeeded.
-#   A commit creates an untagged HEAD, so committing and building Play in one run always
-#   triggers the testing-version question. For a release: commit, tag, then ./build_app --play.
+#     4. Play only: testing-version y/N check (only on a branch with a BRANCH-start tag) and
+#        password prompts, before any gradle work, so an unattended build never stalls part-way.
+#     5. Play only: versionCode bump. app/versionCode.txt N -> N+1 is committed alone
+#        ("versionCode N+1 (play build, tag T)") and that commit gets the annotated tag
+#        T = <base>+<N+1>, where <base> is the nearest tag named v<digit>... or <digit>...
+#        (tags containing '+' excluded; none reachable: base v0). versionName is then T.
+#        If any later step fails the tag is deleted again (said so on screen); the commit
+#        stays, so the next --play uses N+2 (Play only needs increasing codes).
+#     6. Builds in sequence: standard, test, play. The first failure stops everything.
+#     7. The builds tag moves only after every selected build succeeded.
 #
 # Every build runs as coder_user (project.config), so all builds share one owner and one
 # environment. Anyone else (root, primary_user, ...) is re-executed as coder_user through
@@ -356,29 +360,34 @@ fi
 if [ "$BUILD_PLAY" = true ]; then
   # Runs as coder_user like every build. The upload keystore is group-readable by coder_user;
   # what protects it is the password, which only the person at this terminal types.
-  # Same version string the gradle files compute for versionName:
-  # BRANCH-start tag when it exists, else 'git describe --always'.
+  # Same version string the gradle files compute for versionName: BRANCH-start tag when it
+  # exists, else 'git describe --always'. Without a BRANCH-start tag the versionCode commit's
+  # own release tag (step 5) is what describe prints, so only the BRANCH-start case is a
+  # testing version.
   BRANCH=$(git rev-parse --abbrev-ref HEAD) || exit 1
-  if git rev-parse -q --verify "refs/tags/${BRANCH}-start" >/dev/null; then
-    VERSION_DESC=$(git describe --tags --match "${BRANCH}-start") || exit 1
-  else
-    VERSION_DESC=$(git describe --always) || exit 1
+  if [ ! -f app/versionCode.txt ]; then
+    echo "ERROR: --play needs app/versionCode.txt (one integer; gradle reads versionCode from it)." >&2
+    exit 1
   fi
-  HEAD_SHORT=$(git rev-parse --short HEAD) || exit 1
-  if [[ "$VERSION_DESC" == *-* ]] || [ "$VERSION_DESC" = "$HEAD_SHORT" ]; then
+  OLD_VERSION_CODE=$(tr -d '[:space:]' < app/versionCode.txt)
+  if ! [[ "$OLD_VERSION_CODE" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: app/versionCode.txt is '$OLD_VERSION_CODE', not an integer." >&2
+    exit 1
+  fi
+  if ! git ls-files --error-unmatch app/versionCode.txt >/dev/null; then
+    echo "ERROR: app/versionCode.txt is not tracked; --play commits each bump." >&2
+    exit 1
+  fi
+  if git rev-parse -q --verify "refs/tags/${BRANCH}-start" >/dev/null; then
     echo "==================================================================" >&2
-    echo "WARNING: '$VERSION_DESC' is a TESTING version, not a release tag." >&2
-    if [ "$VERSION_DESC" = "$HEAD_SHORT" ]; then
-      echo "  No annotated tag is reachable from HEAD." >&2
-    else
-      echo "  It contains '-' (commits after the tag, or a branch -start tag)." >&2
-    fi
-    echo "  Tag HEAD (git tag -a vX.Y.Z) for a release build." >&2
+    echo "WARNING: branch '$BRANCH' has tag ${BRANCH}-start, so its versionName is" >&2
+    echo "  '${BRANCH}-start-<n>-g<hash>': a TESTING version, not a release." >&2
+    echo "  Release builds come from a branch without a -start tag (e.g. master)." >&2
     echo "==================================================================" >&2
     read -r -p "Build a release bundle from this testing version anyway? [y/N] " ANSWER
     case "$ANSWER" in
       y|Y|yes|YES) ;;
-      *) echo "Aborted: testing version." >&2; exit 1 ;;
+      *) echo "Aborted: testing version (nothing committed or tagged)." >&2; exit 1 ;;
     esac
   fi
 
@@ -407,6 +416,56 @@ if [ "$BUILD_PLAY" = true ]; then
     exit 1
   fi
   echo "Upload key: $RELEASE_KEYSTORE alias $RELEASE_KEY_ALIAS (SHA256 $UPLOAD_SHA256)"
+
+  # versionCode bump + release tag (see the header, step 5).
+  NEW_VERSION_CODE=$((OLD_VERSION_CODE + 1))
+  _rel_tags=$(git tag --merged HEAD --list 'v[0-9]*' '[0-9]*') || exit 1
+  if [ -z "$(printf '%s\n' "$_rel_tags" | grep -v -F '+')" ]; then
+    TAG_BASE=v0
+    echo "No v<digit>/<digit> tag reachable from HEAD: release tag base is v0."
+  else
+    TAG_BASE=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --match '[0-9]*' --exclude '*+*' HEAD) || exit 1
+  fi
+  PLAY_TAG="${TAG_BASE}+${NEW_VERSION_CODE}"
+  if ! git check-ref-format "refs/tags/$PLAY_TAG"; then
+    echo "ERROR: '$PLAY_TAG' is not a valid tag name (base tag '$TAG_BASE')." >&2
+    exit 1
+  fi
+  if git rev-parse -q --verify "refs/tags/$PLAY_TAG" >/dev/null; then
+    echo "ERROR: tag $PLAY_TAG already exists ($(git rev-parse --short "refs/tags/$PLAY_TAG^{commit}")); app/versionCode.txt ($OLD_VERSION_CODE) is behind it." >&2
+    exit 1
+  fi
+  printf '%s\n' "$NEW_VERSION_CODE" > app/versionCode.txt
+  git commit -q --only -m "versionCode $NEW_VERSION_CODE (play build, tag $PLAY_TAG)" -- app/versionCode.txt || {
+    echo "ERROR: could not commit app/versionCode.txt ($NEW_VERSION_CODE)." >&2
+    exit 1
+  }
+  git tag -a "$PLAY_TAG" -m "Play build: versionCode $NEW_VERSION_CODE" || {
+    echo "ERROR: could not create tag $PLAY_TAG on the versionCode commit." >&2
+    exit 1
+  }
+  PLAY_TAG_PENDING=true
+  # Any exit before build_play finishes removes the tag again (the commit stays).
+  drop_unbuilt_play_tag() {
+    if [ "${PLAY_TAG_PENDING:-false}" = true ]; then
+      if git tag -d "$PLAY_TAG" >/dev/null; then
+        echo "Play build did not finish: deleted tag $PLAY_TAG. The versionCode $NEW_VERSION_CODE commit stays; the next --play uses $((NEW_VERSION_CODE + 1))." >&2
+      else
+        echo "ERROR: could not delete tag $PLAY_TAG (it names a versionCode that was never built): git tag -d $PLAY_TAG" >&2
+      fi
+    fi
+  }
+  trap drop_unbuilt_play_tag EXIT
+  if git rev-parse -q --verify "refs/tags/${BRANCH}-start" >/dev/null; then
+    VERSION_DESC=$(git describe --tags --match "${BRANCH}-start") || exit 1
+  else
+    VERSION_DESC=$(git describe --always) || exit 1
+    if [ "$VERSION_DESC" != "$PLAY_TAG" ]; then
+      echo "ERROR: git describe gives '$VERSION_DESC', not the new tag $PLAY_TAG." >&2
+      exit 1
+    fi
+  fi
+  echo "versionCode $OLD_VERSION_CODE -> $NEW_VERSION_CODE, committed and tagged $PLAY_TAG (versionName $VERSION_DESC)"
 fi
 
 # Homes under this worktree. orch_root is read/seed only (keystore copy).
@@ -567,17 +626,15 @@ os.execvp(sys.argv[1], sys.argv[1:])
     exit 1
   fi
   publish_deliverables "$AAB"
-  if [ -f app/versionCode.txt ]; then
-    version_code=$(tr -d '[:space:]' < app/versionCode.txt)
-  else
-    version_code="(no app/versionCode.txt; see versionCode in app/build.gradle*)"
-  fi
+  version_code=$(tr -d '[:space:]' < app/versionCode.txt)
   PLAY_SUMMARY="Play bundle ready for upload:
   Path:        $(pwd)/$AAB
   File SHA256: $(sha256sum "$AAB" | cut -d' ' -f1)
   Signed by:   SHA256 $aab_sha256 (upload key)
   versionName: $VERSION_DESC
-  versionCode: $version_code"
+  versionCode: $version_code
+  Tag:         $PLAY_TAG"
+  PLAY_TAG_PENDING=false
   echo "=== play build OK ==="
 }
 

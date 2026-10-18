@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Tests for build_app --play: versionCode bump + commit + automatic release tag, deliverable
+# modes, and clean-up of the tag when the build fails. Stand-ins: a fake ./gradlew that writes a
+# jar-signed AAB with the injected signing env (jarsigner from the JDK), a stub ve-resolve-orch,
+# a throwaway keystore; passwords are typed into a pty by script(1). No sudo, no real gradle.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/buildplay-test.XXXXXX)"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
+chmod 755 "$T"
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+me=$(id -un)
+JDK=/usr/lib/jvm/java-17-openjdk-amd64
+KS="$T/keys/upload.jks"; mkdir -p "$T/keys"; chmod 750 "$T/keys"
+"$JDK/bin/keytool" -genkeypair -keystore "$KS" -storepass pw123456 -keypass pw123456 -alias upload \
+  -dname CN=test -keyalg RSA -keysize 2048 -validity 2 >/dev/null 2>"$T/kt" || { echo "keytool failed: $(cat "$T/kt")"; exit 1; }
+chmod 640 "$KS"
+
+mk() {  # mk [tag]: fresh worktree repo in $W on master, optionally tagged
+  W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app"
+  cp "$canon/build-examples/android-app/build_app" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
+  cat >"$W/ve-resolve-orch" <<'S'
+ve_resolve_orch() { ORCH_ROOT="$1"; }
+ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }
+ve_aapt2_from_sdk() { echo /bin/true; }
+ve_reset_gradle_daemon_dir() { return 0; }
+ve_wipe_foreign_app_build_outputs() { return 0; }
+S
+  cat >"$W/gradlew" <<G
+#!/bin/bash
+set -e
+[ -f "$T/fail-gradle" ] && { echo "stand-in gradle: forced failure" >&2; exit 1; }
+for a in "\$@"; do
+  case "\$a" in
+    bundleRelease)
+      d=app/build/outputs/bundle/release; mkdir -p "\$d"
+      git describe --always >"$T/versionName-at-build"
+      cat app/versionCode.txt >"$T/versionCode-at-build"
+      python3 - "\$d/app-release.aab" <<'PY'
+import os, subprocess, sys, zipfile
+p = sys.argv[1]
+with zipfile.ZipFile(p, "w") as z:
+    z.writestr("base/manifest/AndroidManifest.xml", "x")
+e = os.environ
+pre = "ORG_GRADLE_PROJECT_android.injected.signing."
+subprocess.run(["$JDK/bin/jarsigner", "-keystore", e[pre + "store.file"], "-storepass", e[pre + "store.password"],
+                "-keypass", e[pre + "key.password"], p, e[pre + "key.alias"]], check=True, stdout=subprocess.DEVNULL)
+PY
+      ;;
+  esac
+done
+G
+  chmod 755 "$W/gradlew"
+  cat >"$W/project.config" <<C
+primary_user=nobody
+coder_user=$me
+planning_user=ai-planner
+java_home=$JDK
+code_group=ai-code
+shared_group=ai-shared
+sandbox_group=ai-sandbox
+release_keystore=$KS
+release_key_alias=upload
+release_bundle_task=bundleRelease
+release_bundle_path=app/build/outputs/bundle/release/app-release.aab
+C
+  echo 1 >"$W/app/versionCode.txt"
+  printf 'project.config\n.gradle-home/\napp/build/\n' >"$W/.gitignore"
+  git -C "$W" init -q -b master && git -C "$W" add -A && git -C "$W" -c user.name=t -c user.email=t@t commit -qm init
+  if [ -n "${1:-}" ]; then git -C "$W" -c user.name=t -c user.email=t@t tag -a "$1" -m "$1"; fi
+}
+play() {  # play ANSWERS: run ./build_app --play in a pty, typing ANSWERS
+  printf "$1" | (cd "$W" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+    script -qec "./build_app --play" /dev/null) >"$T/out" 2>&1
+}
+vc() { tr -d '[:space:]' <"$W/app/versionCode.txt"; }
+
+mk v0.9
+play 'pw123456\n\n'; rc=$?
+[[ $rc -eq 0 ]] && ok "--play rc 0" || bad "--play rc=$rc: $(tail -15 "$T/out")"
+[[ "$(vc)" == 2 ]] && ok "versionCode 1 -> 2" || bad "versionCode $(vc)"
+[[ "$(git -C "$W" log -1 --format=%s)" == "versionCode 2 (play build, tag v0.9+2)" ]] && ok "bump committed on its own" || bad "HEAD subject: $(git -C "$W" log -1 --format=%s)"
+[[ "$(git -C "$W" show --stat --format= HEAD | grep -c '|')" == 1 ]] && ok "bump commit touches only app/versionCode.txt" || bad "bump commit files: $(git -C "$W" show --stat --format= HEAD)"
+[[ "$(git -C "$W" cat-file -t v0.9+2)" == tag && "$(git -C "$W" rev-parse 'v0.9+2^{commit}')" == "$(git -C "$W" rev-parse HEAD)" ]] && ok "annotated tag v0.9+2 on the bump commit" || bad "tag: $(git -C "$W" tag)"
+[[ "$(cat "$T/versionName-at-build")" == "v0.9+2" && "$(cat "$T/versionCode-at-build")" == 2 ]] && ok "gradle saw versionName v0.9+2 and versionCode 2" || bad "at build: $(cat "$T/versionName-at-build") $(cat "$T/versionCode-at-build")"
+grep -q 'TESTING' "$T/out" && bad "release build asked the testing question" || ok "no testing-version prompt on a release"
+grep -q 'Tag:         v0.9+2' "$T/out" && ok "summary names the tag" || bad "summary: $(tail -8 "$T/out")"
+[[ "$(stat -c %a "$W/app/build/outputs/bundle/release/app-release.aab")" == 644 ]] && ok "AAB is 644" || bad "AAB mode $(stat -c %a "$W/app/build/outputs/bundle/release/app-release.aab")"
+[[ "$(git -C "$W" rev-parse builds)" == "$(git -C "$W" rev-parse HEAD)" ]] && ok "builds tag on the bump commit" || bad "builds tag"
+play 'pw123456\n\n'; rc=$?
+[[ $rc -eq 0 && "$(vc)" == 3 ]] && git -C "$W" rev-parse -q --verify 'refs/tags/v0.9+3' >/dev/null && ok "second --play: versionCode 3, tag v0.9+3 (base skips '+' tags)" || bad "second play rc=$rc vc=$(vc) tags=$(git -C "$W" tag | tr '\n' ' ')"
+
+mk
+play 'pw123456\n\n'; rc=$?
+[[ $rc -eq 0 ]] && git -C "$W" rev-parse -q --verify 'refs/tags/v0+2' >/dev/null && ok "no release tag reachable: tag v0+2" || bad "untagged repo rc=$rc tags=$(git -C "$W" tag | tr '\n' ' ') $(tail -5 "$T/out")"
+
+mk v1.0; touch "$T/fail-gradle"
+play 'pw123456\n\n'; rc=$?; rm -f "$T/fail-gradle"
+[[ $rc -ne 0 ]] && ok "failing gradle fails --play" || bad "gradle failure rc=$rc"
+git -C "$W" rev-parse -q --verify 'refs/tags/v1.0+2' >/dev/null && bad "tag of an unbuilt versionCode left behind" || ok "tag deleted after the failure"
+[[ "$(vc)" == 2 ]] && grep -q 'deleted tag v1.0+2. The versionCode 2 commit stays; the next --play uses 3' "$T/out" && ok "bump commit kept, said so" || bad "after failure: vc=$(vc) $(tail -4 "$T/out")"
+
+mk v1.0; git -C "$W" checkout -q -b feat; git -C "$W" tag feat-start
+play 'n\n'; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'nothing committed or tagged' "$T/out" && [[ "$(git -C "$W" log -1 --format=%s)" == init ]] && ok "BRANCH-start branch: answering N aborts before any bump" || bad "testing abort rc=$rc vc=$(vc) $(tail -4 "$T/out")"
+
+mk; git -C "$W" rm -q app/versionCode.txt; git -C "$W" -c user.name=t -c user.email=t@t commit -qm rm
+play 'pw123456\n\n'; rc=$?
+[[ $rc -ne 0 ]] && grep -q -- '--play needs app/versionCode.txt' "$T/out" && ok "missing versionCode.txt is an error" || bad "missing vc rc=$rc $(tail -3 "$T/out")"
+
+mk v2.0; git -C "$W" -c user.name=t -c user.email=t@t tag -a 'v2.0+2' -m x
+play 'pw123456\n\n'; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'tag v2.0+2 already exists' "$T/out" && ok "existing tag: error before the bump" || bad "existing tag rc=$rc vc=$(vc) $(tail -3 "$T/out")"
+
+echo "passed $pass failed $fail"
+[[ $fail -eq 0 ]]

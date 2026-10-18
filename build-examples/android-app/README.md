@@ -31,24 +31,32 @@ carry their own copy (`rules.manifest.local: local build_app`).
 3. **Integrity check:** the tree must be clean. Every selected build comes from that one
    commit, including the Play build. Committing and building Play in one run is allowed.
 4. **Play preflight, before any gradle work:**
-   - **Testing-version check:** a y/N question, default No. It asks when the versionName
-     describe (`<branch>-start` tag, else `git describe --always`) contains `-`, or when no
-     annotated tag is reachable.
+   - `app/versionCode.txt` must exist, be tracked and hold one integer.
+   - **Testing-version check:** a y/N question, default No. It is asked only on a branch
+     with a `<branch>-start` tag, whose versionName is always `<branch>-start-<n>-g<hash>`.
+     Answering No stops before anything is committed or tagged.
    - **Passwords:** `read -s`, checked with `keytool`.
    - So a long unattended stretch never stops part-way to ask.
-5. **Builds:** they run in sequence (standard, test, play), and the first failure stops
+5. **versionCode bump and release tag (Play only, automatic):**
+   - `app/versionCode.txt` goes from N to N+1 and is committed alone as
+     `versionCode N+1 (play build, tag T)`, by `coder_user` with the invoker's git identity.
+   - That commit gets the annotated tag `T = <base>+<N+1>`. `<base>` is the nearest tag
+     reachable from HEAD that is named `v<digit>…` or `<digit>…` and has no `+` in it
+     (e.g. `v0.9.6` gives `v0.9.6+3`). If there is none, the base is `v0`. An existing `T`
+     stops the build before the bump.
+   - versionName (`git describe --always`) is therefore exactly `T`. It has no `-`, so it
+     is a release, not a testing version.
+   - If anything after the bump fails, `T` is deleted again and the message says so. The
+     commit stays, so the next `--play` uses N+2 (Play needs increasing codes, not
+     consecutive ones).
+6. **Builds:** they run in sequence (standard, test, play), and the first failure stops
    everything.
-6. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves only after every selected
+7. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves only after every selected
    build succeeded.
 
-A commit makes HEAD untagged, so committing and building Play together always asks the
-testing-version question. For a release:
-
-1. commit
-2. `git tag -a vX.Y.Z`
-3. `./build_app --play` (or `./build_app` for all three)
-
-Answering No at that question leaves the commit in place and builds nothing.
+For a release: commit your work (with build_app or git), then `./build_app --play`. No
+manual tag or version number is needed. To start a new version line, tag the base yourself
+(`git tag -a v1.0.0`); later Play builds are then `v1.0.0+<code>`.
 
 ## Other behavior
 
@@ -61,7 +69,7 @@ Answering No at that question leaves the commit in place and builds nothing.
 - **Play signing:** through AGP's `android.injected.signing.*` properties, passed as
   `ORG_GRADLE_PROJECT_*` environment variables, never on a command line.
 - **Play output check:** the AAB must be signed by the upload key. Its path, SHA256,
-  versionName and versionCode are printed at the end.
+  versionName, versionCode and release tag are printed at the end.
 - The upload key must be readable by `coder_user`: give it a dedicated group, `chmod 640`,
   and the directory 750. It must not be world-readable.
 - **Permissions** come from `perm-model.tsv` through `perm-lib.sh` (both ship next to
