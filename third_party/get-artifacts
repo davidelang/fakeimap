@@ -2,8 +2,15 @@
 # get-artifacts — copy build products to destinations declared in libpin.toml
 #
 # Usage:
-#   third_party/get-artifacts [NAME…]
+#   third_party/get-artifacts [--verify|--record] [NAME…]
 #   third_party/get-artifacts --help
+#
+#   --verify (default)  a row whose file does not match its sha256 fails (the pin is unchanged,
+#                       so the bytes must be too)
+#   --record            the pin is being changed (fetch-deps upgrade, fetch-deps build --record):
+#                       a row whose sha256 differs is copied anyway and reported on stdout as
+#                       ARTIFACT-SHA256<TAB>row-index<TAB>old<TAB>new; fetch-deps writes the new
+#                       hashes into libpin.toml (this script never edits the pin).
 #
 # Called by fetch-deps build; also usable alone when iterating builds.
 #
@@ -33,6 +40,7 @@ NAMES=()
 FAILURES=0
 NO_BWRAP=0
 NO_LANDLOCK=0
+MODE=verify
 
 usage() {
   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
@@ -43,6 +51,9 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage; exit 0 ;;
     --no-bwrap) NO_BWRAP=1; shift ;;
     --no-landlock) NO_LANDLOCK=1; shift ;;
+    --verify) MODE=verify; shift ;;
+    --record) MODE=record; shift ;;
+    -*) echo "get-artifacts: unknown option $1" >&2; exit 2 ;;
     *) NAMES+=("$1"); shift ;;
   esac
 done
@@ -70,7 +81,7 @@ if [[ "${LIBPIN_GET_ARTIFACTS_SANDBOX:-0}" == "1" ]]; then
     if [[ "${LIBPIN_NO_BWRAP:-0}" != "1" || "${LIBPIN_NO_LANDLOCK:-0}" != "1" ]]; then
       for n in "${NAMES[@]}"; do
         "$ROOT/libpin-sandbox" --mode artifact --lib "$n" -- \
-          "$0" --no-bwrap --no-landlock "$n" || FAILURES=$((FAILURES + 1))
+          "$0" --no-bwrap --no-landlock "--$MODE" "$n" || FAILURES=$((FAILURES + 1))
       done
       exit "$FAILURES"
     fi
@@ -139,7 +150,7 @@ pick_file() {
     newest|*)
       local f best="" best_t=0 t
       for f in "${files[@]}"; do
-        t=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+        t=$(stat -c %Y "$f") || return 1
         if [[ "$t" -ge "$best_t" ]]; then
           best_t=$t
           best=$f
@@ -151,7 +162,9 @@ pick_file() {
 }
 
 sha256_file() {
-  sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  local out
+  out=$(sha256sum "$1") || return 1
+  printf '%s\n' "${out%% *}"
 }
 
 collect_one() {
@@ -160,10 +173,13 @@ collect_one() {
   local pin="$dir/libpin.toml"
   [[ -f "$pin" ]] || { echo "FAIL $name: no libpin.toml" >&2; return 1; }
   echo "==> $name  get-artifacts"
-  local path from pick sha matches m chosen dest got
+  local path from pick sha matches m chosen dest got rows
   local any=0
   local row_fail=0
+  local idx=-1
+  rows=$(parse_artifacts "$pin") || { echo "FAIL $name: cannot parse $pin" >&2; return 1; }
   while IFS=$'\t' read -r path from pick sha; do
+    idx=$((idx + 1))
     [[ -z "$path" ]] && continue
     any=1
     [[ -z "$pick" ]] && pick=newest
@@ -185,7 +201,7 @@ collect_one() {
         basepat="$(basename "$from")"
         while IFS= read -r m; do
           matches+=("$m")
-        done < <(find "$dir" -type f -name "$basepat" 2>/dev/null)
+        done < <(find "$dir" -type f -name "$basepat")
       fi
     else
       if [[ -f "$dir/$from" ]]; then
@@ -197,23 +213,28 @@ collect_one() {
       row_fail=1
       continue
     fi
-    chosen="$(pick_file "$pick" "${matches[@]}")"
+    chosen="$(pick_file "$pick" "${matches[@]}")" || { echo "    FAIL: cannot pick from ${matches[*]}" >&2; row_fail=1; continue; }
     if [[ -n "$sha" ]]; then
-      got="$(sha256_file "$chosen")"
+      got="$(sha256_file "$chosen")" || { row_fail=1; continue; }
       if [[ "$got" != "$sha" ]]; then
-        echo "    FAIL sha256 $from: got $got want $sha" >&2
-        row_fail=1
-        continue
+        if [[ "$MODE" == record ]]; then
+          echo "    record sha256 $path: $sha -> $got"
+          printf 'ARTIFACT-SHA256\t%s\t%s\t%s\n' "$idx" "$sha" "$got"
+        else
+          echo "    FAIL sha256 $from: got $got want $sha (unchanged pin; to take new bytes use fetch-deps upgrade or fetch-deps build --record)" >&2
+          row_fail=1
+          continue
+        fi
       fi
     fi
     dest="$(resolve_dest "$dir" "$path")"
     mkdir -p "$(dirname "$dest")"
-    if [[ -e "$dest" ]]; then
-      chmod u+w "$dest" 2>/dev/null || true
+    if [[ -e "$dest" && ! -w "$dest" ]]; then
+      chmod u+w "$dest"
     fi
     cp -a "$chosen" "$dest"
     echo "    $chosen → $dest"
-  done < <(parse_artifacts "$pin")
+  done <<< "$rows"
 
   if [[ "$any" -eq 0 ]]; then
     echo "    (no [[artifact]] entries — nothing to copy)"

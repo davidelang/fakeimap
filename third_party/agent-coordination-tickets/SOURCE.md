@@ -16,8 +16,6 @@ step by the connector's tests; agents do not run them. Consumers do not rerun th
 
 Bumping the pin (maintainers): `./third_party/fetch-deps rw|ro agent-coordination-tickets` gives a `src/` checkout;
 build with `./third_party/fetch-deps build agent-coordination-tickets`, then commit `artifact/channel`, `git_sha`
-and the artifact `sha256` together. (`fetch-deps upgrade` checks the old sha256 and fails on a new build; see
-below.)
-
-Upstream fetch-deps gap: `upgrade --ref` should rewrite each `[[artifact]] sha256` from the new build instead of
-failing against the old one; until then the pin bump sets it by hand.
+and the artifact `sha256` together. `fetch-deps build --record agent-coordination-tickets` writes the new
+artifact `sha256` into libpin.toml (old -> new printed); `fetch-deps upgrade NAME --ref REF` does the same
+together with `git_sha`/`git_describe`.

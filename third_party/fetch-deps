@@ -39,6 +39,7 @@ DEPTH=""
 BASE_REF=""
 BRANCH_OVERRIDE=""
 REF_UPGRADE=""
+RECORD=0
 VERBOSE=0
 NAMES=()
 FAILURES=0
@@ -60,7 +61,9 @@ Commands:
   status      Show mode / HEAD / pin / dirty (-v / -vv)
   refresh     Advance pin SHA from library master tip + materialize ro (git only)
   upgrade     NAME --ref REF  try ref, build, collect artifacts, update libpin.toml
-  build       Run build[] from libpin.toml, then get-artifacts
+              (git_sha, git_describe and every changed [[artifact]] sha256; a pin with
+              reproducible = true is built a second time and must give the same bytes)
+  build       Run build[] from libpin.toml, then get-artifacts (artifacts must match sha256)
 
 Options:
   --allow-ssh          Permit git@ for *git* transport only (maintainer machines)
@@ -69,6 +72,8 @@ Options:
   --base REF           rw base (default: pin git_sha)
   --ref REF            upgrade source ref
   --depth N            optional shallow clone (not default)
+  --record             build: write the new [[artifact]] sha256 values into libpin.toml
+                       instead of failing on them (old -> new printed per row)
   --worktree-search P  extra local roots (colon-separated)
   --no-bwrap           Disable bubblewrap (or LIBPIN_NO_BWRAP=1)
   --no-landlock        Disable Landlock (or LIBPIN_NO_LANDLOCK=1)
@@ -107,6 +112,7 @@ while [[ $# -gt 0 ]]; do
     --base) BASE_REF="$2"; shift 2 ;;
     --ref) REF_UPGRADE="$2"; shift 2 ;;
     --depth) DEPTH="$2"; shift 2 ;;
+    --record) RECORD=1; shift ;;
     --worktree-search) WORKTREE_SEARCH="$2"; shift 2 ;;
     -vv) VERBOSE=2; shift ;;
     -v) VERBOSE=1; shift ;;
@@ -1109,8 +1115,39 @@ cmd_refresh() {
   cmd_ro "$name"
 }
 
+# Write ARTIFACT-SHA256<TAB>index<TAB>old<TAB>new lines (from get-artifacts --record) into the
+# pin: row <index> of [[artifact]] must have exactly sha256 = "<old>". Atomic (tmp + rename).
+record_artifact_shas() {
+  local pin="$1" records="$2"
+  python3 - "$pin" "$records" <<'PY'
+import os, re, sys
+pin, records = sys.argv[1], sys.argv[2]
+recs = []
+for line in records.splitlines():
+    f = line.split("\t")
+    if f[0] == "ARTIFACT-SHA256" and len(f) == 4:
+        recs.append((int(f[1]), f[2], f[3]))
+lines = open(pin, encoding="utf-8").read().split("\n")
+starts = [i for i, l in enumerate(lines) if l.strip() == "[[artifact]]"]
+for idx, old, new in recs:
+    if idx >= len(starts):
+        sys.exit(f"fetch-deps: {pin}: no [[artifact]] row {idx} (rows are [[artifact]] tables)")
+    end = next((j for j in range(starts[idx] + 1, len(lines)) if re.match(r"^\s*\[", lines[j])), len(lines))
+    hits = [j for j in range(starts[idx] + 1, end) if re.fullmatch(r'\s*sha256\s*=\s*"' + re.escape(old) + r'"\s*', lines[j])]
+    if len(hits) != 1:
+        sys.exit(f"fetch-deps: {pin}: [[artifact]] row {idx} has no single sha256 = \"{old}\" line")
+    lines[hits[0]] = f'sha256 = "{new}"'
+    print(f"    pin row {idx}: sha256 {old[:12]}… -> {new[:12]}…")
+tmp = pin + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(lines))
+os.replace(tmp, pin)
+PY
+}
+
 cmd_build() {
   local name="$1"
+  local ga_mode="${2:-verify}"
   local dir="$ROOT/$name"
   local lock src
   lock="$(lock_path "$name")"
@@ -1145,9 +1182,14 @@ cmd_build() {
   # Collect when [[artifact]] present (get-artifacts no-ops gracefully if none)
   if [[ -x "$ROOT/get-artifacts" ]]; then
     if grep -q '\[\[artifact\]\]' "$lock" 2>/dev/null; then
-      echo "    get-artifacts  [sandbox=artifact]"
-      bwrap_artifact "$name" "$ROOT/get-artifacts" --no-bwrap "$name" \
-        || { echo "    FAIL get-artifacts" >&2; return 1; }
+      echo "    get-artifacts --$ga_mode  [sandbox=artifact]"
+      local ga_out
+      ga_out=$(bwrap_artifact "$name" "$ROOT/get-artifacts" --no-bwrap "--$ga_mode" "$name") \
+        || { printf '%s\n' "$ga_out" | grep -v '^ARTIFACT-SHA256'; echo "    FAIL get-artifacts" >&2; return 1; }
+      printf '%s\n' "$ga_out" | grep -v '^ARTIFACT-SHA256' || [[ $? -eq 1 ]]
+      if [[ "$ga_mode" == record ]]; then
+        record_artifact_shas "$lock" "$ga_out" || { echo "    FAIL: could not record new sha256 values in $lock" >&2; return 1; }
+      fi
     else
       echo "    no [[artifact]] — skip get-artifacts"
     fi
@@ -1198,10 +1240,27 @@ cmd_upgrade() {
     echo "    FAIL upgrade $name: patch did not apply at $sha; not building, lock unchanged" >&2
     return 1
   fi
-  if ! cmd_build "$name"; then
+  # The new commit builds new bytes: record their sha256 (never check them against the old
+  # pin). The pin is restored if anything below fails.
+  local lock backup repro
+  lock="$(lock_path "$name")"
+  backup="$(mktemp "$lock.before-upgrade.XXXXXX")"
+  cp -p "$lock" "$backup"
+  if ! cmd_build "$name" record; then
+    cp -p "$backup" "$lock"; rm -f "$backup"
     echo "    FAIL upgrade $name: build failed at $sha; lock unchanged" >&2
     return 1
   fi
+  repro="$(pin_get "$lock" reproducible)" || repro=""
+  if [[ "$repro" == "true" ]]; then
+    echo "    reproducible = true: second build must give the recorded bytes"
+    if ! cmd_build "$name" verify; then
+      cp -p "$backup" "$lock"; rm -f "$backup"
+      echo "    FAIL upgrade $name: second build differs from the first (not reproducible); lock unchanged" >&2
+      return 1
+    fi
+  fi
+  rm -f "$backup"
   write_lock_sha "$(lock_path "$name")" "$sha" "$(git -C "$src" describe --tags --long --always HEAD 2>/dev/null || echo "$sha")"
   echo "    upgraded pin to $sha — review artifact/ and commit on VE"
   echo "    OK upgrade $name"
@@ -1224,7 +1283,8 @@ case "$CMD" in
     for n in "${NAMES[@]}"; do cmd_refresh "$n" || FAILURES=$((FAILURES+1)); done
     ;;
   build)
-    for n in "${NAMES[@]}"; do cmd_build "$n" || FAILURES=$((FAILURES+1)); done
+    if [[ "$RECORD" -eq 1 ]]; then _bm=record; else _bm=verify; fi
+    for n in "${NAMES[@]}"; do cmd_build "$n" "$_bm" || FAILURES=$((FAILURES+1)); done
     ;;
   upgrade)
     cmd_upgrade "${NAMES[0]}" || FAILURES=$((FAILURES+1))

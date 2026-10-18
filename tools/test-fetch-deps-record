@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Tests for fetch-deps / get-artifacts --verify / --record (throwaway repos in /tmp, no sandbox,
+# no network: the library is a local git repo under a temporary --git-home).
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/fdrec-test.XXXXXX)"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+export LIBPIN_NO_BWRAP=1 LIBPIN_NO_LANDLOCK=1
+G() { git -c user.name=t -c user.email=t@t "$@"; }
+
+GH="$T/gh"; mkdir -p "$GH/toy"
+G -C "$GH/toy" init -q -b master
+echo v1 >"$GH/toy/content"; G -C "$GH/toy" add -A; G -C "$GH/toy" commit -qm v1; V1=$(git -C "$GH/toy" rev-parse HEAD)
+echo v2 >"$GH/toy/content"; G -C "$GH/toy" commit -qam v2; V2=$(git -C "$GH/toy" rev-parse HEAD)
+H1=$(printf 'built v1\n' | sha256sum | cut -d' ' -f1)
+H2=$(printf 'built v2\n' | sha256sum | cut -d' ' -f1)
+
+mkrepo() {  # mkrepo REPRODUCIBLE BUILDCMD
+  R="$T/repo"; if [ -d "$R" ]; then chmod -R u+w "$R"; rm -rf "$R"; fi
+  mkdir -p "$R/third_party/toy"
+  cp "$canon/third_party/fetch-deps" "$canon/third_party/get-artifacts" "$R/third_party/"
+  cat >"$R/third_party/toy/libpin.toml" <<P
+name = "toy"
+git_https = "https://invalid.example/toy.git"
+git_sha = "$V1"
+git_describe = "v1"
+reproducible = $1
+build = ["./build"]
+
+[[artifact]]
+from = "src/out.bin"
+path = "artifact/out.bin"
+sha256 = "$H1"
+P
+  printf '#!/bin/bash\nset -e\n%s\n' "$2" >"$R/third_party/toy/build"; chmod 755 "$R/third_party/toy/build"
+  G -C "$R" init -q -b master; G -C "$R" add -A; G -C "$R" commit -qm init
+}
+fd() { (cd "$R" && ./third_party/fetch-deps --git-home "$GH" "$@") >"$T/out" 2>&1; }
+pin() { cat "$R/third_party/toy/libpin.toml"; }
+
+mkrepo true 'printf "built %s\n" "$(cat src/content)" >src/out.bin'
+fd ro toy; rc=$?; [[ $rc -eq 0 ]] && ok "materialize pin v1" || bad "ro rc=$rc $(tail -5 "$T/out")"
+fd build toy; rc=$?; [[ $rc -eq 0 ]] && ok "build at the pin verifies sha256 (rc 0)" || bad "build rc=$rc $(tail -8 "$T/out")"
+fd upgrade toy --ref "$V2"; rc=$?
+[[ $rc -eq 0 ]] && ok "upgrade to a new commit succeeds (new bytes recorded, not checked against the old sha)" || bad "upgrade rc=$rc $(tail -12 "$T/out")"
+pin | grep -q "sha256 = \"$H2\"" && pin | grep -q "git_sha = \"$V2\"" && ok "pin now has the new git_sha and artifact sha256" || bad "pin after upgrade: $(pin)"
+grep -q "record sha256 artifact/out.bin: $H1 -> $H2" "$T/out" && ok "old -> new printed" || bad "no old->new line: $(cat "$T/out")"
+grep -q 'second build must give the recorded bytes' "$T/out" && ok "reproducible pin built twice" || bad "no second build"
+grep -q '^ARTIFACT-SHA256' "$T/out" && bad "raw record lines leaked to the user" || ok "record lines consumed by fetch-deps"
+fd build toy; rc=$?; [[ $rc -eq 0 ]] && ok "plain build after upgrade verifies the recorded sha256" || bad "post-upgrade build rc=$rc"
+
+# wrong sha in the pin: build fails, build --record fixes it
+sed -i "s/sha256 = \"$H2\"/sha256 = \"$H1\"/" "$R/third_party/toy/libpin.toml"
+fd build toy; rc=$?
+[[ $rc -ne 0 ]] && grep -q "FAIL sha256 src/out.bin: got $H2 want $H1" "$T/out" && ok "verify mode fails on a mismatch" || bad "verify mismatch rc=$rc $(tail -5 "$T/out")"
+fd build --record toy; rc=$?
+[[ $rc -eq 0 ]] && pin | grep -q "sha256 = \"$H2\"" && ok "build --record writes the new sha256" || bad "build --record rc=$rc $(pin)"
+
+# non-reproducible build with reproducible = true: upgrade fails, pin untouched
+mkrepo true 'printf "built %s %s\n" "$(cat src/content)" "$(date +%N)" >src/out.bin'
+fd ro toy; before=$(pin)
+fd upgrade toy --ref "$V2"; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'not reproducible' "$T/out" && ok "non-reproducible upgrade fails" || bad "non-repro upgrade rc=$rc $(tail -6 "$T/out")"
+[[ "$(pin)" == "$before" ]] && ok "pin unchanged after the failed upgrade" || bad "pin changed: $(pin)"
+ls "$R/third_party/toy/" | grep -q before-upgrade && bad "backup left behind" || ok "no backup file left behind"
+
+# reproducible = false: one build, recorded
+mkrepo false 'printf "built %s\n" "$(cat src/content)" >src/out.bin'
+fd ro toy; fd upgrade toy --ref "$V2"; rc=$?
+[[ $rc -eq 0 ]] && ! grep -q 'second build' "$T/out" && pin | grep -q "sha256 = \"$H2\"" && ok "reproducible = false: single build, recorded" || bad "non-repro pin rc=$rc $(tail -6 "$T/out")"
+
+echo "passed $pass failed $fail"
+[[ $fail -eq 0 ]]
