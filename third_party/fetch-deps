@@ -1183,8 +1183,17 @@ cmd_build() {
   if [[ -x "$ROOT/get-artifacts" ]]; then
     if grep -q '\[\[artifact\]\]' "$lock" 2>/dev/null; then
       echo "    get-artifacts --$ga_mode  [sandbox=artifact]"
-      local ga_out
-      ga_out=$(bwrap_artifact "$name" "$ROOT/get-artifacts" --no-bwrap "--$ga_mode" "$name") \
+      local ga_out ga_flag=() caps
+      if [[ "$ga_mode" == record ]]; then
+        # get-artifacts is per tree (not shared); an old copy has no --record.
+        if ! caps=$("$ROOT/get-artifacts" --capabilities) || [[ "$caps" != record ]]; then
+          echo "    FAIL: $ROOT/get-artifacts has no --record (older copy); update it from orchestration-example third_party/get-artifacts" >&2
+          return 1
+        fi
+        ga_flag=(--record)
+      fi
+      # verify is get-artifacts' default, so no flag is passed (older copies accept that too)
+      ga_out=$(bwrap_artifact "$name" "$ROOT/get-artifacts" --no-bwrap "${ga_flag[@]}" "$name") \
         || { printf '%s\n' "$ga_out" | grep -v '^ARTIFACT-SHA256'; echo "    FAIL get-artifacts" >&2; return 1; }
       printf '%s\n' "$ga_out" | grep -v '^ARTIFACT-SHA256' || [[ $? -eq 1 ]]
       if [[ "$ga_mode" == record ]]; then

@@ -71,5 +71,12 @@ mkrepo false 'printf "built %s\n" "$(cat src/content)" >src/out.bin'
 fd ro toy; fd upgrade toy --ref "$V2"; rc=$?
 [[ $rc -eq 0 ]] && ! grep -q 'second build' "$T/out" && pin | grep -q "sha256 = \"$H2\"" && ok "reproducible = false: single build, recorded" || bad "non-repro pin rc=$rc $(tail -6 "$T/out")"
 
+# an older per-tree get-artifacts (no --record): verify builds work, recording fails loudly
+mkrepo false 'printf "built %s\n" "$(cat src/content)" >src/out.bin'
+git -C "$canon" show 4263476~1:third_party/get-artifacts >"$R/third_party/get-artifacts"
+fd ro toy; fd build toy; rc=$?; [[ $rc -eq 0 ]] && ok "old get-artifacts: verify build still works" || bad "old ga build rc=$rc $(tail -5 "$T/out")"
+fd upgrade toy --ref "$V2"; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'has no --record (older copy)' "$T/out" && pin | grep -q "git_sha = \"$V1\"" && ok "old get-artifacts: upgrade fails loudly, pin unchanged" || bad "old ga upgrade rc=$rc $(tail -5 "$T/out")"
+
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]

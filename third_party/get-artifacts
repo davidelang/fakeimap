@@ -11,6 +11,7 @@
 #                       a row whose sha256 differs is copied anyway and reported on stdout as
 #                       ARTIFACT-SHA256<TAB>row-index<TAB>old<TAB>new; fetch-deps writes the new
 #                       hashes into libpin.toml (this script never edits the pin).
+#   --capabilities      print 'record' (an older get-artifacts treats it as a NAME and fails)
 #
 # Called by fetch-deps build; also usable alone when iterating builds.
 #
@@ -53,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --no-landlock) NO_LANDLOCK=1; shift ;;
     --verify) MODE=verify; shift ;;
     --record) MODE=record; shift ;;
+    --capabilities) echo record; exit 0 ;;   # fetch-deps checks this before --record
     -*) echo "get-artifacts: unknown option $1" >&2; exit 2 ;;
     *) NAMES+=("$1"); shift ;;
   esac
