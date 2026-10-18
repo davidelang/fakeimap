@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Tests for ve-resolve-orch: no worktree guessing, and helpers that fail loudly.
+# Throwaway repo in /tmp; a chmod stand-in on PATH simulates a file this user cannot chmod.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/vero-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+grep -n -F '2>/dev/null || true' "$canon/ve-resolve-orch" >"$T/sw" && bad "swallowing: $(cat "$T/sw")" || ok "no '2>/dev/null || true' in ve-resolve-orch"
+
+R="$T/wt"; mkdir -p "$R"; cp "$canon/ve-resolve-orch" "$R/"
+printf 'orch_root=%s\n' "$T" >"$R/project.config"
+printf '#!/bin/sh\n' >"$R/todo-append"; chmod 644 "$R/todo-append"
+printf '#!/bin/sh\n' >"$R/tool"; chmod 755 "$R/tool"
+git -C "$R" init -q && git -C "$R" add -A && git -C "$R" -c user.name=t -c user.email=t@t commit -qm init
+chmod 744 "$R/tool"
+
+(cd "$R" && env -u VE_RESOLVE_ORCH_WT bash ./ve-resolve-orch) >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'no worktree given' "$T/o" && ok "exec without a worktree is an error (no script-dir guess)" || bad "no-arg exec: rc=$rc $(cat "$T/o")"
+out=$(cd "$R" && bash ./ve-resolve-orch "$R") && [[ "$out" == "$T" ]] && ok "exec with a worktree prints orch_root" || bad "exec with arg: $out"
+(cd "$R" && env -u VE_RESOLVE_ORCH_WT bash -c '. ./ve-resolve-orch; ve_resolve_orch') >"$T/o" 2>&1 && bad "sourced call without a worktree succeeded" || ok "sourced ve_resolve_orch without a worktree is an error"
+(cd / && VE_RESOLVE_ORCH_WT="$R" bash -c ". '$R/ve-resolve-orch'; ve_resolve_orch && echo \$ORCH_ROOT") >"$T/o" 2>&1 && grep -qx "$T" "$T/o" && ok "VE_RESOLVE_ORCH_WT names the tree" || bad "env: $(cat "$T/o")"
+
+bash -c ". '$R/ve-resolve-orch'; ve_ensure_tracked_exec_other_x '$R'" >"$T/o" 2>&1; rc=$?
+[[ $rc -eq 0 && "$(stat -c %a "$R/todo-append")" == 755 && "$(stat -c %a "$R/tool")" == 755 ]] && ok "tracked 100755 and named helpers get a+x" || bad "exec-x: rc=$rc $(stat -c %a "$R/todo-append") $(stat -c %a "$R/tool") $(cat "$T/o")"
+mkdir -p "$T/shim"; printf '#!/bin/sh\necho "chmod: forced failure" >&2; exit 1\n' >"$T/shim/chmod"; chmod 755 "$T/shim/chmod"
+PATH="$T/shim:$PATH" bash -c ". '$R/ve-resolve-orch'; ve_ensure_tracked_exec_other_x '$R'" >"$T/o" 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ok "nothing to change = no chmod call (stand-in chmod would fail)" || bad "unneeded chmod: rc=$rc $(cat "$T/o")"
+chmod 744 "$R/tool"
+PATH="$T/shim:$PATH" bash -c ". '$R/ve-resolve-orch'; ve_ensure_tracked_exec_other_x '$R'" >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q "ERROR: cannot chmod a+x $R/tool (owner" "$T/o" && ok "a needed chmod that fails is an error naming the owner" || bad "chmod failure: rc=$rc $(cat "$T/o")"
+bash -c ". '$R/ve-resolve-orch'; ve_ensure_tracked_exec_other_x '$T/nope'" >"$T/o" 2>&1 && bad "missing dir accepted" || ok "missing worktree dir is an error"
+mkdir -p "$T/plain"; bash -c ". '$R/ve-resolve-orch'; ve_ensure_tracked_exec_other_x '$T/plain'" >"$T/o" 2>&1 && bad "non-git dir accepted" || ok "non-git dir is an error"
+
+echo "passed $pass failed $fail"
+[[ $fail -eq 0 ]]

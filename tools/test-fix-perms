@@ -24,7 +24,7 @@ S="$T/shims"; mkdir -p "$S"
 for c in usermod gpasswd chattr; do printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$T" >"$S/$c"; chmod +x "$S/$c"; done
 mk() {  # mk SHARED_GROUP : fresh repo in $R
   R="$T/repo"; rm -rf "$R"; mkdir -p "$R/sandbox"
-  cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/append-to-engineering-log" "$R/"
+  cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/perm-lib.sh" "$canon/perm-model.tsv" "$canon/append-to-engineering-log" "$R/"
   printf '## 2026-01-01 init\n' >"$R/ENGINEERING_LOG.md"
   cat >"$R/project.config" <<C
 primary_user=root
@@ -50,8 +50,9 @@ before="$(git -C "$R" rev-parse HEAD:append-to-engineering-log)"
 asroot ./fix-perms "$R" >"$T/r1" 2>&1; rc=$?
 [[ $rc -eq 0 ]] && ok "worktree run (rc 0)" || bad "worktree run rc=$rc: $(cat "$T/r1")"
 [[ "$(git -C "$R" hash-object append-to-engineering-log)" == "$before" ]] && ok "wrapper content untouched" || bad "wrapper rewritten"
-[[ -z "$(git -C "$R" status --porcelain)" ]] && ok "no tracked file changed" || bad "tracked changes: $(git -C "$R" status --porcelain)"
+[[ -z "$(git -C "$R" status --porcelain -uno)" ]] && ok "no tracked file changed" || bad "tracked changes: $(git -C "$R" status --porcelain)"
 grep -q "chattr +a $R/ENGINEERING_LOG.md" "$T/calls" && ok "log set append-only again" || bad "no chattr +a: $(cat "$T/calls")"
+[[ "$(grep -c "chattr +a $R/ENGINEERING_LOG.md" "$T/calls")" == 1 ]] && ok "log sealed exactly once (no second +a from the EXIT trap)" || bad "chattr +a count: $(cat "$T/calls")"
 [[ "$(stat -c %a "$R/append-to-engineering-log")" == 2755 ]] && ok "wrapper mode 2755" || bad "wrapper mode $(stat -c %a "$R/append-to-engineering-log")"
 
 asroot ./fix-perms >"$T/r1b" 2>&1; rc=$?
@@ -91,6 +92,31 @@ printf '#!/bin/sh\ncase "$*" in *FAILME*) echo "chmod: forced failure on FAILME"
 asroot ./fix-perms "$R" >"$T/r7" 2>&1; rc=$?
 rm -f "$S/chmod"
 [[ $rc -ne 0 ]] && grep -q 'forced failure on FAILME' "$T/r7" && ok "failing chmod gives nonzero exit and its message (rc $rc)" || bad "failing chmod: rc=$rc $(cat "$T/r7")"
+tail -1 "$T/calls" | grep -qx "chattr +a $R/ENGINEERING_LOG.md" && grep -q "chattr -a $R/ENGINEERING_LOG.md" "$T/calls" && ok "a failure mid-pass still restores chattr +a on the lifted log (EXIT trap)" || bad "no +a after failure: $(cat "$T/calls")"
+
+# Tree boundaries: a pass never enters another worktree, the sandbox or the shared homes.
+mk root
+git -C "$R" worktree add -q "$R/wt2" -b wt2
+mkdir -p "$R/sandbox/notes" "$R/.gradle-shared/c"
+for f in "$R/rootfile" "$R/wt2/wtfile" "$R/sandbox/notes/sbfile" "$R/.gradle-shared/c/g"; do : >"$f"; chmod 600 "$f"; done
+chmod 700 "$R/sandbox/notes"
+: >"$T/calls"
+asroot ./fix-perms "$R" >"$T/r8" 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ok "root-as-worktree run rc 0" || bad "root-as-worktree run rc=$rc: $(cat "$T/r8")"
+[[ "$(stat -c %a "$R/rootfile")" == 664 ]] && ok "root's own file gets the worktree mode" || bad "rootfile $(stat -c %a "$R/rootfile")"
+[[ "$(stat -c %a "$R/wt2/wtfile")" == 600 ]] && ok "linked worktree not entered by the root's pass" || bad "wt2 file changed: $(stat -c %a "$R/wt2/wtfile")"
+[[ "$(stat -c %a "$R/sandbox/notes/sbfile")" == 600 && "$(stat -c %a "$R/sandbox/notes")" == 700 ]] && ok "sandbox not entered by the root's pass" || bad "sandbox changed: $(stat -c %a "$R/sandbox/notes/sbfile") $(stat -c %a "$R/sandbox/notes")"
+[[ "$(stat -c %a "$R/.gradle-shared/c/g")" == 600 ]] && ok "shared homes not entered by the root's pass" || bad "gradle-shared changed"
+grep -q "chattr -a $R/wt2/ENGINEERING_LOG.md" "$T/calls" && bad "another worktree's log was lifted" || ok "only this worktree's log is lifted"
+asroot ./fix-perms >"$T/r9" 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ok "orchestration-root run with a linked worktree rc 0" || bad "root run rc=$rc: $(cat "$T/r9")"
+[[ "$(stat -c %a "$R/wt2/wtfile")" == 664 ]] && ok "linked worktree fixed by its own pass" || bad "wt2 file $(stat -c %a "$R/wt2/wtfile")"
+[[ "$(stat -c %a "$R/sandbox/notes/sbfile")" == 660 && "$(stat -c %a "$R/sandbox/notes")" == 2775 ]] && ok "sandbox fixed by the sandbox pass (g+rwX, setgid dirs)" || bad "sandbox $(stat -c %a "$R/sandbox/notes/sbfile") $(stat -c %a "$R/sandbox/notes")"
+[[ "$(stat -c %a "$R/.gradle-shared/c/g")" == 660 ]] && ok "shared homes fixed by their own pass" || bad "gradle-shared $(stat -c %a "$R/.gradle-shared/c/g")"
+for l in "$R/ENGINEERING_LOG.md" "$R/wt2/ENGINEERING_LOG.md"; do
+  [[ "$(grep -c "chattr -a $l" "$T/calls")" == "$(grep -c "chattr +a $l" "$T/calls")" ]] || bad "unbalanced chattr for $l: $(cat "$T/calls")"
+done; ok "every lifted log sealed again"
+grep -n -e 'CURRENT_DIR/ve-resolve-orch' -e 've_resolve_orch "\$CURRENT_DIR"' "$canon/fix-perms" >/dev/null && bad "fix-perms still falls back to CURRENT_DIR for ve-resolve-orch" || ok "ve-resolve-orch only from fix-perms' own directory"
 
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]

@@ -19,8 +19,15 @@
 # nothing is swallowed, so the first failure stops the run with its message. Steps that may
 # not apply are guarded by an explicit check (file exists, ACL present, group membership).
 # Must run as root (sudo).
+#
+# Owners, groups and modes come from perm-model.tsv (perm-lib.sh). Every pass covers exactly
+# one area and never enters another one: a worktree pass prunes every other path from
+# 'git worktree list', sandbox_dir, the shared build homes and .git, so a run from the project
+# root no longer re-groups the sandbox or the linked worktrees through the root's tree. Each
+# ENGINEERING_LOG.md loses chattr +a only for its own worktree's pass; an EXIT trap sets +a
+# again on every log still lifted, whatever failed.
 
-set -euo pipefail
+set -eEuo pipefail
 
 if [ "$EUID" -ne 0 ]; then
   echo "ERROR: fix-perms must run as root: sudo $0 $*" >&2
@@ -36,24 +43,17 @@ TARGET_SPECIFIC=""
 SUDO_USER=${SUDO_USER:-}
 SUDO_USER_VAL=${SUDO_USER:-}
 
-# Orchestration root is project.config orch_root (via ve-resolve-orch).
-# Do NOT treat "update-rules.sh exists" as orch — every full worktree has that file.
-if [ -f "$SCRIPT_DIR/ve-resolve-orch" ]; then
-  # shellcheck source=/dev/null
-  . "$SCRIPT_DIR/ve-resolve-orch"
-elif [ -f "$CURRENT_DIR/ve-resolve-orch" ]; then
-  # shellcheck source=/dev/null
-  . "$CURRENT_DIR/ve-resolve-orch"
-else
-  echo "ERROR: ve-resolve-orch missing; cannot locate orch_root." >&2
-  echo "  Run ./update-rules.sh from the orchestration root." >&2
-  exit 1
-fi
-if ! ve_resolve_orch "$SCRIPT_DIR"; then
-  if ! ve_resolve_orch "$CURRENT_DIR"; then
+# Orchestration root is project.config orch_root (via ve-resolve-orch next to this script;
+# no other location is tried). Do NOT treat "update-rules.sh exists" as orch.
+for _f in ve-resolve-orch perm-lib.sh perm-model.tsv; do
+  if [ ! -f "$SCRIPT_DIR/$_f" ]; then
+    echo "ERROR: $SCRIPT_DIR/$_f missing (it ships with fix-perms; run ./update-rules.sh from the orchestration root)." >&2
     exit 1
   fi
-fi
+done
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/ve-resolve-orch"
+ve_resolve_orch "$SCRIPT_DIR" || exit 1
 AT_ORCHESTRATION=false
 if [ "$(cd "$SCRIPT_DIR" && pwd)" = "$ORCH_ROOT" ]; then
   AT_ORCHESTRATION=true
@@ -149,6 +149,56 @@ _sandbox_under() {
   esac
 }
 
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/perm-lib.sh"
+perm_init "$_CFG"
+
+# Logs whose chattr +a is lifted right now; restored on any exit.
+LIFTED=()
+restore_lifted_logs() {
+  local f rc=0
+  for f in "${LIFTED[@]}"; do
+    if ! chattr +a "$f"; then
+      echo "ERROR: could not set chattr +a again on $f; run: sudo chattr +a '$f'" >&2
+      rc=1
+    fi
+  done
+  LIFTED=()
+  return $rc
+}
+trap 'restore_lifted_logs' EXIT
+lift_log() {
+  chattr -a "$1"
+  LIFTED+=("$1")
+}
+seal_log() {
+  local f="$1" keep=() g
+  chattr +a "$f"
+  for g in "${LIFTED[@]}"; do [ "$g" = "$f" ] || keep+=("$g"); done
+  LIFTED=("${keep[@]}")
+}
+
+# Absolute paths a pass over worktree $1 must never enter: every other worktree of its
+# repository, the sandbox, and the shared build homes. One --prune per path.
+boundary_prunes() {
+  local wt="$1" p
+  wt="$(cd "$wt" && pwd)"
+  local paths=()
+  while IFS= read -r p; do
+    paths+=("$p")
+  done < <(git -C "$wt" worktree list --porcelain | sed -n 's/^worktree //p')
+  case "$SANDBOX" in
+    /*) paths+=("$SANDBOX") ;;
+    *) paths+=("$ORCH_ROOT/$SANDBOX" "$wt/$SANDBOX") ;;
+  esac
+  paths+=("$ORCH_ROOT/.gradle-shared" "$ORCH_ROOT/.android-shared")
+  PRUNES=()
+  for p in "${paths[@]}"; do
+    [ "$p" = "$wt" ] && continue
+    PRUNES+=(--prune "$p")
+  done
+}
+
 if $VERBOSE; then
   echo "  config: $_CFG"
   echo "  sandbox=$SANDBOX  sandbox_group=$SANDBOX_GROUP  primary_user=$PRIMARY_USER"
@@ -192,9 +242,7 @@ ensure_shared_build_homes() {
   fi
   GRADLE_SHARED="$target_root/.gradle-shared"
   mkdir -p "$GRADLE_SHARED"
-  chown -R "$PRIMARY_USER:$SHARED_GROUP" "$GRADLE_SHARED"
-  find "$GRADLE_SHARED" -type d -exec chmod 2770 {} +
-  chmod -R ug+rwX,o-rwx "$GRADLE_SHARED"
+  perm_apply shared-build-homes "$GRADLE_SHARED"
 
   ANDROID_SHARED="$target_root/.android-shared"
   mkdir -p "$ANDROID_SHARED/cache"
@@ -205,9 +253,7 @@ ensure_shared_build_homes() {
       cp "$ks.lock" "$ANDROID_SHARED/"
     fi
   fi
-  chown -R "$PRIMARY_USER:$SHARED_GROUP" "$ANDROID_SHARED"
-  find "$ANDROID_SHARED" -type d -exec chmod 2770 {} +
-  chmod -R ug+rwX,o-rwx "$ANDROID_SHARED"
+  perm_apply shared-build-homes "$ANDROID_SHARED"
 }
 
 ensure_groups() {
@@ -249,8 +295,7 @@ ensure_git_hooks_executable() {
     [ -d "$hooks_dir" ] || continue
     if $VERBOSE; then echo "  Ensuring git hooks executable under $hooks_dir"; fi
     # Active hooks only (not the stock *.sample templates)
-    find "$hooks_dir" -maxdepth 1 -type f ! -name '*.sample' -exec chmod 775 {} +
-    find "$hooks_dir" -mindepth 1 -maxdepth 1 -exec chown ":$SHARED_GROUP" {} +
+    perm_apply git-hooks "$hooks_dir" --maxdepth 1 --skip-glob '*.sample'
   done
 }
 
@@ -271,12 +316,9 @@ repair_common_gitdir() {
   local gdir="$1" hd
   [ -d "$gdir" ] || { echo "ERROR: common git dir $gdir is not a directory" >&2; exit 1; }
   if $VERBOSE; then echo "  Repairing common git dir under $SHARED_GROUP: $gdir"; fi
-  # Ensure top dir is searchable before recursive ops (legacy bug: chmod 660 stripped +x).
-  chown ":$SHARED_GROUP" "$gdir"
-  chmod 2770 "$gdir"
-  chown -R ":$SHARED_GROUP" "$gdir"
-  find "$gdir" -type d -exec chmod 2770 {} +
-  find "$gdir" -type f -exec chmod 660 {} +
+  # perm_apply fixes a directory before descending into it, so the top dir's search bit
+  # (legacy bug: chmod 660 stripped +x) comes back first.
+  perm_apply common-git "$gdir"
   if [ -d "$gdir/worktrees" ]; then
     while read -r hd; do
       ensure_git_hooks_executable "$hd"
@@ -284,17 +326,8 @@ repair_common_gitdir() {
   fi
   ensure_git_hooks_executable "$gdir/hooks"
   if [ -f "$gdir/config" ]; then
-    chown "$PRIMARY_USER:$SHARED_GROUP" "$gdir/config"
-    chmod 660 "$gdir/config"
+    perm_apply git-config "$gdir/config" --top-only
   fi
-}
-
-# chown worktree tree to CODE_GROUP without ever assigning CODE_GROUP to common .git.
-chown_worktree_code_group() {
-  local wt="$1"
-  local spec="$2" # "user:group" or ":group"
-  # Top-level entries except .git (directory = common store; file = gitdir pointer)
-  find "$wt" -mindepth 1 -maxdepth 1 ! -name '.git' -exec chown -R "$spec" {} +
 }
 
 # Worktree scripts humans/agents run by path (./deploy, ./build_app, …).
@@ -317,18 +350,23 @@ ensure_worktree_scripts_executable() {
   )
   for f in "${scripts[@]}"; do
     if [ -f "$wt/$f" ]; then
-      chown "$PRIMARY_USER:$CODE_GROUP" "$wt/$f"
-      chmod 2775 "$wt/$f"
+      perm_apply worktree-scripts "$wt/$f" --top-only
     fi
   done
-  # Shell helpers under git-merge-drivers/
+  # Shell helpers under git-merge-drivers/ (the directory itself keeps the worktree mode)
   if [ -d "$wt/git-merge-drivers" ]; then
-    find "$wt/git-merge-drivers" -type f -exec chown "$PRIMARY_USER:$CODE_GROUP" {} +
-    find "$wt/git-merge-drivers" -type f -exec chmod 775 {} +
+    for f in "$wt"/git-merge-drivers/*; do
+      if [ -f "$f" ]; then
+        perm_apply merge-drivers "$f" --top-only
+      fi
+    done
   fi
   # Named *.sh at worktree root
-  find "$wt" -maxdepth 1 -type f -name '*.sh' -exec chown "$PRIMARY_USER:$CODE_GROUP" {} +
-  find "$wt" -maxdepth 1 -type f -name '*.sh' -exec chmod 2775 {} +
+  for f in "$wt"/*.sh; do
+    if [ -f "$f" ]; then
+      perm_apply worktree-scripts "$f" --top-only
+    fi
+  done
   # Tracked 100755 (agent-landlock is Python, not *.sh). Planner is not in ai-code.
   ve_ensure_tracked_exec_other_x "$wt"
 }
@@ -345,68 +383,52 @@ require_log_files() {
 }
 
 fix_worktree() {
-  local wt="$1"
+  local wt="$1" f common
   [ -d "$wt" ] || { echo "ERROR: worktree $wt is not a directory" >&2; exit 1; }
+  wt="$(cd "$wt" && pwd)"
   require_log_files "$wt"
   if $VERBOSE; then echo "  Applying to worktree: $wt"; fi
+  boundary_prunes "$wt"
+  if $VERBOSE && [ "${#PRUNES[@]}" -gt 0 ]; then echo "    never entered: ${PRUNES[*]}"; fi
 
-  # The log is append-only (chattr +a), which also refuses chown/chmod: lift it for this run;
-  # fix_log_wrapper sets it again at the end.
-  chattr -a "$wt/ENGINEERING_LOG.md"
+  # The log is append-only (chattr +a), which also refuses chown/chmod: lift it for this
+  # worktree's pass only; fix_log_wrapper seals it again, the EXIT trap if anything fails.
+  lift_log "$wt/ENGINEERING_LOG.md"
 
-  # chown worktree to code group — NEVER assign CODE_GROUP to common .git store
-  # (chown -R on main worktree used to poison objects/refs/HEAD → planner lockout).
+  # Worktree files (owner = the sudo invoker, as before), never .git (the common store or the
+  # gitdir pointer) and never another area.
+  local owner_opt=()
   if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-    chown_worktree_code_group "$wt" "$SUDO_USER:$CODE_GROUP"
-  else
-    chown_worktree_code_group "$wt" ":$CODE_GROUP"
+    owner_opt=(--owner "$SUDO_USER")
   fi
-
-  # Re-apply sandbox if present
-  _wt_sb="$(_sandbox_under "$wt")"
-  if [ -d "$_wt_sb" ]; then
-    chown -R ":$SANDBOX_GROUP" "$_wt_sb"
-    find "$_wt_sb" -type d -exec chmod u+rwx,g+rwxs,o+rx {} +
-  fi
+  perm_apply worktree "$wt" "${owner_opt[@]}" --prune-name .git "${PRUNES[@]}"
 
   git_config_as_primary "$wt" config core.sharedRepository group
 
-  # Broad Unix perms on worktree only — prune .git so we never chmod common store here
-  find "$wt" -name .git -prune -o -type f -exec chmod u+rw,g+rw,o+r {} +
-  find "$wt" -name .git -prune -o -type d -exec chmod u+rwx,g+rwxs,o+rx {} +
-
   # Planner writes via ai-shared group rw (664), not other-write. 666 is a bug.
-  local f
   for f in TODO.md project-facts.md; do
     if [ -f "$wt/$f" ]; then
-      chown ":$SHARED_GROUP" "$wt/$f"
-      chmod 664 "$wt/$f"
+      perm_apply planner-files "$wt/$f" --top-only
     fi
   done
 
   # .git handling (linked worktree file vs main common dir).
-  # NEVER chmod 660 a .git *directory* (strips search bit → recursive heal cannot descend).
   WT_GITDIR=""
   if [ -f "$wt/.git" ]; then
-    # Pointer file only
-    chown ":$SHARED_GROUP" "$wt/.git"
-    chmod 660 "$wt/.git"
+    perm_apply git-pointer "$wt/.git" --top-only
     WT_GITDIR=$(sed -n 's/^gitdir: //p' "$wt/.git" | head -1)
     if [ -z "$WT_GITDIR" ] || [ ! -d "$WT_GITDIR" ]; then
       echo "ERROR: $wt/.git names no existing gitdir ($WT_GITDIR)" >&2
       exit 1
     fi
     # Per-worktree admin under common .git/worktrees/<name> only (not objects/refs)
-    chown -R ":$SHARED_GROUP" "$WT_GITDIR"
-    find "$WT_GITDIR" -type d -exec chmod 2770 {} +
-    find "$WT_GITDIR" -type f -exec chmod 660 {} +
+    perm_apply worktree-admin "$WT_GITDIR"
     ensure_git_hooks_executable "$WT_GITDIR/hooks"
   elif [ -d "$wt/.git" ]; then
     # Main worktree: repair common store with SHARED_GROUP only
     repair_common_gitdir "$wt/.git"
   fi
   # Hook +x on common store (shared by all worktrees)
-  local common
   common=$(resolve_common_gitdir "$wt")
   ensure_git_hooks_executable "$common/hooks"
 
@@ -416,8 +438,7 @@ fix_worktree() {
     (cd "$wt" && gcc -O2 -Wall -o run-as-primary run-as-primary.c)
   fi
   if [ -f "$wt/run-as-primary" ]; then
-    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/run-as-primary"
-    chmod 4755 "$wt/run-as-primary"
+    perm_apply setuid-run-as-primary "$wt/run-as-primary" --top-only
   fi
 
   # ve-refresh-shell: setuid root per worktree (binary not in git; .c is tracked).
@@ -430,40 +451,38 @@ fix_worktree() {
       (cd "$wt" && gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c)
     fi
     if [ -f "$wt/ve-refresh-shell" ]; then
-      chown root:root "$wt/ve-refresh-shell"
-      chmod 4755 "$wt/ve-refresh-shell"
+      perm_apply setuid-refresh-shell "$wt/ve-refresh-shell" --top-only
     fi
   fi
 
   # Critical agent/human scripts: must be executable by primary + ai-code after any
-  # update-rules cp (often creates 664 owned by whoever ran sync) and after the
-  # broad "chmod u+rw,g+rw,o+r" pass (does not strip x, but never *adds* it).
+  # update-rules cp (often creates 664 owned by whoever ran sync).
   ensure_worktree_scripts_executable "$wt"
 
   # gradlew executable only by ai-code group (prevents planner)
   if [ -f "$wt/gradlew" ]; then
-    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/gradlew"
-    chmod 2750 "$wt/gradlew"
+    perm_apply gradlew "$wt/gradlew" --top-only
   fi
 
   # Build config must stay group-readable (Gradle wrapper opens as deploying user)
   if [ -f "$wt/gradle.properties" ]; then
-    chown "$PRIMARY_USER:$CODE_GROUP" "$wt/gradle.properties"
-    chmod 664 "$wt/gradle.properties"
+    perm_apply gradle-properties "$wt/gradle.properties" --top-only
   fi
 
-  # .gradle etc (basic)
+  # Worktree build homes (the dirs themselves; their contents had the worktree pass)
+  for f in .gradle-home .android-shared; do
+    if [ -d "$wt/$f" ]; then
+      perm_apply worktree-build-homes "$wt/$f" --top-only
+    fi
+  done
+
+  # .gradle and app/build: group ai-code, group rw, setgid dirs (same as build_app's repair)
   if [ -d "$wt/.gradle" ]; then
-    find "$wt/.gradle" -type d -exec chmod 2770 {} +
-    find "$wt/.gradle" -type f -exec chmod u+rw,g+rw,o-rwx {} +
+    perm_apply build-intermediates "$wt/.gradle"
   fi
-
-  # app/build (gradle, cxx/CMake logs, etc.) - aggressively fix to prevent permission thrashing
   if [ -d "$wt/app/build" ]; then
-    if $VERBOSE; then echo "    Fixing app/build for $PRIMARY_USER:$CODE_GROUP"; fi
-    chown -R "$PRIMARY_USER:$CODE_GROUP" "$wt/app/build"
-    find "$wt/app/build" -type d -exec chmod 2770 {} +
-    find "$wt/app/build" -type f -exec chmod 660 {} +
+    if $VERBOSE; then echo "    Fixing app/build"; fi
+    perm_apply build-intermediates "$wt/app/build"
     # Also clean bad cxx state if present
     rm -rf "$wt/app/build/intermediates/cxx"
   fi
@@ -477,9 +496,7 @@ fix_sandbox() {
     exit 1
   fi
   if $VERBOSE; then echo "  Applying to sandbox: $sb (group=$SANDBOX_GROUP)"; fi
-  chown -R ":$SANDBOX_GROUP" "$sb"
-  chmod -R g+rwX "$sb"
-  find "$sb" -type d -exec chmod u+rwx,g+rwxs,o+rx {} +
+  perm_apply sandbox "$sb"
   # NOTE: Do NOT chown to ai-shared here. The sandbox group is ai-sandbox.
   # ai-shared is for AI engine configs (.gemini/, .grok/), not for sandbox files.
 }
@@ -490,19 +507,20 @@ fix_log_wrapper() {
   require_log_files "$wt"
 
   WRAPPER="$wt/append-to-engineering-log"
-  chown root:"$SHARED_GROUP" "$WRAPPER"
   strip_acl "$WRAPPER"
-  chmod 2755 "$WRAPPER"
+  perm_apply englog-wrapper "$WRAPPER" --top-only
   if $VERBOSE; then
     echo "    wrapper: root:$SHARED_GROUP 2755 (content from git, not touched)"
   fi
 
   LOG="$wt/ENGINEERING_LOG.md"
-  chattr -a "$LOG"
-  chown root:"$SHARED_GROUP" "$LOG"
-  chmod 660 "$LOG"
+  case " ${LIFTED[*]} " in
+    *" $LOG "*) ;;
+    *) lift_log "$LOG" ;;
+  esac
   strip_acl "$LOG"
-  chattr +a "$LOG"
+  perm_apply englog "$LOG" --top-only
+  seal_log "$LOG"
   if $VERBOSE; then
     echo "    log: root:$SHARED_GROUP 660 + chattr +a (pure Unix, no ACLs)"
   fi

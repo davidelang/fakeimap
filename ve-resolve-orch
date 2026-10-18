@@ -2,11 +2,11 @@
 # ve-resolve-orch — resolve the absolute orchestration root.
 #
 # Source from a worktree helper (does not set -e; returns 1 on failure):
-#   . "$(dirname "$0")/ve-resolve-orch"   # uses this script's directory as worktree
-#   ve_resolve_orch [worktree]            # sets ORCH_ROOT
+#   . "$(dirname "$0")/ve-resolve-orch"
+#   ve_resolve_orch WORKTREE              # sets ORCH_ROOT (WORKTREE or $VE_RESOLVE_ORCH_WT is required)
 #
 # Exec:
-#   ./ve-resolve-orch [worktree-dir]      # prints absolute path; exit 1 if missing
+#   ./ve-resolve-orch WORKTREE-DIR        # prints absolute path; exit 1 if missing
 #
 # Order: $ORCH_ROOT if it is a directory; else orch_root= from that tree's
 # project.config (absolute, existing directory, not @@TOKEN@@). Never walk to
@@ -21,7 +21,9 @@ ve_resolve_orch_worktree() {
     (cd "$VE_RESOLVE_ORCH_WT" && pwd)
     return
   fi
-  (cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  # No guessing from this file's location or the current directory: the caller names the tree.
+  echo "ERROR: ve-resolve-orch: no worktree given (pass it as the argument or set VE_RESOLVE_ORCH_WT)" >&2
+  return 1
 }
 
 ve_read_orch_root_from_config() {
@@ -39,7 +41,7 @@ ve_read_orch_root_from_config() {
   (cd "$val" && pwd)
 }
 
-# Sets ORCH_ROOT. Optional arg: worktree directory (default: this script's dir).
+# Sets ORCH_ROOT. Arg: worktree directory (required unless VE_RESOLVE_ORCH_WT is set).
 ve_resolve_orch() {
   local wt
   wt="$(ve_resolve_orch_worktree "${1:-}")" || return 1
@@ -98,6 +100,18 @@ ve_seed_worktree_project_config() {
   }
 }
 
+# chmod MODE PATH only when PATH's mode differs (perm-model.tsv worktree-build-homes: 2770
+# dirs). A chmod that is needed and fails is an error naming the owner.
+ve_set_mode() {
+  local mode="$1" p="$2" cur
+  cur=$(stat -c %a "$p") || return 1
+  [ "$cur" = "$mode" ] && return 0
+  chmod "0$mode" "$p" || {
+    echo "ERROR: cannot chmod $mode $p (owner $(stat -c %U "$p"), mode $cur, running as $(id -un))" >&2
+    return 1
+  }
+}
+
 # After ve_resolve_orch: worktree Gradle/Android homes. Writes stay under $wt.
 # orch is read/seed only. Does not create daemon/ (launchers run as dlang).
 ve_setup_worktree_build_homes() {
@@ -112,13 +126,13 @@ ve_setup_worktree_build_homes() {
     echo "ERROR: cannot create $wt/.gradle-home" >&2
     return 1
   }
-  chmod 2770 "$wt/.gradle-home" 2>/dev/null || true
+  ve_set_mode 2770 "$wt/.gradle-home" || return 1
 
   mkdir -p -m 2770 "$wt/.android-shared" || {
     echo "ERROR: cannot create $wt/.android-shared" >&2
     return 1
   }
-  chmod 2770 "$wt/.android-shared" 2>/dev/null || true
+  ve_set_mode 2770 "$wt/.android-shared" || return 1
 
   dest="$wt/.android-shared/debug.keystore"
   src="$ORCH_ROOT/.android-shared/debug.keystore"
@@ -128,7 +142,7 @@ ve_setup_worktree_build_homes() {
         echo "ERROR: cannot copy debug.keystore from $src to $dest" >&2
         return 1
       }
-      chmod 660 "$dest" 2>/dev/null || true
+      ve_set_mode 660 "$dest" || return 1
     else
       echo "ERROR: no debug.keystore at $dest and none at $src" >&2
       echo "  Copy a canonical debug.keystore to $src" >&2
@@ -210,8 +224,8 @@ ve_wipe_foreign_app_build_outputs() {
   me=$(id -un)
   for d in app/build/intermediates app/build/generated app/build/kspCaches; do
     if [ -e "$d" ]; then
-      owner=$(stat -c %U "$d" 2>/dev/null || true)
-      if [ -n "$owner" ] && [ "$owner" != "$me" ]; then
+      owner=$(stat -c %U "$d") || return 1
+      if [ "$owner" != "$me" ]; then
         need=1
         break
       fi
@@ -228,7 +242,7 @@ ve_wipe_foreign_app_build_outputs() {
   for d in app/build/intermediates app/build/generated app/build/kspCaches; do
     if [ -e "$d" ]; then
       echo "ERROR: still present after wipe: $d" >&2
-      ls -ld "$d" >&2 || true
+      ls -ld "$d" >&2
       echo "  Remove as the owner. Do not chmod." >&2
       return 1
     fi
@@ -242,31 +256,47 @@ ve_wipe_foreign_app_build_outputs() {
 # Always chmod a+x (umask-proof). Never chmod +x under umask 007.
 # Taken from orchestration:ve-resolve-orch (union with ve_aapt2_from_sdk).
 # Callers on orch: update-rules.sh / setup_agent.sh — not build_app/deploy.
+# Only files missing an x bit are chmodded; one this user cannot chmod is an error that
+# names its owner (instead of a later "Permission denied" when someone runs it).
+ve_add_other_x() {
+  local f="$1" cur
+  cur=$(stat -c %a "$f") || return 1
+  [ $(( 0$cur & 0111 )) -eq $(( 0111 )) ] && return 0
+  chmod a+x "$f" || {
+    echo "ERROR: cannot chmod a+x $f (owner $(stat -c %U "$f"), mode $cur, running as $(id -un))" >&2
+    return 1
+  }
+}
+
 ve_ensure_tracked_exec_other_x() {
   local wt="${1:-}"
-  local p mode _hash _stage
-  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  local p mode _hash _stage files
+  if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+    echo "ERROR: ve_ensure_tracked_exec_other_x: not a directory: '$wt'" >&2
+    return 1
+  fi
   for p in agent-landlock todo-append todo-close ve-env \
            landlock-smoke-matrix landlock-write-probe; do
     if [ -f "$wt/$p" ]; then
-      chmod a+x "$wt/$p" 2>/dev/null || true
+      ve_add_other_x "$wt/$p" || return 1
     fi
   done
-  if ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    return 0
-  fi
+  files=$(git -C "$wt" ls-files -s) || {
+    echo "ERROR: ve_ensure_tracked_exec_other_x: $wt is not a git worktree" >&2
+    return 1
+  }
   while read -r mode _hash _stage p; do
     [ "$mode" = "100755" ] || continue
     [ -n "$p" ] || continue
     if [ -f "$wt/$p" ]; then
-      chmod a+x "$wt/$p" 2>/dev/null || true
+      ve_add_other_x "$wt/$p" || return 1
     fi
-  done < <(git -C "$wt" ls-files -s)
+  done <<< "$files"
   return 0
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
-  ve_resolve_orch "${1:-}" || exit 1
+  ve_resolve_orch "${1:-}" || exit 1   # no argument and no VE_RESOLVE_ORCH_WT = error
   printf '%s\n' "$ORCH_ROOT"
 fi
