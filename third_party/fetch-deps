@@ -226,7 +226,7 @@ data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 key = sys.argv[2]
 v = data.get(key)
 if v is None:
-    sys.exit(1)
+    sys.exit(3)  # key absent (pin_get_opt tells this apart from an error)
 if isinstance(v, bool):
     print("true" if v else "false")
 elif isinstance(v, list):
@@ -239,6 +239,22 @@ PY
     # status.local still uses simple key: value
     sed -n "s/^${key}:[[:space:]]*//p" "$file" | head -1 | sed 's/^["'\'']//;s/["'\'']$//'
   fi
+}
+
+# Optional TOML key: prints the value, or nothing when the key is absent (exit 3 of
+# pin_get). An unreadable or unparsable pin is an error, never "absent".
+pin_get_opt() {
+  local file="$1" key="$2" out rc
+  [[ "$file" == *.toml ]] || { echo "fetch-deps: pin_get_opt needs a .toml pin, got $file" >&2; return 2; }
+  [[ -r "$file" ]] || { echo "fetch-deps: cannot read $file" >&2; return 2; }
+  if out="$(pin_get "$file" "$key")"; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  rc=$?
+  [[ "$rc" -eq 3 ]] && return 0
+  echo "fetch-deps: reading $key from $file failed (exit $rc)" >&2
+  return "$rc"
 }
 
 # Print build steps one per line (TOML build = ["...", ...]).
@@ -339,8 +355,21 @@ git_home: $GIT_HOME
 updated: $(date -Is)
 $extra
 EOF
-  chmod 664 "$sp" 2>/dev/null || true
-  chgrp ai-code "$sp" 2>/dev/null || true
+  set_mode_group "$sp"
+}
+
+# 664, group ai-code; changes only what differs and fails loudly (a file of another
+# user that is already right is left alone).
+set_mode_group() {
+  local f="$1" cur
+  cur="$(stat -c '%a %G %U' -- "$f")" || exit 1
+  if [[ "${cur%% *}" != 664 ]]; then
+    chmod 664 -- "$f" || { echo "fetch-deps: chmod 664 $f failed (now ${cur}; you are $(id -un))" >&2; exit 1; }
+  fi
+  cur="$(stat -c '%G' -- "$f")" || exit 1
+  if [[ "$cur" != ai-code ]]; then
+    chgrp ai-code -- "$f" || { echo "fetch-deps: chgrp ai-code $f failed (group $cur; you are $(id -un))" >&2; exit 1; }
+  fi
 }
 
 repo_has_commit() {
@@ -365,10 +394,21 @@ is_linked_worktree() {
 set_origin_https() {
   local src="$1" url="$2"
   [[ -n "$url" && -d "$src" ]] || return 0
-  if git -C "$src" remote get-url origin >/dev/null 2>&1; then
-    git -C "$src" remote set-url origin "$url" 2>/dev/null || true
+  set_origin "$src" "$url"
+}
+
+# Point origin of a standalone src clone at url. A linked worktree shares the
+# library host's config, so its origin is the host's business: left alone.
+set_origin() {
+  local src="$1" url="$2" cur
+  if is_linked_worktree "$src"; then
+    return 0
+  fi
+  if cur="$(git -C "$src" config --get remote.origin.url)"; then
+    [[ "$cur" == "$url" ]] && return 0
+    git -C "$src" remote set-url origin "$url" || { echo "fetch-deps: git remote set-url origin $url in $src failed" >&2; exit 1; }
   else
-    git -C "$src" remote add origin "$url" 2>/dev/null || true
+    git -C "$src" remote add origin "$url" || { echo "fetch-deps: git remote add origin $url in $src failed" >&2; exit 1; }
   fi
 }
 
@@ -377,8 +417,13 @@ remove_linked_worktree_src() {
   local name="$1" src="$2" host
   ensure_writable_tree "$src"
   if host="$(local_repo_for "$name" 2>/dev/null)"; then
-    # May fail under sandbox without LIBPIN_ALLOW_GIT_HOME — ignore; rm -rf still frees pin path.
-    git -C "$host" worktree remove --force "$src" 2>/dev/null || true
+    # Under the sandbox without LIBPIN_ALLOW_GIT_HOME the host's .git is read-only, so
+    # this can fail; rm -rf below still frees the pin path, and the message says what
+    # is left behind.
+    if ! git -C "$host" worktree remove --force "$src"; then
+      echo "fetch-deps: $host still lists worktree $src (git worktree remove failed above);" >&2
+      echo "  it is removed from disk next. Clear the entry later with: git -C $host worktree prune" >&2
+    fi
   fi
   rm -rf "$src"
 }
@@ -386,23 +431,25 @@ remove_linked_worktree_src() {
 ensure_writable_tree() {
   local src="$1"
   [[ -d "$src" ]] || return 0
-  chmod -R u+w "$src" 2>/dev/null || true
+  chmod -R u+w -- "$src" || { echo "fetch-deps: chmod -R u+w $src failed (you are $(id -un))" >&2; exit 1; }
 }
 
 make_readonly_tree() {
   local src="$1"
   [[ -d "$src" ]] || return 0
   # keep .git metadata writable for future fetch-deps
+  local rc=0
   if [[ -d "$src/.git" ]]; then
-    find "$src" -path "$src/.git" -prune -o -type f -exec chmod a-w {} + 2>/dev/null || true
-    find "$src" -path "$src/.git" -prune -o -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+    find "$src" -path "$src/.git" -prune -o -type f -exec chmod a-w {} + || rc=1
+    find "$src" -path "$src/.git" -prune -o -type d -exec chmod u+rwx,go+rx {} + || rc=1
   elif [[ -f "$src/.git" ]]; then
-    find "$src" -type f ! -name .git -exec chmod a-w {} + 2>/dev/null || true
+    find "$src" -type f ! -name .git -exec chmod a-w {} + || rc=1
   else
     # Non-git file pins: whole tree RO
-    find "$src" -type f -exec chmod a-w {} + 2>/dev/null || true
-    find "$src" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+    find "$src" -type f -exec chmod a-w {} + || rc=1
+    find "$src" -type d -exec chmod u+rwx,go+rx {} + || rc=1
   fi
+  [[ "$rc" -eq 0 ]] || { echo "fetch-deps: making $src read-only failed (messages above; you are $(id -un))" >&2; exit 1; }
 }
 
 # True if libpin.toml has one or more [[source]] tables.
@@ -423,16 +470,16 @@ PY
 # True if pin is git-backed (usable git_sha or git remotes, or seed-src).
 pin_is_git() {
   local file="$1" sha https ssh kind
-  kind="$(pin_get "$file" source_kind 2>/dev/null || true)"
+  kind="$(pin_get_opt "$file" source_kind)" || exit 1
   if [[ "$kind" == "files" || "$kind" == "file" || "$kind" == "http" ]]; then
     return 1
   fi
-  sha="$(pin_get "$file" git_sha 2>/dev/null || true)"
+  sha="$(pin_get_opt "$file" git_sha)" || exit 1
   if is_real_sha "$sha"; then
     return 0
   fi
-  https="$(pin_get "$file" git_https 2>/dev/null || true)"
-  ssh="$(pin_get "$file" git_ssh 2>/dev/null || true)"
+  https="$(pin_get_opt "$file" git_https)" || exit 1
+  ssh="$(pin_get_opt "$file" git_ssh)" || exit 1
   [[ -n "$https" && "$https" != "null" ]] && return 0
   [[ -n "$ssh" && "$ssh" != "null" && "$ssh" != "" ]] && return 0
   return 1
@@ -742,9 +789,14 @@ materialize_at_sha() {
       if [[ "$u" == https://* || "$u" == http://* ]]; then
         set_origin_https "$src" "$u"
       else
-        git -C "$src" remote set-url origin "$u" 2>/dev/null || true
+        set_origin "$src" "$u"
       fi
-      git -C "$src" fetch origin "$sha" 2>/dev/null || git -C "$src" fetch origin 2>/dev/null || true
+      # Fetch the pinned sha; a server that refuses fetch-by-sha gets a full fetch.
+      # Both are shown; if neither brings the commit, the next URL is tried.
+      if ! git -C "$src" fetch origin "$sha"; then
+        echo "    fetch of $sha by id failed (above); fetching all refs from $u"
+        git -C "$src" fetch origin || echo "    fetch from $u failed (above)" >&2
+      fi
       if repo_has_commit "$src" "$sha" && checkout_pin_clean "$src" "$sha"; then
         set_origin_https "$src" "$url_https"
         return 0
@@ -834,8 +886,7 @@ if n2 == 0:
     text2 = text2.replace(f'git_sha = "{sha}"', f'git_sha = "{sha}"\ngit_describe = "{desc}"', 1)
 path.write_text(text2)
 PY
-  chmod 664 "$pin" 2>/dev/null || true
-  chgrp ai-code "$pin" 2>/dev/null || true
+  set_mode_group "$pin"
 }
 write_lock_sha() { write_pin_sha "$@"; }
 
@@ -1056,7 +1107,7 @@ cmd_status() {
       if [[ ! -f "$src/$relpath" ]]; then dirty="Y"; break; fi
       got="$(file_sha256 "$src/$relpath")"
       [[ "$got" != "$sha" ]] && { dirty="Y"; break; }
-    done < <(pin_source_rows "$lock" 2>/dev/null || true)
+    done < <(pin_source_rows "$lock")
   fi
   echo "$name: mode=$mode kind=$kind head=$head pin=${locksha:0:12}… dirty=$dirty"
   if [[ "$VERBOSE" -ge 1 ]]; then
@@ -1085,7 +1136,7 @@ cmd_status() {
         else
           echo "  source MISSING $relpath"
         fi
-      done < <(pin_source_rows "$lock" 2>/dev/null || true)
+      done < <(pin_source_rows "$lock")
     fi
   fi
   if [[ "$VERBOSE" -ge 2 && "$kind" == "git" ]] && { [[ -d "$src/.git" ]] || [[ -f "$src/.git" ]]; }; then
@@ -1208,16 +1259,24 @@ cmd_build() {
   mode="$(yaml_get "$(status_path "$name")" mode 2>/dev/null || echo ro)"
   if [[ "$mode" == "ro" && "$need_rw" != "true" ]]; then
     make_readonly_tree "$src"
-    # allow common build scratch dirs to remain writable for iterate
-    chmod -R u+w "$src/build" "$src/bin" 2>/dev/null || true
-    # Android library pins (remotetable/extractmail): Gradle outputs under android/
-    chmod -R u+w "$src/android/.gradle" "$src/android"/*/build 2>/dev/null || true
-    # local.properties is machine-local (gitignored in lib trees)
-    if [[ -f "$src/android/local.properties" ]]; then
-      chmod u+w "$src/android/local.properties" 2>/dev/null || true
-    fi
+    # Build scratch stays writable for iterate: build/, bin/, and for Android library
+    # pins (remotetable/extractmail) android/.gradle, android/*/build and the
+    # machine-local android/local.properties. Only those that exist.
+    local scratch
+    for scratch in "$src/build" "$src/bin" "$src/android/.gradle" "$src/android"/*/build "$src/android/local.properties"; do
+      [[ -e "$scratch" ]] || continue
+      chmod -R u+w -- "$scratch" || { echo "    FAIL: chmod -R u+w $scratch" >&2; exit 1; }
+    done
   fi
   echo "    OK build $name"
+}
+
+# A fatal helper (exit 1) during an upgrade build must not leave the half-recorded pin.
+UPGRADE_LOCK="" UPGRADE_BACKUP=""
+restore_upgrade_pin() {
+  [[ -n "$UPGRADE_BACKUP" && -f "$UPGRADE_BACKUP" ]] || return 0
+  cp -p "$UPGRADE_BACKUP" "$UPGRADE_LOCK" && rm -f "$UPGRADE_BACKUP" \
+    && echo "    upgrade stopped: $UPGRADE_LOCK restored" >&2
 }
 
 cmd_upgrade() {
@@ -1255,12 +1314,14 @@ cmd_upgrade() {
   lock="$(lock_path "$name")"
   backup="$(mktemp "$lock.before-upgrade.XXXXXX")"
   cp -p "$lock" "$backup"
+  UPGRADE_LOCK="$lock" UPGRADE_BACKUP="$backup"
+  trap restore_upgrade_pin EXIT
   if ! cmd_build "$name" record; then
     cp -p "$backup" "$lock"; rm -f "$backup"
     echo "    FAIL upgrade $name: build failed at $sha; lock unchanged" >&2
     return 1
   fi
-  repro="$(pin_get "$lock" reproducible)" || repro=""
+  repro="$(pin_get_opt "$lock" reproducible)" || exit 1
   if [[ "$repro" == "true" ]]; then
     echo "    reproducible = true: second build must give the recorded bytes"
     if ! cmd_build "$name" verify; then
@@ -1270,6 +1331,8 @@ cmd_upgrade() {
     fi
   fi
   rm -f "$backup"
+  UPGRADE_BACKUP=""
+  trap - EXIT
   write_lock_sha "$(lock_path "$name")" "$sha" "$(git -C "$src" describe --tags --long --always HEAD 2>/dev/null || echo "$sha")"
   echo "    upgraded pin to $sha — review artifact/ and commit on VE"
   echo "    OK upgrade $name"

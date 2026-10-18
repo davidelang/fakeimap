@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""audit-swallow: find error-swallowing shell idioms and stop new ones.
+
+An occurrence is a command whose stderr goes to /dev/null AND whose failure is
+forced to success on the same line:
+    cmd 2>/dev/null || true      cmd &>/dev/null || :   (audit-swallow: ok -- example)
+    cmd >/dev/null 2>&1 || true                         (audit-swallow: ok -- example)
+A line carrying the marker  "audit-swallow: ok <reason>"  (e.g. a test that greps
+for the idiom) is listed as class "marked" and never counts.
+
+Usage:
+  tools/audit-swallow [--repo DIR] [PATH...]
+      Report every occurrence in tracked files (or the given paths) as TSV:
+      file  line  class  command  text
+  tools/audit-swallow --staged [--repo DIR]
+      Pre-commit check: for every staged file, count occurrences in the index
+      and in HEAD. Exit 1 if any file gains occurrences (a new swallow), naming
+      the file, the counts and the new lines. Files may only stay level or drop.
+  tools/audit-swallow --against REF [--repo DIR]
+      The same comparison, working tree vs REF, for every file changed since REF.
+
+Classes (first command word in front of the redirect, after sudo/env/command):
+  perm     chmod chown chgrp chattr setfacl      -> check the current value first,
+                                                    change only if it differs, loudly
+  git      git ...                               -> query the state (rev-parse -q
+                                                    --verify, config --get) then act
+  remove   rm rmdir unlink                       -> test existence, then rm loudly
+  fs       mkdir cp mv ln touch install          -> same: test, then act loudly
+  process  kill pkill wait                       -> check the pid/process first
+  probe    stat test [ grep find ls readlink lsattr getfacl command type id
+                                                 -> a query: keep the exit code,
+                                                    decide on it explicitly
+  other    anything else                         -> decide case by case
+"""
+import os
+import re
+import subprocess
+import sys
+
+PATTERNS = [
+    re.compile(r'(?:\b2|&)>\s*/dev/null\s*\|\|\s*(?:true|:)(?![\w-])'),
+    re.compile(r'>\s*/dev/null\s+2>&1\s*\|\|\s*(?:true|:)(?![\w-])'),
+]
+MARK = re.compile(r'audit-swallow:\s*(?:ok|pattern)\b')
+CLASSES = {
+    "perm": {"chmod", "chown", "chgrp", "chattr", "setfacl"},
+    "git": {"git"},
+    "remove": {"rm", "rmdir", "unlink"},
+    "fs": {"mkdir", "cp", "mv", "ln", "touch", "install"},
+    "process": {"kill", "pkill", "wait"},
+    "probe": {"stat", "test", "[", "[[", "grep", "find", "ls", "readlink", "lsattr",
+              "getfacl", "command", "type", "id", "which"},
+}
+PREFIX_WORDS = {"sudo", "env", "command", "exec", "nohup", "!", "then", "do", "else",
+                "if", "while", "until", "time"}
+
+
+def die(msg):
+    print(f"audit-swallow: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def git(repo, *args, binary=False):
+    p = subprocess.run(["git", "-C", repo, *args], capture_output=True)
+    if p.returncode != 0:
+        die(f"git {' '.join(args)} failed: {p.stderr.decode(errors='replace').strip()}")
+    return p.stdout if binary else p.stdout.decode(errors="replace")
+
+
+def match_at(line):
+    for pat in PATTERNS:
+        m = pat.search(line)
+        if m:
+            return m
+    return None
+
+
+def command_word(before):
+    tail = before.rstrip()
+    if not tail:
+        return "(continued line)"
+    if tail.endswith(("}", ")")):
+        return "(group)"
+    seg = re.split(r'\$\(|`|;|&&|\|\||\||\(|\{', before)[-1]
+    words = seg.split()
+    for w in words:
+        if w in PREFIX_WORDS or re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', w) or w.startswith("-"):
+            continue
+        return os.path.basename(w.strip("\"'"))
+    return ""
+
+
+def classify(line):
+    m = match_at(line)
+    if not m:
+        return None
+    if MARK.search(line):
+        return ("marked", "")
+    word = command_word(line[: m.start()])
+    for cls, words in CLASSES.items():
+        if word in words:
+            return (cls, word)
+    return ("other", word)
+
+
+def scan_text(text):
+    """[(lineno, class, word, line)] for every occurrence, marked included."""
+    out = []
+    for i, line in enumerate(text.splitlines(), 1):
+        c = classify(line)
+        if c:
+            out.append((i, c[0], c[1], line.strip()))
+    return out
+
+
+def counted(occ):
+    return [o for o in occ if o[1] != "marked"]
+
+
+def is_text(data):
+    return b"\0" not in data[:8192]
+
+
+def report(repo, paths):
+    files = []
+    for path in paths or ["."]:
+        if os.path.isdir(os.path.join(repo, path)):
+            files += [f for f in git(repo, "ls-files", "-z", "--", path).split("\0") if f]
+        else:
+            files.append(path)
+    print("file\tline\tclass\tcommand\ttext")
+    total = 0
+    for f in files:
+        p = os.path.join(repo, f)
+        if os.path.islink(p) or not os.path.isfile(p):
+            continue
+        with open(p, "rb") as fh:
+            data = fh.read()
+        if not is_text(data):
+            continue
+        for ln, cls, word, text in scan_text(data.decode(errors="replace")):
+            print(f"{f}\t{ln}\t{cls}\t{word}\t{text}")
+            if cls != "marked":
+                total += 1
+    print(f"audit-swallow: {total} occurrence(s)", file=sys.stderr)
+    return 0
+
+
+def blob(repo, spec):
+    """Contents of REV:PATH or :PATH, or None when the path does not exist there."""
+    p = subprocess.run(["git", "-C", repo, "cat-file", "-e", spec], capture_output=True)
+    if p.returncode != 0:
+        return None
+    return git(repo, "cat-file", "blob", spec, binary=True)
+
+
+def compare(repo, pairs):
+    """pairs: [(path, old_bytes_or_None, new_bytes_or_None)]. Exit 1 on any increase."""
+    bad = 0
+    for path, old, new in pairs:
+        if new is None or not is_text(new):
+            continue
+        new_occ = counted(scan_text(new.decode(errors="replace")))
+        old_occ = counted(scan_text(old.decode(errors="replace"))) if old is not None and is_text(old) else []
+        if len(new_occ) > len(old_occ):
+            bad += 1
+            old_texts = [o[3] for o in old_occ]
+            print(f"NEW-SWALLOW file={path} before={len(old_occ)} after={len(new_occ)}", file=sys.stderr)
+            for ln, cls, word, text in new_occ:
+                if text in old_texts:
+                    old_texts.remove(text)
+                    continue
+                print(f"  {path}:{ln} [{cls}] {text}", file=sys.stderr)
+    if bad:
+        print("audit-swallow: new error-swallowing idioms (stderr to /dev/null plus || true). Check the state and act"
+              " loudly instead (tools/audit-swallow --help lists the fix per class).", file=sys.stderr)
+        return 1
+    return 0
+
+
+def staged(repo):
+    names = [n for n in git(repo, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR").split("\0") if n]
+    has_head = subprocess.run(["git", "-C", repo, "rev-parse", "-q", "--verify", "HEAD"],
+                              capture_output=True).returncode == 0
+    pairs = [(n, blob(repo, f"HEAD:{n}") if has_head else None, blob(repo, f":{n}")) for n in names]
+    return compare(repo, pairs)
+
+
+def against(repo, ref):
+    git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    names = [n for n in git(repo, "diff", "--name-only", "-z", "--diff-filter=ACMR", ref).split("\0") if n]
+    untracked = [n for n in git(repo, "ls-files", "-z", "--others", "--exclude-standard").split("\0") if n]
+    pairs = []
+    for n in names + untracked:
+        p = os.path.join(repo, n)
+        if os.path.islink(p) or not os.path.isfile(p):
+            continue
+        with open(p, "rb") as fh:
+            pairs.append((n, blob(repo, f"{ref}:{n}"), fh.read()))
+    return compare(repo, pairs)
+
+
+def main(argv):
+    repo, mode, ref, paths = ".", "report", None, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        if a == "--repo":
+            i += 1
+            if i >= len(argv):
+                die("--repo needs a directory")
+            repo = argv[i]
+        elif a == "--staged":
+            mode = "staged"
+        elif a == "--against":
+            i += 1
+            if i >= len(argv):
+                die("--against needs a ref")
+            mode, ref = "against", argv[i]
+        elif a.startswith("-"):
+            die(f"unknown option {a}")
+        else:
+            paths.append(a)
+        i += 1
+    repo = git(repo, "rev-parse", "--show-toplevel").strip()
+    if mode != "report" and paths:
+        die("paths are only for the report mode")
+    if mode == "staged":
+        return staged(repo)
+    if mode == "against":
+        return against(repo, ref)
+    return report(repo, paths)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

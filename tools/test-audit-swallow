@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Tests for tools/audit-swallow and hooks/pre-commit (throwaway repos under /tmp).
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/audsw-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+G() { git -c user.name=t -c user.email=t@t "$@"; }
+SW='2>/dev/null || true'  # audit-swallow: pattern (the idiom under test)
+SW2='>/dev/null 2>&1 || :'  # audit-swallow: pattern (second form)
+A="$canon/tools/audit-swallow"
+
+R="$T/r"; mkdir -p "$R/tools" "$R/sub"; G -C "$R" init -q -b master
+cp "$A" "$R/tools/"; cp "$canon/hooks/pre-commit" "$R/.git/hooks/pre-commit"
+printf '#!/bin/bash\nchmod 644 x %s\nsudo chown a:b y %s\ngit tag -d t %s\nrm -f z %s\necho fine\n' "$SW" "$SW" "$SW" "$SW2" >"$R/s.sh"
+printf 'echo clean\n' >"$R/sub/c.sh"
+G -C "$R" add -A; G -C "$R" commit -qm init --no-verify
+
+out=$("$A" --repo "$R" 2>/dev/null)
+echo "$out" | grep -qP '^s\.sh\t2\tperm\tchmod\t' && ok "chmod classed perm" || bad "report: $out"
+echo "$out" | grep -qP '^s\.sh\t3\tperm\tchown\t' && ok "sudo chown classed perm (sudo skipped)" || bad "report: $out"
+echo "$out" | grep -qP '^s\.sh\t4\tgit\tgit\t' && ok "git classed git" || bad "report: $out"
+echo "$out" | grep -qP '^s\.sh\t5\tremove\trm\t' && ok "second form found, classed remove" || bad "report: $out"
+[ "$(echo "$out" | grep -c '^s\.sh')" -eq 4 ] && ok "echo fine not reported" || bad "count: $out"
+"$A" --repo "$R" sub >/dev/null 2>"$T/e"; grep -q '0 occurrence' "$T/e" && ok "directory path scans only that dir" || bad "dir scan: $(cat "$T/e")"
+
+# staged: a new swallow in a tracked file is rejected, with the line named
+printf 'mkdir -p d %s\n' "$SW" >>"$R/s.sh"; G -C "$R" add s.sh
+"$A" --staged --repo "$R" 2>"$T/e"; rc=$?
+[ $rc -eq 1 ] && grep -q 'NEW-SWALLOW file=s.sh before=4 after=5' "$T/e" && grep -q 's.sh:7 \[fs\] mkdir -p d' "$T/e" && ok "--staged rejects an added swallow, names it" || bad "rc=$rc $(cat "$T/e")"
+grep -q 'chmod 644' "$T/e" && bad "old swallows listed as new" || ok "only the new line listed"
+G -C "$R" commit -qm add >/dev/null 2>"$T/e"; rc=$?
+[ $rc -ne 0 ] && grep -q NEW-SWALLOW "$T/e" && ok "pre-commit hook blocks the commit" || bad "hook rc=$rc $(cat "$T/e")"
+G -C "$R" checkout -q -- s.sh 2>/dev/null; G -C "$R" reset -q; G -C "$R" checkout -q -- s.sh
+
+# removing one is fine; moving one line is fine
+sed -i '2d' "$R/s.sh"; G -C "$R" add s.sh
+"$A" --staged --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 0 ] && ok "dropping a swallow passes" || bad "rc=$rc $(cat "$T/e")"
+G -C "$R" commit -qm drop; [ $? -eq 0 ] && ok "hook lets a cleanup commit through" || bad "cleanup commit blocked"
+printf 'echo moved\n' >"$R/t"; awk 'NR==2{l=$0;next}{print} END{print l}' "$R/s.sh" >"$R/t" && cat "$R/t" >"$R/s.sh"; rm "$R/t"; G -C "$R" add s.sh
+"$A" --staged --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 0 ] && ok "a moved swallow is not new" || bad "rc=$rc $(cat "$T/e")"
+G -C "$R" reset -q --hard
+
+# a new file with one swallow; a marked one
+printf 'cp a b %s\n' "$SW" >"$R/n.sh"; G -C "$R" add n.sh
+"$A" --staged --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 1 ] && grep -q 'file=n.sh before=0 after=1' "$T/e" && ok "new file with a swallow rejected" || bad "rc=$rc $(cat "$T/e")"
+printf 'cp a b %s  # audit-swallow: ok -- test fixture\n' "$SW" >"$R/n.sh"; G -C "$R" add n.sh
+"$A" --staged --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 0 ] && ok "marked line does not count" || bad "rc=$rc $(cat "$T/e")"
+G -C "$R" reset -q --hard; rm -f "$R/n.sh"
+
+# --against: working tree and untracked files vs a ref
+printf 'ln -s a b %s\n' "$SW" >>"$R/sub/c.sh"
+"$A" --against HEAD --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 1 ] && grep -q 'file=sub/c.sh before=0 after=1' "$T/e" && ok "--against HEAD sees a worktree change" || bad "rc=$rc $(cat "$T/e")"
+G -C "$R" checkout -q -- sub/c.sh; printf 'kill 1 %s\n' "$SW" >"$R/u.sh"
+"$A" --against HEAD --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 1 ] && grep -q 'u.sh:1 \[process\]' "$T/e" && ok "--against sees an untracked file" || bad "rc=$rc $(cat "$T/e")"
+"$A" --against no-such-ref --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 2 ] && ok "bad ref is an error (2)" || bad "rc=$rc"
+"$A" --bogus 2>/dev/null; [ $? -eq 2 ] && ok "unknown option is an error" || bad "unknown option accepted"
+
+# canon itself: the committed tree vs its parent gains none (the check that guards canon)
+"$A" --repo "$canon" --against HEAD 2>"$T/e"; rc=$?; [ $rc -eq 0 ] && ok "canon working tree adds no swallow vs HEAD" || bad "canon: $(cat "$T/e")"
+echo "passed $pass failed $fail"; [ $fail -eq 0 ]

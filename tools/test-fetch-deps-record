@@ -6,6 +6,7 @@ canon="$(git rev-parse --show-toplevel)"
 T="$(mktemp -d /tmp/fdrec-test.XXXXXX)"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
+SW='2>/dev/null || true'  # audit-swallow: pattern (what the no-swallow checks grep for)
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
 export LIBPIN_NO_BWRAP=1 LIBPIN_NO_LANDLOCK=1
 G() { git -c user.name=t -c user.email=t@t "$@"; }
@@ -77,6 +78,20 @@ git -C "$canon" show 4263476~1:third_party/get-artifacts >"$R/third_party/get-ar
 fd ro toy; fd build toy; rc=$?; [[ $rc -eq 0 ]] && ok "old get-artifacts: verify build still works" || bad "old ga build rc=$rc $(tail -5 "$T/out")"
 fd upgrade toy --ref "$V2"; rc=$?
 [[ $rc -ne 0 ]] && grep -q 'has no --record (older copy)' "$T/out" && pin | grep -q "git_sha = \"$V1\"" && ok "old get-artifacts: upgrade fails loudly, pin unchanged" || bad "old ga upgrade rc=$rc $(tail -5 "$T/out")"
+
+# swallow cleanup: helpers now fail loudly or say what they do
+mkrepo false 'mkdir -p src/build; printf "built %s\n" "$(cat src/content)" >src/out.bin; echo t >src/build/tmp'
+host_url_before=$(git -C "$GH/toy" config --get remote.origin.url || echo none)
+fd ro toy; fd build toy; rc=$?
+st="$R/third_party/toy/status.local"
+[[ $rc -eq 0 ]] && [[ "$(stat -c '%a %G' "$st")" == "664 ai-code" ]] && ok "status.local 664 ai-code" || bad "status.local: $(stat -c '%a %G' "$st") rc=$rc"
+[[ -w "$R/third_party/toy/src/build/tmp" && ! -w "$R/third_party/toy/src/content" ]] && ok "ro src: build/ scratch writable, sources not" || bad "scratch modes: $(ls -l "$R/third_party/toy/src" "$R/third_party/toy/src/build")"
+[[ "$(git -C "$GH/toy" config --get remote.origin.url || echo none)" == "$host_url_before" ]] && ok "library host origin untouched by a linked-worktree src" || bad "host origin changed: $(git -C "$GH/toy" config --get remote.origin.url)"
+printf 'name = "toy"\ngit_sha = [unterminated\n' >"$R/third_party/toy/libpin.toml"
+fd ro toy; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'reading source_kind from .*libpin.toml failed' "$T/out" && ok "unparsable pin is an error, not 'not git'" || bad "bad pin rc=$rc $(tail -6 "$T/out")"
+grep -q 'upgrade is git-only' "$T/out" && bad "bad pin taken as a file pin" || ok "bad pin not mistaken for a file pin"
+grep -c -F "$SW" "$canon/third_party/fetch-deps" >/dev/null && bad "fetch-deps still swallows" || ok "fetch-deps has no swallow idiom"
 
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]

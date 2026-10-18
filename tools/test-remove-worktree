@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Tests for remove_worktree.sh with stand-in sudo / lsattr (nothing real is chattr'd,
+# chowned or run as root). Throwaway repos under /tmp.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/rmwt-test.XXXXXX)"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+SW='2>/dev/null || true'  # audit-swallow: pattern (what the no-swallow checks grep for)
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+G() { git -c user.name=t -c user.email=t@t "$@"; }
+
+mkdir -p "$T/bin"
+# sudo stand-in: records the command, runs nothing.
+cat >"$T/bin/sudo" <<'S'
+#!/bin/bash
+printf 'sudo %s\n' "$*" >>"$RMWT_LOG"
+S
+# lsattr stand-in: attributes come from $RMWT_ATTRS; RMWT_ATTRS=fail makes it fail.
+cat >"$T/bin/lsattr" <<'S'
+#!/bin/bash
+[ "$RMWT_ATTRS" = fail ] && { echo "lsattr: Operation not supported" >&2; exit 1; }
+printf '%s %s\n' "$RMWT_ATTRS" "${@: -1}"
+S
+chmod 755 "$T/bin/"*
+export PATH="$T/bin:$PATH" RMWT_LOG="$T/sudo.log"
+
+mk() {  # fresh repo R with worktree agent-1 on branch b1 (merged), tag b1-start
+  R="$T/r"; [ -d "$T/r" ] && { chmod -R u+w "$T/r"; rm -rf "$T/r"; }
+  mkdir -p "$R"; G -C "$R" init -q -b master
+  cp "$canon/remove_worktree.sh" "$R/"; echo x >"$R/f"; G -C "$R" add -A; G -C "$R" commit -qm init
+  G -C "$R" worktree add -q -b b1 "$R/agent-1"; G -C "$R" tag b1-start b1
+  ln -s agent-1 "$R/b1.wt"
+  echo log >"$R/agent-1/ENGINEERING_LOG.md"
+  mkdir -p "$R/agent-1/third_party/lib/src/sub"; echo s >"$R/agent-1/third_party/lib/src/sub/a"
+  chmod -R a-w "$R/agent-1/third_party/lib/src"
+  : >"$RMWT_LOG"
+}
+rw() { (cd "$R" && ./remove_worktree.sh "$@") >"$T/out" 2>&1; }
+
+mk; export RMWT_ATTRS='-----a--------e-----'
+rw b1.wt; rc=$?
+[ $rc -eq 0 ] && [ ! -e "$R/agent-1" ] && ok "append-only log, read-only lib src: removed (rc 0)" || bad "rc=$rc $(cat "$T/out")"
+grep -qx "sudo chattr -a -- agent-1/ENGINEERING_LOG.md" "$RMWT_LOG" && ok "sudo chattr -a only on the log" || bad "sudo log: $(cat "$RMWT_LOG")"
+grep -q 'chown' "$RMWT_LOG" && bad "chown without foreign files" || ok "no sudo chown when every file is ours"
+git -C "$R" rev-parse -q --verify refs/tags/b1-start >/dev/null && bad "start tag kept" || ok "start tag deleted with the merged branch"
+[ ! -L "$R/b1.wt" ] && ok "symlink removed" || bad "symlink kept"
+
+mk; export RMWT_ATTRS='--------------e-----'
+G -C "$R" tag -d b1-start >/dev/null
+rw b1.wt; rc=$?
+[ $rc -eq 0 ] && ! grep -q . "$RMWT_LOG" && ok "no +a, no tag: no sudo at all, rc 0" || bad "rc=$rc sudo=$(cat "$RMWT_LOG") $(tail -3 "$T/out")"
+grep -qi 'error' "$T/out" && bad "error text with no tag: $(cat "$T/out")" || ok "missing start tag is not an error"
+
+mk; export RMWT_ATTRS=fail
+rw b1.wt; rc=$?
+[ $rc -ne 0 ] && [ -d "$R/agent-1" ] && grep -q 'cannot tell whether it is append-only' "$T/out" && ok "lsattr failure stops before touching anything" || bad "rc=$rc $(cat "$T/out")"
+
+mk; export RMWT_ATTRS='--------------e-----'
+chmod a-w "$R"   # git worktree remove cannot unlink agent-1 from R
+rw b1.wt; rc=$?; chmod u+w "$R"
+[ $rc -ne 0 ] && [ -d "$R/agent-1" ] && grep -q 'Nothing else was tried' "$T/out" && ok "git worktree remove failure: loud, no rm -rf fallback" || bad "rc=$rc $(cat "$T/out")"
+grep -q 'rm -rf' "$RMWT_LOG" && bad "sudo rm -rf fallback ran" || ok "no sudo rm -rf"
+
+grep -c -F "$SW" "$canon/remove_worktree.sh" >/dev/null && bad "remove_worktree.sh still swallows" || ok "remove_worktree.sh has no swallow idiom"
+echo "passed $pass failed $fail"; [ $fail -eq 0 ]

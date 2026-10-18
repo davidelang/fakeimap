@@ -8,9 +8,10 @@ canon="$(git rev-parse --show-toplevel)"
 T="$(mktemp -d /tmp/setupagent-test.XXXXXX)"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
+SW='2>/dev/null || true'  # audit-swallow: pattern (what the no-swallow checks grep for)
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
 me=$(id -un)
-grep -n -F '2>/dev/null || true' "$canon/setup_agent.sh" >"$T/sw" && bad "swallowing: $(cat "$T/sw")" || ok "no '2>/dev/null || true' in setup_agent.sh"
+grep -n -F "$SW" "$canon/setup_agent.sh" >"$T/sw" && bad "swallowing: $(cat "$T/sw")" || ok "no swallow idiom in setup_agent.sh"
 grep -n 'skip-sudoers' "$canon/setup_agent.sh" >/dev/null && bad "setup_agent passes the removed --skip-sudoers" || ok "no --skip-sudoers"
 
 S="$T/shims"; mkdir -p "$S"

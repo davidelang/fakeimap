@@ -120,30 +120,42 @@ fi
 if [ "$DIR_PRESENT" -eq 0 ]; then
     echo "Directory already gone; clearing the git worktree registration only."
 else
-# Reset permissions to allow deletion (worktrees may have root-owned files like logs,
-# tight setgid, or chattr that prevent rm by non-root). This is needed because
-# git worktree remove does an internal rm that respects current perms.
-echo "Resetting permissions on '$WORKTREE_DIR' for deletion..."
-chmod -R u+rwX "$WORKTREE_DIR" 2>/dev/null || true
-# If root-owned files (e.g. ENGINEERING_LOG.md, append wrapper), escalate
-if [ "$(stat -c %U "$WORKTREE_DIR/ENGINEERING_LOG.md" 2>/dev/null)" = "root" ] || \
-   [ "$(stat -c %U "$WORKTREE_DIR/append-to-engineering-log" 2>/dev/null)" = "root" ]; then
-    echo "  Root-owned files detected; using sudo for full cleanup..."
-    sudo chmod -R u+rwX "$WORKTREE_DIR" 2>/dev/null || true
-    sudo chown -R "$(id -un):$(id -gn)" "$WORKTREE_DIR" 2>/dev/null || true
+# Make the tree deletable by us, in this order, each step loud and fatal:
+# 1. the root-owned ENGINEERING_LOG.md loses chattr +a (chown/chmod/unlink of an
+#    append-only file is refused, even for root);
+# 2. if anything in the tree is not ours (root-owned log, files of another agent
+#    user), sudo chown -R gives it to us;
+# 3. chmod -R u+rwX, so git worktree remove can unlink everything.
+_me=$(id -un)
+_log="$WORKTREE_DIR/ENGINEERING_LOG.md"
+if [ -e "$_log" ] && [ ! -L "$_log" ]; then
+    _attrs=$(lsattr -d -- "$_log") || {
+        echo "Error: lsattr failed on $_log; cannot tell whether it is append-only." >&2; exit 1; }
+    case "${_attrs%% *}" in
+        *a*)
+            echo "  $_log is append-only: sudo chattr -a"
+            sudo chattr -a -- "$_log" || {
+                echo "Error: sudo chattr -a $_log failed; the worktree cannot be removed." >&2; exit 1; }
+            ;;
+    esac
 fi
-# Also handle possible chattr on log
-sudo chattr -a "$WORKTREE_DIR/ENGINEERING_LOG.md" 2>/dev/null || true
+_foreign=$(find "$WORKTREE_DIR" ! -user "$_me" -print -quit) || {
+    echo "Error: could not scan $WORKTREE_DIR for files owned by other users." >&2; exit 1; }
+if [ -n "$_foreign" ]; then
+    echo "  Files not owned by $_me (first: $_foreign): sudo chown -R $_me:$(id -gn)"
+    sudo chown -R -- "$_me:$(id -gn)" "$WORKTREE_DIR" || {
+        echo "Error: sudo chown -R of $WORKTREE_DIR failed." >&2; exit 1; }
+fi
+echo "Resetting permissions on '$WORKTREE_DIR' for deletion..."
+chmod -R u+rwX -- "$WORKTREE_DIR" || {
+    echo "Error: chmod -R u+rwX $WORKTREE_DIR failed." >&2; exit 1; }
 
-# third_party: detach worktrees / empty src so rm -rf of agent dir succeeds
+# third_party: remove library worktrees through their host, so the registration
+# goes too (rm -rf alone left a dead entry and the next fetch-deps failed).
 if [ -d "$WORKTREE_DIR/third_party" ]; then
   echo "Cleaning third_party/*/src under $WORKTREE_DIR ..."
   for _src in "$WORKTREE_DIR"/third_party/*/src; do
     [ -e "$_src" ] || continue
-    chmod -R u+w "$_src" 2>/dev/null || true
-    # A linked worktree of a library host is removed through that host, so its
-    # registration goes too (rm -rf alone left a dead entry and the next
-    # fetch-deps for this path failed).
     if [ -f "$_src/.git" ]; then
       _hostgit=$(git -C "$_src" rev-parse --path-format=absolute --git-common-dir) || {
         echo "Error: $_src/.git names no readable library repo; fix it by hand." >&2; exit 1; }
@@ -152,22 +164,17 @@ if [ -d "$WORKTREE_DIR/third_party" ]; then
       git -C "$_host" worktree remove --force "$_src" || {
         echo "Error: could not remove library worktree $_src from $_host." >&2; exit 1; }
     fi
-    rm -rf "$_src" 2>/dev/null || sudo rm -rf "$_src" 2>/dev/null || true
-    mkdir -p "$_src" 2>/dev/null || true
+    if [ -e "$_src" ]; then
+      rm -rf -- "$_src" || { echo "Error: rm -rf $_src failed." >&2; exit 1; }
+    fi
   done
 fi
 
 echo "Removing worktree '$WORKTREE_DIR'..."
 git worktree remove --force "$WORKTREE_DIR" || {
-    echo "git worktree remove failed (likely permissions). Re-applying permissive reset..."
-    chmod -R u+rwX "$WORKTREE_DIR" 2>/dev/null || true
-    sudo chmod -R u+rwX "$WORKTREE_DIR" 2>/dev/null || true
-    sudo chown -R "$(id -un):$(id -gn)" "$WORKTREE_DIR" 2>/dev/null || true
-    sudo chattr -a "$WORKTREE_DIR/ENGINEERING_LOG.md" 2>/dev/null || true
-    git worktree remove --force "$WORKTREE_DIR" || {
-        echo "Still failed. Falling back to direct rm -rf..."
-        rm -rf "$WORKTREE_DIR" || sudo rm -rf "$WORKTREE_DIR"
-    }
+    echo "Error: git worktree remove --force $WORKTREE_DIR failed (message above)." >&2
+    echo "  Nothing else was tried. Fix the cause and re-run." >&2
+    exit 1
 }
 
 if [ -d "$WORKTREE_DIR" ]; then
@@ -176,8 +183,7 @@ if [ -d "$WORKTREE_DIR" ]; then
 fi
 fi
 
-# rm -rf fallback deletes the folder and leaves .git/worktrees/<id> behind.
-# A later run used to stop at "directory not found" and never prune.
+# A folder deleted by hand leaves .git/worktrees/<id> behind; prune clears it.
 if ! git worktree prune -v; then
     echo "Error: git worktree prune failed. Registration for '$WORKTREE_DIR' may remain." >&2
     exit 1
@@ -219,7 +225,10 @@ else
 fi
 
 if [ "$branch_deleted" -eq 1 ]; then
-    git tag -d "${BRANCH_NAME}-start" 2>/dev/null || true
+    if git rev-parse -q --verify "refs/tags/${BRANCH_NAME}-start" >/dev/null; then
+        git tag -d "${BRANCH_NAME}-start" || {
+            echo "Error: could not delete tag ${BRANCH_NAME}-start." >&2; exit 1; }
+    fi
 fi
 
 echo "Cleanup complete."
