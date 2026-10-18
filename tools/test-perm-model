@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Tests for perm-model.tsv / perm-engine.py and their users (no privileges, throwaway /tmp dirs).
+- the model parses (8 columns, unique areas, every mode spec valid, umask octal or '-');
+- every area named by perm_apply/perm_verify/perm_umask in the tools exists in the model;
+- the engine's symbolic modes agree with GNU chmod;
+- deploy-orchestration creates dirs/files with the worktree area's modes from any umask."""
+import importlib.util, os, re, subprocess, sys, tempfile, importlib.machinery
+
+canon = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
+passed = failed = 0
+def ok(m):
+    global passed; passed += 1; print("ok   " + m)
+def bad(m):
+    global failed; failed += 1; print("FAIL " + m)
+
+spec = importlib.util.spec_from_file_location("perm_engine", os.path.join(canon, "perm-engine.py"))
+eng = importlib.util.module_from_spec(spec); spec.loader.exec_module(eng)
+model = eng.load_model(os.path.join(canon, "perm-model.tsv"))
+ok("perm-model.tsv parses (%d areas)" % len(model))
+areas = [l.split("\t")[0] for l in open(os.path.join(canon, "perm-model.tsv")) if l.strip() and not l.startswith("#")]
+dups = sorted({a for a in areas if areas.count(a) > 1})
+(bad("duplicate areas: %s" % dups) if dups else ok("areas unique"))
+badspec = []
+for a, r in model.items():
+    for col in ("dir", "file"):
+        v = r[col]
+        if v == "-": continue
+        if not re.fullmatch(r"[0-7]{3,4}", v) and not all(re.fullmatch(r"[ugoa]*[-+=][rwxXst]*", c) for c in v.split(",")):
+            badspec.append("%s.%s=%s" % (a, col, v))
+    if r["umask"] != "-" and not re.fullmatch(r"0?[0-7]{3}", r["umask"]):
+        badspec.append("%s.umask=%s" % (a, r["umask"]))
+    for col in ("owner", "group"):
+        v = r[col]
+        if v not in ("-", "root") and not re.fullmatch(r"[a-z_]+_(user|group)", v):
+            badspec.append("%s.%s=%s" % (a, col, v))
+(bad("bad specs: %s" % badspec) if badspec else ok("every owner/group/mode/umask spec is valid"))
+
+used = set()
+for f in ("fix-perms", "setup_agent.sh", "build-examples/android-app/build_app"):
+    code = "\n".join(l for l in open(os.path.join(canon, f)).read().split("\n") if not l.lstrip().startswith("#"))
+    for m in re.finditer(r"perm_(?:apply|verify|umask)\s+([a-z][a-z0-9-]*)", code):
+        used.add((f, m.group(1)))
+missing = sorted("%s:%s" % u for u in used if u[1] not in model)
+(bad("areas used but not in the model: %s" % missing) if missing else ok("all %d area uses exist in the model" % len(used)))
+unused = sorted(set(model) - {a for _, a in used})
+(bad("areas nobody applies: %s" % unused) if unused else ok("every area is applied by some tool"))
+
+with tempfile.TemporaryDirectory() as d:
+    mism = 0
+    for isdir in (False, True):
+        for m0 in (0o600, 0o644, 0o755, 0o700, 0o2770, 0o640, 0o000):
+            for a, r in model.items():
+                sp = r["dir" if isdir else "file"]
+                if sp == "-" or re.fullmatch(r"[0-7]{4}", sp): continue   # absolute: exact by definition
+                p = os.path.join(d, "x")
+                if os.path.isdir(p): os.rmdir(p)
+                elif os.path.exists(p): os.unlink(p)
+                os.mkdir(p) if isdir else open(p, "w").close()
+                os.chmod(p, m0)
+                subprocess.run(["chmod", sp, p], check=True)
+                if (os.stat(p).st_mode & 0o7777) != eng.apply_spec(sp, m0 | (0o040000 if isdir else 0), isdir):
+                    mism += 1; print("  mismatch", a, oct(m0), sp)
+    (bad("%d engine/GNU chmod mismatches" % mism) if mism else ok("engine symbolic modes agree with GNU chmod"))
+
+    loader = importlib.machinery.SourceFileLoader("deploy_orch", os.path.join(canon, "deploy-orchestration"))
+    dspec = importlib.util.spec_from_loader("deploy_orch", loader)
+    do = importlib.util.module_from_spec(dspec); loader.exec_module(do)
+    old = os.umask(0o077)
+    try:
+        do.make_dirs(d, "a/b")
+    finally:
+        os.umask(old)
+    modes = [os.stat(os.path.join(d, x)).st_mode & 0o7777 for x in ("a", "a/b")]
+    (ok("deploy-orchestration make_dirs: 2775 from umask 077") if modes == [0o2775, 0o2775] else bad("make_dirs modes %s" % [oct(m) for m in modes]))
+    e, row = do.perm_worktree()
+    fm = (e.apply_spec(row["file"], 0o755, False), e.apply_spec(row["file"], 0o644, False))
+    (ok("deploy-orchestration file modes 775/664 from the model") if fm == (0o775, 0o664) else bad("file modes %s" % [oct(x) for x in fm]))
+src = open(os.path.join(canon, "deploy-orchestration")).read()
+(bad("deploy-orchestration still hard-codes modes") if re.search(r"os\.chmod\([^,()]+,\s*0o[0-7]+\s*\)", src) else ok("deploy-orchestration has no hard-coded chmod modes"))
+man = open(os.path.join(canon, "rules.manifest")).read().split("\n")
+need = [f for f in ("perm-lib.sh", "perm-engine.py", "perm-model.tsv") if "shared " + f not in man]
+(bad("not shared in rules.manifest: %s" % need) if need else ok("perm-lib.sh, perm-engine.py, perm-model.tsv are shared rules"))
+print("passed %d failed %d" % (passed, failed))
+sys.exit(1 if failed else 0)

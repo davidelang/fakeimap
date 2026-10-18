@@ -24,7 +24,7 @@ S="$T/shims"; mkdir -p "$S"
 for c in usermod gpasswd chattr; do printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$T" >"$S/$c"; chmod +x "$S/$c"; done
 mk() {  # mk SHARED_GROUP : fresh repo in $R
   R="$T/repo"; rm -rf "$R"; mkdir -p "$R/sandbox"
-  cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/perm-lib.sh" "$canon/perm-model.tsv" "$canon/append-to-engineering-log" "$R/"
+  cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$canon/append-to-engineering-log" "$R/"
   printf '## 2026-01-01 init\n' >"$R/ENGINEERING_LOG.md"
   cat >"$R/project.config" <<C
 primary_user=root

@@ -21,7 +21,7 @@ grep -n 'o-rwx\|umask 007' "$canon/build-examples/android-app/build_app" >"$T/sw
 
 mk() {  # fresh worktree repo in $W
   W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app/src/main"
-  cp "$canon/build-examples/android-app/build_app" "$canon/perm-lib.sh" "$canon/perm-model.tsv" "$W/"
+  cp "$canon/build-examples/android-app/build_app" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
   cat >"$W/ve-resolve-orch" <<'S'
 ve_resolve_orch() { ORCH_ROOT="$1"; }
 ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }

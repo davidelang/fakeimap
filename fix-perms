@@ -45,7 +45,7 @@ SUDO_USER_VAL=${SUDO_USER:-}
 
 # Orchestration root is project.config orch_root (via ve-resolve-orch next to this script;
 # no other location is tried). Do NOT treat "update-rules.sh exists" as orch.
-for _f in ve-resolve-orch perm-lib.sh perm-model.tsv; do
+for _f in ve-resolve-orch perm-lib.sh perm-engine.py perm-model.tsv; do
   if [ ! -f "$SCRIPT_DIR/$_f" ]; then
     echo "ERROR: $SCRIPT_DIR/$_f missing (it ships with fix-perms; run ./update-rules.sh from the orchestration root)." >&2
     exit 1

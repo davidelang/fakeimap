@@ -79,8 +79,17 @@ _setup_req orchestrator_user "$ORCHESTRATOR_USER"
 _setup_req code_group "$CODE_GROUP"
 _setup_req shared_group "$SHARED_GROUP"
 
-# Enforce correct creation umask for setgid inheritance
-umask 007
+# Owners, groups, modes and umasks: perm-model.tsv via perm-lib.sh (orchestration root).
+for _f in perm-lib.sh perm-engine.py perm-model.tsv ve-resolve-orch; do
+  [ -f "$_f" ] || _setup_die "missing $(pwd)/$_f (run ./deploy-orchestration / update-rules.sh)"
+done
+# shellcheck source=/dev/null
+. ./perm-lib.sh
+perm_init "$(pwd)/project.config" || exit 1
+# shellcheck source=/dev/null
+. ./ve-resolve-orch
+# The worktree area's umask (002): new dirs 2775 under the setgid root, files 664.
+umask "$(perm_umask worktree)" || exit 1
 
 # .git is mode 2770 and owned by the primary user, so this shell can enter it.
 # Role accounts rewrite files such as .git/config as mode 660, group
@@ -129,15 +138,11 @@ while true; do
     continue
   fi
   echo "Removing stale non-worktree directory agent-$N (failed prior setup_agent run)..."
+  # Its log is root-owned and may be append-only, so the removal needs root.
   if [ -f "agent-$N/ENGINEERING_LOG.md" ]; then
-    sudo chattr -a "agent-$N/ENGINEERING_LOG.md" 2>/dev/null || true
+    sudo chattr -a "agent-$N/ENGINEERING_LOG.md" || _setup_die "cannot lift chattr +a on agent-$N/ENGINEERING_LOG.md"
   fi
-  if ! rm -rf "agent-$N" 2>/dev/null; then
-    sudo rm -rf "agent-$N" 2>/dev/null || {
-      echo "Error: cannot remove stale agent-$N (try: sudo rm -rf agent-$N)"
-      exit 1
-    }
-  fi
+  sudo rm -rf -- "agent-$N" || _setup_die "cannot remove stale agent-$N (try: sudo rm -rf agent-$N)"
   AGENT_ID="agent-$N"
   break
 done
@@ -153,15 +158,15 @@ if [ -e "${BRANCH_NAME}.wt" ] && [ ! -L "${BRANCH_NAME}.wt" ]; then
 fi
 
 # Ensure main .git/config is not root-owned (breaks git for users without active ai-shared GID)
-if [ -f .git/config ] && [ "$(stat -c '%U' .git/config 2>/dev/null || echo '')" = "root" ]; then
+if [ "$(stat -c '%U' .git/config)" = "root" ]; then
   echo "Repairing root-owned .git/config (requires sudo once)..."
-  if ! sudo chown "$PRIMARY_USER:$SHARED_GROUP" .git/config 2>/dev/null; then
+  if ! sudo chown "$PRIMARY_USER:$SHARED_GROUP" .git/config; then
     echo "Error: .git/config is owned by root. Run:"
     echo "  sudo chown $PRIMARY_USER:$SHARED_GROUP .git/config"
     echo "  sudo ./fix-perms --verbose"
     exit 1
   fi
-  chmod 660 .git/config 2>/dev/null || true
+  perm_apply git-config .git/config --top-only || exit 1
 fi
 
 # Orchestration root (absolute) — used after cd into agent-N for seeding filters/config.
@@ -171,7 +176,7 @@ ORCH_ROOT="$(pwd)"
 # fix-perms must not assign ai-code to common .git; hooks no longer re-run fix-perms.
 ensure_common_hooks_executable() {
   local common hooks
-  common=$(git rev-parse --git-common-dir 2>/dev/null || echo .git)
+  common=$(git rev-parse --git-common-dir) || _setup_die "git rev-parse --git-common-dir failed in $(pwd)"
   case "$common" in
     /*) hooks="$common/hooks" ;;
     *) hooks="$ORCH_ROOT/$common/hooks" ;;
@@ -180,8 +185,8 @@ ensure_common_hooks_executable() {
   # One source: the tracked hooks/post-checkout
   [ -f "$ORCH_ROOT/hooks/post-checkout" ] || _setup_die "missing $ORCH_ROOT/hooks/post-checkout (run deploy-orchestration)"
   cp "$ORCH_ROOT/hooks/post-checkout" "$hooks/post-checkout" || _setup_die "cannot install $hooks/post-checkout"
-  # Active hooks only (not *.sample)
-  find "$hooks" -maxdepth 1 -type f ! -name '*.sample' -exec chmod 775 {} + 2>/dev/null || true
+  # Active hooks only (not *.sample); a hook this user cannot fix is an error
+  perm_apply git-hooks "$hooks" --maxdepth 1 --skip-glob '*.sample' || _setup_die "cannot set hook modes in $hooks"
   [ -x "$hooks/post-checkout" ] || _setup_die "$hooks/post-checkout is not executable (check ownership)"
 }
 
@@ -222,11 +227,10 @@ if [ "$WORKTREE_ERR" -ne 0 ]; then
     echo "Error: Failed to create worktree."
     exit 1
 fi
-# umask 007 + worktree add → 2770. Planner is not in ai-code and cannot
-# search that dir (looks like agent-landlock Permission denied). Owner can
-# add other-search without sudo. Do not wait for fix-perms.
-chmod 2775 "$AGENT_ID" || {
-    echo "Error: chmod 2775 $AGENT_ID failed (planner will not be able to enter)."
+# The planner is not in ai-code: the worktree dir needs other-search (worktree area,
+# 2775). The owner sets it without sudo; do not wait for fix-perms.
+perm_apply worktree "$AGENT_ID" --top-only || {
+    echo "Error: cannot set the worktree mode on $AGENT_ID (planner will not be able to enter)."
     exit 1
 }
 
@@ -275,15 +279,8 @@ seed_smudge_inputs() {
   for f in filter-apply-config filter-clean-config ve-resolve-orch; do
     copy_orch_seed_file "$orch_root/$f" "./$f"
   done
-  if [ -f ./ve-resolve-orch ]; then
-    # shellcheck source=/dev/null
-    . ./ve-resolve-orch
-    ve_upsert_project_config_key ./project.config orch_root "$orch_root"
-  elif [ -f "$orch_root/ve-resolve-orch" ]; then
-    # shellcheck source=/dev/null
-    . "$orch_root/ve-resolve-orch"
-    ve_upsert_project_config_key ./project.config orch_root "$orch_root"
-  fi
+  # ve-resolve-orch was sourced from the orchestration root at the start.
+  ve_upsert_project_config_key ./project.config orch_root "$orch_root"
 }
 
 
@@ -328,6 +325,8 @@ re_smudge_stamped_files() {
     case "$mode" in
       100755|100775) chmod a+x "$f" ;;
     esac
+    # mktemp made it 0600: give it the worktree area's mode like every checked-out file
+    perm_apply worktree "$f" --top-only || return 1
   done
 }
 
@@ -354,6 +353,17 @@ verify_smudge() {
   "$ORCH_ROOT/verify-smudge"
 }
 
+# A failed populate removes the new worktree (from the orchestration root). If that removal
+# fails too, its error is shown with the command to finish by hand.
+abort_new_worktree() {
+  cd "$ORCH_ROOT" || _setup_die "cannot cd to $ORCH_ROOT"
+  if ! git worktree remove --force "$AGENT_ID"; then
+    echo "Error: could not remove the half-made worktree $AGENT_ID; remove it with:" >&2
+    echo "  git worktree remove --force $AGENT_ID" >&2
+  fi
+  return 1 2>/dev/null || exit 1
+}
+
 # 4. Populate worktree from branch tip, then manually smudge stamped files.
 cd "$AGENT_ID"
 
@@ -362,9 +372,7 @@ cd "$AGENT_ID"
 if [ ! -f "$ORCH_ROOT/project.config" ]; then
   echo "Error: $ORCH_ROOT/project.config missing."
   echo "  Copy project.config.example → project.config and fill local values, then retry."
-  cd ..
-  git worktree remove --force "$AGENT_ID" 2>/dev/null || rm -rf "$AGENT_ID"
-  return 1 2>/dev/null || exit 1
+  abort_new_worktree
 fi
 seed_smudge_inputs "$ORCH_ROOT"
 
@@ -373,31 +381,23 @@ seed_smudge_inputs "$ORCH_ROOT"
 # VE_SETUP_AGENT=1 makes post-checkout a no-op during worktree populate.
 if ! git -c filter.manage-configs.smudge=cat -c filter.manage-configs.clean=cat checkout HEAD -- .; then
   echo "Error: Failed to populate worktree (git checkout HEAD -- .)."
-  cd ..
-  git worktree remove --force "$AGENT_ID" 2>/dev/null || rm -rf "$AGENT_ID"
-  return 1 2>/dev/null || exit 1
+  abort_new_worktree
 fi
 
 # Re-seed filters from orchestration (authoritative) then smudge stamped paths.
 seed_smudge_inputs "$ORCH_ROOT"
 if ! re_smudge_stamped_files; then
   echo "Error: Failed to smudge stamped files using orchestration filter scripts."
-  cd ..
-  git worktree remove --force "$AGENT_ID" 2>/dev/null || rm -rf "$AGENT_ID"
-  return 1 2>/dev/null || exit 1
+  abort_new_worktree
 fi
 if ! refresh_smudged_index; then
   echo "Error: Failed to refresh the index after smudge."
-  cd ..
-  git worktree remove --force "$AGENT_ID" 2>/dev/null || rm -rf "$AGENT_ID"
-  return 1 2>/dev/null || exit 1
+  abort_new_worktree
 fi
 
 if ! verify_smudge; then
   echo "Hint: ensure orchestration root has project.config and working filter-apply-config."
-  cd ..
-  git worktree remove --force "$AGENT_ID" 2>/dev/null || rm -rf "$AGENT_ID"
-  return 1 2>/dev/null || exit 1
+  abort_new_worktree
 fi
 
 if [ "$(id -un)" != "$PRIMARY_USER" ] && [ "$EUID" -ne 0 ]; then
@@ -464,65 +464,55 @@ done
 # Launchers often live only on orchestration until update-rules; seed common ones
 for f in run-grok-coder run-grok-orchestrator run-grok-master run-grok-planner; do
   if [ -f "$PARENT_ROOT/$f" ] && [ ! -f "$AGENT_ABS/$f" ]; then
-    cp -p "$PARENT_ROOT/$f" "$AGENT_ABS/$f" 2>/dev/null || true
-    chmod a+x "$AGENT_ABS/$f" 2>/dev/null || true
+    cp -p "$PARENT_ROOT/$f" "$AGENT_ABS/$f" || _setup_die "cannot copy $f into $AGENT_ABS"
+    ve_add_other_x "$AGENT_ABS/$f" || exit 1
   fi
 done
 
 # Build / ensure the setuid helper (run-as-primary) is present and correct
 if [ -f "$AGENT_ABS/run-as-primary.c" ]; then
-  (cd "$AGENT_ABS" && gcc -O2 -Wall -o run-as-primary run-as-primary.c && chmod 4755 run-as-primary && chown "$PRIMARY_USER:$CODE_GROUP" run-as-primary) 2>/dev/null || echo "    Warning: run-as-primary build/chmod may need gcc or manual fix"
+  (cd "$AGENT_ABS" && gcc -O2 -Wall -o run-as-primary run-as-primary.c) || _setup_die "gcc failed for $AGENT_ABS/run-as-primary.c"
+  perm_apply setuid-run-as-primary "$AGENT_ABS/run-as-primary" --top-only || exit 1
 fi
 
 # Create log file with minimal header if missing (fixer will harden it)
 if [ ! -f "$AGENT_ABS/ENGINEERING_LOG.md" ]; then
-  echo "## $(date +%Y-%m-%d) - Initial log for $AGENT_ID" > "$AGENT_ABS/ENGINEERING_LOG.md"
-fi 2>/dev/null || true
+  echo "## $(date +%Y-%m-%d) - Initial log for $AGENT_ID" > "$AGENT_ABS/ENGINEERING_LOG.md" \
+    || _setup_die "cannot create $AGENT_ABS/ENGINEERING_LOG.md"
+fi
 
-cd "$ORCH_ROOT" || cd "$PARENT_ROOT" || true
+cd "$ORCH_ROOT" || _setup_die "cannot cd to $ORCH_ROOT"
 
 # Planner search on the worktree dir (again after populate). Owner chmod; no sudo.
-chmod 2775 "$AGENT_ABS" || {
-    echo "Error: chmod 2775 $AGENT_ABS failed (planner will not be able to enter)."
+perm_apply worktree "$AGENT_ABS" --top-only || {
+    echo "Error: cannot set the worktree mode on $AGENT_ABS (planner will not be able to enter)."
     exit 1
 }
 
-# Unified fix-perms for the new tree (--skip-sudoers: sudoers only at setup-project).
-# Scoped to this worktree (excludes common .git from ai-code chown).
-# Do not hide sudo failure — 2775 above is enough to enter; wrappers/log still need this.
-echo "Running sudo ./fix-perms --skip-sudoers $AGENT_ABS"
-if ! sudo ./fix-perms --skip-sudoers "$AGENT_ABS"; then
-    echo "WARNING: sudo ./fix-perms failed for $AGENT_ABS"
-    echo "  Directory is 2775 so the planner can enter. Re-run:"
-    echo "    sudo ./fix-perms --skip-sudoers $AGENT_ABS"
+# fix-perms for the new tree only (it never enters another worktree or the sandbox).
+echo "Running sudo ./fix-perms $AGENT_ABS"
+if ! sudo ./fix-perms "$AGENT_ABS"; then
+    _setup_die "sudo ./fix-perms $AGENT_ABS failed (output above). Fix the cause, then re-run: sudo ./fix-perms $AGENT_ABS"
 fi
-
-# Re-lock setuid binaries silently (in case not covered).
 if [ -f "$AGENT_ABS/run-as-primary" ]; then
-  chown "$PRIMARY_USER:$CODE_GROUP" "$AGENT_ABS/run-as-primary" 2>/dev/null || true
-  chmod 4755 "$AGENT_ABS/run-as-primary" 2>/dev/null || true
+  perm_verify setuid-run-as-primary "$AGENT_ABS/run-as-primary" --top-only || _setup_die "run-as-primary is not as perm-model.tsv says after fix-perms"
 fi
 
 # ve-refresh-shell: build + setuid-root in orch AND this agent worktree (not in git).
 # One sudo password may be requested. Never leave setuid on non-root owner.
+# Setuid root needs root, so the installer always runs under sudo; a failure stops setup.
 if [ -x "$ORCH_ROOT/install-ve-refresh-shell.sh" ]; then
   echo "Installing ve-refresh-shell (setuid root) in orch + worktree..."
-  "$ORCH_ROOT/install-ve-refresh-shell.sh" "$ORCH_ROOT" 2>/dev/null || \
-    sudo "$ORCH_ROOT/install-ve-refresh-shell.sh" "$ORCH_ROOT" 2>/dev/null || true
-  "$ORCH_ROOT/install-ve-refresh-shell.sh" "$AGENT_ABS" 2>/dev/null || \
-    sudo "$ORCH_ROOT/install-ve-refresh-shell.sh" "$AGENT_ABS" 2>/dev/null || true
+  for _dest in "$ORCH_ROOT" "$AGENT_ABS"; do
+    sudo "$ORCH_ROOT/install-ve-refresh-shell.sh" "$_dest" || _setup_die "install-ve-refresh-shell.sh $_dest failed"
+  done
 else
-  # Fallback inline install
+  # Projects without the installer: build here, then root owns it (setuid-refresh-shell area).
   for _dest in "$ORCH_ROOT" "$AGENT_ABS"; do
     [ -f "$_dest/ve-refresh-shell.c" ] || continue
-    (cd "$_dest" && gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c) 2>/dev/null || true
-    if [ -f "$_dest/ve-refresh-shell" ]; then
-      if sudo chown root:root "$_dest/ve-refresh-shell" 2>/dev/null; then
-        sudo chmod 4755 "$_dest/ve-refresh-shell" 2>/dev/null || true
-      else
-        chmod 755 "$_dest/ve-refresh-shell" 2>/dev/null || true
-      fi
-    fi
+    (cd "$_dest" && gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c) || _setup_die "gcc failed for $_dest/ve-refresh-shell.c"
+    sudo chown root:root "$_dest/ve-refresh-shell" || _setup_die "cannot chown root:root $_dest/ve-refresh-shell"
+    sudo chmod 4755 "$_dest/ve-refresh-shell" || _setup_die "cannot chmod 4755 $_dest/ve-refresh-shell"
   done
 fi
 
@@ -531,21 +521,14 @@ ensure_common_hooks_executable
 
 # Merge drivers are repo-global (.git config); ensure installed for all worktrees
 if [ -x "$ORCH_ROOT/install-merge-drivers.sh" ]; then
-  (cd "$ORCH_ROOT" && ./install-merge-drivers.sh >/dev/null) || true
+  (cd "$ORCH_ROOT" && ./install-merge-drivers.sh >/dev/null) || _setup_die "install-merge-drivers.sh failed"
 fi
-chmod a+x "$AGENT_ABS/git-merge-drivers/"* "$AGENT_ABS/install-merge-drivers.sh" "$AGENT_ABS/merge-branch-into-master.sh" 2>/dev/null || true
-if ! type ve_ensure_tracked_exec_other_x >/dev/null 2>&1; then
-  if [ -f "$ORCH_ROOT/ve-resolve-orch" ]; then
-    # shellcheck source=/dev/null
-    . "$ORCH_ROOT/ve-resolve-orch"
-  elif [ -f "$AGENT_ABS/ve-resolve-orch" ]; then
-    # shellcheck source=/dev/null
-    . "$AGENT_ABS/ve-resolve-orch"
+for _f in "$AGENT_ABS"/git-merge-drivers/* "$AGENT_ABS/install-merge-drivers.sh" "$AGENT_ABS/merge-branch-into-master.sh"; do
+  if [ -f "$_f" ]; then
+    ve_add_other_x "$_f" || exit 1
   fi
-fi
-if type ve_ensure_tracked_exec_other_x >/dev/null 2>&1; then
-  ve_ensure_tracked_exec_other_x "$AGENT_ABS"
-fi
+done
+ve_ensure_tracked_exec_other_x "$AGENT_ABS" || exit 1
 
 # 9. third_party comes from the pinned, committed artifacts in the checkout; setup never checks out
 #    or builds a library (that is fetch-deps rw/upgrade/build, by hand). Every [[artifact]] path a
@@ -582,21 +565,28 @@ PYEND_ARTIFACTS
 # CRITICAL: seed/smudge/copy of tracked files must not leave the agent worktree dirty,
 # or ./build_app will refuse (uncommitted tracked files gate). Commit if needed.
 (
-  cd "$AGENT_ABS" || exit 0
-  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+  set -e
+  cd "$AGENT_ABS"
+  if ! git diff --quiet || ! git diff --cached --quiet; then
     echo "Committing setup_agent tracked-file updates so build_app can run..."
-    git add -u 2>/dev/null || true
-    # Newly copied tracked scripts may be untracked if not on branch tip yet
-    git add -A -- \
-      env deploy build_app setup_agent.sh fix-perms update-rules.sh \
-      append-to-engineering-log get-builds-tag.sh install-*.sh \
-      git-merge-drivers hooks AGENT_MANDATES.md AGENTS.md GROK.md \
-      standard-plan-compliance-block.md project-facts.md 2>/dev/null || true
-    if ! git diff --cached --quiet 2>/dev/null; then
-      git commit -m "chore: setup_agent seed/sync tracked infra (keep build_app clean)" || true
+    git add -u
+    # Newly copied tracked scripts may be untracked if not on branch tip yet (only paths
+    # that exist are named, so git add has nothing to complain about)
+    _seed=()
+    for _p in env deploy build_app setup_agent.sh fix-perms update-rules.sh \
+              append-to-engineering-log get-builds-tag.sh install-*.sh \
+              git-merge-drivers hooks AGENT_MANDATES.md AGENTS.md GROK.md \
+              standard-plan-compliance-block.md project-facts.md; do
+      if [ -e "$_p" ]; then _seed+=("$_p"); fi
+    done
+    if [ "${#_seed[@]}" -gt 0 ]; then
+      git add -A -- "${_seed[@]}"
+    fi
+    if ! git diff --cached --quiet; then
+      git commit -m "chore: setup_agent seed/sync tracked infra (keep build_app clean)"
     fi
   fi
-)
+) || _setup_die "committing setup_agent's tracked-file updates in $AGENT_ABS failed (output above)"
 
 # --- Enter new worktree shell (env semantics) ---
 # Replace this process with an interactive shell in AGENT_ABS, umask 002, full
@@ -610,7 +600,7 @@ echo "Next: run a launcher from here, e.g.  ../run-grok-coder   or   ../run-grok
 echo "Entering worktree shell (umask 002 + project groups via env helper)..."
 
 export VE_ENV_CWD="$AGENT_ABS"
-umask 002
+umask "$(perm_umask worktree)"
 
 # Prefer setuid-root helper only (setuid+non-root owner is unsafe — see env)
 REFRESH=""
@@ -625,7 +615,7 @@ if [ -n "$REFRESH" ]; then
   exec "$REFRESH"
 fi
 
-# Fallback: interactive shell in worktree with umask 002 (groups may still be stale)
+# No setuid helper yet: plain interactive shell in the worktree (umask 002; groups may be stale)
 echo "NOTE: ve-refresh-shell not setuid yet — shell may lack project groups."
 echo "  One-time: gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c && sudo chown root:root ve-refresh-shell && sudo chmod 4755 ve-refresh-shell"
 echo "  Then: source ./env"

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Tests for setup_agent.sh in a throwaway project in /tmp. Stand-ins: 'sudo' on PATH only
+# records its arguments (nothing runs as root or another user); no fix-perms, chattr or
+# installer really runs. Checks the permission model (umask 002 worktree, 2775 dir), the
+# fix-perms call, and that failures stop setup loudly.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/setupagent-test.XXXXXX)"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+me=$(id -un)
+grep -n -F '2>/dev/null || true' "$canon/setup_agent.sh" >"$T/sw" && bad "swallowing: $(cat "$T/sw")" || ok "no '2>/dev/null || true' in setup_agent.sh"
+grep -n 'skip-sudoers' "$canon/setup_agent.sh" >/dev/null && bad "setup_agent passes the removed --skip-sudoers" || ok "no --skip-sudoers"
+
+S="$T/shims"; mkdir -p "$S"
+cat >"$S/sudo" <<SH
+#!/bin/sh
+echo "sudo \$*" >>"$T/sudo-calls"
+case "\$*" in *fix-perms*) [ -f "$T/fail-fixperms" ] && { echo "fix-perms: forced failure" >&2; exit 1; } ;; esac
+exit 0
+SH
+chmod 755 "$S/sudo"
+
+mk() {
+  R="$T/proj"; if [ -d "$R" ]; then chmod -R u+rwx "$R"; rm -rf "$R"; fi
+  mkdir -p "$R/hooks" "$R/sandbox"; chmod 2775 "$R"
+  cp "$canon/setup_agent.sh" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$canon/ve-resolve-orch" \
+     "$canon/filter-apply-config" "$canon/filter-clean-config" "$canon/verify-smudge" \
+     "$canon/append-to-engineering-log" "$R/"
+  printf '#!/bin/sh\nexit 0\n' >"$R/hooks/post-checkout"; chmod 755 "$R/hooks/post-checkout"
+  printf '#!/bin/sh\necho stand-in fix-perms\n' >"$R/fix-perms"; chmod 755 "$R/fix-perms"
+  printf '## log\n' >"$R/ENGINEERING_LOG.md"
+  echo 'conf.txt filter=manage-configs' >"$R/.gitattributes"; echo plain >"$R/conf.txt"
+  printf 'project.config\nsandbox\nagent-*\n*.wt\n' >"$R/.gitignore"
+  cat >"$R/project.config" <<C
+primary_user=$me
+planning_user=ai-planner
+coder_user=ai-coder
+orchestrator_user=ai-orchestrator
+code_group=ai-code
+shared_group=ai-shared
+sandbox_group=ai-sandbox
+sandbox_dir=sandbox
+orch_root=$R
+C
+  git -C "$R" init -q -b master
+  git -C "$R" config filter.manage-configs.clean 'bash ./filter-clean-config %f'
+  git -C "$R" config filter.manage-configs.smudge 'bash ./filter-apply-config'
+  git -C "$R" config filter.manage-configs.required true
+  git -C "$R" add -A && git -C "$R" -c user.name=t -c user.email=t@t commit -qm init
+  : >"$T/sudo-calls"
+}
+run() { (cd "$R" && env PATH="$S:$PATH" SHELL=/bin/true GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t bash ./setup_agent.sh "$@") >"$T/out" 2>&1; }
+
+mk; umask 077; run feature-x; rc=$?; umask 022
+[[ $rc -eq 0 ]] && ok "setup_agent completes (rc 0)" || bad "setup rc=$rc: $(tail -15 "$T/out")"
+[[ "$(stat -c %a "$R/agent-1")" == 2775 ]] && ok "worktree dir 2775 (worktree area)" || bad "agent-1 mode $(stat -c %a "$R/agent-1")"
+[[ "$(stat -c %a "$R/agent-1/.gitignore")" == 664 ]] && ok "checked-out files created with umask 002 even from a umask 077 shell" || bad ".gitignore mode $(stat -c %a "$R/agent-1/.gitignore")"
+[[ "$(stat -c %a "$R/agent-1/conf.txt")" == 664 ]] && ok "smudged file (mktemp 0600) gets the worktree mode" || bad "conf.txt mode $(stat -c %a "$R/agent-1/conf.txt")"
+grep -qx "sudo ./fix-perms $R/agent-1" "$T/sudo-calls" && ok "fix-perms called for the new worktree only" || bad "sudo calls: $(cat "$T/sudo-calls")"
+[[ -L "$R/feature-x.wt" ]] && ok "branch symlink made" || bad "no symlink"
+grep -q 'Agent ID:\*\* agent-1' "$R/agent-1/AGENT_CONTEXT.md" && ok "AGENT_CONTEXT.md written" || bad "no AGENT_CONTEXT"
+
+mk; touch "$T/fail-fixperms"; run feature-y; rc=$?; rm -f "$T/fail-fixperms"
+[[ $rc -ne 0 ]] && grep -q 'sudo ./fix-perms .* failed' "$T/out" && ok "a failing fix-perms stops setup (rc $rc)" || bad "fix-perms failure: rc=$rc $(tail -5 "$T/out")"
+
+mk; mkdir -p "$R/agent-1"; : >"$R/agent-1/junk"; run feature-z; rc=$?
+grep -q "sudo rm -rf -- agent-1" "$T/sudo-calls" && ok "stale agent-1 removed with one explicit sudo rm (no silent retry)" || bad "stale dir: $(cat "$T/sudo-calls")"
+
+echo "passed $pass failed $fail"
+[[ $fail -eq 0 ]]

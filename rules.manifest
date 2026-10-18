@@ -63,6 +63,7 @@ shared remove_worktree.sh
 shared fix-perms
 shared perm-lib.sh
 shared perm-model.tsv
+shared perm-engine.py
 shared filter-apply-config
 shared filter-clean-config
 shared verify-smudge
