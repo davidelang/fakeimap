@@ -64,6 +64,15 @@ Answering No at that question leaves the commit in place and builds nothing.
   versionName and versionCode are printed at the end.
 - The upload key must be readable by `coder_user`: give it a dedicated group, `chmod 640`,
   and the directory 750. It must not be world-readable.
+- **Permissions** come from `perm-model.tsv` through `perm-lib.sh` (both ship next to
+  build_app). Gradle runs with `--no-daemon` under the `build-intermediates` umask (002), so
+  the JVM writing the outputs inherits it. Afterwards `app/build` and `.gradle` get group
+  ai-code, group read/write and setgid dirs; "other" bits are never stripped.
+- **Deliverables** (every APK in `apk_outputs`/`apk_test_outputs`, its
+  `output-metadata.json`, and the AAB) are set to 644, and every directory from the worktree
+  down to them gets o+rx. build_app then checks that `primary_user` can read them with no
+  supplementary groups (as from a desktop session that started before a group change). If
+  that check fails, build_app prints `NOT-READABLE ... blocker=<path>` and exits 1.
 
 All keys are documented in `project.config.example`.
 

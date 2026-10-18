@@ -28,7 +28,8 @@
 # 'sudo -n -u <coder_user> /usr/bin/env ...', carrying the invoker's git identity for commits.
 #
 # NEVER run gradlew, gradlew.bat, or direct gradle commands (forbidden; this is the enforced gateway).
-# It handles: git commit, tag update, forensic checks, local .gradle repair, umask/sg enforcement.
+# It handles: git commit, tag update, forensic checks, local .gradle repair, umask (perm-model.tsv),
+# and makes the APKs/AAB readable by primary_user even without group membership (644).
 # Pass gradle options after -- (e.g. build_app "msg" file.kt -- --info --stacktrace).
 #
 # project.config keys (see project.config.example):
@@ -46,7 +47,11 @@
 #   No key has a default: a selected build whose keys are unset stops before the commit phase.
 #   release_gradle_args Play build: extra space-separated gradle args (e.g. -Pfuelsmoothing.official=true)
 
-PRIMARY_USER=$(sed -n 's/^primary_user=//p' project.config 2>/dev/null | tr -d '\r' | head -1)
+if [ ! -f project.config ]; then
+  echo "ERROR: no project.config in $(pwd) (run build_app from the worktree root)." >&2
+  exit 1
+fi
+PRIMARY_USER=$(sed -n 's/^primary_user=//p' project.config | tr -d '\r' | head -1)
 if [ -z "$PRIMARY_USER" ]; then
   echo "ERROR: primary_user unset in project.config" >&2
   echo "  Stamp project.config from project.config.example (or source ./env after setup)." >&2
@@ -82,8 +87,20 @@ if [ "$(id -un)" != "$CODER_USER" ]; then
     "$0" "$@"
 fi
 
-# Source/docs: prefer 664/2775 → umask 002. Build outputs tightened after gradle.
-umask 002
+# Owners, groups, modes and umasks come from perm-model.tsv through perm-lib.sh (next to this
+# script). Gradle runs with --no-daemon, so the JVM that writes the outputs is a child of this
+# shell and inherits its umask (a long-lived daemon would keep the umask it was started with).
+_BA_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -f "$_BA_DIR/perm-lib.sh" ]; then
+  echo "ERROR: missing $_BA_DIR/perm-lib.sh (ships with the orchestration rules)." >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$_BA_DIR/perm-lib.sh"
+perm_init "$_BA_DIR/project.config" || exit 1
+WORKTREE_UMASK=$(perm_umask worktree) || exit 1
+BUILD_UMASK=$(perm_umask build-intermediates) || exit 1
+umask "$WORKTREE_UMASK"
 
 # sudo resets the environment, so the JDK running Gradle and keytool comes from project.config
 # (java_home=, required), never from the invoker's shell or coder_user's default java.
@@ -403,8 +420,10 @@ fi
 ve_resolve_orch "$_BA_HERE" || exit 1
 ve_setup_worktree_build_homes "$_BA_HERE" || exit 1
 _AAPT2=$(ve_aapt2_from_sdk "$_BA_HERE") || exit 1
+# Extracted Maven aapt2 copies lose +x (see ve_aapt2_from_sdk); restore it where missing.
+# A copy this user cannot chmod stops the build with chmod's own error.
 if [ -n "${GRADLE_USER_HOME:-}" ] && [ -d "$GRADLE_USER_HOME" ]; then
-  find "$GRADLE_USER_HOME" -type f -name aapt2 -exec chmod u+rx,g+rx {} + 2>/dev/null || true
+  find "$GRADLE_USER_HOME" -type f -name aapt2 ! -perm -u+rx,g+rx -exec chmod u+rx,g+rx {} + || exit 1
 fi
 ve_reset_gradle_daemon_dir || exit 1
 ve_wipe_foreign_app_build_outputs || exit 1
@@ -426,41 +445,57 @@ GRADLE_BASE=( ./gradlew --no-daemon --no-configuration-cache
   -Dkotlin.compiler.execution.strategy=in-process )
 
 # Post-build permission repair for this worktree only (not orch caches). Runs after every
-# gradle invocation, successful or not. (Legacy lines, kept verbatim.)
+# gradle invocation, successful or not: app/build and .gradle get the build-intermediates
+# area (group ai-code, group rw, setgid dirs; 'other' bits are left as the umask made them),
+# app/src the worktree area. Paths whose owner is someone else and whose modes differ make
+# chmod fail, and the build stops with that error.
 repair_build_perms() {
-for gdir in .gradle app/build; do
-  if [ -d "$gdir" ]; then
-    echo "Quick $gdir permission repair (group sync + setgid + ug+rwX)..."
-    chgrp -R ai-code "$gdir" 2>/dev/null || true
-    find "$gdir" -type d -exec chmod 2770 {} + 2>/dev/null || true
-    chmod -R ug+rwX,o-rwx "$gdir" 2>/dev/null || true
-  fi
-done
-
-# Assert group-writable dirs under app/build (2755 blocks other users' deploy wipe).
-if [ -d app/build ]; then
-  BAD_DIRS=$(find app/build -type d ! -perm -g+w 2>/dev/null | head -20)
-  if [ -n "$BAD_DIRS" ]; then
-    echo "Re-applying group-write on non-group-writable app/build dirs..."
-    echo "$BAD_DIRS" | while read -r d; do chmod g+rwX "$d" 2>/dev/null || true; done
-    find app/build -type d -exec chmod 2770 {} + 2>/dev/null || true
-    BAD_DIRS=$(find app/build -type d ! -perm -g+w | head -10)
-    if [ -n "$BAD_DIRS" ]; then
-      echo "WARN: app/build dir(s) still lack group write (other users cannot wipe/deploy). Sample:"
-      echo "$BAD_DIRS"
-      echo "  Fix as owner: find app/build -type d -exec chmod 2770 {} +"
-    else
-      echo "Build tree group-writable: OK (after re-chmod)"
+  local d
+  for d in .gradle app/build; do
+    if [ -d "$d" ]; then
+      perm_apply build-intermediates "$d" || exit 1
     fi
+  done
+  if [ -d app/src ]; then
+    perm_apply worktree app/src || exit 1
   fi
-fi
+}
 
-# Source tree target modes: dirs 2775; files get ug+rw added without removing bits, so tracked
-# exec bits (e.g. 100755 jniLibs .so files) survive (absolute 664 stripped them).
-if [ -d app/src ]; then
-  find app/src -type d -exec chmod 2775 {} + 2>/dev/null || true
-  find app/src -type f -exec chmod ug+rw {} + 2>/dev/null || true
-fi
+# Deliverables (the files someone uploads or sideloads, possibly from a desktop session that
+# predates a group change): each named file gets the deliverables area (644), every directory
+# from the worktree down to it the deliverable-dirs area (o+rx), and then the result is checked
+# from the primary user's point of view with no supplementary groups. Not readable = exit 1.
+publish_deliverables() {
+  local f d files=()
+  for f in "$@"; do
+    case "$f" in
+      /*) echo "ERROR: deliverable path must be relative to the worktree: $f" >&2; exit 1 ;;
+    esac
+    if [ ! -f "$f" ]; then
+      echo "ERROR: deliverable missing: $f" >&2
+      exit 1
+    fi
+    files+=("$f")
+    if [ -f "$(dirname "$f")/output-metadata.json" ]; then
+      files+=("$(dirname "$f")/output-metadata.json")
+    fi
+  done
+  for f in "${files[@]}"; do
+    perm_apply deliverables "$f" --top-only || exit 1
+    d=$(dirname "$f")
+    while [ "$d" != "." ]; do
+      perm_apply deliverable-dirs "$d" --top-only || exit 1
+      d=$(dirname "$d")
+    done
+  done
+  for f in "${files[@]}"; do
+    perm_verify deliverables "$f" --top-only || exit 1
+  done
+  perm_readable_nogroups "$PRIMARY_USER" "${files[@]/#/$(pwd)/}" || {
+    echo "ERROR: deliverables are not readable by $PRIMARY_USER without group membership (see NOT-READABLE above)." >&2
+    exit 1
+  }
+  echo "Deliverables readable by $PRIMARY_USER without group membership: ${files[*]}"
 }
 
 # APK build: $1 = label; remaining args = tasks, then '::', then expected outputs.
@@ -473,7 +508,7 @@ build_apks() {
   outputs=( "$@" )
   echo "=== $label build: ${tasks[*]} ==="
   # No daemon: multi-worktree RAM; agent path does not keep Gradle daemons warm.
-  (umask 007; "${GRADLE_BASE[@]}" "${GRADLE_ARGS[@]}" "${tasks[@]}")
+  (umask "$BUILD_UMASK"; "${GRADLE_BASE[@]}" "${GRADLE_ARGS[@]}" "${tasks[@]}")
   ret=$?
   ve_reset_gradle_daemon_dir || exit 1
   repair_build_perms
@@ -487,6 +522,7 @@ build_apks() {
       exit 1
     fi
   done
+  publish_deliverables "${outputs[@]}"
   echo "=== $label build OK ==="
 }
 
@@ -498,7 +534,7 @@ build_play() {
   # ORG_GRADLE_PROJECT_* environment variables rather than -P so the passwords never appear in
   # ps. Bash cannot export names containing '.', so python3 renames them and execs gradlew.
   # gradlew is '#!/usr/bin/env sh' and dash silently drops such variables, so it runs under bash.
-  (umask 007
+  (umask "$BUILD_UMASK"
    export BA_STORE_FILE="$RELEASE_KEYSTORE" BA_KEY_ALIAS="$RELEASE_KEY_ALIAS" BA_STORE_PASSWORD BA_KEY_PASSWORD
    exec python3 -c '
 import os, sys
@@ -530,6 +566,7 @@ os.execvp(sys.argv[1], sys.argv[1:])
     echo "ERROR: $AAB is signed with SHA256 '$aab_sha256', not the upload key ($UPLOAD_SHA256)." >&2
     exit 1
   fi
+  publish_deliverables "$AAB"
   if [ -f app/versionCode.txt ]; then
     version_code=$(tr -d '[:space:]' < app/versionCode.txt)
   else

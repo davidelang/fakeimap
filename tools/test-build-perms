@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Tests for build_app's permission handling (build-examples/android-app/build_app + perm-lib.sh).
+# Stand-ins only: a fake ./gradlew writes the outputs, ve-resolve-orch is a stub, and the
+# "primary user" whose read access is checked is 'nobody' (a computed check; nothing is run as
+# another user, no sudo). Runs as the current user, who must be in ai-code and ai-shared
+# (build_app requires both) and is coder_user in the throwaway project.config.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/buildperms-test.XXXXXX)"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
+chmod 755 "$T"
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+me=$(id -un)
+JDK=/usr/lib/jvm/java-17-openjdk-amd64
+
+grep -n -F '2>/dev/null || true' "$canon/build-examples/android-app/build_app" "$canon/perm-lib.sh" >"$T/sw" \
+  && bad "error swallowing: $(cat "$T/sw")" || ok "no '2>/dev/null || true' in build_app or perm-lib.sh"
+grep -n 'o-rwx\|umask 007' "$canon/build-examples/android-app/build_app" >"$T/sw" \
+  && bad "build_app still forces group-only modes: $(cat "$T/sw")" || ok "build_app forces no o-rwx / umask 007"
+
+mk() {  # fresh worktree repo in $W
+  W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app/src/main"
+  cp "$canon/build-examples/android-app/build_app" "$canon/perm-lib.sh" "$canon/perm-model.tsv" "$W/"
+  cat >"$W/ve-resolve-orch" <<'S'
+ve_resolve_orch() { ORCH_ROOT="$1"; }
+ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }
+ve_aapt2_from_sdk() { echo /bin/true; }
+ve_reset_gradle_daemon_dir() { return 0; }
+ve_wipe_foreign_app_build_outputs() { return 0; }
+S
+  cat >"$W/gradlew" <<'G'
+#!/bin/bash
+# stand-in gradle: records its umask, writes the outputs the tasks name
+umask >"$GRADLE_USER_HOME/gradle-umask"
+for a in "$@"; do
+  case "$a" in
+    assembleDebug) mkdir -p app/build/outputs/apk/debug app/build/intermediates/x
+                   echo apk >app/build/outputs/apk/debug/app-debug.apk
+                   echo '{}' >app/build/outputs/apk/debug/output-metadata.json
+                   echo i >app/build/intermediates/x/f ;;
+    failBuild) exit 1 ;;
+  esac
+done
+G
+  chmod 755 "$W/gradlew"
+  cat >"$W/project.config" <<C
+primary_user=nobody
+coder_user=$me
+planning_user=ai-planner
+java_home=$JDK
+code_group=ai-code
+shared_group=ai-shared
+sandbox_group=ai-sandbox
+apk_tasks=assembleDebug
+apk_outputs=app/build/outputs/apk/debug/app-debug.apk
+C
+  echo src >"$W/app/src/main/a.txt"
+  printf 'project.config\n.gradle-home/\napp/build/\n' >"$W/.gitignore"   # as in real projects
+  git -C "$W" init -q -b master && git -C "$W" add -A && git -C "$W" -c user.name=t -c user.email=t@t commit -qm init
+}
+build() { (cd "$W" && env -u GRADLE_USER_HOME PATH="$PATH" ./build_app --standard </dev/null) >"$T/out" 2>&1; }
+
+mk
+# leftover from the old build_app: group-only output dirs
+mkdir -p "$W/app/build/outputs/apk/debug"; chmod 2770 "$W/app/build" "$W/app/build/outputs" "$W/app/build/outputs/apk" "$W/app/build/outputs/apk/debug"
+build; rc=$?
+[[ $rc -eq 0 ]] && ok "standard build rc 0" || bad "standard build rc=$rc: $(tail -20 "$T/out")"
+[[ "$(cat "$W/.gradle-home/gradle-umask")" == 0002 ]] && ok "gradle ran with umask 0002" || bad "gradle umask $(cat "$W/.gradle-home/gradle-umask")"
+[[ "$(stat -c %a "$W/app/build/outputs/apk/debug/app-debug.apk")" == 644 ]] && ok "APK is 644" || bad "APK mode $(stat -c %a "$W/app/build/outputs/apk/debug/app-debug.apk")"
+[[ "$(stat -c %a "$W/app/build/outputs/apk/debug/output-metadata.json")" == 644 ]] && ok "output-metadata.json is 644" || bad "metadata mode"
+[[ "$(stat -c %G "$W/app/build/outputs/apk/debug/app-debug.apk")" == ai-code ]] && ok "APK group ai-code" || bad "APK group $(stat -c %G "$W/app/build/outputs/apk/debug/app-debug.apk")"
+x=1; for d in app app/build app/build/outputs app/build/outputs/apk app/build/outputs/apk/debug; do
+  [[ $(( 0$(stat -c %a "$W/$d") & 05 )) -eq 5 ]] || { x=0; bad "$d not o+rx: $(stat -c %a "$W/$d")"; }
+done; [[ $x -eq 1 ]] && ok "every dir down to the APK is o+rx (was 2770)"
+grep -q 'Deliverables readable by nobody without group membership' "$T/out" && ok "no-groups read check reported" || bad "no read-check line: $(tail -5 "$T/out")"
+[[ "$(stat -c %a "$W/app/build/intermediates/x/f")" == 664 ]] && ok "intermediates keep umask modes (664, 'other' not stripped)" || bad "intermediate mode $(stat -c %a "$W/app/build/intermediates/x/f")"
+[[ $(( 0$(stat -c %a "$W/app/build/intermediates") & 02000 )) -ne 0 ]] && ok "intermediate dirs setgid" || bad "intermediates not setgid"
+
+# A directory above the worktree that 'other' cannot search: the check fails loudly.
+chmod 750 "$T"
+build; rc=$?
+chmod 755 "$T"
+[[ $rc -ne 0 ]] && grep -q "NOT-READABLE user=nobody .* blocker=$T class=other" "$T/out" && ok "unreadable path fails the build, naming the blocker (rc $rc)" || bad "blocked path: rc=$rc $(tail -5 "$T/out")"
+
+# A deliverable chmod failure surfaces with chmod's error and the path's owner/mode.
+mk
+mkdir -p "$T/shim"; printf '#!/bin/sh\ncase "$*" in *app-debug.apk*) echo "chmod: forced failure" >&2; exit 1;; esac\nexec /usr/bin/chmod "$@"\n' >"$T/shim/chmod"; chmod 755 "$T/shim/chmod"
+(cd "$W" && env -u GRADLE_USER_HOME PATH="$T/shim:$PATH" ./build_app --standard </dev/null) >"$T/out" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'forced failure' "$T/out" && grep -q "perm-lib: 'chmod 00644 .*app-debug.apk' failed" "$T/out" && ok "failing chmod on a deliverable stops the build (rc $rc)" || bad "chmod failure: rc=$rc $(tail -5 "$T/out")"
+grep -q "Updating 'builds' tag" "$T/out" && bad "builds tag moved after a failure" || ok "builds tag not moved after the failure"
+
+# A failed gradle run still repairs, then fails.
+mk; sed -i 's/^apk_tasks=.*/apk_tasks=failBuild/' "$W/project.config"
+build; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'Build failed (standard)' "$T/out" && ok "gradle failure exits non-zero" || bad "gradle failure rc=$rc $(tail -5 "$T/out")"
+
+# perm-lib unit checks
+. "$canon/perm-lib.sh"; perm_init "$W/project.config"
+mkdir -p "$T/u/a/b"; : >"$T/u/a/b/f"; chmod 700 "$T/u/a"
+perm_readable_nogroups nobody "$T/u/a/b/f" >"$T/o" 2>&1 && bad "readable check passed through a 700 dir" || ok "readable check: 700 dir blocks 'other'"
+perm_verify deliverables "$T/u/a/b/f" --top-only >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q '^PERM-MISMATCH area=deliverables' "$T/o" && ok "perm_verify lists the mismatch" || bad "verify: $(cat "$T/o")"
+perm_apply deliverables "$T/u/a/b/f" --top-only && perm_verify deliverables "$T/u/a/b/f" --top-only >/dev/null && ok "perm_apply then perm_verify agree" || bad "apply/verify disagree"
+perm_umask nosucharea >"$T/o" 2>&1 && bad "unknown area accepted" || grep -q "unknown area 'nosucharea'" "$T/o" && ok "unknown area is an error"
+perm_umask englog >"$T/o" 2>&1 && bad "area without umask returned one" || ok "area without a umask is an error"
+mkdir -p "$T/p/keep" "$T/p/other" "$T/p/.git"; : >"$T/p/other/f"; : >"$T/p/.git/f"; : >"$T/p/keep/f"; chmod 600 "$T/p/other/f" "$T/p/.git/f" "$T/p/keep/f"
+perm_apply worktree "$T/p" --prune "$T/p/other" --prune-name .git
+[[ "$(stat -c %a "$T/p/keep/f")" == 664 && "$(stat -c %a "$T/p/other/f")" == 600 && "$(stat -c %a "$T/p/.git/f")" == 600 ]] && ok "--prune and --prune-name are never entered" || bad "prune: keep=$(stat -c %a "$T/p/keep/f") other=$(stat -c %a "$T/p/other/f") git=$(stat -c %a "$T/p/.git/f")"
+
+echo "passed $pass failed $fail"
+[[ $fail -eq 0 ]]
