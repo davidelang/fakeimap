@@ -304,6 +304,7 @@ def perm_worktree():
             if not os.path.isfile(f):
                 sys.exit("deploy-orchestration: %s missing (it ships with the rules)" % f)
         import importlib.util
+        sys.dont_write_bytecode = True  # no __pycache__/ in the rules tree
         spec = importlib.util.spec_from_file_location("perm_engine", eng_path)
         eng = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(eng)
