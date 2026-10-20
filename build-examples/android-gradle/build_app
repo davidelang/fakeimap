@@ -44,8 +44,8 @@
 #     7. Play only, last: after the bundle and its checks succeeded, app/versionCode.txt goes
 #        N -> N+1, committed alone as "versionCode N+1 (next play build)". So the built commit
 #        is exactly the source of Play versionCode N (tag it yourself if you want); a failed
-#        build bumps nothing. No git tag is created. android-build-info treats these bump-only
-#        commits as not changing the build (deploy's HEAD checks look through them).
+#        build bumps nothing. No git tag is created. The bump is a new commit, so builds from
+#        before it are no longer current (deploy --test wants a build from HEAD).
 #
 # Multi-user mode (a smudged project.config): every build, in every mode (--standard, --test,
 # --play, the default), runs as coder_user, so app/build, .gradle and the deliverables always have

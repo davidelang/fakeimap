@@ -88,11 +88,9 @@ line each:
      `git describe --always --exclude '*+*'` of the built commit.
    - If HEAD or `app/versionCode.txt` changed during the build, it stops with an error and
      does not bump.
-   - **deploy staleness:** `android-build-info select` treats HEAD as the nearest commit that is
-     not a build_app bump (subject exactly `versionCode N (next play build)`, one parent, only
-     `app/versionCode.txt` changed). So the standard/test builds made in the same run, from the
-     built commit, still count as current after the bump. Any other commit, including a
-     hand-made versionCode change, makes them stale.
+   - **deploy staleness:** a build is current only when its recorded commit is HEAD. The bump
+     is a commit like any other, so builds made before it (including this run's standard/test
+     builds) are stale afterwards; rebuild before `deploy --test`.
 
 For a release: commit your work (with build_app or git), then `./build_app --play`. No
 manual version number is needed. build_app makes no release tag; tag versions yourself

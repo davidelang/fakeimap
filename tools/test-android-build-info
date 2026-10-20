@@ -77,11 +77,7 @@ meta arm64/qa arm64Qa com.ex.app.test arm64-qa.apk; info stamp test
 g commit -q --allow-empty -m later; info select test
 [[ $rc -ne 0 ]] && grep -q 'not HEAD' $T/out && ok "select: test build older than HEAD fails" || bad "head: $(cat $T/out)"
 info stamp test; echo 7 >$R/app/versionCode.txt; g add app/versionCode.txt; g commit -qm 'versionCode 7 (next play build)'; info select test
-[[ $rc -eq 0 ]] && ok "select: build_app's versionCode bump commit after the build is looked through" || bad "bump: $(cat $T/out)"
-echo 8 >$R/app/versionCode.txt; g add app/versionCode.txt; g commit -qm 'versionCode 8 (play build)'; info select test
-[[ $rc -ne 0 ]] && grep -q 'not HEAD' $T/out && ok "select: a hand-made versionCode commit is a real change" || bad "hand bump: $(cat $T/out)"
-info stamp test; echo 9 >$R/app/versionCode.txt; echo y >$R/other; g add -A; g commit -qm 'versionCode 9 (next play build)'; info select test
-[[ $rc -ne 0 ]] && grep -q 'not HEAD' $T/out && ok "select: a bump-subject commit touching other files is a real change" || bad "bump+other: $(cat $T/out)"
+[[ $rc -ne 0 ]] && grep -q 'not HEAD' $T/out && ok "select: build_app's versionCode bump commit makes the earlier build stale" || bad "bump: $(cat $T/out)"
 info stamp test; g commit -q --allow-empty -m later2; info stamp standard
 info select test
 [[ $rc -ne 0 ]] && grep -q 'earlier commit than the regular build' $T/out && ok "select: test build from an earlier commit than the standard build fails" || bad "earlier: $(cat $T/out)"

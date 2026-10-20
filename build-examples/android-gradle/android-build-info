@@ -17,8 +17,7 @@ applicationId, versionName). Nothing comes from project.config, no app id is har
                              output present afterwards was produced by this run)
   stamp standard|test        after gradle: record that build's APKs (commit, metadata, sha256) in
                              app/build/outputs/build_app/<kind>.json; fails if anything is missing
-  select standard|test       for deploy: check the stamp against HEAD (build_app's own
-                             'versionCode N (next play build)' commits are looked through), the files and (test) the
+  select standard|test       for deploy: check the stamp against HEAD, the files and (test) the
                              standard stamp, then print 'app <apk>' / 'instr <apk> <id>' lines
 Exit 1 with an ERROR line on any problem.
 """
@@ -216,25 +215,8 @@ def is_ancestor(a, b):
     """a is an ancestor of b (or equal)."""
     return subprocess.run(["git", "merge-base", "--is-ancestor", a, b]).returncode == 0
 
-BUMP_RX = re.compile(r"versionCode [0-9]+ \(next play build\)")
-
-def build_head():
-    """HEAD, looking back through build_app's own versionCode bump commits (subject
-    'versionCode N (next play build)', one parent, only app/versionCode.txt changed): they
-    record the code for the NEXT Play build and change nothing that was built."""
-    c = git("rev-parse", "HEAD").strip()
-    while True:
-        subj = git("log", "-1", "--format=%s", c).strip()
-        parents = git("rev-list", "--parents", "-n", "1", c).split()[1:]
-        if not BUMP_RX.fullmatch(subj) or len(parents) != 1:
-            return c
-        files = git("diff-tree", "--no-commit-id", "--name-only", "-r", c).split()
-        if files != ["app/versionCode.txt"]:
-            return c
-        c = parents[0]
-
 def select(d, kind):
-    head = build_head()
+    head = git("rev-parse", "HEAD").strip()
     s = load_stamp(kind)
     if kind == "test" and not d["test"]:
         die("this app declares no test build ('- **Test build:** none' in %s); deploy --test has nothing to install" % FACTS)
@@ -252,7 +234,7 @@ def select(d, kind):
             die("the test build (%s) is from an earlier commit than the regular build (%s); run ./build_app --test"
                 % (s["commit"][:12], std["commit"][:12]))
         if s["commit"] != head:
-            die("the test build is from %s, not HEAD %s (versionCode bump commits excluded); run ./build_app --test" % (s["commit"][:12], head[:12]))
+            die("the test build is from %s, not HEAD %s; run ./build_app --test" % (s["commit"][:12], head[:12]))
         std_ids = {e["application_id"] for e in std["entries"] if e["role"] == "app"}
         for e in s["entries"]:
             if e["role"] == "app" and e["item"].startswith("buildtype:") and e["application_id"] in std_ids:
