@@ -50,6 +50,7 @@ Context · Recommended Approach · Critical Files · Existing utilities · **Pha
 ## Do
 
 - Product locks + Acceptance the coder can completeness-check.
+- One line `Review: diff` when Acceptance is behavior a diff can hide (state, migration, merge, persistence). A deletion, a doc edit, or a pin bump omits it.
 - High-signal only; cite paths not long code dumps.
 - Long forensics → `sandbox/research/<slug>.md` + link (or chat).
 - **Finish greps in planning.** Never leave `unless` / `grep X` / “if that path walks…” in a plan about to be approved. Write the answer (`Kotlin: no edits.` or the exact `fun`).

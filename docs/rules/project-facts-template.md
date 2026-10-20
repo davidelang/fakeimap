@@ -14,6 +14,4 @@ Changing this section needs David's OK (master-merge asks).
 ## Worktree: <name>
 Testing override: device=<id or none> emulator=<yes/no>.
 
-## Coder sequence
-executor -> reviewer
-(choose from executor, reviewer, test-writer, security-auditor)
+Coder children follow `roles/coder.md`. A plan line `Review: diff` adds one reviewer. Do not put a child sequence in this file.
