@@ -338,7 +338,7 @@ ensure_worktree_scripts_executable() {
   local f
   # setgid + rwx for owner/group so primary and ai-code can run; other r-x for stale sessions
   local scripts=(
-    build_app deploy setup_agent.sh remove_worktree.sh
+    build_app deploy
     get-builds-tag.sh update-rules.sh ve-resolve-orch install-merge-drivers.sh merge-branch-into-master.sh
     generate_pr.sh cleanup_pr.sh
     filter-apply-config filter-clean-config setup-project
@@ -348,6 +348,10 @@ ensure_worktree_scripts_executable() {
     agent-landlock todo-append todo-close env
     landlock-smoke-matrix landlock-write-probe
   )
+  # Root-only tools (rules.manifest class root): only the orchestration root has them.
+  if [ "$(cd "$wt" && pwd -P)" = "$(cd "$ORCH_ROOT" && pwd -P)" ]; then
+    scripts+=(setup_agent.sh remove_worktree.sh)
+  fi
   for f in "${scripts[@]}"; do
     if [ -f "$wt/$f" ]; then
       perm_apply worktree-scripts "$wt/$f" --top-only

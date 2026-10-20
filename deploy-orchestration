@@ -37,6 +37,7 @@ Rules:
   `none` installs and checks nothing. A dirty/untracked root copy fails; a root copy canon never
   published (DIVERGED) fails unless --override-path names it; older published copies update.
   A leftover build_type= in project.config fails (delete it). Not run with --host-only.
+- Class root goes to project roots only, never into worktrees (setup_agent.sh, remove_worktree.sh).
 - Class purge deletes the path everywhere it is tracked.
 - No write access to a target gives a read-only report for it, not a failure.
 - Commits use `git commit --only` on exactly the copied paths; other changes are untouched.
@@ -433,14 +434,14 @@ def check(src):
     man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
     problems = []
     for cls, pat in man:
-        if cls not in ("law", "shared", "opt", "replace", "retired", "purge"):
+        if cls not in ("law", "shared", "opt", "replace", "root", "retired", "purge"):
             problems.append("bad class: %s %s" % (cls, pat))
         hits = [p for p in t if glob_match(pat, p)]
-        if cls in ("law", "shared", "replace") and not hits and "*" not in pat:
+        if cls in ("law", "shared", "replace", "root") and not hits and "*" not in pat:
             problems.append("missing in source: %s" % pat)
         if cls in ("retired", "purge") and hits:
             problems.append("retired but still tracked: %s" % ", ".join(hits))
-    sel = entries_for(src, man, t, ("law", "shared", "opt", "replace"))
+    sel = entries_for(src, man, t, ("law", "shared", "opt", "replace", "root"))
     for p in t:
         if (p.startswith((".grok/", "roles/", "docs/rules/", "probes/")) or p in ("roles.config",)) and p not in sel:
             problems.append("rule-ish file not in manifest: %s" % p)
@@ -651,7 +652,7 @@ def main():
     st = git(src, "status", "--porcelain", "--untracked-files=no").splitlines()
     src_man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
     src_tree = tree(src)
-    sel_src = entries_for(src, src_man, src_tree, ("law", "shared", "opt", "replace"))
+    sel_src = entries_for(src, src_man, src_tree, ("law", "shared", "opt", "replace", "root"))
     dirty_src = [l[3:] for l in st if l[3:] in sel_src or l[3:] == "rules.manifest"]
     if dirty_src:
         print("FAIL: source %s has uncommitted manifest paths: %s" % (src, ", ".join(dirty_src)))
@@ -684,7 +685,7 @@ def main():
         if os.path.realpath(host) != os.path.realpath(first_src):
             upstream = first_src
             u_tree = tree(upstream)
-            sel = entries_for(upstream, src_man, u_tree, ("law", "shared", "opt", "replace"))
+            sel = entries_for(upstream, src_man, u_tree, ("law", "shared", "opt", "replace", "root"))
             msg = MSG.format(src=os.path.basename(upstream), sha=git(upstream, "rev-parse", "--short", "HEAD").strip())
             changed = sync(upstream, host, sel, u_tree, retired, rep, hl, "(root)", apply, msg)
             if changed:

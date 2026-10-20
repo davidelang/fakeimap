@@ -37,7 +37,8 @@ canon = os.path.join(home, "orchestration-example")
 os.makedirs(canon); g(canon, "init", "-q", "-b", "master")
 for f in ("deploy-orchestration", "perm-engine.py", "perm-model.tsv"):
     shutil.copy2(os.path.join(canon_src, f), os.path.join(canon, f))
-write(canon + "/rules.manifest", "shared AGENTS.md\n")
+write(canon + "/rules.manifest", "shared AGENTS.md\nroot setup_agent.sh\n")
+write(canon + "/setup_agent.sh", "#!/bin/bash\necho setup\n", 0o755)
 write(canon + "/AGENTS.md", "agents\n"); write(canon + "/update-rules.sh", "#\n", 0o755)
 write(canon + "/.gitignore", "project.config\n")
 write(canon + "/project.config", "git_home=%s\n" % home)
@@ -93,7 +94,9 @@ for n in ("p-nofacts", "p-noline", "p-uncommitted"):
     check(("FAIL: %s:" % n) not in out and any(l.startswith(n + " ") and "unmanaged" in l and "no build type: build scripts not managed" in l for l in out.split("\n")),
           "%s: no build type -> reported unmanaged, not an error, nothing installed" % n)
 check(not os.path.exists(p_nofacts + "/deploy") and not os.path.exists(p_uncommitted + "/deploy"), "unmanaged: nothing installed (uncommitted facts not read)")
-check(all(head(os.path.join(home, n)) == before[n] for n in names), "failed/none/command projects: no commit")
+def installs(n):
+    return [m for m in g(os.path.join(home, n), "log", "--format=%s", before[n] + "..HEAD").split("\n") if m.startswith("rules: install")]
+check(all(not installs(n) for n in names), "failed/none/command projects: no build-type install commit")
 check(not os.path.exists(p_none + "/deploy") and "FAIL: p-none:" not in out, "none: nothing installed, no failure")
 check("FAIL: p-cmd:" not in out and open(p_cmd + "/build_app").read().endswith("own build\n") and not os.path.exists(p_cmd + "/deploy"),
       "command: own build_app untouched, nothing installed, no failure")
@@ -116,6 +119,8 @@ check("local build_app\n" in lm and "local deploy\n" in lm and "local .gitignore
 check(g(pa, "status", "--porcelain", "--untracked-files=no") == "", "root clean after commit")
 check(g(pa, "log", "-1", "--format=%s").startswith("rules: install build-examples/android-gradle from orchestration-example@"), "commit message names type and canon sha")
 check(open(pa + "/master/build_app").read().endswith("build v1\n"), "worktree receives build_app via rules.manifest.local")
+check(os.path.isfile(pa + "/setup_agent.sh") and not os.path.exists(pa + "/master/setup_agent.sh"),
+      "manifest class root: published to the project root, not to its worktrees")
 h1 = head(pa)
 r = deploy("--apply", "--repos", "p-and")
 check(r.returncode == 0 and head(pa) == h1, "rerun: up-to-date, no commit")

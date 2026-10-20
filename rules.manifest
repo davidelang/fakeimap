@@ -4,6 +4,7 @@
 #   law      agents read or follow it (`./deploy-orchestration --list law`); created if missing
 #   shared   tooling; created if missing
 #   opt      updated only where the target already has it
+#   root     tooling for the orchestration root only; never published into worktrees
 #   replace  overwritten even if the host changed it (its host specifics moved to rules.manifest.local)
 #   retired  removed from targets (kept, with a warning, if the target's copy is not from our history)
 #   purge    removed from every target wherever tracked
@@ -58,8 +59,8 @@ shared plans-scope
 shared install-merge-drivers.sh
 shared merge-branch-into-master.sh
 shared git-merge-drivers/*
-shared setup_agent.sh
-shared remove_worktree.sh
+root setup_agent.sh
+root remove_worktree.sh
 shared fix-perms
 shared perm-lib.sh
 shared perm-model.tsv

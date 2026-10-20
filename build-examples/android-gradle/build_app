@@ -256,7 +256,7 @@ for grp in ai-shared ai-code; do
 done
 if [ -n "$MISSING" ]; then
   echo "ERROR: this shell is missing project group(s):$MISSING" >&2
-  echo "  Fix:  source ./env   (or use a setup_agent worktree shell)" >&2
+  echo "  Fix:  source ./env   (refreshes this shell's groups)" >&2
   exit 1
 fi
 
