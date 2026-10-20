@@ -96,7 +96,7 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 | Option | Effect |
 |---|---|
 | (none) | Install the standard build (`apk_outputs`) on every online device |
-| `--test` | Install the test build (`apk_test_outputs`); the tag is `deployed-test` |
+| `--test` | Install the test build (`apk_test_outputs`, including its androidTest APKs with `adb install -r -t`); the tag is `deployed-test` |
 | `--clean` | Uninstall the APKs' own app id first, which removes its data (`UNINSTALL_FIRST=1`) |
 | `--rebuild` | Run `./build_app --standard` (or `--test`) first; flags after `--` go to build_app (`REBUILD=1`) |
 | `--launch` | Start the app's launcher activity after install |
@@ -115,7 +115,7 @@ For each device it reads `ro.product.cpu.abilist` and installs the APK whose nat
 matches the first ABI in that list. A universal APK (no native code) goes to every device.
 After `adb install -r` it checks that the app id appears in `pm list packages` (exact
 match). Any device failure leaves the deployed tag (`deployed`, or `<branch>/deployed`)
-unchanged and makes deploy exit with an error. androidTest APKs in the list are skipped.
+unchanged and makes deploy exit with an error. With `--test`, androidTest APKs in `apk_test_outputs` (paths under `*/androidTest/*`) are installed on every device after the app (`adb install -r -t`), each verified by its own package id (one APK per test package); a missing, unreadable or not-installed one fails that device and the tag stays. In the default mode they are skipped.
 
 Run as root, it re-executes as `primary_user`. It refuses `planning_user` and `coder_user`
 and needs the ai-shared and ai-code groups (`source ./env`).

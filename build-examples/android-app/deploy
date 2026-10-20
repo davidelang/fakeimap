@@ -7,6 +7,8 @@
 # Which APKs: project.config apk_outputs (standard, the default) or apk_test_outputs (--test),
 # the same keys build_app builds. Each device gets the APK whose native code matches the
 # device's ro.product.cpu.abilist (first match in the device's preference order).
+# --test also installs the androidTest APKs in apk_test_outputs (adb install -r -t) on every
+# device, each verified by its own package id; default mode skips androidTest APKs.
 # The app id comes from one place: the APKs themselves (SDK aapt2 dump packagename). Nothing
 # is hard-coded. Everything about the APKs is checked before the first adb call.
 
@@ -80,7 +82,10 @@ deploy stops before any adb call if aapt2 is missing or fails, if the APKs name 
 apps, or if they mix ABI-specific and universal APKs. After each install it checks
 (pm list packages, exact match) that the app id is installed. The deployed tag
 (deployed / <branch>/deployed; deployed-test for --test) moves only when every device
-succeeded. androidTest APKs in the outputs are not installed.
+succeeded. androidTest APKs (paths under */androidTest/*) in apk_test_outputs are installed
+with --test on every device (adb install -r -t) after the app, each verified by its own
+package id; a missing, unreadable or not-installed androidTest APK fails that device. In the
+default mode androidTest APKs in apk_outputs are not installed.
 USAGE
 }
 
@@ -167,14 +172,32 @@ apk_package() {
   printf '%s\n' "$out"
 }
 
-apk_paths=()      # installable APKs (androidTest excluded)
+apk_paths=()      # installable app APKs (androidTest excluded)
+test_paths=()     # --test: androidTest APKs, installed on every device after the app
+test_pkgs=()      # their package ids (from the APKs), one APK per package
 apk_abis=()       # space-separated native ABIs per APK; empty = universal (no native code)
 PKG=""
 PKG_FROM=""
 VERSION_NAME=""
 for apk in "${outputs[@]}"; do
   if [[ "$apk" == */androidTest/* ]]; then
-    echo "Note: $apk is an androidTest APK; not installed by deploy."
+    if [ "$mode" != test ]; then
+      echo "Note: $apk is an androidTest APK; installed only with --test."
+      continue
+    fi
+    if [ ! -f "$apk" ]; then
+      echo "ERROR: missing androidTest APK $apk; run ./build_app --test first, or pass --rebuild" >&2
+      exit 1
+    fi
+    tpkg=$(apk_package "$apk")
+    for i in "${!test_pkgs[@]}"; do
+      if [ "${test_pkgs[$i]}" = "$tpkg" ]; then
+        echo "ERROR: ${test_paths[$i]} and $apk are both $tpkg; list one androidTest APK per test package" >&2
+        exit 1
+      fi
+    done
+    test_paths+=("$apk")
+    test_pkgs+=("$tpkg")
     continue
   fi
   if [ ! -f "$apk" ]; then
@@ -221,6 +244,13 @@ if [ "$n_universal" -gt 1 ]; then
   exit 1
 fi
 echo "App id: $PKG  versionName: $VERSION_NAME  ($mode build, from $PKG_FROM)"
+for i in "${!test_paths[@]}"; do
+  if [ "${test_pkgs[$i]}" = "$PKG" ]; then
+    echo "ERROR: androidTest APK ${test_paths[$i]} has the app's own id $PKG" >&2
+    exit 1
+  fi
+  echo "androidTest id: ${test_pkgs[$i]}  (from ${test_paths[$i]})"
+done
 
 # APK for a device: $1 = comma-separated abilist in preference order.
 apk_for_abilist() {
@@ -370,6 +400,24 @@ for serial in "${selected[@]}"; do
   fi
   if ! pkg_installed "$serial" "$PKG"; then
     echo "ERROR: after installing $apk, $PKG is not installed on $serial (app id mismatch)" >&2
+    failed=1
+    continue
+  fi
+  test_ok=1
+  for i in "${!test_paths[@]}"; do
+    if ! adb -s "$serial" install -r -t "${test_paths[$i]}"; then
+      echo "ERROR: adb install -r -t ${test_paths[$i]} failed on $serial" >&2
+      test_ok=0
+      break
+    fi
+    if ! pkg_installed "$serial" "${test_pkgs[$i]}"; then
+      echo "ERROR: after installing ${test_paths[$i]}, ${test_pkgs[$i]} is not installed on $serial" >&2
+      test_ok=0
+      break
+    fi
+    echo "Installed androidTest ${test_pkgs[$i]} on $serial"
+  done
+  if [ "$test_ok" -ne 1 ]; then
     failed=1
     continue
   fi

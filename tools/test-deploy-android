@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# No-device tests of build-examples/android-app/deploy: fake adb and fake SDK aapt2 on a scratch
+# git repo (no real device, tag or APK is touched). Covers the app-id path and --test androidTest
+# install (adb install -r -t, verified by its own package id, tag only on success).
+set -uo pipefail
+C=$(git rev-parse --show-toplevel)
+T=$(mktemp -d /tmp/test-deploy-android.XXXXXX); trap 'rm -rf "$T"' EXIT
+pass=0 fail=0; ok(){ pass=$((pass+1)); echo "ok   $*"; }; bad(){ fail=$((fail+1)); echo "FAIL $*"; }
+R=$T/repo; mkdir -p $R $T/bin $T/sdk/build-tools/99.0.0
+cp $C/build-examples/android-app/deploy $C/ve-resolve-orch $R/
+echo "sdk.dir=$T/sdk" > $R/local.properties
+A=app/build/outputs/apk
+mkdir -p $R/$A/arm64/debug $R/$A/x86_64/debug $R/$A/androidTest/x86_64/debug
+TA=$A/androidTest/x86_64/debug/app-x86_64-debug-androidTest.apk
+touch $R/$A/arm64/debug/app-arm64-debug.apk $R/$A/x86_64/debug/app-x86_64-debug.apk $R/$TA
+cat > $R/project.config <<C
+primary_user=$(id -un)
+planning_user=ai-planner
+coder_user=ai-coder
+apk_outputs=$A/arm64/debug/app-arm64-debug.apk $A/x86_64/debug/app-x86_64-debug.apk
+apk_test_outputs=$A/arm64/debug/app-arm64-debug.apk $A/x86_64/debug/app-x86_64-debug.apk $TA
+C
+git -C $R init -q; git -C $R -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+cat > $T/sdk/build-tools/99.0.0/aapt2 <<'B'
+#!/bin/sh
+f="$3"
+case "$f" in
+  *androidTest*) [ -n "${A_TEST_FAIL:-}" ] && { echo "error: failed opening zip" >&2; exit 1; }; pkg="${A_TEST:-com.example.app.test}"; abi="" ;;
+  *arm64*) pkg=com.example.app; abi="'arm64-v8a'" ;;
+  *) pkg=com.example.app; abi="'x86_64'" ;;
+esac
+case "$2" in
+  packagename) echo "$pkg" ;;
+  badging) echo "package: name='$pkg' versionCode='1' versionName='1.0'"; [ -n "$abi" ] && echo "native-code: $abi" ;;
+esac
+exit 0
+B
+chmod +x $T/sdk/build-tools/99.0.0/aapt2
+cat > $T/bin/adb <<'X'
+#!/usr/bin/env bash
+echo "adb $*" >>"$FAKE/calls"
+[ "$1" = -s ] && shift 2
+case "$1" in
+  devices) printf 'List of devices attached\nemulator-5554\tdevice\n' ;;
+  shell) case "$2" in
+      getprop) echo x86_64 ;;
+      pm) grep -F -- "$5" "$FAKE/installed" | sed 's/^/package:/' ;;
+    esac ;;
+  install) f="${@: -1}"
+     case "$f" in
+       *androidTest*) [ -n "${ADB_TEST_FAIL:-}" ] && { echo Failure; exit 1; }
+                      [ -z "${ADB_TEST_NOREG:-}" ] && echo "${A_TEST:-com.example.app.test}" >>"$FAKE/installed" ;;
+       *) echo com.example.app >>"$FAKE/installed" ;;
+     esac; echo Success ;;
+  logcat) ;;
+esac
+X
+chmod +x $T/bin/adb
+export FAKE=$T PATH=$T/bin:$PATH
+run() { (cd $R && ./deploy "$@") >$T/out 2>&1; rc=$?; }
+reset() { : >$T/calls; : >$T/installed; unset A_TEST A_TEST_FAIL ADB_TEST_FAIL ADB_TEST_NOREG; git -C $R tag -d deployed deployed-test >/dev/null 2>&1; }
+tag() { git -C $R rev-parse -q --verify "$1" >/dev/null; }
+
+reset; run emulator
+[[ $rc -eq 0 ]] && ! grep -q 'install -r -t' $T/calls && ! grep -q androidTest $T/calls \
+  && grep -q 'install -r .*x86_64-debug.apk' $T/calls && tag deployed && ok "default: app installed, androidTest not, deployed tag" || bad "default: rc=$rc $(cat $T/out)"
+
+reset; sed -i "s|^apk_outputs=.*|& $TA|" $R/project.config; run emulator
+[[ $rc -eq 0 ]] && grep -q 'installed only with --test' $T/out && ! grep -q androidTest $T/calls && ok "default: androidTest in apk_outputs noted and skipped" || bad "default+test: rc=$rc $(cat $T/out)"
+
+reset; run --test emulator
+[[ $rc -eq 0 ]] && grep -q "install -r -t $TA" $T/calls && grep -qx com.example.app.test $T/installed && grep -q 'Installed androidTest com.example.app.test' $T/out \
+  && tag deployed-test && ok "--test: androidTest installed with -r -t, verified, deployed-test tag" || bad "--test: rc=$rc $(cat $T/out) $(cat $T/calls)"
+grep -n 'install' $T/calls | head -1 | grep -q 'x86_64-debug.apk' && ok "--test: app installed before the test APK" || bad "order: $(cat $T/calls)"
+
+reset; rm $R/$TA; run --test emulator
+[[ $rc -ne 0 ]] && grep -q 'missing androidTest APK' $T/out && ! grep -q adb $T/calls && ! tag deployed-test && ok "--test: missing androidTest APK fails before adb, no tag" || bad "missing: rc=$rc $(cat $T/out)"
+touch $R/$TA
+
+reset; A_TEST_FAIL=1 run --test emulator
+[[ $rc -ne 0 ]] && grep -q 'dump packagename .*androidTest.* failed' $T/out && ! grep -q adb $T/calls && ! tag deployed-test && ok "--test: unreadable androidTest APK fails before adb" || bad "unreadable: rc=$rc $(cat $T/out)"
+
+reset; ADB_TEST_FAIL=1 run --test emulator
+[[ $rc -ne 0 ]] && grep -q 'adb install -r -t .* failed' $T/out && ! tag deployed-test && ok "--test: failed test install fails, no tag" || bad "install fail: rc=$rc $(cat $T/out)"
+
+reset; ADB_TEST_NOREG=1 run --test emulator
+[[ $rc -ne 0 ]] && grep -q 'com.example.app.test is not installed' $T/out && ! tag deployed-test && ok "--test: test package not in pm list fails, no tag" || bad "noreg: rc=$rc $(cat $T/out)"
+
+reset; A_TEST=com.example.app run --test emulator
+[[ $rc -ne 0 ]] && grep -q "has the app's own id" $T/out && ! grep -q adb $T/calls && ok "--test: androidTest APK with the app's id rejected" || bad "same id: rc=$rc $(cat $T/out)"
+
+reset; cp $R/$TA $R/$A/androidTest/x86_64/debug/second-androidTest.apk
+sed -i "s|^apk_test_outputs=.*|& $A/androidTest/x86_64/debug/second-androidTest.apk|" $R/project.config
+run --test emulator
+[[ $rc -ne 0 ]] && grep -q 'list one androidTest APK per test package' $T/out && ! grep -q adb $T/calls && ok "--test: two androidTest APKs with one package rejected" || bad "dup: rc=$rc $(cat $T/out)"
+
+grep -qE '\|\| true|2>/dev/null' $C/build-examples/android-app/deploy && bad "deploy swallows errors" || ok "deploy: no '|| true', no '2>/dev/null'"
+echo "passed $pass failed $fail"; [[ $fail -eq 0 ]]
