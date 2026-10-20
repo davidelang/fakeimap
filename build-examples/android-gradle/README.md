@@ -72,29 +72,25 @@ line each:
    - `app/versionCode.txt` must exist, be tracked and hold one integer.
    - **Testing-version check:** a y/N question, default No. It is asked only on a branch
      with a `<branch>-start` tag, whose versionName is always `<branch>-start-<n>-g<hash>`.
-     Answering No stops before anything is committed or tagged.
+     Answering No stops before anything is committed.
    - **Passwords:** `read -s`, checked with `keytool`.
    - So a long unattended stretch never stops part-way to ask.
-5. **versionCode bump and release tag (Play only, automatic):**
+5. **versionCode bump (Play only, automatic):**
    - `app/versionCode.txt` goes from N to N+1 and is committed alone as
-     `versionCode N+1 (play build, tag T)`, by `coder_user` with the invoker's git identity.
-   - That commit gets the annotated tag `T = <base>+<N+1>`. `<base>` is the nearest tag
-     reachable from HEAD that is named `v<digit>…` or `<digit>…` and has no `+` in it
-     (e.g. `v0.9.6` gives `v0.9.6+3`). If there is none, the base is `v0`. An existing `T`
-     stops the build before the bump.
-   - versionName (`git describe --always`) is therefore exactly `T`. It has no `-`, so it
-     is a release, not a testing version.
-   - If anything after the bump fails, `T` is deleted again and the message says so. The
-     commit stays, so the next `--play` uses N+2 (Play needs increasing codes, not
-     consecutive ones).
+     `versionCode N+1 (play build)`, by `coder_user` with the invoker's git identity.
+   - It creates no git tag. Tags are yours to make.
+   - versionName is the `<branch>-start` describe when that tag exists, otherwise
+     `git describe --always --exclude '*+*'`.
+   - If anything after the bump fails, the commit stays, so the next `--play` uses N+2
+     (Play needs increasing codes, not consecutive ones).
 6. **Builds:** they run in sequence (standard, test, play), and the first failure stops
    everything.
 7. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves only after every selected
    build succeeded.
 
 For a release: commit your work (with build_app or git), then `./build_app --play`. No
-manual tag or version number is needed. To start a new version line, tag the base yourself
-(`git tag -a v1.0.0`); later Play builds are then `v1.0.0+<code>`.
+manual version number is needed. build_app makes no release tag; tag versions yourself
+(`git tag -a v1.0.0`) when you want them.
 
 ## Single-user mode
 
@@ -122,7 +118,7 @@ is `./.gradle-home`. deploy refuses to run as root in this mode.
   symlink, or points elsewhere (the error prints the one-line fix), and checks after the build
   that it resolves to the bundle just built.
 - **Play output check:** the AAB must be signed by the upload key. Its path, SHA256,
-  versionName, versionCode and release tag are printed at the end.
+  versionName and versionCode are printed at the end.
 - The upload key must be readable by `coder_user`: give it a dedicated group, `chmod 640`,
   and the directory 750. It must not be world-readable.
 - **Permissions** come from `perm-model.tsv` through `perm-lib.sh` (both ship next to

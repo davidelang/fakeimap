@@ -38,12 +38,10 @@
 #     3. Integrity check: the tree must be clean; every build comes from that one commit.
 #     4. Play only: testing-version y/N check (only on a branch with a BRANCH-start tag) and
 #        password prompts, before any gradle work, so an unattended build never stalls part-way.
-#     5. Play only: versionCode bump. app/versionCode.txt N -> N+1 is committed alone
-#        ("versionCode N+1 (play build, tag T)") and that commit gets the annotated tag
-#        T = <base>+<N+1>, where <base> is the nearest tag named v<digit>... or <digit>...
-#        (tags containing '+' excluded; none reachable: base v0). versionName is then T.
-#        If any later step fails the tag is deleted again (said so on screen); the commit
-#        stays, so the next --play uses N+2 (Play only needs increasing codes).
+#     5. Play only: versionCode bump. Play commits app/versionCode.txt from N to N+1 alone
+#        ("versionCode N+1 (play build)"). It creates no git tag. versionName is the
+#        BRANCH-start describe when that tag exists, otherwise
+#        'git describe --always --exclude '*+*''.
 #     6. Builds in sequence: standard, test, play. The first failure stops everything.
 #     7. The builds tag moves only after every selected build succeeded.
 #
@@ -538,9 +536,9 @@ fi
 if [ "$BUILD_PLAY" = true ]; then
   # Runs as coder_user like every build. The upload keystore is group-readable by coder_user;
   # what protects it is the password, which only the person at this terminal types.
-  # Same version string the gradle files compute for versionName: BRANCH-start tag when it
-  # exists, else 'git describe --always'. Without a BRANCH-start tag the versionCode commit's
-  # own release tag (step 5) is what describe prints, so only the BRANCH-start case is a
+  # Same version string the gradle files compute for versionName: the BRANCH-start describe
+  # when that tag exists, otherwise 'git describe --always --exclude '*+*''. A Play
+  # versionCode is not a git tag and is not versionName. Only the BRANCH-start case is a
   # testing version.
   BRANCH=$(git rev-parse --abbrev-ref HEAD) || exit 1
   if [ ! -f app/versionCode.txt ]; then
@@ -595,55 +593,19 @@ if [ "$BUILD_PLAY" = true ]; then
   fi
   echo "Upload key: $RELEASE_KEYSTORE alias $RELEASE_KEY_ALIAS (SHA256 $UPLOAD_SHA256)"
 
-  # versionCode bump + release tag (see the header, step 5).
+  # versionCode bump (see the header, step 5). A Play versionCode is not a git tag.
   NEW_VERSION_CODE=$((OLD_VERSION_CODE + 1))
-  _rel_tags=$(git tag --merged HEAD --list 'v[0-9]*' '[0-9]*') || exit 1
-  if [ -z "$(printf '%s\n' "$_rel_tags" | grep -v -F '+')" ]; then
-    TAG_BASE=v0
-    echo "No v<digit>/<digit> tag reachable from HEAD: release tag base is v0."
-  else
-    TAG_BASE=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --match '[0-9]*' --exclude '*+*' HEAD) || exit 1
-  fi
-  PLAY_TAG="${TAG_BASE}+${NEW_VERSION_CODE}"
-  if ! git check-ref-format "refs/tags/$PLAY_TAG"; then
-    echo "ERROR: '$PLAY_TAG' is not a valid tag name (base tag '$TAG_BASE')." >&2
-    exit 1
-  fi
-  if git rev-parse -q --verify "refs/tags/$PLAY_TAG" >/dev/null; then
-    echo "ERROR: tag $PLAY_TAG already exists ($(git rev-parse --short "refs/tags/$PLAY_TAG^{commit}")); app/versionCode.txt ($OLD_VERSION_CODE) is behind it." >&2
-    exit 1
-  fi
   printf '%s\n' "$NEW_VERSION_CODE" > app/versionCode.txt
-  git commit -q --only -m "versionCode $NEW_VERSION_CODE (play build, tag $PLAY_TAG)" -- app/versionCode.txt || {
+  git commit -q --only -m "versionCode $NEW_VERSION_CODE (play build)" -- app/versionCode.txt || {
     echo "ERROR: could not commit app/versionCode.txt ($NEW_VERSION_CODE)." >&2
     exit 1
   }
-  git tag -a "$PLAY_TAG" -m "Play build: versionCode $NEW_VERSION_CODE" || {
-    echo "ERROR: could not create tag $PLAY_TAG on the versionCode commit." >&2
-    exit 1
-  }
-  PLAY_TAG_PENDING=true
-  # Any exit before build_play finishes removes the tag again (the commit stays).
-  drop_unbuilt_play_tag() {
-    if [ "${PLAY_TAG_PENDING:-false}" = true ]; then
-      if git tag -d "$PLAY_TAG" >/dev/null; then
-        echo "Play build did not finish: deleted tag $PLAY_TAG. The versionCode $NEW_VERSION_CODE commit stays; the next --play uses $((NEW_VERSION_CODE + 1))." >&2
-      else
-        echo "ERROR: could not delete tag $PLAY_TAG (it names a versionCode that was never built): git tag -d $PLAY_TAG" >&2
-      fi
-    fi
-  }
-  trap drop_unbuilt_play_tag EXIT
   if git rev-parse -q --verify "refs/tags/${BRANCH}-start" >/dev/null; then
     VERSION_DESC=$(git describe --tags --match "${BRANCH}-start") || exit 1
   else
-    VERSION_DESC=$(git describe --always) || exit 1
-    if [ "$VERSION_DESC" != "$PLAY_TAG" ]; then
-      echo "ERROR: git describe gives '$VERSION_DESC', not the new tag $PLAY_TAG." >&2
-      exit 1
-    fi
+    VERSION_DESC=$(git describe --always --exclude '*+*') || exit 1
   fi
-  echo "versionCode $OLD_VERSION_CODE -> $NEW_VERSION_CODE, committed and tagged $PLAY_TAG (versionName $VERSION_DESC)"
+  echo "versionCode $OLD_VERSION_CODE -> $NEW_VERSION_CODE, committed (versionName $VERSION_DESC)"
 fi
 
 # Homes under this worktree. orch_root is read/seed only (keystore copy).
@@ -824,9 +786,7 @@ os.execvp(sys.argv[1], sys.argv[1:])
   File SHA256: $(sha256sum "$AAB" | cut -d' ' -f1)
   Signed by:   SHA256 $aab_sha256 (upload key)
   versionName: $VERSION_DESC
-  versionCode: $version_code
-  Tag:         $PLAY_TAG"
-  PLAY_TAG_PENDING=false
+  versionCode: $version_code"
   echo "=== play build OK ==="
 }
 
@@ -850,11 +810,11 @@ else
 fi
 echo "All selected builds succeeded:$SELECTED. Updating '$TAG_NAME' tag."
 git tag -f "$TAG_NAME"
-# Same version string as the gradle versionName: BRANCH-start tag when it exists, else 'git describe --always'.
+# Same version string as the gradle versionName: BRANCH-start tag when it exists, else 'git describe --always --exclude '*+*''.
 if git rev-parse -q --verify "refs/tags/${CURRENT_BRANCH}-start" >/dev/null; then
   git describe --tags --match "${CURRENT_BRANCH}-start"
 else
-  git describe --always
+  git describe --always --exclude '*+*'
 fi
 if [ -n "$PLAY_SUMMARY" ]; then
   echo "=================================================================="
