@@ -184,23 +184,33 @@ ve_reset_gradle_daemon_dir() {
 # unix 0644 in the jar. After extract, Gradle's transform cache drops +x, so
 # ProcessBuilder gets EACCES ("AAPT2 Daemon startup failed"). Point AGP at
 # the SDK build-tools binary instead (android.aapt2FromMavenOverride = file).
-ve_aapt2_from_sdk() {
-  local wt props sdk ver aapt
+# Android SDK root: sdk.dir from the worktree's local.properties, else $ANDROID_HOME. Neither set
+# is an error naming both. Prints the directory.
+ve_android_sdk_dir() {
+  local wt props sdk=""
   wt="$(ve_resolve_orch_worktree "${1:-}")" || return 1
   props="$wt/local.properties"
-  if [ ! -f "$props" ]; then
-    echo "ERROR: missing $props (sdk.dir required to locate SDK aapt2)." >&2
-    echo "  Create it with sdk.dir=/absolute/path/to/Android/Sdk" >&2
-    return 1
+  if [ -f "$props" ]; then
+    sdk=$(sed -n 's/^sdk\.dir=//p' "$props" | tr -d '\r' | head -1)
   fi
-  sdk=$(sed -n 's/^sdk\.dir=//p' "$props" | tr -d '\r' | head -1)
-  if [ -z "$sdk" ]; then
-    echo "ERROR: sdk.dir unset in $props." >&2
-    echo "  Set sdk.dir to the Android SDK root (must contain build-tools/*/aapt2)." >&2
-    return 1
+  if [ -n "$sdk" ]; then
+    printf '%s\n' "$sdk"
+    return 0
   fi
+  if [ -n "${ANDROID_HOME:-}" ]; then
+    printf '%s\n' "$ANDROID_HOME"
+    return 0
+  fi
+  echo "ERROR: no Android SDK: sdk.dir is not set in $props and ANDROID_HOME is not set." >&2
+  echo "  Set one of them to the Android SDK root (must contain build-tools/*/aapt2)." >&2
+  return 1
+}
+
+ve_aapt2_from_sdk() {
+  local sdk ver aapt
+  sdk=$(ve_android_sdk_dir "${1:-}") || return 1
   if [ ! -d "$sdk/build-tools" ]; then
-    echo "ERROR: no build-tools directory under sdk.dir=$sdk" >&2
+    echo "ERROR: no build-tools directory under the Android SDK $sdk" >&2
     return 1
   fi
   while IFS= read -r ver; do

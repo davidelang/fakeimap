@@ -19,7 +19,7 @@ chmod 640 "$KS"
 
 mk() {  # mk [tag]: fresh worktree repo in $W on master, optionally tagged
   W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app"
-  cp "$canon/build-examples/android-gradle/build_app" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
+  cp "$canon/build-examples/android-gradle/build_app" "$canon/build-examples/android-gradle/android-build-info" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
   cat >"$W/ve-resolve-orch" <<'S'
 ve_resolve_orch() { ORCH_ROOT="$1"; }
 ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }
@@ -66,6 +66,7 @@ release_bundle_task=bundleRelease
 release_bundle_path=app/build/outputs/bundle/release/app-release.aab
 C
   echo 1 >"$W/app/versionCode.txt"
+  printf '%s\n' '## Build and commit' '- **Standard build:** debug' '- **Test build:** none' >"$W/project-facts.md"
   printf 'project.config\n.gradle-home/\napp/build/\n' >"$W/.gitignore"
   git -C "$W" init -q -b master && git -C "$W" add -A && git -C "$W" -c user.name=t -c user.email=t@t commit -qm init
   if [ -n "${1:-}" ]; then git -C "$W" -c user.name=t -c user.email=t@t tag -a "$1" -m "$1"; fi

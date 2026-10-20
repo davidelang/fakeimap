@@ -6,10 +6,25 @@
 # Usage:
 #   ./build_app [--standard] [--test] [--play|--bundle] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
 #
-#   Build selection (flags first, any order, combinable). No flag = all three:
-#     --standard        standard APKs     (apk_tasks / apk_outputs)
-#     --test            test APKs         (apk_test_tasks / apk_test_outputs)
+#   Build selection (flags first, any order, combinable). No flag = standard, test (unless the
+#   app declares none) and, with a project.config, play:
+#     --standard        the app's standard build   ('- **Standard build:**' in project-facts.md)
+#     --test            the app's test build       ('- **Test build:**': a build type such as qa,
+#                       a side-by-side app, and/or instrumentation:<variant> = that variant's app
+#                       plus its androidTest APK)
 #     --play, --bundle  signed Play AAB   (release_* keys); needs a terminal for the passwords
+#
+#   What to build is declared in the committed project-facts.md, section '## Build and commit',
+#   one line each (strict: missing, duplicate or malformed lines stop the build):
+#     - **Standard build:** debug
+#     - **Test build:** qa | instrumentation:x86_64Debug | none | a comma-separated list
+#   Which APKs came out is read from Gradle's output-metadata.json and recorded, with the commit
+#   and sha256, in app/build/outputs/build_app/<standard|test>.json for ./deploy
+#   (android-build-info, next to this script, does the parsing and recording).
+#
+#   project.config is optional. Without one (or with unsmudged @@TOKEN@@ values) build_app runs in
+#   single-user mode: no sudo re-exec, no group checks, no permission model, orch_root = this
+#   worktree, Gradle cache in ./.gradle-home. It says so when it starts.
 #
 #   Order of work:
 #     1. Check the config for every selected build. If the Play build is selected (also by
@@ -27,8 +42,8 @@
 #     6. Builds in sequence: standard, test, play. The first failure stops everything.
 #     7. The builds tag moves only after every selected build succeeded.
 #
-# Every build runs as coder_user (project.config), so all builds share one owner and one
-# environment. Anyone else (root, primary_user, ...) is re-executed as coder_user through
+# Multi-user mode (a smudged project.config): every build runs as coder_user, so all builds
+# share one owner and one environment. Anyone else (root, primary_user, ...) is re-executed as coder_user through
 # 'sudo -n -u <coder_user> /usr/bin/env ...', carrying the invoker's git identity for commits.
 #
 # NEVER run gradlew, gradlew.bat, or direct gradle commands (forbidden; this is the enforced gateway).
@@ -38,34 +53,48 @@
 #
 # project.config keys (see project.config.example):
 #   coder_user          user every build runs as (required)
-#   java_home           JDK home for Gradle and keytool: absolute, with release file and bin/java, javac, keytool (required)
-#   planning_user       planning agent user, which must never build (required)
-#   apk_tasks           standard build: space-separated gradle tasks (required when the standard build is selected)
-#   apk_outputs         standard build: space-separated APKs that must exist afterwards (required likewise)
-#   apk_test_tasks      test build: gradle tasks (required when the test build is selected)
-#   apk_test_outputs    test build: APKs that must exist afterwards (required likewise)
+#   java_home           JDK home for Gradle and keytool: absolute, with release file and bin/java, javac, keytool
+#                       (optional: unset = the OS default java on PATH, printed at start)
+#   planning_user       planning agent user, which must never build (required in multi-user mode)
 #   release_keystore    Play build: absolute path of the app's upload keystore (required)
 #   release_key_alias   Play build: key alias in that keystore (required)
 #   release_bundle_task Play build: gradle task, e.g. bundlePlayRelease (required)
 #   release_bundle_path Play build: AAB that task produces, relative to the worktree (required)
-#   No key has a default: a selected build whose keys are unset stops before the commit phase.
+#   The release_* keys have no default: a Play build whose keys are unset stops before the commit
+#   phase, naming each missing key (also in single-user mode: signing stays local to this machine).
 #   release_gradle_args Play build: extra space-separated gradle args (e.g. -Pfuelsmoothing.official=true)
 
+# Mode: multi-user when project.config exists and is smudged; single-user otherwise.
+SINGLE_USER=false
+SINGLE_USER_WHY=""
 if [ ! -f project.config ]; then
-  echo "ERROR: no project.config in $(pwd) (run build_app from the worktree root)." >&2
-  exit 1
+  SINGLE_USER=true
+  SINGLE_USER_WHY="no project.config in $(pwd)"
+elif grep -q '@@' project.config; then
+  SINGLE_USER=true
+  SINGLE_USER_WHY="project.config has unsmudged @@TOKEN@@ values (not set up by setup-project)"
 fi
-PRIMARY_USER=$(sed -n 's/^primary_user=//p' project.config | tr -d '\r' | head -1)
+
+# project.config value for key $1 (empty when unset or when there is no project.config).
+cfg() {
+  if [ ! -f project.config ]; then
+    return 0
+  fi
+  sed -n "s/^$1=//p" project.config | tr -d '\r' | head -1
+}
+
+if [ "$SINGLE_USER" = true ]; then
+  echo "NOTICE: single-user mode: $SINGLE_USER_WHY."
+  echo "  Building as $(id -un) in this worktree: no sudo re-exec, no group checks, no permission"
+  echo "  model; orch_root is this worktree and the Gradle cache is ./.gradle-home."
+  PRIMARY_USER=$(id -un)
+else
+PRIMARY_USER=$(cfg primary_user)
 if [ -z "$PRIMARY_USER" ]; then
   echo "ERROR: primary_user unset in project.config" >&2
   echo "  Stamp project.config from project.config.example (or source ./env after setup)." >&2
   exit 1
 fi
-
-# project.config value for key $1 (empty when unset). project.config exists: primary_user was read above.
-cfg() {
-  sed -n "s/^$1=//p" project.config | tr -d '\r' | head -1
-}
 
 # All builds run as coder_user: one owner for app/build and .gradle-home, one gradle/user
 # environment. sudoers grants primary_user NOPASSWD (coder_user) /usr/bin/env; root needs nothing.
@@ -90,11 +119,15 @@ if [ "$(id -un)" != "$CODER_USER" ]; then
     BUILD_APP_INVOKER="$(id -un)" \
     "$0" "$@"
 fi
+fi
 
 # Owners, groups, modes and umasks come from perm-model.tsv through perm-lib.sh (next to this
 # script). Gradle runs with --no-daemon, so the JVM that writes the outputs is a child of this
 # shell and inherits its umask (a long-lived daemon would keep the umask it was started with).
 _BA_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ "$SINGLE_USER" = true ]; then
+  BUILD_UMASK=$(umask)
+else
 if [ ! -f "$_BA_DIR/perm-lib.sh" ]; then
   echo "ERROR: missing $_BA_DIR/perm-lib.sh (ships with the orchestration rules)." >&2
   exit 1
@@ -105,14 +138,25 @@ perm_init "$_BA_DIR/project.config" || exit 1
 WORKTREE_UMASK=$(perm_umask worktree) || exit 1
 BUILD_UMASK=$(perm_umask build-intermediates) || exit 1
 umask "$WORKTREE_UMASK"
+fi
+_BA_INFO="$_BA_DIR/android-build-info"
+if [ ! -x "$_BA_INFO" ]; then
+  echo "ERROR: missing $_BA_INFO (ships with the android-gradle build type)." >&2
+  exit 1
+fi
 
-# sudo resets the environment, so the JDK running Gradle and keytool comes from project.config
-# (java_home=, required), never from the invoker's shell or coder_user's default java.
+# The JDK running Gradle and keytool: java_home= from project.config when set (strict), else the
+# OS default java on PATH (resolved through its symlinks; printed).
 JAVA_HOME_CFG=$(cfg java_home)
 if [ -z "$JAVA_HOME_CFG" ]; then
-  echo "ERROR: java_home unset in project.config (JDK for Gradle and keytool)." >&2
-  echo "  Example: java_home=/usr/lib/jvm/java-17-openjdk-amd64" >&2
-  exit 1
+  if ! _ba_java=$(command -v java); then
+    echo "ERROR: java_home is not set in project.config and there is no java on PATH." >&2
+    echo "  Install a JDK, or set java_home=/absolute/jdk/home in project.config." >&2
+    exit 1
+  fi
+  _ba_java=$(readlink -f "$_ba_java") || exit 1
+  JAVA_HOME_CFG=$(dirname "$(dirname "$_ba_java")")
+  echo "java_home not set: using the OS default java $_ba_java (JAVA_HOME=$JAVA_HOME_CFG)"
 fi
 if [[ "$JAVA_HOME_CFG" != /* ]]; then
   echo "ERROR: java_home must be an absolute path: $JAVA_HOME_CFG" >&2
@@ -120,13 +164,13 @@ if [[ "$JAVA_HOME_CFG" != /* ]]; then
 fi
 for _jdk_tool in java javac keytool; do
   if [ ! -x "$JAVA_HOME_CFG/bin/$_jdk_tool" ]; then
-    echo "ERROR: java_home=$JAVA_HOME_CFG is not a JDK (no executable bin/$_jdk_tool)." >&2
+    echo "ERROR: $JAVA_HOME_CFG is not a JDK (no executable bin/$_jdk_tool)." >&2
     exit 1
   fi
 done
 # Every JDK home has a 'release' file; /usr (alternatives symlinks) does not, so it is rejected.
 if [ ! -f "$JAVA_HOME_CFG/release" ]; then
-  echo "ERROR: java_home=$JAVA_HOME_CFG is not a JDK home (no 'release' file)." >&2
+  echo "ERROR: $JAVA_HOME_CFG is not a JDK home (no 'release' file)." >&2
   exit 1
 fi
 JDK_VERSION=$(sed -n 's/^JAVA_VERSION="\(.*\)"$/\1/p' "$JAVA_HOME_CFG/release")
@@ -156,10 +200,17 @@ while [ "$#" -ge 1 ]; do
     *) break ;;
   esac
 done
+# The declaration (strict) is read before anything else happens.
+_BA_DECL=$("$_BA_INFO" decl) || exit 1
+TEST_DECL=$(printf '%s\n' "$_BA_DECL" | sed -n 's/^test=//p')
 if [ "$FLAG_SEEN" = false ]; then
   BUILD_STANDARD=true
-  BUILD_TEST=true
-  BUILD_PLAY=true
+  [ "$TEST_DECL" != none ] && BUILD_TEST=true
+  [ "$SINGLE_USER" = false ] && BUILD_PLAY=true
+fi
+if [ "$BUILD_TEST" = true ] && [ "$TEST_DECL" = none ]; then
+  echo "ERROR: --test, but this app declares '- **Test build:** none' in project-facts.md." >&2
+  exit 1
 fi
 SELECTED=""
 [ "$BUILD_STANDARD" = true ] && SELECTED="$SELECTED standard"
@@ -169,29 +220,10 @@ echo "Selected builds:$SELECTED"
 
 # Resolve every selected build's config before the commit, so a bad config commits nothing.
 if [ "$BUILD_STANDARD" = true ]; then
-  read -r -a STD_TASKS <<< "$(cfg apk_tasks)"
-  read -r -a STD_OUTPUTS <<< "$(cfg apk_outputs)"
-  if [ ${#STD_TASKS[@]} -eq 0 ]; then
-    echo "ERROR: the standard build is selected but apk_tasks is unset in project.config." >&2
-    echo "  Example: apk_tasks=assembleDebug" >&2
-    echo "  Set it, or select builds explicitly (e.g. --test)." >&2
-    exit 1
-  fi
-  if [ ${#STD_OUTPUTS[@]} -eq 0 ]; then
-    echo "ERROR: the standard build is selected but apk_outputs is unset in project.config." >&2
-    echo "  Example: apk_outputs=app/build/outputs/apk/debug/app-debug.apk" >&2
-    echo "  Set it, or select builds explicitly (e.g. --test)." >&2
-    exit 1
-  fi
+  read -r -a STD_TASKS <<< "$("$_BA_INFO" tasks standard)" || exit 1
 fi
 if [ "$BUILD_TEST" = true ]; then
-  read -r -a TEST_TASKS <<< "$(cfg apk_test_tasks)"
-  read -r -a TEST_OUTPUTS <<< "$(cfg apk_test_outputs)"
-  if [ ${#TEST_TASKS[@]} -eq 0 ] || [ ${#TEST_OUTPUTS[@]} -eq 0 ]; then
-    echo "ERROR: the test build needs apk_test_tasks and apk_test_outputs in project.config." >&2
-    echo "  Set them, or select builds explicitly (e.g. --standard)." >&2
-    exit 1
-  fi
+  read -r -a TEST_TASKS <<< "$("$_BA_INFO" tasks test)" || exit 1
 fi
 if [ "$BUILD_PLAY" = true ]; then
   if [ ! -t 0 ]; then
@@ -206,11 +238,24 @@ if [ "$BUILD_PLAY" = true ]; then
   fi
   RELEASE_KEYSTORE=$(cfg release_keystore)
   RELEASE_KEY_ALIAS=$(cfg release_key_alias)
-  if [ -z "$RELEASE_KEYSTORE" ] || [ -z "$RELEASE_KEY_ALIAS" ]; then
-    echo "ERROR: release_keystore and release_key_alias must both be set in project.config for the Play build." >&2
+  RELEASE_BUNDLE_TASK=$(cfg release_bundle_task)
+  AAB=$(cfg release_bundle_path)
+  _ba_missing=""
+  [ -z "$RELEASE_KEYSTORE" ] && _ba_missing="$_ba_missing release_keystore"
+  [ -z "$RELEASE_KEY_ALIAS" ] && _ba_missing="$_ba_missing release_key_alias"
+  [ -z "$RELEASE_BUNDLE_TASK" ] && _ba_missing="$_ba_missing release_bundle_task"
+  [ -z "$AAB" ] && _ba_missing="$_ba_missing release_bundle_path"
+  if [ -n "$_ba_missing" ]; then
+    if [ -f project.config ]; then
+      echo "ERROR: the Play build is selected but these keys are unset in $(pwd)/project.config:$_ba_missing" >&2
+    else
+      echo "ERROR: the Play build is selected but there is no $(pwd)/project.config; it needs:$_ba_missing" >&2
+    fi
     echo "  Example: release_keystore=/home/$PRIMARY_USER/keys/<app>-upload.jks" >&2
     echo "           release_key_alias=upload" >&2
-    echo "  Or select builds explicitly (e.g. --standard --test)." >&2
+    echo "           release_bundle_task=bundlePlayRelease" >&2
+    echo "           release_bundle_path=app/build/outputs/bundle/playRelease/app-play-release.aab" >&2
+    echo "  The keystore and passwords stay on this machine. Or select builds explicitly (e.g. --standard --test)." >&2
     exit 1
   fi
   if [[ "$RELEASE_KEYSTORE" != /* ]]; then
@@ -232,24 +277,11 @@ if [ "$BUILD_PLAY" = true ]; then
   if [ "${KS_MODE: -1}" != "0" ]; then
     echo "WARNING: $RELEASE_KEYSTORE is mode $KS_MODE (world-accessible). Fix: chmod 640 '$RELEASE_KEYSTORE'" >&2
   fi
-  RELEASE_BUNDLE_TASK=$(cfg release_bundle_task)
-  if [ -z "$RELEASE_BUNDLE_TASK" ]; then
-    echo "ERROR: the Play build is selected but release_bundle_task is unset in project.config." >&2
-    echo "  Example: release_bundle_task=bundlePlayRelease" >&2
-    echo "  Or select builds explicitly (e.g. --standard --test)." >&2
-    exit 1
-  fi
-  AAB=$(cfg release_bundle_path)
-  if [ -z "$AAB" ]; then
-    echo "ERROR: the Play build is selected but release_bundle_path is unset in project.config." >&2
-    echo "  Example: release_bundle_path=app/build/outputs/bundle/playRelease/app-play-release.aab" >&2
-    echo "  Or select builds explicitly (e.g. --standard --test)." >&2
-    exit 1
-  fi
   read -r -a RELEASE_GRADLE_ARGS <<< "$(cfg release_gradle_args)"
 fi
 
 # ai-shared + ai-code required (agent caches are ai-coder:ai-code). Do not sg one group.
+if [ "$SINGLE_USER" = false ]; then
 MISSING=""
 for grp in ai-shared ai-code; do
   if ! id -nG | grep -qw "$grp"; then MISSING="$MISSING $grp"; fi
@@ -258,6 +290,7 @@ if [ -n "$MISSING" ]; then
   echo "ERROR: this shell is missing project group(s):$MISSING" >&2
   echo "  Fix:  source ./env   (refreshes this shell's groups)" >&2
   exit 1
+fi
 fi
 
 if [ "$#" -ge 1 ]; then
@@ -476,8 +509,14 @@ if [ ! -f "$_BA_HERE/ve-resolve-orch" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_BA_HERE/ve-resolve-orch"
-ve_resolve_orch "$_BA_HERE" || exit 1
-ve_setup_worktree_build_homes "$_BA_HERE" || exit 1
+if [ "$SINGLE_USER" = true ]; then
+  ORCH_ROOT="$_BA_HERE"
+  mkdir -p "$_BA_HERE/.gradle-home" || exit 1
+  export GRADLE_USER_HOME="$_BA_HERE/.gradle-home"
+else
+  ve_resolve_orch "$_BA_HERE" || exit 1
+  ve_setup_worktree_build_homes "$_BA_HERE" || exit 1
+fi
 _AAPT2=$(ve_aapt2_from_sdk "$_BA_HERE") || exit 1
 # Extracted Maven aapt2 copies lose +x (see ve_aapt2_from_sdk); restore it where missing.
 # A copy this user cannot chmod stops the build with chmod's own error.
@@ -485,17 +524,19 @@ if [ -n "${GRADLE_USER_HOME:-}" ] && [ -d "$GRADLE_USER_HOME" ]; then
   find "$GRADLE_USER_HOME" -type f -name aapt2 ! -perm -u+rx,g+rx -exec chmod u+rx,g+rx {} + || exit 1
 fi
 ve_reset_gradle_daemon_dir || exit 1
-ve_wipe_foreign_app_build_outputs || exit 1
 unset GRADLE_OPTS
-PLANNING_USER=$(cfg planning_user)
-if [ -z "$PLANNING_USER" ]; then
-  echo "ERROR: planning_user unset in project.config (the user that must never build)." >&2
-  echo "  Example: planning_user=ai-planner" >&2
-  exit 1
-fi
-if [ "$(id -un)" = "$PLANNING_USER" ]; then
-  echo "ERROR: Planning agents must not run Gradle builds. Policy violation."
-  exit 1
+if [ "$SINGLE_USER" = false ]; then
+  ve_wipe_foreign_app_build_outputs || exit 1
+  PLANNING_USER=$(cfg planning_user)
+  if [ -z "$PLANNING_USER" ]; then
+    echo "ERROR: planning_user unset in project.config (the user that must never build)." >&2
+    echo "  Example: planning_user=ai-planner" >&2
+    exit 1
+  fi
+  if [ "$(id -un)" = "$PLANNING_USER" ]; then
+    echo "ERROR: Planning agents must not run Gradle builds. Policy violation."
+    exit 1
+  fi
 fi
 
 GRADLE_BASE=( ./gradlew --no-daemon --no-configuration-cache
@@ -510,6 +551,7 @@ GRADLE_BASE=( ./gradlew --no-daemon --no-configuration-cache
 # chmod fail, and the build stops with that error.
 repair_build_perms() {
   local d
+  [ "$SINGLE_USER" = true ] && return 0
   for d in .gradle app/build; do
     if [ -d "$d" ]; then
       perm_apply build-intermediates "$d" || exit 1
@@ -526,6 +568,7 @@ repair_build_perms() {
 # from the primary user's point of view with no supplementary groups. Not readable = exit 1.
 publish_deliverables() {
   local f d files=()
+  [ "$SINGLE_USER" = true ] && return 0
   for f in "$@"; do
     case "$f" in
       /*) echo "ERROR: deliverable path must be relative to the worktree: $f" >&2; exit 1 ;;
@@ -557,15 +600,16 @@ publish_deliverables() {
   echo "Deliverables readable by $PRIMARY_USER without group membership: ${files[*]}"
 }
 
-# APK build: $1 = label; remaining args = tasks, then '::', then expected outputs.
+# APK build: $1 = standard|test; remaining args = gradle tasks. Previous outputs of that build's
+# variants are removed first, so the recorded APKs (android-build-info stamp, from Gradle's
+# output-metadata.json) are this run's; the stamp ties them to this commit for ./deploy.
 build_apks() {
   local label="$1"
   shift
-  local tasks=() outputs=() apk ret
-  while [ "$#" -ge 1 ] && [ "$1" != "::" ]; do tasks+=("$1"); shift; done
-  shift
-  outputs=( "$@" )
+  local tasks=( "$@" ) ret apks=() stamped
   echo "=== $label build: ${tasks[*]} ==="
+  rm -f "app/build/outputs/build_app/$label.json" || exit 1
+  "$_BA_INFO" clean "$label" || exit 1
   # No daemon: multi-worktree RAM; agent path does not keep Gradle daemons warm.
   (umask "$BUILD_UMASK"; "${GRADLE_BASE[@]}" "${GRADLE_ARGS[@]}" "${tasks[@]}")
   ret=$?
@@ -575,13 +619,14 @@ build_apks() {
     echo "Build failed ($label)."
     exit 1
   fi
-  for apk in "${outputs[@]}"; do
-    if [ ! -f "$apk" ]; then
-      echo "ERROR: Gradle succeeded but expected $label APK missing: $apk" >&2
-      exit 1
-    fi
-  done
-  publish_deliverables "${outputs[@]}"
+  stamped=$("$_BA_INFO" stamp "$label") || exit 1
+  printf '%s\n' "$stamped"
+  mapfile -t apks < <(printf '%s\n' "$stamped" | awk '{print $3}')
+  if [ "${#apks[@]}" -eq 0 ]; then
+    echo "ERROR: the $label build recorded no APKs." >&2
+    exit 1
+  fi
+  publish_deliverables "${apks[@]}"
   echo "=== $label build OK ==="
 }
 
@@ -641,10 +686,10 @@ os.execvp(sys.argv[1], sys.argv[1:])
 # Builds in a fixed sequence; any failure exits before the tag moves.
 PLAY_SUMMARY=""
 if [ "$BUILD_STANDARD" = true ]; then
-  build_apks standard "${STD_TASKS[@]}" :: "${STD_OUTPUTS[@]}"
+  build_apks standard "${STD_TASKS[@]}"
 fi
 if [ "$BUILD_TEST" = true ]; then
-  build_apks test "${TEST_TASKS[@]}" :: "${TEST_OUTPUTS[@]}"
+  build_apks test "${TEST_TASKS[@]}"
 fi
 if [ "$BUILD_PLAY" = true ]; then
   build_play

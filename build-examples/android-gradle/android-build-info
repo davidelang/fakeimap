@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""android-build-info: the one place build_app and deploy learn what to build and install.
+
+Declaration: the COMMITTED project-facts.md of this worktree (app branch), section
+'## Build and commit', exactly one of each line (strict; anything else labelled like them fails):
+  - **Standard build:** <build type>                     e.g. debug
+  - **Test build:** <item>[, <item>...] | none           item: a build type (e.g. qa, a side-by-side
+                                                         test app) or instrumentation:<variant>
+                                                         (e.g. instrumentation:x86_64Debug: that
+                                                         variant's app + its androidTest APK)
+Layout: Gradle's output-metadata.json files under app/build/outputs/apk (variantName, outputFile,
+applicationId, versionName). Nothing comes from project.config, no app id is hard-coded.
+
+  decl                       print the declaration (standard=..., test=...)
+  tasks standard|test        gradle tasks for that build
+  clean standard|test        delete the previous outputs of that build's variants (so every
+                             output present afterwards was produced by this run)
+  stamp standard|test        after gradle: record that build's APKs (commit, metadata, sha256) in
+                             app/build/outputs/build_app/<kind>.json; fails if anything is missing
+  select standard|test       for deploy: check the stamp against HEAD, the files and (test) the
+                             standard stamp, then print 'app <apk>' / 'instr <apk> <id>' lines
+Exit 1 with an ERROR line on any problem.
+"""
+import hashlib, json, os, re, shutil, subprocess, sys
+
+FACTS = "project-facts.md"
+SECTION = "## Build and commit"
+STD_RX = re.compile(r"- \*\*Standard build:\*\* ([a-z][A-Za-z0-9]*)")
+TEST_RX = re.compile(r"- \*\*Test build:\*\* (.+)")
+LABEL_RX = re.compile(r"\s*[-*+]\s*[*_`]*\s*(standard|test)[ _-]?build\b", re.I)
+ITEM_RX = re.compile(r"(?:instrumentation:([a-z][A-Za-z0-9_]*)|([a-z][A-Za-z0-9]*))")
+APK_ROOT = os.path.join("app", "build", "outputs", "apk")
+STAMP_DIR = os.path.join("app", "build", "outputs", "build_app")
+
+def die(msg):
+    print("ERROR: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+def git(*a):
+    p = subprocess.run(["git"] + list(a), capture_output=True, text=True)
+    if p.returncode:
+        die("git %s: %s" % (" ".join(a), p.stderr.strip()))
+    return p.stdout
+
+def cap(s):
+    return s[:1].upper() + s[1:]
+
+def decl():
+    """{'standard': bt, 'test': [('buildtype', bt) | ('instrumentation', variant)]} (test [] = none)."""
+    p = subprocess.run(["git", "show", "HEAD:" + FACTS], capture_output=True, text=True)
+    if p.returncode:
+        die("%s is not committed in this worktree (needs '%s' with '- **Standard build:** <type>' and "
+            "'- **Test build:** <type>|instrumentation:<variant>|none')" % (FACTS, SECTION))
+    lines = p.stdout.split("\n")
+    heads = [i for i, l in enumerate(lines) if l.rstrip() == SECTION]
+    if len(heads) != 1:
+        die("%s has %d '%s' sections (need exactly 1)" % (FACTS, len(heads), SECTION))
+    end = next((i for i in range(heads[0] + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+    std, test, stray = [], [], []
+    for i, l in enumerate(lines):
+        s = l.rstrip()
+        inside = heads[0] < i < end
+        m1, m2 = STD_RX.fullmatch(s), TEST_RX.fullmatch(s)
+        if inside and m1:
+            std.append(m1.group(1))
+        elif inside and m2:
+            test.append(m2.group(1).strip())
+        elif LABEL_RX.match(l):
+            stray.append("line %d: %s" % (i + 1, l.strip()[:80]))
+    if stray:
+        die("%s: build-declaration item that is not exactly '- **Standard build:** <type>' / "
+            "'- **Test build:** ...' in '%s' (%s)" % (FACTS, SECTION, "; ".join(stray)))
+    for name, vals in (("Standard build", std), ("Test build", test)):
+        if len(vals) != 1:
+            die("%s: need exactly one '- **%s:**' line in '%s', found %d" % (FACTS, name, SECTION, len(vals)))
+    items = []
+    if test[0] != "none":
+        for it in [x.strip() for x in test[0].split(",")]:
+            m = ITEM_RX.fullmatch(it)
+            if not m:
+                die("%s: Test build item '%s' is not a build type or instrumentation:<variant> (or 'none')" % (FACTS, it))
+            items.append(("instrumentation", m.group(1)) if m.group(1) else ("buildtype", m.group(2)))
+        if len(set(items)) != len(items):
+            die("%s: Test build lists an item twice" % FACTS)
+        for kind, v in items:
+            if kind == "buildtype" and v == std[0]:
+                die("%s: Test build '%s' is the standard build type; a test build must differ" % (FACTS, v))
+    return {"standard": std[0], "test": items}
+
+def tasks(d, kind):
+    if kind == "standard":
+        return ["assemble" + cap(d["standard"])]
+    if not d["test"]:
+        die("this app declares no test build ('- **Test build:** none' in %s)" % FACTS)
+    out = []
+    for k, v in d["test"]:
+        out += ["assemble" + cap(v)] if k == "buildtype" else ["assemble" + cap(v), "assemble" + cap(v) + "AndroidTest"]
+    return out
+
+def is_buildtype_variant(variant, bt):
+    if variant.endswith("AndroidTest"):
+        return False
+    return variant == bt or (variant.endswith(cap(bt)) and len(variant) > len(bt) and variant[0].islower())
+
+def wanted(d, kind):
+    """[(role, matcher, item)] for that build: role app|instrumentation."""
+    if kind == "standard":
+        bt = d["standard"]
+        return [("app", lambda v, bt=bt: is_buildtype_variant(v, bt), ("buildtype", bt))]
+    if not d["test"]:
+        die("this app declares no test build ('- **Test build:** none' in %s)" % FACTS)
+    out = []
+    for k, v in d["test"]:
+        if k == "buildtype":
+            out.append(("app", lambda x, bt=v: is_buildtype_variant(x, bt), (k, v)))
+        else:
+            out.append(("app", lambda x, var=v: x == var, (k, v)))
+            out.append(("instrumentation", lambda x, var=v: x == var + "AndroidTest", (k, v)))
+    return out
+
+def metadata():
+    """[(dir, json)] for every output-metadata.json under app/build/outputs/apk."""
+    res = []
+    if not os.path.isdir(APK_ROOT):
+        return res
+    for dp, dn, fn in os.walk(APK_ROOT):
+        if "output-metadata.json" in fn:
+            p = os.path.join(dp, "output-metadata.json")
+            try:
+                res.append((dp, json.load(open(p))))
+            except ValueError as e:
+                die("%s is not valid JSON: %s" % (p, e))
+    return sorted(res, key=lambda x: x[0])
+
+def sha256(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+def clean(d, kind):
+    # Build-type tasks (assemble<Type>) build every enabled flavor, so leftovers of a now-disabled
+    # flavor would look like outputs: remove them. An instrumentation item names one variant, whose
+    # app is usually the standard build's own output: only its androidTest output is removed.
+    w = [x for x in wanted(d, kind) if x[2][0] == "buildtype" or x[0] == "instrumentation"]
+    for dp, m in metadata():
+        v = m.get("variantName", "")
+        if any(match(v) for _, match, _ in w):
+            shutil.rmtree(dp)
+            print("removed previous output %s (%s)" % (dp, v))
+
+def stamp(d, kind):
+    head = git("rev-parse", "HEAD").strip()
+    entries = []
+    w = wanted(d, kind)
+    for role, match, item in w:
+        found = 0
+        for dp, m in metadata():
+            v = m.get("variantName", "")
+            if not match(v):
+                continue
+            if m.get("artifactType", {}).get("type") != "APK":
+                die("%s/output-metadata.json is %s, not APK" % (dp, m.get("artifactType")))
+            app_id = m.get("applicationId", "")
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+", app_id):
+                die("%s/output-metadata.json: applicationId '%s' is not an application id" % (dp, app_id))
+            els = m.get("elements") or []
+            if not els:
+                die("%s/output-metadata.json lists no outputs" % dp)
+            for e in els:
+                apk = os.path.join(dp, e["outputFile"])
+                if not os.path.isfile(apk):
+                    die("%s (from %s/output-metadata.json) is missing" % (apk, dp))
+                entries.append({"role": role, "item": "%s:%s" % item, "variant": v, "application_id": app_id,
+                                "version_name": e.get("versionName", ""), "apk": apk, "sha256": sha256(apk),
+                                "filters": e.get("filters", [])})
+                found += 1
+        if not found:
+            die("the %s build produced no %s output for %s:%s (no matching output-metadata.json under %s)"
+                % (kind, role, item[0], item[1], APK_ROOT))
+    if kind == "test":
+        apps = {e["application_id"] for e in entries if e["role"] == "app"}
+        for e in entries:
+            if e["role"] == "instrumentation" and e["application_id"] in apps:
+                die("instrumentation APK %s has an app's own id %s" % (e["apk"], e["application_id"]))
+        std = load_stamp("standard", required=False)
+        if std:
+            std_ids = {e["application_id"] for e in std["entries"] if e["role"] == "app"}
+            for e in entries:
+                if e["role"] == "app" and e["item"].startswith("buildtype:") and e["application_id"] in std_ids:
+                    die("test app %s has the standard app's id %s; give the %s build type its own "
+                        "applicationIdSuffix" % (e["apk"], e["application_id"], e["item"].split(":", 1)[1]))
+    os.makedirs(STAMP_DIR, exist_ok=True)
+    data = {"kind": kind, "commit": head, "declaration": d, "entries": entries}
+    tmp = os.path.join(STAMP_DIR, kind + ".json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, os.path.join(STAMP_DIR, kind + ".json"))
+    for e in entries:
+        print("%s %s %s (%s, %s)" % (kind, e["role"], e["apk"], e["application_id"], e["version_name"]))
+
+def load_stamp(kind, required=True):
+    p = os.path.join(STAMP_DIR, kind + ".json")
+    if not os.path.isfile(p):
+        if required:
+            die("no %s build recorded (%s missing); run ./build_app --%s" % (kind, p, kind))
+        return None
+    try:
+        return json.load(open(p))
+    except ValueError as e:
+        die("%s is not valid JSON: %s" % (p, e))
+
+def is_ancestor(a, b):
+    """a is an ancestor of b (or equal)."""
+    return subprocess.run(["git", "merge-base", "--is-ancestor", a, b]).returncode == 0
+
+def select(d, kind):
+    head = git("rev-parse", "HEAD").strip()
+    s = load_stamp(kind)
+    if kind == "test" and not d["test"]:
+        die("this app declares no test build ('- **Test build:** none' in %s); deploy --test has nothing to install" % FACTS)
+    want = [("%s:%s" % it) for _, _, it in wanted(d, kind)]
+    have = {e["item"] for e in s["entries"]}
+    missing = sorted(set(want) - have)
+    if missing:
+        die("the recorded %s build lacks %s (declared in %s); run ./build_app --%s" % (kind, ", ".join(missing), FACTS, kind))
+    if kind == "test":
+        std = load_stamp("standard", required=False)
+        if std is None:
+            die("no standard build recorded; build both (./build_app --standard --test) so the test build "
+                "can be checked against the regular build")
+        if std["commit"] != s["commit"] and is_ancestor(s["commit"], std["commit"]):
+            die("the test build (%s) is from an earlier commit than the regular build (%s); run ./build_app --test"
+                % (s["commit"][:12], std["commit"][:12]))
+        if s["commit"] != head:
+            die("the test build is from %s, not HEAD %s; run ./build_app --test" % (s["commit"][:12], head[:12]))
+        std_ids = {e["application_id"] for e in std["entries"] if e["role"] == "app"}
+        for e in s["entries"]:
+            if e["role"] == "app" and e["item"].startswith("buildtype:") and e["application_id"] in std_ids:
+                die("test app %s has the standard app's id %s" % (e["apk"], e["application_id"]))
+    for e in s["entries"]:
+        if not os.path.isfile(e["apk"]):
+            die("%s (recorded by the %s build) is missing; run ./build_app --%s" % (e["apk"], kind, kind))
+        if sha256(e["apk"]) != e["sha256"]:
+            die("%s changed since the %s build recorded it; run ./build_app --%s" % (e["apk"], kind, kind))
+    for e in s["entries"]:
+        if e["role"] == "app":
+            print("app %s" % e["apk"])
+        else:
+            print("instr %s %s" % (e["apk"], e["application_id"]))
+
+def main(argv):
+    if len(argv) == 1 and argv[0] == "decl":
+        d = decl()
+        print("standard=%s" % d["standard"])
+        print("test=%s" % (",".join("%s:%s" % x for x in d["test"]) or "none"))
+        return 0
+    if len(argv) != 2 or argv[0] not in ("tasks", "clean", "stamp", "select") or argv[1] not in ("standard", "test"):
+        print(__doc__, file=sys.stderr)
+        return 2
+    d = decl()
+    cmd, kind = argv
+    if cmd == "tasks":
+        print(" ".join(tasks(d, kind)))
+    elif cmd == "clean":
+        clean(d, kind)
+    elif cmd == "stamp":
+        stamp(d, kind)
+    else:
+        select(d, kind)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

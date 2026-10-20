@@ -22,7 +22,7 @@ grep -n 'o-rwx\|umask 007' "$canon/build-examples/android-gradle/build_app" >"$T
 
 mk() {  # fresh worktree repo in $W
   W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app/src/main"
-  cp "$canon/build-examples/android-gradle/build_app" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
+  cp "$canon/build-examples/android-gradle/build_app" "$canon/build-examples/android-gradle/android-build-info" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
   cat >"$W/ve-resolve-orch" <<'S'
 ve_resolve_orch() { ORCH_ROOT="$1"; }
 ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }
@@ -34,11 +34,12 @@ S
 #!/bin/bash
 # stand-in gradle: records its umask, writes the outputs the tasks name
 umask >"$GRADLE_USER_HOME/gradle-umask"
+[ -f "$GRADLE_USER_HOME/fail" ] && exit 1
 for a in "$@"; do
   case "$a" in
     assembleDebug) mkdir -p app/build/outputs/apk/debug app/build/intermediates/x
                    echo apk >app/build/outputs/apk/debug/app-debug.apk
-                   echo '{}' >app/build/outputs/apk/debug/output-metadata.json
+                   printf '{"version":3,"artifactType":{"type":"APK","kind":"Directory"},"applicationId":"com.ex.app","variantName":"debug","elements":[{"type":"SINGLE","filters":[],"versionName":"1.0","outputFile":"app-debug.apk"}]}\n' >app/build/outputs/apk/debug/output-metadata.json
                    echo i >app/build/intermediates/x/f ;;
     failBuild) exit 1 ;;
   esac
@@ -53,9 +54,8 @@ java_home=$JDK
 code_group=ai-code
 shared_group=ai-shared
 sandbox_group=ai-sandbox
-apk_tasks=assembleDebug
-apk_outputs=app/build/outputs/apk/debug/app-debug.apk
 C
+  printf '%s\n' '## Build and commit' '- **Standard build:** debug' '- **Test build:** none' >"$W/project-facts.md"
   echo src >"$W/app/src/main/a.txt"
   printf 'project.config\n.gradle-home/\napp/build/\n' >"$W/.gitignore"   # as in real projects
   git -C "$W" init -q -b master && git -C "$W" add -A && git -C "$W" -c user.name=t -c user.email=t@t commit -qm init
@@ -92,9 +92,30 @@ mkdir -p "$T/shim"; printf '#!/bin/sh\ncase "$*" in *app-debug.apk*) echo "chmod
 grep -q "Updating 'builds' tag" "$T/out" && bad "builds tag moved after a failure" || ok "builds tag not moved after the failure"
 
 # A failed gradle run still repairs, then fails.
-mk; sed -i 's/^apk_tasks=.*/apk_tasks=failBuild/' "$W/project.config"
+mk; mkdir -p "$W/.gradle-home"; : >"$W/.gradle-home/fail"
 build; rc=$?
 [[ $rc -ne 0 ]] && grep -q 'Build failed (standard)' "$T/out" && ok "gradle failure exits non-zero" || bad "gradle failure rc=$rc $(tail -5 "$T/out")"
+
+# The build is recorded for deploy (android-build-info stamp from output-metadata.json).
+mk; build; rc=$?
+[[ $rc -eq 0 ]] && python3 -c "import json,sys; d=json.load(open('$W/app/build/outputs/build_app/standard.json')); sys.exit(0 if d['commit']=='$(git -C "$W" rev-parse HEAD)' and d['entries'][0]['application_id']=='com.ex.app' else 1)" \
+  && ok "standard build recorded with commit and app id" || bad "stamp: rc=$rc $(tail -5 "$T/out")"
+
+# Single-user mode: no project.config, or one with @@TOKEN@@ values.
+mk; rm "$W/project.config"; build; rc=$?
+[[ $rc -eq 0 ]] && grep -q 'NOTICE: single-user mode: no project.config' "$T/out" && ! grep -q 'Re-executing\|Deliverables readable' "$T/out" \
+  && [ -f "$W/app/build/outputs/build_app/standard.json" ] && ok "single-user: no project.config builds without sudo/perm model, says why" || bad "single-user: rc=$rc $(tail -8 "$T/out")"
+grep -q 'java_home not set: using the OS default java' "$T/out" && ok "single-user: OS default java used and printed" || bad "java default: $(grep -i java "$T/out")"
+mk; printf 'primary_user=@@PRIMARY_USER@@\ncoder_user=@@CODER_USER@@\n' >"$W/project.config"; build; rc=$?
+[[ $rc -eq 0 ]] && grep -q 'unsmudged @@TOKEN@@' "$T/out" && ok "single-user: unsmudged project.config" || bad "smudge: rc=$rc $(tail -5 "$T/out")"
+mk; rm "$W/project.config"; (cd "$W" && env -u GRADLE_USER_HOME PATH="$PATH" ./build_app --play </dev/null) >"$T/out" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && ok "single-user: --play without a terminal refused" || bad "play tty: rc=$rc"
+mk; rm "$W/project.config"; (cd "$W" && env -u GRADLE_USER_HOME PATH="$PATH" script -qec "./build_app --play" /dev/null </dev/null) >"$T/out" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'there is no .*project.config; it needs: release_keystore release_key_alias release_bundle_task release_bundle_path' "$T/out" && ok "single-user --play names every missing key" || bad "play keys: rc=$rc $(tail -5 "$T/out")"
+mk; printf '%s\n' '## Build and commit' '- **Standard build:** debug' >"$W/project-facts.md"; git -C "$W" -c user.name=t -c user.email=t@t commit -qam facts; build; rc=$?
+[[ $rc -ne 0 ]] && grep -q "Test build:\*\*' line" "$T/out" && ! grep -q '=== standard build' "$T/out" && ok "missing declaration line stops before any build" || bad "decl: rc=$rc $(tail -5 "$T/out")"
+mk; (cd "$W" && env -u GRADLE_USER_HOME PATH="$PATH" ./build_app --test </dev/null) >"$T/out" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q "declares '- \*\*Test build:\*\* none'" "$T/out" && ok "--test with Test build none refused" || bad "test none: rc=$rc $(tail -3 "$T/out")"
 
 # perm-lib unit checks
 . "$canon/perm-lib.sh"; perm_init "$W/project.config"

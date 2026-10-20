@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Tests for build-examples/android-gradle/android-build-info: strict project-facts.md declaration,
+# gradle tasks, clean, stamp (from fake output-metadata.json) and the deploy-side select checks.
+set -uo pipefail
+C=$(git rev-parse --show-toplevel)
+T=$(mktemp -d /tmp/test-android-build-info.XXXXXX); trap 'rm -rf "$T"' EXIT
+pass=0 fail=0; ok(){ pass=$((pass+1)); echo "ok   $*"; }; bad(){ fail=$((fail+1)); echo "FAIL $*"; }
+I=$C/build-examples/android-gradle/android-build-info
+R=$T/r
+g() { git -C $R -c user.name=t -c user.email=t@t "$@"; }
+facts() {  # facts LINE...: commit project-facts.md with a '## Build and commit' section holding LINEs
+  rm -rf $R; mkdir -p $R; git -C $R init -q -b master
+  printf '%s\n' "# Facts" "" "## Build and commit" "" "$@" "" "## Other" "- x" >$R/project-facts.md
+  printf 'app/build/\n' >$R/.gitignore
+  g add -A; g commit -qm facts
+}
+info() { (cd $R && "$I" "$@") >$T/out 2>&1; rc=$?; }
+meta() {  # meta DIR VARIANT APPID APK...: fake gradle output in app/build/outputs/apk/DIR
+  local d=$R/app/build/outputs/apk/$1 v=$2 id=$3; shift 3; mkdir -p $d
+  local els="" a; for a in "$@"; do echo "$v $a $RANDOM" >$d/$a; els="$els${els:+,}{\"type\":\"SINGLE\",\"filters\":[],\"versionName\":\"1.0\",\"outputFile\":\"$a\"}"; done
+  printf '{"version":3,"artifactType":{"type":"APK","kind":"Directory"},"applicationId":"%s","variantName":"%s","elements":[%s]}\n' "$id" "$v" "$els" >$d/output-metadata.json
+}
+STD='- **Standard build:** debug'
+
+facts "$STD" '- **Test build:** qa'; info decl
+[[ $rc -eq 0 ]] && grep -qx standard=debug $T/out && grep -qx test=buildtype:qa $T/out && ok "decl: debug + qa" || bad "decl: $(cat $T/out)"
+facts "$STD" '- **Test build:** instrumentation:x86_64Debug'; info tasks test
+[[ $rc -eq 0 ]] && grep -qx 'assembleX86_64Debug assembleX86_64DebugAndroidTest' $T/out && ok "tasks: instrumentation variant + its androidTest" || bad "tasks instr: $(cat $T/out)"
+facts "$STD" '- **Test build:** qa, instrumentation:x86_64Debug'; info tasks test
+[[ $rc -eq 0 ]] && grep -qx 'assembleQa assembleX86_64Debug assembleX86_64DebugAndroidTest' $T/out && ok "tasks: combination" || bad "combo: $(cat $T/out)"
+info tasks standard; grep -qx assembleDebug $T/out && ok "tasks standard: assembleDebug" || bad "std tasks: $(cat $T/out)"
+facts "$STD" '- **Test build:** none'; info tasks test
+[[ $rc -ne 0 ]] && grep -q 'declares no test build' $T/out && ok "test none: tasks test refused" || bad "none: rc=$rc $(cat $T/out)"
+facts '- **Test build:** qa'; info decl
+[[ $rc -ne 0 ]] && grep -q "exactly one '- \*\*Standard build:\*\*' line .* found 0" $T/out && ok "missing Standard line fails" || bad "missing std: $(cat $T/out)"
+facts "$STD"; info decl
+[[ $rc -ne 0 ]] && grep -q "Test build:\*\*' line .* found 0" $T/out && ok "missing Test line fails" || bad "missing test: $(cat $T/out)"
+facts "$STD" "$STD" '- **Test build:** qa'; info decl
+[[ $rc -ne 0 ]] && grep -q 'found 2' $T/out && ok "duplicate Standard line fails" || bad "dup: $(cat $T/out)"
+facts '- **Standard build**: debug' '- **Test build:** qa'; info decl
+[[ $rc -ne 0 ]] && grep -q 'not exactly' $T/out && ok "malformed Standard line fails (named)" || bad "malformed: $(cat $T/out)"
+facts "$STD" '- **Test build:** instrumentation:'; info decl
+[[ $rc -ne 0 ]] && grep -q "is not a build type or instrumentation" $T/out && ok "malformed Test item fails" || bad "bad item: $(cat $T/out)"
+facts "$STD" '- **Test build:** debug'; info decl
+[[ $rc -ne 0 ]] && grep -q 'is the standard build type' $T/out && ok "test build type = standard rejected" || bad "same bt: $(cat $T/out)"
+facts "$STD" '- **Test build:** qa'; echo '- **Test build:** none' >>$R/project-facts.md; g commit -qam outside; info decl
+[[ $rc -ne 0 ]] && grep -q 'not exactly' $T/out && ok "declaration line outside the section fails" || bad "outside: $(cat $T/out)"
+facts "$STD" '- **Test build:** qa'; sed -i 's/qa$/none/' $R/project-facts.md; info decl
+[[ $rc -eq 0 ]] && grep -qx test=buildtype:qa $T/out && ok "decl reads the committed file, not the working copy" || bad "committed: $(cat $T/out)"
+rm -rf $R; mkdir -p $R; git -C $R init -q; g commit -q --allow-empty -m x; info decl
+[[ $rc -ne 0 ]] && grep -q 'project-facts.md is not committed' $T/out && ok "no committed project-facts.md fails" || bad "no facts: $(cat $T/out)"
+
+# stamp / select: VE-like (debug + qa with .test suffix; disabled play flavor leftovers)
+facts "$STD" '- **Test build:** qa'
+meta arm64/debug arm64Debug com.ex.app app-arm64-debug.apk
+meta x86_64/debug x86_64Debug com.ex.app app-x86_64-debug.apk
+meta playArm64/debug playArm64Debug com.ex.app stale.apk
+info clean standard
+[[ ! -d $R/app/build/outputs/apk/playArm64/debug && ! -d $R/app/build/outputs/apk/arm64/debug ]] && ok "clean: previous outputs of the build's variants removed (incl. disabled flavor)" || bad "clean: $(cat $T/out)"
+meta arm64/debug arm64Debug com.ex.app app-arm64-debug.apk
+meta x86_64/debug x86_64Debug com.ex.app app-x86_64-debug.apk
+meta arm64/debugAndroidTest arm64DebugAndroidTest com.ex.app.test t.apk
+info stamp standard
+[[ $rc -eq 0 && $(grep -c '^standard app ' $T/out) -eq 2 ]] && ! grep -q AndroidTest $T/out && ok "stamp standard: both ABIs, androidTest not part of a build type" || bad "stamp std: $(cat $T/out)"
+info select test
+[[ $rc -ne 0 ]] && grep -q 'no test build recorded' $T/out && ok "select test: missing test build fails" || bad "no test: $(cat $T/out)"
+meta arm64/qa arm64Qa com.ex.app arm64-qa.apk
+info stamp test
+[[ $rc -ne 0 ]] && grep -q "has the standard app's id" $T/out && ok "stamp test: qa with the standard id fails" || bad "same id: $(cat $T/out)"
+meta arm64/qa arm64Qa com.ex.app.test arm64-qa.apk
+info stamp test; [[ $rc -eq 0 ]] || bad "stamp qa: $(cat $T/out)"
+info select test
+[[ $rc -eq 0 ]] && grep -q '^app .*arm64-qa.apk' $T/out && ! grep -q 'debug.apk' $T/out && ok "select test: the qa APK, never the standard ones" || bad "select qa: $(cat $T/out)"
+echo x >>$R/app/build/outputs/apk/arm64/qa/arm64-qa.apk; info select test
+[[ $rc -ne 0 ]] && grep -q 'changed since the test build' $T/out && ok "select: changed APK fails" || bad "sha: $(cat $T/out)"
+meta arm64/qa arm64Qa com.ex.app.test arm64-qa.apk; info stamp test
+g commit -q --allow-empty -m later; info select test
+[[ $rc -ne 0 ]] && grep -q 'not HEAD' $T/out && ok "select: test build older than HEAD fails" || bad "head: $(cat $T/out)"
+info stamp test; g commit -q --allow-empty -m later2; info stamp standard
+info select test
+[[ $rc -ne 0 ]] && grep -q 'earlier commit than the regular build' $T/out && ok "select: test build from an earlier commit than the standard build fails" || bad "earlier: $(cat $T/out)"
+info stamp test; rm $R/app/build/outputs/build_app/standard.json; info select test
+[[ $rc -ne 0 ]] && grep -q 'no standard build recorded' $T/out && ok "select test: standard build required for the id check" || bad "nostd: $(cat $T/out)"
+rm -rf $R/app/build/outputs/apk/arm64/qa; info stamp test
+[[ $rc -ne 0 ]] && grep -q 'produced no app output for buildtype:qa' $T/out && ok "stamp: declared build with no output fails" || bad "no out: $(cat $T/out)"
+
+# liveimap-like: instrumentation:x86_64Debug
+facts "$STD" '- **Test build:** instrumentation:x86_64Debug'
+meta arm64/debug arm64Debug com.ex.app a.apk; meta x86_64/debug x86_64Debug com.ex.app x.apk
+meta androidTest/x86_64/debug x86_64DebugAndroidTest com.ex.app.test xt.apk
+info stamp standard; info stamp test; info select test
+[[ $rc -eq 0 ]] && grep -q '^app .*/x86_64/debug/x.apk$' $T/out && grep -q '^instr .*xt.apk com.ex.app.test$' $T/out && ! grep -q '/a.apk' $T/out && ok "instrumentation: that variant's app + androidTest APK" || bad "instr: $(cat $T/out)"
+meta androidTest/x86_64/debug x86_64DebugAndroidTest com.ex.app xt.apk; info stamp test
+[[ $rc -ne 0 ]] && grep -q "has an app's own id" $T/out && ok "instrumentation APK with the app id fails" || bad "instr id: $(cat $T/out)"
+info clean test
+[[ -d $R/app/build/outputs/apk/x86_64/debug && ! -d $R/app/build/outputs/apk/androidTest/x86_64/debug ]] && ok "clean test (instrumentation): only the androidTest output" || bad "clean instr"
+
+grep -qE '\|\| true|2>/dev/null|except:|except Exception' $I && bad "helper swallows errors" || ok "helper: no swallowed errors"
+echo "passed $pass failed $fail"; [[ $fail -eq 0 ]]

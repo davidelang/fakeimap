@@ -4,25 +4,45 @@
 #
 # Usage: ./deploy [-h|--help] [--test] [--clean] [--rebuild] [--launch] [device...] [-- gradle-flag...]
 #
-# Which APKs: project.config apk_outputs (standard, the default) or apk_test_outputs (--test),
-# the same keys build_app builds. Each device gets the APK whose native code matches the
-# device's ro.product.cpu.abilist (first match in the device's preference order).
-# --test also installs the androidTest APKs in apk_test_outputs (adb install -r -t) on every
-# device, each verified by its own package id; default mode skips androidTest APKs.
+# Which APKs: the ones the last ./build_app --standard (default) or --test recorded in
+# app/build/outputs/build_app/<standard|test>.json (from Gradle's output-metadata.json; see
+# android-build-info). Never anything else: --test never falls back to the standard APKs.
+# Each device gets the APK whose native code matches the device's ro.product.cpu.abilist
+# (first match in the device's preference order). --test also installs the test build's
+# instrumentation (androidTest) APKs (adb install -r -t) on every device, each verified by
+# its own package id.
 # The app id comes from one place: the APKs themselves (SDK aapt2 dump packagename). Nothing
 # is hard-coded. Everything about the APKs is checked before the first adb call.
 
 set -euo pipefail
 
+# Mode: multi-user when project.config exists and is smudged; single-user otherwise (no
+# re-exec, no role or group checks; it must not run as root, which would own the adb server).
+SINGLE_USER=false
 if [ ! -f project.config ]; then
-  echo "ERROR: project.config missing in $(pwd); run deploy from the app worktree." >&2
-  exit 1
+  SINGLE_USER=true
+  SINGLE_USER_WHY="no project.config in $(pwd)"
+elif grep -q '@@' project.config; then
+  SINGLE_USER=true
+  SINGLE_USER_WHY="project.config has unsmudged @@TOKEN@@ values (not set up by setup-project)"
 fi
-# project.config value for key $1 (empty when unset).
+# project.config value for key $1 (empty when unset or when there is no project.config).
 cfg() {
+  if [ ! -f project.config ]; then
+    return 0
+  fi
   sed -n "/^$1=/{s/^$1=//;p;q}" project.config | tr -d '\r'
 }
 
+if [ "$SINGLE_USER" = true ]; then
+  echo "NOTICE: single-user mode: $SINGLE_USER_WHY."
+  echo "  Deploying as $(id -un): no re-exec, no role or group checks."
+  if [ "$EUID" -eq 0 ]; then
+    echo "ERROR: single-user mode does not run as root (adb keys and server belong to you); run it as your own user." >&2
+    exit 1
+  fi
+  umask 002
+else
 PRIMARY_USER=$(cfg primary_user)
 if [ -z "$PRIMARY_USER" ]; then
   echo "ERROR: primary_user unset in project.config" >&2
@@ -55,8 +75,9 @@ for grp in ai-shared ai-code; do
 done
 if [ -n "$MISSING" ]; then
   echo "ERROR: this shell is missing project group(s):$MISSING" >&2
-  echo "  Fix:  source ./env" >&2
+  echo "  Fix:  source ./env   (refreshes this shell's groups)" >&2
   exit 1
+fi
 fi
 
 usage() {
@@ -65,8 +86,10 @@ Usage: ./deploy [-h|--help] [--test] [--clean] [--rebuild] [--launch] [device...
 
 Install the last-built APKs with adb install -r. The default path does not compile.
 
-  --test       Install the test build (apk_test_outputs) instead of the standard build
-               (apk_outputs). Its app id is read from those APKs (e.g. a .test suffix).
+  --test       Install the test build ('- **Test build:**' in project-facts.md) instead of the
+               standard build. Its app id is read from the APKs (e.g. a .test suffix).
+               Refused when the test build is missing, not from HEAD, from an earlier commit
+               than the standard build, or (a test build type) has the standard app's id.
   --clean      Uninstall the APKs' own app id before install (UNINSTALL_FIRST=1). That
                removes that app's data; no other package is touched. An app that is not
                installed is reported and skipped; a failed uninstall stops that device.
@@ -82,10 +105,9 @@ deploy stops before any adb call if aapt2 is missing or fails, if the APKs name 
 apps, or if they mix ABI-specific and universal APKs. After each install it checks
 (pm list packages, exact match) that the app id is installed. The deployed tag
 (deployed / <branch>/deployed; deployed-test for --test) moves only when every device
-succeeded. androidTest APKs (paths under */androidTest/*) in apk_test_outputs are installed
-with --test on every device (adb install -r -t) after the app, each verified by its own
-package id; a missing, unreadable or not-installed androidTest APK fails that device. In the
-default mode androidTest APKs in apk_outputs are not installed.
+succeeded. With --test, the test build's instrumentation (androidTest) APKs are installed on
+every device (adb install -r -t) after the app, each verified by its own package id; a
+missing, unreadable or not-installed one fails that device.
 USAGE
 }
 
@@ -123,20 +145,6 @@ if [ "$rebuild" -ne 1 ] && [ "${#gradle_flags[@]}" -gt 0 ]; then
   exit 1
 fi
 
-# APK list for this mode (same keys and default as build_app).
-if [ "$mode" = test ]; then
-  read -r -a outputs <<< "$(cfg apk_test_outputs)"
-  if [ "${#outputs[@]}" -eq 0 ]; then
-    echo "ERROR: --test needs apk_test_outputs in project.config." >&2
-    exit 1
-  fi
-else
-  read -r -a outputs <<< "$(cfg apk_outputs)"
-  if [ "${#outputs[@]}" -eq 0 ]; then
-    outputs=( app/build/outputs/apk/debug/app-debug.apk )
-  fi
-fi
-
 if [ "$rebuild" -eq 1 ]; then
   if [ "${#gradle_flags[@]}" -gt 0 ]; then
     ./build_app "--$mode" -- "${gradle_flags[@]}"
@@ -146,8 +154,23 @@ if [ "$rebuild" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# APK analysis (no adb yet).
+# APK analysis (no adb yet). The APKs come from the build's record only (android-build-info
+# select: stamp present, files unchanged, --test checks against HEAD and the standard build).
 _DEPLOY_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -x "$_DEPLOY_HERE/android-build-info" ]; then
+  echo "ERROR: $_DEPLOY_HERE/android-build-info missing (ships with the android-gradle build type)" >&2
+  exit 1
+fi
+selected=$("$_DEPLOY_HERE/android-build-info" select "$mode")
+outputs=()
+instr_paths=()
+while read -r _role _apk _rest; do
+  case "$_role" in
+    app) outputs+=("$_apk") ;;
+    instr) instr_paths+=("$_apk") ;;
+    *) echo "ERROR: android-build-info select printed '$_role $_apk $_rest'" >&2; exit 1 ;;
+  esac
+done <<< "$selected"
 if [ ! -f "$_DEPLOY_HERE/ve-resolve-orch" ]; then
   echo "ERROR: $_DEPLOY_HERE/ve-resolve-orch missing (needed to locate the SDK aapt2)" >&2
   exit 1
@@ -155,7 +178,7 @@ fi
 # shellcheck source=/dev/null
 . "$_DEPLOY_HERE/ve-resolve-orch"
 if ! AAPT2=$(ve_aapt2_from_sdk "$_DEPLOY_HERE"); then
-  echo "ERROR: cannot locate the SDK aapt2 (sdk.dir in local.properties) to read the APKs" >&2
+  echo "ERROR: cannot locate the SDK aapt2 (sdk.dir in local.properties, or ANDROID_HOME) to read the APKs" >&2
   exit 1
 fi
 
@@ -179,27 +202,22 @@ apk_abis=()       # space-separated native ABIs per APK; empty = universal (no n
 PKG=""
 PKG_FROM=""
 VERSION_NAME=""
-for apk in "${outputs[@]}"; do
-  if [[ "$apk" == */androidTest/* ]]; then
-    if [ "$mode" != test ]; then
-      echo "Note: $apk is an androidTest APK; installed only with --test."
-      continue
-    fi
-    if [ ! -f "$apk" ]; then
-      echo "ERROR: missing androidTest APK $apk; run ./build_app --test first, or pass --rebuild" >&2
+for apk in "${instr_paths[@]}"; do
+  if [ ! -f "$apk" ]; then
+    echo "ERROR: missing instrumentation APK $apk; run ./build_app --test first, or pass --rebuild" >&2
+    exit 1
+  fi
+  tpkg=$(apk_package "$apk")
+  for i in "${!test_pkgs[@]}"; do
+    if [ "${test_pkgs[$i]}" = "$tpkg" ]; then
+      echo "ERROR: ${test_paths[$i]} and $apk are both $tpkg; one instrumentation APK per test package" >&2
       exit 1
     fi
-    tpkg=$(apk_package "$apk")
-    for i in "${!test_pkgs[@]}"; do
-      if [ "${test_pkgs[$i]}" = "$tpkg" ]; then
-        echo "ERROR: ${test_paths[$i]} and $apk are both $tpkg; list one androidTest APK per test package" >&2
-        exit 1
-      fi
-    done
-    test_paths+=("$apk")
-    test_pkgs+=("$tpkg")
-    continue
-  fi
+  done
+  test_paths+=("$apk")
+  test_pkgs+=("$tpkg")
+done
+for apk in "${outputs[@]}"; do
   if [ ! -f "$apk" ]; then
     echo "ERROR: missing $apk; run ./build_app --$mode first, or pass --rebuild" >&2
     exit 1
@@ -236,11 +254,11 @@ for abis in "${apk_abis[@]}"; do
   if [ -z "$abis" ]; then n_universal=$((n_universal + 1)); fi
 done
 if [ "$n_universal" -gt 0 ] && [ "$n_universal" -ne "${#apk_paths[@]}" ]; then
-  echo "ERROR: the $mode outputs mix universal and ABI-specific APKs; list one kind in project.config" >&2
+  echo "ERROR: the $mode build recorded both universal and ABI-specific APKs; declare one kind" >&2
   exit 1
 fi
 if [ "$n_universal" -gt 1 ]; then
-  echo "ERROR: the $mode outputs list $n_universal universal APKs; list exactly one" >&2
+  echo "ERROR: the $mode build recorded $n_universal universal APKs; need exactly one" >&2
   exit 1
 fi
 echo "App id: $PKG  versionName: $VERSION_NAME  ($mode build, from $PKG_FROM)"

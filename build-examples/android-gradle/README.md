@@ -11,16 +11,43 @@ carry their own copy (`rules.manifest.local: local build_app`).
 ./build_app [--standard] [--test] [--play|--bundle] ["msg" | @msg_file] [files...] [-- gradle-flags]
 ```
 
+## Declaring the builds
+
+The app branch's committed `project-facts.md` declares them in `## Build and commit`, one
+line each:
+
+```
+- **Standard build:** debug
+- **Test build:** qa
+```
+
+- `Standard build`: a Gradle build type (`assemble<Type>`, every enabled flavor).
+- `Test build`: one of, or a comma-separated list of:
+  - a build type, e.g. `qa`: a separate test app. It must have its own app id
+    (`applicationIdSuffix`); deploy refuses one with the standard app's id.
+  - `instrumentation:<variant>`, e.g. `instrumentation:x86_64Debug`: that variant's app plus
+    its androidTest APK (`assemble<Variant> assemble<Variant>AndroidTest`).
+  - `none`: the app has no test build; `--test` is refused.
+- Parsing is strict: a missing, duplicate or malformed line (also outside the section) stops
+  build_app before anything happens. The committed file counts, not the working copy.
+- No `apk_*` keys: which APKs came out is read from Gradle's `output-metadata.json`
+  (variantName, outputFile, applicationId, filters). Before each build the previous outputs of
+  its variants are removed, and afterwards `android-build-info stamp` records the APKs with the
+  commit and sha256 in `app/build/outputs/build_app/<standard|test>.json`. deploy installs only
+  what that record names.
+
 ## Selecting builds
 
-| Flag | Build | project.config |
-|------|-------|----------------|
-| `--standard` | standard APKs (one per ABI) | `apk_tasks`, `apk_outputs` (default `assembleDebug`, `app-debug.apk`) |
-| `--test` | test APKs (one per ABI) | `apk_test_tasks`, `apk_test_outputs` (required, no default) |
-| `--play` / `--bundle` | signed Play AAB | `release_keystore`, `release_key_alias` (required), `release_bundle_task`, `release_bundle_path`, `release_gradle_args` |
+| Flag | Build | Config |
+|------|-------|--------|
+| `--standard` | the standard build | `- **Standard build:**` |
+| `--test` | the test build | `- **Test build:**` |
+| `--play` / `--bundle` | signed Play AAB | project.config `release_keystore`, `release_key_alias`, `release_bundle_task`, `release_bundle_path` (required), `release_gradle_args` |
 
 - Flags come first, in any order, and can be combined.
-- **No flag builds all three.**
+- **No flag builds** standard, test (unless `none`) and, with a project.config, Play.
+- A Play build whose keys are missing stops naming each missing key. The keystore and
+  passwords never leave this machine.
 - An unknown `--flag` is an error, so a typo is never taken as a commit message.
 - **The Play build needs a terminal** for the passwords. If it's selected, including by
   default, and stdin isn't a terminal, `build_app` stops before doing anything. Unattended
@@ -62,14 +89,23 @@ For a release: commit your work (with build_app or git), then `./build_app --pla
 manual tag or version number is needed. To start a new version line, tag the base yourself
 (`git tag -a v1.0.0`); later Play builds are then `v1.0.0+<code>`.
 
+## Single-user mode
+
+project.config is optional. When it is missing, or still has unsmudged `@@TOKEN@@` values,
+build_app and deploy say so in one NOTICE line and run in single-user mode: no sudo re-exec,
+no group checks, no permission model, orch_root is the worktree itself and the Gradle cache
+is `./.gradle-home`. deploy refuses to run as root in this mode.
+
 ## Other behavior
 
-- Every build runs as `coder_user`. Other invokers are re-executed with
+- Multi-user mode (smudged project.config): every build runs as `coder_user`. Other invokers are re-executed with
   `sudo -n -u <coder_user> /usr/bin/env ...`, which primary_user's sudoers entry allows
   without a password. The invoker's git `user.name`/`user.email` are passed in as
   `GIT_AUTHOR_*`/`GIT_COMMITTER_*`.
-- `java_home=` is required: an absolute JDK home with a `release` file and `bin/java`,
-  `bin/javac`, `bin/keytool` (so `/usr` is rejected). sudo drops `JAVA_HOME`.
+- `java_home=`, when set, must be an absolute JDK home with a `release` file and `bin/java`,
+  `bin/javac`, `bin/keytool` (so `/usr` is rejected). Unset: the OS default `java` on PATH,
+  resolved through its symlinks, and build_app prints which one it uses.
+- Android SDK: `sdk.dir` in local.properties, else `ANDROID_HOME`; neither is an error naming both.
 - **Play signing:** through AGP's `android.injected.signing.*` properties, passed as
   `ORG_GRADLE_PROJECT_*` environment variables, never on a command line.
 - **Play output check:** the AAB must be signed by the upload key. Its path, SHA256,
@@ -80,7 +116,7 @@ manual tag or version number is needed. To start a new version line, tag the bas
   build_app). Gradle runs with `--no-daemon` under the `build-intermediates` umask (002), so
   the JVM writing the outputs inherits it. Afterwards `app/build` and `.gradle` get group
   ai-code, group read/write and setgid dirs; "other" bits are never stripped.
-- **Deliverables** (every APK in `apk_outputs`/`apk_test_outputs`, its
+- **Deliverables** (every recorded APK, its
   `output-metadata.json`, and the AAB) are set to 644, and every directory from the worktree
   down to them gets o+rx. build_app then checks that `primary_user` can read them with no
   supplementary groups (as from a desktop session that started before a group change). If
@@ -99,8 +135,8 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 
 | Option | Effect |
 |---|---|
-| (none) | Install the standard build (`apk_outputs`) on every online device |
-| `--test` | Install the test build (`apk_test_outputs`, including its androidTest APKs with `adb install -r -t`); the tag is `deployed-test` |
+| (none) | Install the recorded standard build on every online device |
+| `--test` | Install the recorded test build (its instrumentation APKs with `adb install -r -t`); the tag is `deployed-test`. Never falls back to the standard APKs |
 | `--clean` | Uninstall the APKs' own app id first, which removes its data (`UNINSTALL_FIRST=1`) |
 | `--rebuild` | Run `./build_app --standard` (or `--test`) first; flags after `--` go to build_app (`REBUILD=1`) |
 | `--launch` | Start the app's launcher activity after install |
@@ -108,8 +144,13 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 | `phone` | `deploy_serial=` from project.config (error if unset) |
 | other words | adb serials |
 
-Before the first adb call, deploy reads every listed APK with the SDK aapt2 (found through
-`sdk.dir` in local.properties). It stops if aapt2 is missing or fails, if `dump packagename`
+`deploy --test` refuses, before any adb call, when the test build is missing, when it is not
+from HEAD, when it comes from an earlier commit than the recorded standard build, when no
+standard build is recorded, or when a test build type has the standard app's id. Any recorded
+APK that is missing or changed since the build fails either mode.
+
+Before the first adb call, deploy reads every recorded APK with the SDK aapt2 (found through
+`sdk.dir` in local.properties, else `ANDROID_HOME`). It stops if aapt2 is missing or fails, if `dump packagename`
 does not print exactly one application id, if the APKs name different apps or versionNames,
 or if the list mixes ABI-specific and universal APKs (or has more than one universal APK).
 The app id always comes from the APKs. Nothing is hard-coded, so a test build with a
@@ -119,16 +160,16 @@ For each device it reads `ro.product.cpu.abilist` and installs the APK whose nat
 matches the first ABI in that list. A universal APK (no native code) goes to every device.
 After `adb install -r` it checks that the app id appears in `pm list packages` (exact
 match). Any device failure leaves the deployed tag (`deployed`, or `<branch>/deployed`)
-unchanged and makes deploy exit with an error. With `--test`, androidTest APKs in `apk_test_outputs` (paths under `*/androidTest/*`) are installed on every device after the app (`adb install -r -t`), each verified by its own package id (one APK per test package); a missing, unreadable or not-installed one fails that device and the tag stays. In the default mode they are skipped.
+unchanged and makes deploy exit with an error. With `--test`, the instrumentation (androidTest) APKs are installed on every device after the app (`adb install -r -t`), each verified by its own package id (one APK per test package); a missing, unreadable or not-installed one fails that device and the tag stays.
 
-Run as root, it re-executes as `primary_user`. It refuses `planning_user` and `coder_user`
+Multi-user mode: run as root, it re-executes as `primary_user`. It refuses `planning_user` and `coder_user`
 and needs the ai-shared and ai-code groups (`source ./env`).
 
 Per-app config:
-- project.config: `primary_user`, `planning_user`, `coder_user`; `apk_outputs` (default
-  `app/build/outputs/apk/debug/app-debug.apk`); `apk_test_outputs` for `--test`; optional
+- project-facts.md: the build declaration above.
+- project.config (multi-user mode): `primary_user`, `planning_user`, `coder_user`; optional
   `deploy_serial`.
-- local.properties: `sdk.dir` (Android SDK with build-tools/*/aapt2).
+- local.properties `sdk.dir`, or `ANDROID_HOME` (Android SDK with build-tools/*/aapt2).
 
 App-specific data features (for example VehicleExpenses' `--backup`/`--restore-data`) are not
 part of this script. VehicleExpenses plans to replace them with the adb export/import
