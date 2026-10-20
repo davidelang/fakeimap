@@ -68,9 +68,8 @@ def head(r): return g(r, "rev-parse", "HEAD")
 
 # --- missing, malformed, unknown, none, command
 cases = [
-    ("p-nofacts", None, {}, "project-facts.md not committed in the project root"),
-    ("p-noline", "# f\n\n## Build and commit\n- Build: x\n", {}, "has no '- **Build type:** <type>' line"),
-    ("p-nosect", "# f\n\n## Build\n- **Build type:** android-gradle\n", {}, "has 0 '## Build and commit' sections"),
+    ("p-nosect", "# f\n\n## Build\n- **Build type:** android-gradle\n", {}, "build-type item that is not the one"),
+    ("p-twosect", "# f\n\n## Build and commit\n- **Build type:** none\n## Build and commit\n", {}, "has 2 '## Build and commit' sections"),
     ("p-dup", "# f\n\n## Build and commit\n- **Build type:** none\n- **Build type:** none\n", {}, "2 '- **Build type:**' lines"),
     ("p-outside", "# f\n\n## Build and commit\n- **Build type:** none\n\n## Other\n- **Build type:** none\n", {}, "build-type item that is not the one"),
     ("p-typo", "# f\n\n## Build and commit\n- **Build Type:** Android\n", {}, "build-type item that is not the one"),
@@ -80,16 +79,20 @@ cases = [
     ("p-cmd-noexec", facts("command"), {"build_app": 0o644}, "build_app in the project root is not executable (git mode 100644)"),
 ]
 projs = {n: mkproj(n, f, **kw) for n, f, kw, _ in cases}
+p_nofacts = mkproj("p-nofacts", None); p_noline = mkproj("p-noline", "# f\n\n## Build and commit\n- Build: x\n")
 p_none = mkproj("p-none", facts("none")); p_cmd = mkproj("p-cmd", facts("command"), build_app=0o755)
 p_uncommitted = mkproj("p-uncommitted", None); write(p_uncommitted + "/project-facts.md", facts("none"))
-names = [n for n, _, _, _ in cases] + ["p-none", "p-cmd", "p-uncommitted"]
+names = [n for n, _, _, _ in cases] + ["p-none", "p-cmd", "p-uncommitted", "p-nofacts", "p-noline"]
 before = {n: head(os.path.join(home, n)) for n in names}
 r = deploy("--apply", "--repos", ",".join(names))
 out = r.stdout
 check(r.returncode == 1, "bad build types exit 1 (rc=%d)" % r.returncode)
 for n, _, _, msg in cases:
     check(("FAIL: %s: " % n) in out and msg in out.split("FAIL: %s: " % n, 1)[1].split("\n", 1)[0], "%s fails: %s" % (n, msg))
-check("FAIL: p-uncommitted: project-facts.md not committed" in out, "uncommitted project-facts.md is not read (committed only)")
+for n in ("p-nofacts", "p-noline", "p-uncommitted"):
+    check(("FAIL: %s:" % n) not in out and any(l.startswith(n + " ") and "unmanaged" in l and "no build type: build scripts not managed" in l for l in out.split("\n")),
+          "%s: no build type -> reported unmanaged, not an error, nothing installed" % n)
+check(not os.path.exists(p_nofacts + "/deploy") and not os.path.exists(p_uncommitted + "/deploy"), "unmanaged: nothing installed (uncommitted facts not read)")
 check(all(head(os.path.join(home, n)) == before[n] for n in names), "failed/none/command projects: no commit")
 check(not os.path.exists(p_none + "/deploy") and "FAIL: p-none:" not in out, "none: nothing installed, no failure")
 check("FAIL: p-cmd:" not in out and open(p_cmd + "/build_app").read().endswith("own build\n") and not os.path.exists(p_cmd + "/deploy"),

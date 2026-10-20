@@ -28,11 +28,12 @@ Rules:
   from the root AND is dirty or has a commit on the worktree branch touching it since the
   merge-base with the root branch.
 - Build type: the project root's committed project-facts.md has exactly one line
-  `- **Build type:** <type>` in its `## Build and commit` section (strict; a missing, duplicated,
+  `- **Build type:** <type>` in its `## Build and commit` section (strict; a duplicated,
   misplaced or unknown value fails that project). Types: a folder under canon's build-examples/
   (e.g. android-gradle) installs its files except README.md into the project root, lists each as
   `local` in rules.manifest.local (same commit), and from there they reach the worktrees;
   `command` installs nothing and requires the project's own executable build_app in the root;
+  no build-type line at all (or no project-facts.md) = build scripts not managed (reported, no error);
   `none` installs and checks nothing. A dirty/untracked root copy fails; a root copy canon never
   published (DIVERGED) fails unless --override-path names it; older published copies update.
   A leftover build_type= in project.config fails (delete it). Not run with --host-only.
@@ -478,31 +479,31 @@ def build_type_files(canon_tree, bt):
     return {p[len(pre):]: p for p in canon_tree if p.startswith(pre) and p[len(pre):] != "README.md"}
 
 def read_build_type(host, label):
-    """(value, problem) from the project root's COMMITTED project-facts.md: exactly one line
-    `- **Build type:** <type>` inside the one `## Build and commit` section. Any other line that
-    mentions a build type is a problem (a typo must not be silently ignored)."""
+    """(value, problem) from the project root's COMMITTED project-facts.md: one line
+    `- **Build type:** <type>` inside the one `## Build and commit` section. No such line anywhere
+    (no file, no section, no line) = (None, None): build scripts are not managed for this project.
+    A build-type item that is not exactly that line in that section, or two lines, is a problem."""
     if FACTS not in tree(host):
-        return None, "%s: %s not committed in the project root (needs '%s' with '- **Build type:** <type>')" % (label, FACTS, FACTS_SECTION)
+        return None, None
     lines = git(host, "show", "HEAD:" + FACTS).split("\n")
     heads = [i for i, l in enumerate(lines) if l.rstrip() == FACTS_SECTION]
-    if len(heads) != 1:
-        return None, "%s: %s has %d '%s' sections (need exactly 1)" % (label, FACTS, len(heads), FACTS_SECTION)
-    end = next((i for i in range(heads[0] + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+    if len(heads) > 1:
+        return None, "%s: %s has %d '%s' sections (need at most 1)" % (label, FACTS, len(heads), FACTS_SECTION)
+    start = heads[0] if heads else -1
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("#")), len(lines)) if heads else -1
     vals, stray = [], []
     for i, l in enumerate(lines):
         m = FACTS_LINE.fullmatch(l.rstrip())
-        if m and heads[0] < i < end:
+        if m and start < i < end:
             vals.append(m.group(1))
-        elif FACTS_MENTION.match(l):
+        elif m or FACTS_MENTION.match(l):
             stray.append("line %d: %s" % (i + 1, l.strip()[:80]))
     if stray:
         return None, "%s: %s has a build-type item that is not the one '- **Build type:** <type>' line in '%s' (%s)" % (
             label, FACTS, FACTS_SECTION, "; ".join(stray))
-    if not vals:
-        return None, "%s: %s '%s' has no '- **Build type:** <type>' line" % (label, FACTS, FACTS_SECTION)
     if len(vals) > 1:
         return None, "%s: %s has %d '- **Build type:**' lines (need exactly 1)" % (label, FACTS, len(vals))
-    return vals[0], None
+    return (vals[0] if vals else None), None
 
 def plan_build_type(canon, canon_tree, canon_dirty, host, label):
     """Plan installing build-examples/<build type>/* into the project root as project-local files.
@@ -517,6 +518,8 @@ def plan_build_type(canon, canon_tree, canon_dirty, host, label):
     bt, prob = read_build_type(host, label)
     if prob:
         return None, [], [prob]
+    if bt is None:
+        return None, [], []
     types = build_types(canon_tree)
     clash = [t for t in BUILTIN_TYPES if t in types]
     if clash:
@@ -596,6 +599,8 @@ def sync_build_type(canon, host, rep, hl, apply):
         rep.fail.extend(probs)
         rep.row(hl, "(root)", "FAILED", "build_type=%s: %d problem(s), nothing installed" % (bt or "?", len(probs)))
         return
+    if bt is None:
+        rep.row(hl, "(root)", "unmanaged", "no build type: build scripts not managed"); return
     if not acts:
         rep.row(hl, "(root)", "up-to-date", "build_type=%s" % bt); return
     desc = "build_type=%s: %s" % (bt, ", ".join("%s %s" % (k, p) for k, p, _, _ in acts))
