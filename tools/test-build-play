@@ -68,6 +68,7 @@ C
   echo 1 >"$W/app/versionCode.txt"
   printf '%s\n' '## Build and commit' '- **Standard build:** debug' '- **Test build:** none' >"$W/project-facts.md"
   printf 'project.config\n.gradle-home/\napp/build/\n' >"$W/.gitignore"
+  ln -s app/build/outputs/bundle/release/app-release.aab "$W/play-bundle.aab"   # tracked, dangling until --play
   git -C "$W" init -q -b master && git -C "$W" add -A && git -C "$W" -c user.name=t -c user.email=t@t commit -qm init
   if [ -n "${1:-}" ]; then git -C "$W" -c user.name=t -c user.email=t@t tag -a "$1" -m "$1"; fi
 }
@@ -114,6 +115,22 @@ mk v2.0; git -C "$W" -c user.name=t -c user.email=t@t tag -a 'v2.0+2' -m x
 play 'pw123456\n\n'; rc=$?
 [[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'tag v2.0+2 already exists' "$T/out" && ok "existing tag: error before the bump" || bad "existing tag rc=$rc vc=$(vc) $(tail -3 "$T/out")"
 
+# play-bundle.aab: tracked relative symlink, checked (never written) by build_app.
+mk v5.0
+play 'pw123456\n\n'; rc=$?
+[[ $rc -eq 0 && -r "$W/play-bundle.aab" && -z "$(git -C "$W" status --porcelain)" ]] && ! grep -q 'play-bundle' "$W/.git/info/exclude" \
+  && grep -q "Link:        $W/play-bundle.aab" "$T/out" && ok "--play: tracked link resolves to the new bundle, tree clean, nothing excluded" || bad "link: rc=$rc $(git -C "$W" status --porcelain) $(tail -5 "$T/out")"
+mk v5.0; git -C "$W" rm -q play-bundle.aab; git -C "$W" -c user.name=t -c user.email=t@t commit -qm rmlink
+play 'pw123456\n\n'; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'play-bundle.aab is not tracked' "$T/out" && grep -q "ln -sfn 'app/build/outputs/bundle/release/app-release.aab' play-bundle.aab" "$T/out" \
+  && ok "missing link: error with the fix, before the versionCode bump" || bad "nolink: rc=$rc vc=$(vc) $(tail -4 "$T/out")"
+mk v5.0; ln -sfn app/build/other.aab "$W/play-bundle.aab"; git -C "$W" -c user.name=t -c user.email=t@t commit -qam wrong
+play 'pw123456\n\n'; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q "points at 'app/build/other.aab', not release_bundle_path" "$T/out" && ok "link to the wrong path: error before the bump" || bad "wrong: rc=$rc $(tail -4 "$T/out")"
+mk v5.0; rm "$W/play-bundle.aab"; echo x >"$W/play-bundle.aab"; git -C "$W" -c user.name=t -c user.email=t@t commit -qam file
+play 'pw123456\n\n'; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'is not a symlink (git mode 100644)' "$T/out" && ok "tracked regular file instead of a link: error" || bad "file: rc=$rc $(tail -3 "$T/out")"
+
 # Multi-user mode: every mode re-executes as coder_user (sudo -n -u, invoker's git identity
 # carried) before anything else; a recording sudo shim stands in for sudo.
 mkdir -p "$T/sudoshim"; printf '#!/bin/sh\nprintf "%%s\\n" "$*" >"%s/sudo-args"\nexit 0\n' "$T" >"$T/sudoshim/sudo"; chmod 755 "$T/sudoshim/sudo"
@@ -159,6 +176,10 @@ playargs 'pw123456\n\n' --signing-config "$SC"; rc=$?
 mk v3.0; rm "$W/project.config"
 (cd "$W" && ./build_app --standard --signing-config "$SC" </dev/null) >"$T/out" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q 'given without --play' "$T/out" && ok "signing options without --play: error" || bad "noplay rc=$rc $(tail -3 "$T/out")"
+
+mk v5.0; git -C "$W" rm -q play-bundle.aab; git -C "$W" -c user.name=t -c user.email=t@t commit -qm rmlink; rm "$W/project.config"
+playargs 'pw123456\n\n' --signing-config "$SC"; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'play-bundle.aab is not tracked' "$T/out" && ok "single-user --play without the link: same error" || bad "su nolink: rc=$rc $(tail -3 "$T/out")"
 
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]

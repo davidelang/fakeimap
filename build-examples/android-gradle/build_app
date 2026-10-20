@@ -70,6 +70,42 @@
 #   phase, naming each missing key (also in single-user mode: signing stays local to this machine).
 #   release_gradle_args Play build: extra space-separated gradle args (e.g. -Pfuelsmoothing.official=true)
 
+# play-bundle.aab: a TRACKED relative symlink at the worktree top pointing at release_bundle_path,
+# so a file picker (Play Console filters *.aab) reaches the bundle without walking app/build/...
+# It is committed on the app branch (part of merges and new worktrees); build_app never creates
+# or rewrites it (that would dirty the tree). Required in both modes: a missing or wrong link is an
+# error with the fix, checked before the commit phase and again after the bundle is built.
+PLAY_LINK=play-bundle.aab
+play_link_fix() {
+  echo "  Fix (once, on the app branch): ln -sfn '$1' $PLAY_LINK && git add $PLAY_LINK && git commit -m 'Link $PLAY_LINK to the Play bundle' -- $PLAY_LINK" >&2
+}
+check_play_link() {  # check_play_link TARGET [built]
+  local target="$1" entry mode
+  case "$target" in
+    /*|../*) echo "ERROR: release_bundle_path must be relative and inside the worktree: $target" >&2; exit 1 ;;
+  esac
+  entry=$(git ls-files -s -- "$PLAY_LINK") || exit 1
+  mode="${entry%% *}"
+  if [ -z "$entry" ]; then
+    echo "ERROR: $PLAY_LINK is not tracked in this branch (the committed link to the Play bundle)." >&2
+    play_link_fix "$target"; exit 1
+  fi
+  if [ "$mode" != 120000 ]; then
+    echo "ERROR: tracked $PLAY_LINK is not a symlink (git mode $mode)." >&2
+    play_link_fix "$target"; exit 1
+  fi
+  if [ "$(git cat-file blob "HEAD:$PLAY_LINK")" != "$target" ]; then
+    echo "ERROR: committed $PLAY_LINK points at '$(git cat-file blob "HEAD:$PLAY_LINK")', not release_bundle_path '$target'." >&2
+    play_link_fix "$target"; exit 1
+  fi
+  if [ "${2:-}" = built ]; then
+    if [ "$(readlink -f -- "$PLAY_LINK")" != "$(readlink -f -- "$target")" ] || [ ! -r "$PLAY_LINK" ]; then
+      echo "ERROR: $(pwd)/$PLAY_LINK does not resolve to the readable bundle $target just built." >&2
+      exit 1
+    fi
+  fi
+}
+
 # Mode: multi-user when project.config exists and is smudged; single-user otherwise.
 SINGLE_USER=false
 SINGLE_USER_WHY=""
@@ -359,6 +395,7 @@ if [ "$BUILD_PLAY" = true ]; then
     echo "WARNING: $RELEASE_KEYSTORE is mode $KS_MODE (world-accessible). Fix: chmod 640 '$RELEASE_KEYSTORE'" >&2
   fi
   read -r -a RELEASE_GRADLE_ARGS <<< "$(play_key release_gradle_args)"
+  check_play_link "$AAB"
 fi
 
 # ai-shared + ai-code required (agent caches are ai-coder:ai-code). Do not sg one group.
@@ -779,9 +816,11 @@ os.execvp(sys.argv[1], sys.argv[1:])
     exit 1
   fi
   publish_deliverables "$AAB"
+  check_play_link "$AAB" built
   version_code=$(tr -d '[:space:]' < app/versionCode.txt)
   PLAY_SUMMARY="Play bundle ready for upload:
   Path:        $(pwd)/$AAB
+  Link:        $(pwd)/$PLAY_LINK
   File SHA256: $(sha256sum "$AAB" | cut -d' ' -f1)
   Signed by:   SHA256 $aab_sha256 (upload key)
   versionName: $VERSION_DESC

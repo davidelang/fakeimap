@@ -115,6 +115,12 @@ is `./.gradle-home`. deploy refuses to run as root in this mode.
 - Android SDK: `sdk.dir` in local.properties, else `ANDROID_HOME`; neither is an error naming both.
 - **Play signing:** through AGP's `android.injected.signing.*` properties, passed as
   `ORG_GRADLE_PROJECT_*` environment variables, never on a command line.
+- **`play-bundle.aab`:** each app branch commits a relative symlink `play-bundle.aab` at the
+  worktree top pointing at `release_bundle_path`, so a file picker (Play Console lists `*.aab`)
+  reaches the bundle directly. It may dangle until the first `--play`. build_app never creates
+  or rewrites it: `--play` (both modes) stops before the commit phase if it is untracked, not a
+  symlink, or points elsewhere (the error prints the one-line fix), and checks after the build
+  that it resolves to the bundle just built.
 - **Play output check:** the AAB must be signed by the upload key. Its path, SHA256,
   versionName, versionCode and release tag are printed at the end.
 - The upload key must be readable by `coder_user`: give it a dedicated group, `chmod 640`,
