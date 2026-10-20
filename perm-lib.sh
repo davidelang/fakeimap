@@ -7,6 +7,9 @@
 #   perm_umask AREA                       print the area's umask
 #   perm_apply AREA PATH [opts]           set owner/group/modes where they differ from the model
 #   perm_verify AREA PATH [opts]          list every path that differs; return 1 if any
+#   perm_preflight AREA PATH [opts]       list every difference this user cannot fix (another
+#                                         owner needed, or a mode change on a path someone else
+#                                         owns); return 1 if any. Changes nothing.
 #   perm_readable_nogroups USER PATH...   PATH readable by USER with only USER's primary group
 #                                         (no supplementary groups, as in a login session that
 #                                         predates a group change); return 1 naming the blocker
@@ -46,4 +49,5 @@ _perm_engine() {
 perm_umask()              { _perm_engine umask "$@"; }
 perm_apply()              { _perm_engine apply "$@"; }
 perm_verify()             { _perm_engine verify "$@"; }
+perm_preflight()          { _perm_engine preflight "$@"; }
 perm_readable_nogroups()  { _perm_engine readable-nogroups "$@"; }

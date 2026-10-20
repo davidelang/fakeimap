@@ -75,7 +75,7 @@ SINGLE_USER_WHY=""
 if [ ! -f project.config ]; then
   SINGLE_USER=true
   SINGLE_USER_WHY="no project.config in $(pwd)"
-elif grep -q '@@' project.config; then
+elif grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=.*@@[A-Za-z_][A-Za-z0-9_]*@@' project.config; then
   SINGLE_USER=true
   SINGLE_USER_WHY="project.config has unsmudged @@TOKEN@@ values (not set up by setup-project)"
 fi
@@ -371,6 +371,22 @@ if [ -n "$MISSING" ]; then
   echo "  Fix:  source ./env   (refreshes this shell's groups)" >&2
   exit 1
 fi
+fi
+
+# Build outputs belong to the builder (perm-model.tsv build-intermediates: coder_user). Paths
+# under app/build or .gradle that this user cannot bring to the model (another owner, e.g. left
+# by an old build or fix-perms run as someone else) would stop the post-build repair or the
+# deliverable chmod after a long gradle run: refuse now, before the commit, naming them.
+if [ "$SINGLE_USER" = false ]; then
+  for _d in .gradle app/build; do
+    if [ -d "$_d" ]; then
+      perm_preflight build-intermediates "$_d" || {
+        echo "ERROR: $(pwd)/$_d has paths $(id -un) cannot fix (CANNOT-FIX above); nothing was committed or built." >&2
+        echo "  Fix once: sudo ./fix-perms   (from the orchestration root; makes app/build and .gradle $(cfg coder_user)-owned)" >&2
+        exit 1
+      }
+    fi
+  done
 fi
 
 if [ "$#" -ge 1 ]; then

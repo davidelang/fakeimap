@@ -172,13 +172,41 @@ def name_g(gid):
     try: return grp.getgrgid(gid).gr_name
     except KeyError: return str(gid)
 
+FIX_HINT = "only its owner or root can change it: run 'sudo ./fix-perms' from the orchestration root"
+
 def run(argv, path, st):
     r = subprocess.run(argv)
     if r.returncode != 0:
         me = pwd.getpwuid(os.geteuid()).pw_name
+        hint = ""
+        if os.geteuid() != 0 and st.st_uid != os.geteuid():
+            hint = f"; it is not owned by {me}, so {FIX_HINT}"
         print(f"ERROR: perm-lib: '{' '.join(argv)}' failed (exit {r.returncode}); "
               f"{path} is {name_u(st.st_uid)}:{name_g(st.st_gid)} {format(st.st_mode & 0o7777, '04o')}, "
-              f"running as {me}", file=sys.stderr)
+              f"running as {me}{hint}", file=sys.stderr)
+        sys.exit(1)
+
+def cmd_preflight(area, root, *a):
+    """List every difference from the model that this user cannot fix (needs another owner, or
+    a mode change on a path someone else owns); exit 1 if any. Changes nothing."""
+    o = parse_opts(list(a))
+    if os.geteuid() == 0:
+        return
+    me = os.geteuid()
+    bad = 0
+    for path, st, owner, group, mode, own, md in diffs(area, root, o):
+        why = []
+        if own and ((owner and pwd.getpwnam(owner).pw_uid != st.st_uid) or st.st_uid != me):
+            why.append(f"owner should be {owner or name_u(st.st_uid)}:{group or name_g(st.st_gid)}")
+        if md and st.st_uid != me:
+            why.append(f"mode should be {format(mode, '04o')}")
+        if why:
+            bad += 1
+            print(f"CANNOT-FIX area={area} path={path} got={name_u(st.st_uid)}:{name_g(st.st_gid)} "
+                  f"{format(st.st_mode & 0o7777, '04o')} ({'; '.join(why)})")
+    if bad:
+        print(f"ERROR: perm-lib: {bad} path(s) in area '{area}' differ from perm-model.tsv and are not "
+              f"owned by {name_u(me)}; {FIX_HINT}", file=sys.stderr)
         sys.exit(1)
 
 def cmd_apply(area, root, *a):
@@ -249,7 +277,7 @@ def main(argv):
         die("usage: perm-engine.py MODEL CONFIG COMMAND [ARGS]")
     model_path, config_path, cmd, *args = argv
     MODEL = load_model()
-    cmds = {"apply": cmd_apply, "verify": cmd_verify, "umask": cmd_umask, "readable-nogroups": cmd_readable_nogroups}
+    cmds = {"apply": cmd_apply, "verify": cmd_verify, "preflight": cmd_preflight, "umask": cmd_umask, "readable-nogroups": cmd_readable_nogroups}
     if cmd not in cmds:
         die(f"unknown command {cmd}")
     try:

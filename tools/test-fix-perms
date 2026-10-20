@@ -55,6 +55,12 @@ grep -q "chattr +a $R/ENGINEERING_LOG.md" "$T/calls" && ok "log set append-only 
 [[ "$(grep -c "chattr +a $R/ENGINEERING_LOG.md" "$T/calls")" == 1 ]] && ok "log sealed exactly once (no second +a from the EXIT trap)" || bad "chattr +a count: $(cat "$T/calls")"
 [[ "$(stat -c %a "$R/append-to-engineering-log")" == 2755 ]] && ok "wrapper mode 2755" || bad "wrapper mode $(stat -c %a "$R/append-to-engineering-log")"
 
+mkdir -p "$R/app/build/x"; : >"$R/app/build/x/f"; chmod 600 "$R/app/build/x/f"; : >"$R/wtf"; chmod 600 "$R/wtf"
+asroot ./fix-perms "$R" >"$T/r1a" 2>&1; rc=$?
+[[ $rc -eq 0 && "$(stat -c %a "$R/app/build/x/f")" == 660 && "$(stat -c %a "$R/wtf")" == 664 ]] \
+  && ok "worktree pass does not enter app/build; build-intermediates pass fixes it (660, not the worktree's 664)" || bad "app/build: rc=$rc f=$(stat -c %a "$R/app/build/x/f") wtf=$(stat -c %a "$R/wtf") $(tail -3 "$T/r1a")"
+rm -rf "$R/app" "$R/wtf"
+
 asroot ./fix-perms >"$T/r1b" 2>&1; rc=$?
 [[ $rc -eq 0 ]] && [[ -d "$R/.gradle-shared" ]] && ok "orchestration-root run (all worktrees + sandbox + common .git) rc 0" || bad "root run rc=$rc: $(cat "$T/r1b")"
 

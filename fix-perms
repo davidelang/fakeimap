@@ -405,7 +405,10 @@ fix_worktree() {
   if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     owner_opt=(--owner "$SUDO_USER")
   fi
-  perm_apply worktree "$wt" "${owner_opt[@]}" --prune-name .git "${PRUNES[@]}"
+  # app/build and .gradle are the build-intermediates area (owned by coder_user, the builder):
+  # never entered here, so this pass cannot re-own build outputs to the invoker.
+  perm_apply worktree "$wt" "${owner_opt[@]}" --prune-name .git "${PRUNES[@]}" \
+    --prune "$wt/app/build" --prune "$wt/.gradle"
 
   git_config_as_primary "$wt" config core.sharedRepository group
 
@@ -480,7 +483,7 @@ fix_worktree() {
     fi
   done
 
-  # .gradle and app/build: group ai-code, group rw, setgid dirs (same as build_app's repair)
+  # .gradle and app/build: owner coder_user, group ai-code, group rw, setgid dirs (same as build_app's repair)
   if [ -d "$wt/.gradle" ]; then
     perm_apply build-intermediates "$wt/.gradle"
   fi

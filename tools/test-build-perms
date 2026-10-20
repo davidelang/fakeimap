@@ -117,8 +117,25 @@ mk; printf '%s\n' '## Build and commit' '- **Standard build:** debug' >"$W/proje
 mk; (cd "$W" && env -u GRADLE_USER_HOME PATH="$PATH" ./build_app --test </dev/null) >"$T/out" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q "declares '- \*\*Test build:\*\* none'" "$T/out" && ok "--test with Test build none refused" || bad "test none: rc=$rc $(tail -3 "$T/out")"
 
+# '@@' in a comment of a smudged project.config (torque's has two) is not single-user mode.
+mk; printf '# Notes for filters: use @@VAR@@ in source scripts for substitution.\n' >>"$W/project.config"; build; rc=$?
+[[ $rc -eq 0 ]] && ! grep -q 'single-user' "$T/out" && grep -q 'Deliverables readable' "$T/out" && ok "@@ in a comment keeps multi-user mode" || bad "@@ comment: rc=$rc $(grep -i 'single\|ERROR' "$T/out")"
+# build_app checks build-intermediates ownership before the commit phase.
+awk '/perm_preflight build-intermediates/{p=NR} /^if \[ "\$#" -ge 1 \]; then/{c=NR} END{exit !(p && c && p<c)}' "$W/build_app" \
+  && ok "build_app runs perm_preflight before the commit phase" || bad "preflight not before commit phase"
+
 # perm-lib unit checks
 . "$canon/perm-lib.sh"; perm_init "$W/project.config"
+mkdir -p "$T/pf/d"; chmod 0755 "$T/pf/d"
+perm_preflight build-intermediates "$T/pf/d" --top-only >"$T/o" 2>&1 && [ ! -s "$T/o" ] && ok "preflight: own path with the wrong mode is fixable (no output)" || bad "pf own: $(cat "$T/o")"
+perm_preflight build-intermediates /etc --top-only >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q '^CANNOT-FIX area=build-intermediates path=/etc got=root:root' "$T/o" && grep -q "sudo ./fix-perms" "$T/o" && ok "preflight: someone else's path with the wrong mode/owner is CANNOT-FIX, hint given" || bad "pf foreign: $(cat "$T/o")"
+sed "s/^coder_user=.*/coder_user=nobody/" "$W/project.config" >"$T/pc-nobody"
+( perm_init "$T/pc-nobody"; perm_preflight build-intermediates "$T/pf/d" --top-only ) >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'owner should be nobody:ai-code' "$T/o" && ok "preflight: build outputs owned by someone other than coder_user are CANNOT-FIX" || bad "pf owner: $(cat "$T/o")"
+perm_apply deliverable-dirs /etc --top-only >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q "is not owned by $me, so only its owner or root can change it: run 'sudo ./fix-perms'" "$T/o" && ok "failing chmod on another user's path names the fix" || bad "apply hint: $(cat "$T/o")"
+grep -q $'^build-intermediates\tcoder_user\t' "$canon/perm-model.tsv" && ok "model: build-intermediates owned by coder_user" || bad "model owner"
 mkdir -p "$T/u/a/b"; : >"$T/u/a/b/f"; chmod 700 "$T/u/a"
 perm_readable_nogroups nobody "$T/u/a/b/f" >"$T/o" 2>&1 && bad "readable check passed through a 700 dir" || ok "readable check: 700 dir blocks 'other'"
 perm_verify deliverables "$T/u/a/b/f" --top-only >"$T/o" 2>&1; rc=$?
