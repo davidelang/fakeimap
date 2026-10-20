@@ -240,6 +240,46 @@ def cmd_umask(area):
         die(f"area '{area}' has no umask (nobody creates files there)")
     print(u)
 
+# POSIX ACL access check (acl(5) "ACCESS CHECK ALGORITHM") for a user with only its primary
+# group: owner -> user::, named user:<uid> -> entry & mask, owning or named group matching the
+# primary gid -> entry & mask, else other::. Without an ACL this is the plain mode-bit check.
+ACL_USER_OBJ, ACL_USER, ACL_GROUP_OBJ, ACL_GROUP, ACL_MASK, ACL_OTHER = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
+
+def read_acl(path):
+    """[(tag, perm, id)] from system.posix_acl_access, or None when the path has no ACL."""
+    if "system.posix_acl_access" not in os.listxattr(path, follow_symlinks=False):
+        return None
+    raw = os.getxattr(path, "system.posix_acl_access", follow_symlinks=False)
+    if len(raw) < 4 or int.from_bytes(raw[:4], "little") != 2 or (len(raw) - 4) % 8:
+        die(f"{path}: unreadable POSIX ACL xattr ({len(raw)} bytes)")
+    out = []
+    for i in range(4, len(raw), 8):
+        out.append((int.from_bytes(raw[i:i + 2], "little"), int.from_bytes(raw[i + 2:i + 4], "little"),
+                    int.from_bytes(raw[i + 4:i + 8], "little")))
+    return out
+
+def effective_perm(path, st, uid, gid):
+    """(class, rwx bits 0..7) that uid with only primary group gid gets on path."""
+    m = st.st_mode
+    acl = read_acl(path)
+    if acl is None:
+        if st.st_uid == uid: return "owner", (m >> 6) & 7
+        if st.st_gid == gid: return "primary-group", (m >> 3) & 7
+        return "other", m & 7
+    ent = {}
+    for tag, perm, i in acl:
+        ent.setdefault(tag, {})[i] = perm
+    if st.st_uid == uid:
+        return "owner", (m >> 6) & 7
+    mask = next(iter(ent.get(ACL_MASK, {0: 7}).values()))
+    if uid in ent.get(ACL_USER, {}):
+        return "acl-user", ent[ACL_USER][uid] & mask
+    if st.st_gid == gid:
+        return "acl-group", next(iter(ent[ACL_GROUP_OBJ].values())) & mask
+    if gid in ent.get(ACL_GROUP, {}):
+        return "acl-named-group", ent[ACL_GROUP][gid] & mask
+    return "other", m & 7
+
 def cmd_readable_nogroups(user, *paths):
     if not paths: die("readable-nogroups needs at least one path")
     pw = pwd.getpwnam(user)
@@ -253,17 +293,13 @@ def cmd_readable_nogroups(user, *paths):
             st = os.lstat(c)
             if stat.S_ISLNK(st.st_mode):
                 print(f"NOT-READABLE user={user} path={p} blocker={c} reason=symlink-in-path"); bad += 1; break
-            if "system.posix_acl_access" in os.listxattr(c, follow_symlinks=False):
-                print(f"NOT-READABLE user={user} path={p} blocker={c} reason=has-acl (model has no ACLs)"); bad += 1; break
             need = 0o4 if last else 0o1   # read the file, search each directory
             if last and stat.S_ISDIR(st.st_mode):
                 need = 0o5
             if pw.pw_uid == 0:
                 continue
-            if st.st_uid == pw.pw_uid: cls, sh = "owner", 6
-            elif st.st_gid == pw.pw_gid: cls, sh = "primary-group", 3
-            else: cls, sh = "other", 0
-            if ((st.st_mode >> sh) & need) != need:
+            cls, perm = effective_perm(c, st, pw.pw_uid, pw.pw_gid)
+            if (perm & need) != need:
                 print(f"NOT-READABLE user={user} path={p} blocker={c} class={cls} mode={format(st.st_mode & 0o7777, '04o')} owner={name_u(st.st_uid)}:{name_g(st.st_gid)}")
                 bad += 1
                 break

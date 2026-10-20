@@ -135,6 +135,20 @@ sed "s/^coder_user=.*/coder_user=nobody/" "$W/project.config" >"$T/pc-nobody"
 [[ $rc -ne 0 ]] && grep -q 'owner should be nobody:ai-code' "$T/o" && ok "preflight: build outputs owned by someone other than coder_user are CANNOT-FIX" || bad "pf owner: $(cat "$T/o")"
 perm_apply deliverable-dirs /etc --top-only >"$T/o" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q "is not owned by $me, so only its owner or root can change it: run 'sudo ./fix-perms'" "$T/o" && ok "failing chmod on another user's path names the fix" || bad "apply hint: $(cat "$T/o")"
+# readable-nogroups evaluates POSIX ACLs (acl(5)), not "any ACL = unreadable".
+mkdir -p "$T/acl/d"; : >"$T/acl/d/f"; chmod 755 "$T/acl" "$T/acl/d"; chmod 644 "$T/acl/d/f"
+setfacl -m u:ai-planner:r-x "$T/acl"
+perm_readable_nogroups nobody "$T/acl/d/f" >"$T/o" 2>&1 && ok "ACL for another user (like VE root's user:ai-planner:r-x) does not block 'other'" || bad "acl other: $(cat "$T/o")"
+setfacl -m u:nobody:--- "$T/acl"
+perm_readable_nogroups nobody "$T/acl/d/f" >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q "blocker=$T/acl class=acl-user" "$T/o" && ok "named-user ACL entry --- blocks that user" || bad "acl user: rc=$rc $(cat "$T/o")"
+setfacl -m u:nobody:r-x,m:--- "$T/acl"
+perm_readable_nogroups nobody "$T/acl/d/f" >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'class=acl-user' "$T/o" && ok "mask limits a named-user entry" || bad "acl mask: rc=$rc $(cat "$T/o")"
+setfacl -b "$T/acl"; setfacl -m u:ai-planner:r-x "$T/acl"; chmod o-x "$T/acl"
+perm_readable_nogroups nobody "$T/acl/d/f" >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q "blocker=$T/acl class=other" "$T/o" && ok "ACL dir without o+x still blocks 'other'" || bad "acl no-ox: rc=$rc $(cat "$T/o")"
+perm_readable_nogroups $me "$T/acl/d/f" >"$T/o" 2>&1 && ok "owner reads through an ACL dir" || bad "acl owner: $(cat "$T/o")"
 grep -q $'^build-intermediates\tcoder_user\t' "$canon/perm-model.tsv" && ok "model: build-intermediates owned by coder_user" || bad "model owner"
 mkdir -p "$T/u/a/b"; : >"$T/u/a/b/f"; chmod 700 "$T/u/a"
 perm_readable_nogroups nobody "$T/u/a/b/f" >"$T/o" 2>&1 && bad "readable check passed through a 700 dir" || ok "readable check: 700 dir blocks 'other'"
