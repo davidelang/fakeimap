@@ -75,18 +75,24 @@ line each:
      Answering No stops before anything is committed.
    - **Passwords:** `read -s`, checked with `keytool`.
    - So a long unattended stretch never stops part-way to ask.
-5. **versionCode bump (Play only, automatic):**
-   - `app/versionCode.txt` goes from N to N+1 and is committed alone as
-     `versionCode N+1 (play build)`, by `coder_user` with the invoker's git identity.
-   - It creates no git tag. Tags are yours to make.
+5. **Builds:** they run in sequence (standard, test, play), all from that one HEAD with the
+   committed `app/versionCode.txt` (N). The first failure stops everything and bumps nothing.
+6. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves to the built commit only after
+   every selected build succeeded.
+7. **versionCode bump (Play only, after the build):** once the bundle and its checks have
+   succeeded, `app/versionCode.txt` goes from N to N+1 and is committed alone as
+   `versionCode N+1 (next play build)`, by `coder_user` with the invoker's git identity.
+   - The built commit (the bump's parent, printed as `Commit:` in the summary) is exactly the
+     source of Play versionCode N. Tag it yourself if you want a tag; build_app creates none.
    - versionName is the `<branch>-start` describe when that tag exists, otherwise
-     `git describe --always --exclude '*+*'`.
-   - If anything after the bump fails, the commit stays, so the next `--play` uses N+2
-     (Play needs increasing codes, not consecutive ones).
-6. **Builds:** they run in sequence (standard, test, play), and the first failure stops
-   everything.
-7. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves only after every selected
-   build succeeded.
+     `git describe --always --exclude '*+*'` of the built commit.
+   - If HEAD or `app/versionCode.txt` changed during the build, it stops with an error and
+     does not bump.
+   - **deploy staleness:** `android-build-info select` treats HEAD as the nearest commit that is
+     not a build_app bump (subject exactly `versionCode N (next play build)`, one parent, only
+     `app/versionCode.txt` changed). So the standard/test builds made in the same run, from the
+     built commit, still count as current after the bump. Any other commit, including a
+     hand-made versionCode change, makes them stale.
 
 For a release: commit your work (with build_app or git), then `./build_app --play`. No
 manual version number is needed. build_app makes no release tag; tag versions yourself

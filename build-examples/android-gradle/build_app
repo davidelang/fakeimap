@@ -38,12 +38,14 @@
 #     3. Integrity check: the tree must be clean; every build comes from that one commit.
 #     4. Play only: testing-version y/N check (only on a branch with a BRANCH-start tag) and
 #        password prompts, before any gradle work, so an unattended build never stalls part-way.
-#     5. Play only: versionCode bump. Play commits app/versionCode.txt from N to N+1 alone
-#        ("versionCode N+1 (play build)"). It creates no git tag. versionName is the
-#        BRANCH-start describe when that tag exists, otherwise
-#        'git describe --always --exclude '*+*''.
-#     6. Builds in sequence: standard, test, play. The first failure stops everything.
-#     7. The builds tag moves only after every selected build succeeded.
+#     5. Builds in sequence: standard, test, play, all from that one HEAD with the committed
+#        versionCode N (app/versionCode.txt). The first failure stops everything.
+#     6. The builds tag moves to the built commit only after every selected build succeeded.
+#     7. Play only, last: after the bundle and its checks succeeded, app/versionCode.txt goes
+#        N -> N+1, committed alone as "versionCode N+1 (next play build)". So the built commit
+#        is exactly the source of Play versionCode N (tag it yourself if you want); a failed
+#        build bumps nothing. No git tag is created. android-build-info treats these bump-only
+#        commits as not changing the build (deploy's HEAD checks look through them).
 #
 # Multi-user mode (a smudged project.config): every build, in every mode (--standard, --test,
 # --play, the default), runs as coder_user, so app/build, .gradle and the deliverables always have
@@ -563,7 +565,7 @@ if [ "$BUILD_PLAY" = true ]; then
     read -r -p "Build a release bundle from this testing version anyway? [y/N] " ANSWER
     case "$ANSWER" in
       y|Y|yes|YES) ;;
-      *) echo "Aborted: testing version (nothing committed or tagged)." >&2; exit 1 ;;
+      *) echo "Aborted: testing version (nothing built or committed)." >&2; exit 1 ;;
     esac
   fi
 
@@ -593,19 +595,19 @@ if [ "$BUILD_PLAY" = true ]; then
   fi
   echo "Upload key: $RELEASE_KEYSTORE alias $RELEASE_KEY_ALIAS (SHA256 $UPLOAD_SHA256)"
 
-  # versionCode bump (see the header, step 5). A Play versionCode is not a git tag.
-  NEW_VERSION_CODE=$((OLD_VERSION_CODE + 1))
-  printf '%s\n' "$NEW_VERSION_CODE" > app/versionCode.txt
-  git commit -q --only -m "versionCode $NEW_VERSION_CODE (play build)" -- app/versionCode.txt || {
-    echo "ERROR: could not commit app/versionCode.txt ($NEW_VERSION_CODE)." >&2
+  # This HEAD (committed versionCode OLD_VERSION_CODE) is what every build uses; the bump to
+  # the next code is committed only after the bundle succeeded (header, step 7).
+  BUILT_COMMIT=$(git rev-parse HEAD) || exit 1
+  if [ "$(git cat-file blob "HEAD:app/versionCode.txt" | tr -d '[:space:]')" != "$OLD_VERSION_CODE" ]; then
+    echo "ERROR: app/versionCode.txt differs from its committed version." >&2
     exit 1
-  }
+  fi
   if git rev-parse -q --verify "refs/tags/${BRANCH}-start" >/dev/null; then
     VERSION_DESC=$(git describe --tags --match "${BRANCH}-start") || exit 1
   else
     VERSION_DESC=$(git describe --always --exclude '*+*') || exit 1
   fi
-  echo "versionCode $OLD_VERSION_CODE -> $NEW_VERSION_CODE, committed (versionName $VERSION_DESC)"
+  echo "Play build: versionCode $OLD_VERSION_CODE, versionName $VERSION_DESC, commit $(git rev-parse --short HEAD)"
 fi
 
 # Homes under this worktree. orch_root is read/seed only (keystore copy).
@@ -779,14 +781,15 @@ os.execvp(sys.argv[1], sys.argv[1:])
   fi
   publish_deliverables "$AAB"
   check_play_link "$AAB" built
-  version_code=$(tr -d '[:space:]' < app/versionCode.txt)
+  version_code="$OLD_VERSION_CODE"
   PLAY_SUMMARY="Play bundle ready for upload:
   Path:        $(pwd)/$AAB
   Link:        $(pwd)/$PLAY_LINK
   File SHA256: $(sha256sum "$AAB" | cut -d' ' -f1)
   Signed by:   SHA256 $aab_sha256 (upload key)
   versionName: $VERSION_DESC
-  versionCode: $version_code"
+  versionCode: $version_code
+  Commit:      $BUILT_COMMIT"
   echo "=== play build OK ==="
 }
 
@@ -815,6 +818,24 @@ if git rev-parse -q --verify "refs/tags/${CURRENT_BRANCH}-start" >/dev/null; the
   git describe --tags --match "${CURRENT_BRANCH}-start"
 else
   git describe --always --exclude '*+*'
+fi
+if [ "$BUILD_PLAY" = true ]; then
+  # Bump for the NEXT Play build (header, step 7). HEAD and the file must still be what was built.
+  if [ "$(git rev-parse HEAD)" != "$BUILT_COMMIT" ]; then
+    echo "ERROR: HEAD moved during the build ($(git rev-parse --short HEAD), built $(git rev-parse --short "$BUILT_COMMIT")); versionCode not bumped. Bump app/versionCode.txt to $((OLD_VERSION_CODE + 1)) by hand before the next --play." >&2
+    exit 1
+  fi
+  if [ -n "$(git status --porcelain -uno -- app/versionCode.txt)" ]; then
+    echo "ERROR: app/versionCode.txt was modified during the build; versionCode not bumped." >&2
+    exit 1
+  fi
+  NEW_VERSION_CODE=$((OLD_VERSION_CODE + 1))
+  printf '%s\n' "$NEW_VERSION_CODE" > app/versionCode.txt
+  git commit -q --only -m "versionCode $NEW_VERSION_CODE (next play build)" -- app/versionCode.txt || {
+    echo "ERROR: could not commit app/versionCode.txt ($NEW_VERSION_CODE); the Play bundle (versionCode $OLD_VERSION_CODE) is built. Commit the bump by hand before the next --play." >&2
+    exit 1
+  }
+  echo "Committed versionCode $NEW_VERSION_CODE for the next Play build ($(git rev-parse --short HEAD)); bundle is versionCode $OLD_VERSION_CODE from $(git rev-parse --short "$BUILT_COMMIT")."
 fi
 if [ -n "$PLAY_SUMMARY" ]; then
   echo "=================================================================="

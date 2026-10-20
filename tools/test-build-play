@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for build_app --play: versionCode bump + commit (no tag), deliverable
-# modes, and the kept bump commit when the build fails. Stand-ins: a fake ./gradlew that writes a
+# Tests for build_app --play: versionCode used as committed, bumped + committed after the bundle (no tag), deliverable
+# modes, and no bump when the build fails. Stand-ins: a fake ./gradlew that writes a
 # jar-signed AAB with the injected signing env (jarsigner from the JDK), a stub ve-resolve-orch,
 # a throwaway keystore; passwords are typed into a pty by script(1). No sudo, no real gradle.
 set -uo pipefail
@@ -82,16 +82,16 @@ mk v0.9
 play 'pw123456\n\n'; rc=$?
 [[ $rc -eq 0 ]] && ok "--play rc 0" || bad "--play rc=$rc: $(tail -15 "$T/out")"
 [[ "$(vc)" == 2 ]] && ok "versionCode 1 -> 2" || bad "versionCode $(vc)"
-[[ "$(git -C "$W" log -1 --format=%s)" == "versionCode 2 (play build)" ]] && ok "bump committed on its own" || bad "HEAD subject: $(git -C "$W" log -1 --format=%s)"
+[[ "$(git -C "$W" log -1 --format=%s)" == "versionCode 2 (next play build)" && "$(git -C "$W" log -1 --format=%s HEAD~1)" == init ]] && ok "bump committed on its own, after the built commit" || bad "HEAD subject: $(git -C "$W" log -1 --format=%s)"
 [[ "$(git -C "$W" show --stat --format= HEAD | grep -c '|')" == 1 ]] && ok "bump commit touches only app/versionCode.txt" || bad "bump commit files: $(git -C "$W" show --stat --format= HEAD)"
 [[ -z "$(git -C "$W" tag -l '*+*')" ]] && ok "--play creates no version tag" || bad "tags: $(git -C "$W" tag | tr '\n' ' ')"
-[[ "$(cat "$T/versionName-at-build")" == "$(git -C "$W" describe --always --exclude '*+*')" && "$(cat "$T/versionCode-at-build")" == 2 ]] && ok "gradle saw versionName = describe and versionCode 2" || bad "at build: $(cat "$T/versionName-at-build") $(cat "$T/versionCode-at-build")"
+[[ "$(cat "$T/versionName-at-build")" == "$(git -C "$W" describe --always HEAD~1)" && "$(cat "$T/versionCode-at-build")" == 1 ]] && grep -q "Commit:      $(git -C "$W" rev-parse HEAD~1)" "$T/out" && grep -q 'versionCode: 1' "$T/out" && ok "gradle built the pre-bump commit with versionCode 1; summary names it" || bad "at build: $(cat "$T/versionName-at-build") $(cat "$T/versionCode-at-build")"
 grep -q 'TESTING' "$T/out" && bad "release build asked the testing question" || ok "no testing-version prompt on a release"
 grep -q 'Tag:' "$T/out" && bad "summary still names a tag" || ok "summary names no tag"
 [[ "$(stat -c %a "$W/app/build/outputs/bundle/release/app-release.aab")" == 644 ]] && ok "AAB is 644" || bad "AAB mode $(stat -c %a "$W/app/build/outputs/bundle/release/app-release.aab")"
-[[ "$(git -C "$W" rev-parse builds)" == "$(git -C "$W" rev-parse HEAD)" ]] && ok "builds tag on the bump commit" || bad "builds tag"
+[[ "$(git -C "$W" rev-parse builds)" == "$(git -C "$W" rev-parse HEAD~1)" ]] && ok "builds tag on the built commit, not the bump" || bad "builds tag"
 play 'pw123456\n\n'; rc=$?
-[[ $rc -eq 0 && "$(vc)" == 3 && -z "$(git -C "$W" tag -l '*+*')" ]] && ok "second --play: versionCode 3, still no version tag" || bad "second play rc=$rc vc=$(vc) tags=$(git -C "$W" tag | tr '\n' ' ')"
+[[ $rc -eq 0 && "$(vc)" == 3 && "$(cat "$T/versionCode-at-build")" == 2 && -z "$(git -C "$W" tag -l '*+*')" ]] && ok "second --play builds code 2, bumps to 3, no version tag" || bad "second play rc=$rc vc=$(vc) tags=$(git -C "$W" tag | tr '\n' ' ')"
 
 mk
 play 'pw123456\n\n'; rc=$?
@@ -100,11 +100,11 @@ play 'pw123456\n\n'; rc=$?
 mk v1.0; touch "$T/fail-gradle"
 play 'pw123456\n\n'; rc=$?; rm -f "$T/fail-gradle"
 [[ $rc -ne 0 ]] && ok "failing gradle fails --play" || bad "gradle failure rc=$rc"
-[[ "$(vc)" == 2 ]] && ok "bump commit kept after the failure" || bad "after failure: vc=$(vc) $(tail -4 "$T/out")"
+[[ "$(vc)" == 1 && "$(git -C "$W" log -1 --format=%s)" == init ]] && ok "failed build: no bump, nothing committed" || bad "after failure: vc=$(vc) $(tail -4 "$T/out")"
 
 mk v1.0; git -C "$W" checkout -q -b feat; git -C "$W" tag feat-start
 play 'n\n'; rc=$?
-[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'nothing committed or tagged' "$T/out" && [[ "$(git -C "$W" log -1 --format=%s)" == init ]] && ok "BRANCH-start branch: answering N aborts before any bump" || bad "testing abort rc=$rc vc=$(vc) $(tail -4 "$T/out")"
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'nothing built or committed' "$T/out" && [[ "$(git -C "$W" log -1 --format=%s)" == init ]] && ok "BRANCH-start branch: answering N aborts before any bump" || bad "testing abort rc=$rc vc=$(vc) $(tail -4 "$T/out")"
 
 mk; git -C "$W" rm -q app/versionCode.txt; git -C "$W" -c user.name=t -c user.email=t@t commit -qm rm
 play 'pw123456\n\n'; rc=$?
