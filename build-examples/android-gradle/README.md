@@ -1,4 +1,8 @@
-# build-examples/android-app
+# build-examples/android-gradle
+
+Build type `android-gradle`: Android apps built with Gradle. A project selects it with the line
+`- **Build type:** android-gradle` in the `## Build and commit` section of its committed
+project-facts.md; deploy-orchestration then installs build_app and deploy into the project root.
 
 `build_app` here is the authoritative copy of the Android app build gateway. App repos
 carry their own copy (`rules.manifest.local: local build_app`).

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # THE ONLY WAY TO BUILD OR COMPILE.
-# Authoritative copy: orchestration-example/build-examples/android-app/build_app
+# Authoritative copy: orchestration-example/build-examples/android-gradle/build_app
 #
 # Usage:
 #   ./build_app [--standard] [--test] [--play|--bundle] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]

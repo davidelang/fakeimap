@@ -8,5 +8,6 @@
 - Clone a sibling host: `./clone-orchestration-project <new-name>` → `git_home/<name>/` (branch `orchestration`) + `master/` worktree
 
 ## Build and commit
+- **Build type:** none
 - Build: none (template host, no product)
 - Commit: none (David commits canon)

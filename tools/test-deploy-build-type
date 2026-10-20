@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Tests for deploy-orchestration's build_type stage (throwaway git_home under /tmp, no privileges):
-build_type= in project.config selects build-examples/<type>/ in canon; missing/unknown/missing-config
-fail loudly with nothing installed; none installs nothing; files land in the project root, are listed
+"""Tests for deploy-orchestration's build-type stage (throwaway git_home under /tmp, no privileges):
+the '- **Build type:**' line in the root's committed project-facts.md ('## Build and commit') selects
+build-examples/<type>/ in canon; missing/duplicated/misplaced/unknown values and a leftover
+project.config build_type= fail loudly with nothing installed; none installs nothing; command needs
+the project's own executable build_app and installs nothing; a renamed type folder still updates
+older published copies; files land in the project root, are listed
 in rules.manifest.local and reach worktrees; older published copies update; a diverged copy fails
 unless --override-path names it; a dirty copy always fails; README.md is not installed; report mode
 and --host-only write nothing."""
@@ -38,18 +41,23 @@ write(canon + "/rules.manifest", "shared AGENTS.md\n")
 write(canon + "/AGENTS.md", "agents\n"); write(canon + "/update-rules.sh", "#\n", 0o755)
 write(canon + "/.gitignore", "project.config\n")
 write(canon + "/project.config", "git_home=%s\n" % home)
-write(canon + "/build-examples/android-app/build_app", "#!/bin/bash\necho build v1\n", 0o755)
-write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho deploy v1\n", 0o755)
-write(canon + "/build-examples/android-app/README.md", "docs\n")
+write(canon + "/build-examples/android-gradle/build_app", "#!/bin/bash\necho build v1\n", 0o755)
+write(canon + "/build-examples/android-gradle/deploy", "#!/bin/bash\necho deploy v1\n", 0o755)
+write(canon + "/build-examples/android-gradle/README.md", "docs\n")
 commit(canon, "canon")
 
-def mkproj(name, cfg):
+def facts(bt):
+    return "# project-facts.md\n\n## Build and commit\n- Build: x\n- **Build type:** %s\n\n## Other\n- y\n" % bt
+
+def mkproj(name, factstext, cfg="x=1\n", build_app=None):
     h = os.path.join(home, name); os.makedirs(h); g(h, "init", "-q", "-b", "orchestration")
     write(h + "/AGENTS.md", "agents\n"); write(h + "/update-rules.sh", "#\n", 0o755)
     write(h + "/rules.manifest", "shared AGENTS.md\n")
     write(h + "/rules.manifest.local", "local .gitignore\n")
     write(h + "/.gitignore", "project.config\nmaster/\n")
-    if cfg is not None: write(h + "/project.config", cfg)
+    write(h + "/project.config", cfg)
+    if factstext is not None: write(h + "/project-facts.md", factstext)
+    if build_app is not None: write(h + "/build_app", "#!/bin/bash\necho own build\n", build_app)
     commit(h, "init")
     g(h, "worktree", "add", "-q", "-b", "master", os.path.join(h, "master"))
     return h
@@ -58,31 +66,44 @@ def deploy(*extra):
     return sh(canon, sys.executable, "./deploy-orchestration", *extra, check=False)
 def head(r): return g(r, "rev-parse", "HEAD")
 
-# --- missing config, missing key, unknown type, none
-p_nocfg = mkproj("p-nocfg", None)
-p_nokey = mkproj("p-nokey", "x=1\n")
-p_unk = mkproj("p-unk", "build_type=ios-app\n")
-p_none = mkproj("p-none", "build_type=none\n")
-before = {p: head(p) for p in (p_nocfg, p_nokey, p_unk, p_none)}
-r = deploy("--apply", "--repos", "p-nocfg,p-nokey,p-unk,p-none")
+# --- missing, malformed, unknown, none, command
+cases = [
+    ("p-nofacts", None, {}, "project-facts.md not committed in the project root"),
+    ("p-noline", "# f\n\n## Build and commit\n- Build: x\n", {}, "has no '- **Build type:** <type>' line"),
+    ("p-nosect", "# f\n\n## Build\n- **Build type:** android-gradle\n", {}, "has 0 '## Build and commit' sections"),
+    ("p-dup", "# f\n\n## Build and commit\n- **Build type:** none\n- **Build type:** none\n", {}, "2 '- **Build type:**' lines"),
+    ("p-outside", "# f\n\n## Build and commit\n- **Build type:** none\n\n## Other\n- **Build type:** none\n", {}, "build-type item that is not the one"),
+    ("p-typo", "# f\n\n## Build and commit\n- **Build Type:** Android\n", {}, "build-type item that is not the one"),
+    ("p-unk", facts("ios-bazel"), {}, "unknown build type ios-bazel in project-facts.md (one of: none, command, android-gradle"),
+    ("p-oldcfg", facts("none"), {"cfg": "build_type=android-gradle\n"}, "project.config has build_type=; the build type now lives in project-facts.md"),
+    ("p-cmd-missing", facts("command"), {}, "build type command needs the project's own build_app"),
+    ("p-cmd-noexec", facts("command"), {"build_app": 0o644}, "build_app in the project root is not executable (git mode 100644)"),
+]
+projs = {n: mkproj(n, f, **kw) for n, f, kw, _ in cases}
+p_none = mkproj("p-none", facts("none")); p_cmd = mkproj("p-cmd", facts("command"), build_app=0o755)
+p_uncommitted = mkproj("p-uncommitted", None); write(p_uncommitted + "/project-facts.md", facts("none"))
+names = [n for n, _, _, _ in cases] + ["p-none", "p-cmd", "p-uncommitted"]
+before = {n: head(os.path.join(home, n)) for n in names}
+r = deploy("--apply", "--repos", ",".join(names))
 out = r.stdout
-check(r.returncode == 1, "missing/unknown build_type exits 1 (rc=%d)" % r.returncode)
-check("p-nocfg: project.config missing" in out, "missing project.config fails loudly")
-check("p-nokey: build_type= missing" in out and "none, android-app" in out, "missing key fails, lists valid types")
-check("p-unk: unknown build_type=ios-app" in out, "unknown type fails")
-check(all(head(p) == before[p] for p in before), "failed/none projects: no commit")
-check(not os.path.exists(p_none + "/build_app"), "build_type=none installs nothing")
-check("build_type=none" in out, "none reported")
-for p in (p_nocfg, p_nokey, p_unk, p_none): shutil.rmtree(p)
+check(r.returncode == 1, "bad build types exit 1 (rc=%d)" % r.returncode)
+for n, _, _, msg in cases:
+    check(("FAIL: %s: " % n) in out and msg in out.split("FAIL: %s: " % n, 1)[1].split("\n", 1)[0], "%s fails: %s" % (n, msg))
+check("FAIL: p-uncommitted: project-facts.md not committed" in out, "uncommitted project-facts.md is not read (committed only)")
+check(all(head(os.path.join(home, n)) == before[n] for n in names), "failed/none/command projects: no commit")
+check(not os.path.exists(p_none + "/deploy") and "FAIL: p-none:" not in out, "none: nothing installed, no failure")
+check("FAIL: p-cmd:" not in out and open(p_cmd + "/build_app").read().endswith("own build\n") and not os.path.exists(p_cmd + "/deploy"),
+      "command: own build_app untouched, nothing installed, no failure")
+for n in names: shutil.rmtree(os.path.join(home, n))
 
-# --- fresh android-app: report mode, then apply
-pa = mkproj("p-and", "build_type=android-app\n")
+# --- fresh android-gradle: report mode, then apply
+pa = mkproj("p-and", facts("android-gradle"))
 h0 = head(pa)
 r = deploy("--repos", "p-and")
 check(r.returncode == 0 and "WOULD-COMMIT" in r.stdout and head(pa) == h0 and not os.path.exists(pa + "/build_app"),
       "report mode: WOULD-COMMIT, nothing written")
 r = deploy("--apply", "--repos", "p-and")
-check(r.returncode == 0, "apply android-app exits 0 (%s)" % r.stdout[-300:].replace("\n", " | "))
+check(r.returncode == 0, "apply android-gradle exits 0 (%s)" % r.stdout[-300:].replace("\n", " | "))
 check(open(pa + "/build_app").read() == "#!/bin/bash\necho build v1\n" and os.access(pa + "/build_app", os.X_OK),
       "build_app installed in root, executable")
 check(os.path.isfile(pa + "/deploy"), "deploy installed")
@@ -90,30 +111,30 @@ check(not os.path.exists(pa + "/README.md"), "README.md not installed")
 lm = open(pa + "/rules.manifest.local").read()
 check("local build_app\n" in lm and "local deploy\n" in lm and "local .gitignore\n" in lm, "rules.manifest.local lists the files (old entries kept)")
 check(g(pa, "status", "--porcelain", "--untracked-files=no") == "", "root clean after commit")
-check(g(pa, "log", "-1", "--format=%s").startswith("rules: install build-examples/android-app from orchestration-example@"), "commit message names type and canon sha")
+check(g(pa, "log", "-1", "--format=%s").startswith("rules: install build-examples/android-gradle from orchestration-example@"), "commit message names type and canon sha")
 check(open(pa + "/master/build_app").read().endswith("build v1\n"), "worktree receives build_app via rules.manifest.local")
 h1 = head(pa)
 r = deploy("--apply", "--repos", "p-and")
 check(r.returncode == 0 and head(pa) == h1, "rerun: up-to-date, no commit")
 
 # --- canon update reaches an older published copy
-write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho deploy v2\n", 0o755); commit(canon, "deploy v2")
+write(canon + "/build-examples/android-gradle/deploy", "#!/bin/bash\necho deploy v2\n", 0o755); commit(canon, "deploy v2")
 r = deploy("--apply", "--repos", "p-and")
 check(r.returncode == 0 and open(pa + "/deploy").read().endswith("deploy v2\n"), "older published copy updated")
 check(open(pa + "/master/deploy").read().endswith("deploy v2\n"), "worktree follows")
 
 # --- a worktree's own change to a local file is still skipped (only published copies update)
 write(pa + "/master/deploy", "#!/bin/bash\necho worktree-own\n", 0o755); commit(pa + "/master", "wt own deploy")
-write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho deploy v3\n", 0o755); commit(canon, "deploy v3")
+write(canon + "/build-examples/android-gradle/deploy", "#!/bin/bash\necho deploy v3\n", 0o755); commit(canon, "deploy v3")
 r = deploy("--apply", "--repos", "p-and")
 check(open(pa + "/deploy").read().endswith("deploy v3\n") and open(pa + "/master/deploy").read().endswith("worktree-own\n")
       and "skipped file deploy (own commit since merge-base)" in r.stdout, "worktree's own deploy kept and reported")
-write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho deploy v2\n", 0o755); commit(canon, "deploy back to v2")
+write(canon + "/build-examples/android-gradle/deploy", "#!/bin/bash\necho deploy v2\n", 0o755); commit(canon, "deploy back to v2")
 deploy("--apply", "--repos", "p-and")
 
 # --- diverged project copy fails loudly, override replaces it
 write(pa + "/deploy", "#!/bin/bash\necho project-own deploy\n", 0o755); commit(pa, "own deploy")
-write(canon + "/build-examples/android-app/build_app", "#!/bin/bash\necho build v2\n", 0o755); commit(canon, "build v2")
+write(canon + "/build-examples/android-gradle/build_app", "#!/bin/bash\necho build v2\n", 0o755); commit(canon, "build v2")
 h2 = head(pa)
 r = deploy("--apply", "--repos", "p-and")
 check(r.returncode == 1 and "deploy DIVERGED" in r.stdout and "--override-path deploy" in r.stdout, "diverged copy: FAIL with override hint")
@@ -130,22 +151,30 @@ check(r.returncode == 1 and "deploy has uncommitted changes" in r.stdout and ope
 g(pa, "checkout", "--", "deploy")
 
 # --- uncommitted copy identical to canon's file is committed with the install
-write(canon + "/build-examples/android-app/build_app", "#!/bin/bash\necho build v3\n", 0o755); commit(canon, "build v3")
+write(canon + "/build-examples/android-gradle/build_app", "#!/bin/bash\necho build v3\n", 0o755); commit(canon, "build v3")
 write(pa + "/build_app", "#!/bin/bash\necho build v3\n", 0o755)
 r = deploy("--apply", "--repos", "p-and")
 check(r.returncode == 0 and g(pa, "status", "--porcelain", "--untracked-files=no") == ""
       and g(pa, "show", "HEAD:build_app").endswith("build v3"), "dirty copy equal to canon: committed, root clean")
 
 # --- dirty canon example fails
-write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho uncommitted\n", 0o755)
+write(canon + "/build-examples/android-gradle/deploy", "#!/bin/bash\necho uncommitted\n", 0o755)
 r = deploy("--apply", "--repos", "p-and")
-check(r.returncode == 1 and "canon build-examples/android-app/deploy has uncommitted changes" in r.stdout, "uncommitted canon example fails")
-g(canon, "checkout", "--", "build-examples/android-app/deploy")
+check(r.returncode == 1 and "canon build-examples/android-gradle/deploy has uncommitted changes" in r.stdout, "uncommitted canon example fails")
+g(canon, "checkout", "--", "build-examples/android-gradle/deploy")
+
+# --- renamed type folder: copies published from the old folder still update (not DIVERGED)
+g(canon, "mv", "build-examples/android-gradle", "build-examples/android-x")
+write(canon + "/build-examples/android-x/deploy", "#!/bin/bash\necho deploy renamed\n", 0o755); commit(canon, "rename type")
+write(pa + "/project-facts.md", facts("android-x")); commit(pa, "facts: android-x")
+r = deploy("--apply", "--repos", "p-and")
+check(r.returncode == 0 and open(pa + "/deploy").read().endswith("deploy renamed\n") and "DIVERGED" not in r.stdout,
+      "after a type-folder rename, older published copies update")
 
 # --- --host-only does not run the build stage
-write(pa + "/project.config", "build_type=bogus\n")
+write(pa + "/project-facts.md", facts("bogus")); commit(pa, "facts: bogus")
 r = sh(pa, sys.executable, os.path.join(canon, "deploy-orchestration"), "--host-only", check=False)
-check("unknown build_type" not in r.stdout, "--host-only skips build_type")
+check("unknown build type" not in r.stdout, "--host-only skips build_type")
 shutil.rmtree(home)
 print("passed %d failed %d" % (passed, failed))
 sys.exit(1 if failed else 0)

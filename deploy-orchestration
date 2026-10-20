@@ -27,14 +27,15 @@ Rules:
   skipped (only that file, reported) when the worktree has its own modification: it differs
   from the root AND is dirty or has a commit on the worktree branch touching it since the
   merge-base with the root branch.
-- build_type= in each project's project.config (required; `none` or a folder under
-  build-examples/ in canon, e.g. android-app) installs canon's build-examples/<type>/* except
-  README.md into the project root, lists each file as `local` in rules.manifest.local (same
-  commit), and from there they reach the worktrees like any project-local file. A missing or
-  unknown build_type, a missing folder, or a dirty/untracked root copy fails that project
-  (nothing installed). A root copy that canon never published (DIVERGED) fails too unless
-  --override-path names it. Older published copies are updated. Not run with --host-only.
-  build_type=none installs nothing and removes nothing.
+- Build type: the project root's committed project-facts.md has exactly one line
+  `- **Build type:** <type>` in its `## Build and commit` section (strict; a missing, duplicated,
+  misplaced or unknown value fails that project). Types: a folder under canon's build-examples/
+  (e.g. android-gradle) installs its files except README.md into the project root, lists each as
+  `local` in rules.manifest.local (same commit), and from there they reach the worktrees;
+  `command` installs nothing and requires the project's own executable build_app in the root;
+  `none` installs and checks nothing. A dirty/untracked root copy fails; a root copy canon never
+  published (DIVERGED) fails unless --override-path names it; older published copies update.
+  A leftover build_type= in project.config fails (delete it). Not run with --host-only.
 - Class purge deletes the path everywhere it is tracked.
 - No write access to a target gives a read-only report for it, not a failure.
 - Commits use `git commit --only` on exactly the copied paths; other changes are untouched.
@@ -460,7 +461,13 @@ def check(src):
     return 1 if problems else 0
 
 BUILD_EXAMPLES = "build-examples"
-BUILD_TYPE_NONE = "none"
+BUILD_TYPE_NONE = "none"        # the project has no build; nothing installed or checked
+BUILD_TYPE_COMMAND = "command"  # the project maintains its own ./build_app; nothing installed
+BUILTIN_TYPES = (BUILD_TYPE_NONE, BUILD_TYPE_COMMAND)
+FACTS = "project-facts.md"
+FACTS_SECTION = "## Build and commit"
+FACTS_LINE = re.compile(r"- \*\*Build type:\*\* ([a-z0-9][a-z0-9-]*)")
+FACTS_MENTION = re.compile(r"\s*[-*+]\s*[*_`]*\s*build[ _-]?type\b", re.I)  # a list item labelled build type
 
 def build_types(canon_tree):
     return sorted({p.split("/")[1] for p in canon_tree if p.startswith(BUILD_EXAMPLES + "/") and p.count("/") >= 2})
@@ -470,28 +477,63 @@ def build_type_files(canon_tree, bt):
     pre = "%s/%s/" % (BUILD_EXAMPLES, bt)
     return {p[len(pre):]: p for p in canon_tree if p.startswith(pre) and p[len(pre):] != "README.md"}
 
+def read_build_type(host, label):
+    """(value, problem) from the project root's COMMITTED project-facts.md: exactly one line
+    `- **Build type:** <type>` inside the one `## Build and commit` section. Any other line that
+    mentions a build type is a problem (a typo must not be silently ignored)."""
+    if FACTS not in tree(host):
+        return None, "%s: %s not committed in the project root (needs '%s' with '- **Build type:** <type>')" % (label, FACTS, FACTS_SECTION)
+    lines = git(host, "show", "HEAD:" + FACTS).split("\n")
+    heads = [i for i, l in enumerate(lines) if l.rstrip() == FACTS_SECTION]
+    if len(heads) != 1:
+        return None, "%s: %s has %d '%s' sections (need exactly 1)" % (label, FACTS, len(heads), FACTS_SECTION)
+    end = next((i for i in range(heads[0] + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+    vals, stray = [], []
+    for i, l in enumerate(lines):
+        m = FACTS_LINE.fullmatch(l.rstrip())
+        if m and heads[0] < i < end:
+            vals.append(m.group(1))
+        elif FACTS_MENTION.match(l):
+            stray.append("line %d: %s" % (i + 1, l.strip()[:80]))
+    if stray:
+        return None, "%s: %s has a build-type item that is not the one '- **Build type:** <type>' line in '%s' (%s)" % (
+            label, FACTS, FACTS_SECTION, "; ".join(stray))
+    if not vals:
+        return None, "%s: %s '%s' has no '- **Build type:** <type>' line" % (label, FACTS, FACTS_SECTION)
+    if len(vals) > 1:
+        return None, "%s: %s has %d '- **Build type:**' lines (need exactly 1)" % (label, FACTS, len(vals))
+    return vals[0], None
+
 def plan_build_type(canon, canon_tree, canon_dirty, host, label):
-    """Plan installing build-examples/<build_type>/* into the project root as project-local files.
-    One defined path: build_type= in the host's project.config selects the folder. Returns (bt, acts,
-    problems). Any problem means nothing is installed for this host. A root copy that is not a
-    version canon ever published (diverged) is a problem unless --override-path names it; a dirty
-    or untracked copy is always a problem."""
+    """Plan installing build-examples/<build type>/* into the project root as project-local files.
+    One defined path: the '- **Build type:**' line of the root's committed project-facts.md selects
+    the folder. Returns (bt, acts, problems). Any problem means nothing is installed for this host.
+    A root copy that is not a version canon ever published (diverged) is a problem unless
+    --override-path names it; a dirty or untracked copy is always a problem."""
     probs = []
     cfg = os.path.join(host, "project.config")
-    if not os.path.isfile(cfg):
-        return None, [], ["%s: project.config missing (build_type= is required)" % label]
-    vals = [l.split("=", 1)[1].strip() for l in open(cfg, errors="replace") if l.startswith("build_type=")]
+    if os.path.isfile(cfg) and any(l.startswith("build_type=") for l in open(cfg, errors="replace")):
+        return None, [], ["%s: project.config has build_type=; the build type now lives in %s ('- **Build type:**'). Delete that line" % (label, FACTS)]
+    bt, prob = read_build_type(host, label)
+    if prob:
+        return None, [], [prob]
     types = build_types(canon_tree)
-    if not vals:
-        return None, [], ["%s: build_type= missing in project.config (one of: %s)" % (label, ", ".join([BUILD_TYPE_NONE] + types))]
-    if len(vals) > 1:
-        return None, [], ["%s: build_type= set %d times in project.config" % (label, len(vals))]
-    bt = vals[0]
+    clash = [t for t in BUILTIN_TYPES if t in types]
+    if clash:
+        return bt, [], ["%s: canon %s/ has folder(s) named like built-in types: %s" % (label, BUILD_EXAMPLES, ", ".join(clash))]
     if bt == BUILD_TYPE_NONE:
         return bt, [], []
+    if bt == BUILD_TYPE_COMMAND:
+        ent = tree(host).get("build_app")
+        fp = os.path.join(host, "build_app")
+        if ent is None:
+            return bt, [], ["%s: build type command needs the project's own build_app committed in the project root" % label]
+        if ent[0] != "100755" or not (os.path.isfile(fp) and os.access(fp, os.X_OK)):
+            return bt, [], ["%s: build type command: build_app in the project root is not executable (git mode %s)" % (label, ent[0])]
+        return bt, [], []
     if bt not in types:
-        return bt, [], ["%s: unknown build_type=%s (one of: %s; folders under %s/%s/)" % (
-            label, bt, ", ".join([BUILD_TYPE_NONE] + types), canon, BUILD_EXAMPLES)]
+        return bt, [], ["%s: unknown build type %s in %s (one of: %s; folders under %s/%s/)" % (
+            label, bt, FACTS, ", ".join(list(BUILTIN_TYPES) + types), canon, BUILD_EXAMPLES)]
     files = build_type_files(canon_tree, bt)
     if not files:
         return bt, [], ["%s: %s/%s/ has no installable files" % (label, BUILD_EXAMPLES, bt)]
@@ -520,7 +562,8 @@ def plan_build_type(canon, canon_tree, canon_dirty, host, label):
             if cur[0] != mode:
                 acts.append(("update", rel, mode, blob))
             continue
-        older = cur[1] in history(canon, cp) or cur[1] in history(canon, rel)
+        # any version canon published for this file under any type folder (survives folder renames)
+        older = cur[1] in history(canon, "%s/*/%s" % (BUILD_EXAMPLES, rel)) or cur[1] in history(canon, rel)
         if older:
             acts.append(("update", rel, mode, blob)); continue
         if any(glob_match(g, rel) for g in OVERRIDE_PATHS):
@@ -663,7 +706,7 @@ def main():
             if os.path.realpath(host) == os.path.realpath(canon) and apply:
                 first_src = canon  # later hosts take from the canonical copy
             elif os.path.realpath(host) != os.path.realpath(canon):
-                # Stage 1b: build-examples/<build_type>/* (canon only; not a manifest class) -> project root.
+                # Stage 1b: build-examples/<build type>/* (canon only; not a manifest class) -> project root.
                 sync_build_type(canon, host, rep, hl, apply)
         # Stage 2: host root -> its worktrees (shared set + host-local set).
         h_tree = tree(host)

@@ -37,7 +37,7 @@ for a, r in model.items():
 (bad("bad specs: %s" % badspec) if badspec else ok("every owner/group/mode/umask spec is valid"))
 
 used = set()
-for f in ("fix-perms", "setup_agent.sh", "build-examples/android-app/build_app"):
+for f in ("fix-perms", "setup_agent.sh", "build-examples/android-gradle/build_app"):
     code = "\n".join(l for l in open(os.path.join(canon, f)).read().split("\n") if not l.lstrip().startswith("#"))
     for m in re.finditer(r"perm_(?:apply|verify|umask)\s+([a-z][a-z0-9-]*)", code):
         used.add((f, m.group(1)))

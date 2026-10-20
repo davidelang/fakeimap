@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# No-device tests of build-examples/android-app/deploy: fake adb and fake SDK aapt2 on a scratch
+# No-device tests of build-examples/android-gradle/deploy: fake adb and fake SDK aapt2 on a scratch
 # git repo (no real device, tag or APK is touched). Covers the app-id path and --test androidTest
 # install (adb install -r -t, verified by its own package id, tag only on success).
 set -uo pipefail
@@ -7,7 +7,7 @@ C=$(git rev-parse --show-toplevel)
 T=$(mktemp -d /tmp/test-deploy-android.XXXXXX); trap 'rm -rf "$T"' EXIT
 pass=0 fail=0; ok(){ pass=$((pass+1)); echo "ok   $*"; }; bad(){ fail=$((fail+1)); echo "FAIL $*"; }
 R=$T/repo; mkdir -p $R $T/bin $T/sdk/build-tools/99.0.0
-cp $C/build-examples/android-app/deploy $C/ve-resolve-orch $R/
+cp $C/build-examples/android-gradle/deploy $C/ve-resolve-orch $R/
 echo "sdk.dir=$T/sdk" > $R/local.properties
 A=app/build/outputs/apk
 mkdir -p $R/$A/arm64/debug $R/$A/x86_64/debug $R/$A/androidTest/x86_64/debug
@@ -94,5 +94,5 @@ sed -i "s|^apk_test_outputs=.*|& $A/androidTest/x86_64/debug/second-androidTest.
 run --test emulator
 [[ $rc -ne 0 ]] && grep -q 'list one androidTest APK per test package' $T/out && ! grep -q adb $T/calls && ok "--test: two androidTest APKs with one package rejected" || bad "dup: rc=$rc $(cat $T/out)"
 
-grep -qE '\|\| true|2>/dev/null' $C/build-examples/android-app/deploy && bad "deploy swallows errors" || ok "deploy: no '|| true', no '2>/dev/null'"
+grep -qE '\|\| true|2>/dev/null' $C/build-examples/android-gradle/deploy && bad "deploy swallows errors" || ok "deploy: no '|| true', no '2>/dev/null'"
 echo "passed $pass failed $fail"; [[ $fail -eq 0 ]]

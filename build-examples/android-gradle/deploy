@@ -1,6 +1,6 @@
 #!/bin/bash
 # Install the last-built APKs on connected devices. Human-only: agents must not run this.
-# Authoritative copy: orchestration-example/build-examples/android-app/deploy
+# Authoritative copy: orchestration-example/build-examples/android-gradle/deploy
 #
 # Usage: ./deploy [-h|--help] [--test] [--clean] [--rebuild] [--launch] [device...] [-- gradle-flag...]
 #

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for build_app's permission handling (build-examples/android-app/build_app + perm-lib.sh).
+# Tests for build_app's permission handling (build-examples/android-gradle/build_app + perm-lib.sh).
 # Stand-ins only: a fake ./gradlew writes the outputs, ve-resolve-orch is a stub, and the
 # "primary user" whose read access is checked is 'nobody' (a computed check; nothing is run as
 # another user, no sudo). Runs as the current user, who must be in ai-code and ai-shared
@@ -15,14 +15,14 @@ bad() { fail=$((fail+1)); echo "FAIL $*"; }
 me=$(id -un)
 JDK=/usr/lib/jvm/java-17-openjdk-amd64
 
-grep -n -F "$SW" "$canon/build-examples/android-app/build_app" "$canon/perm-lib.sh" >"$T/sw" \
+grep -n -F "$SW" "$canon/build-examples/android-gradle/build_app" "$canon/perm-lib.sh" >"$T/sw" \
   && bad "error swallowing: $(cat "$T/sw")" || ok "no swallow idiom in build_app or perm-lib.sh"
-grep -n 'o-rwx\|umask 007' "$canon/build-examples/android-app/build_app" >"$T/sw" \
+grep -n 'o-rwx\|umask 007' "$canon/build-examples/android-gradle/build_app" >"$T/sw" \
   && bad "build_app still forces group-only modes: $(cat "$T/sw")" || ok "build_app forces no o-rwx / umask 007"
 
 mk() {  # fresh worktree repo in $W
   W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app/src/main"
-  cp "$canon/build-examples/android-app/build_app" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
+  cp "$canon/build-examples/android-gradle/build_app" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
   cat >"$W/ve-resolve-orch" <<'S'
 ve_resolve_orch() { ORCH_ROOT="$1"; }
 ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }

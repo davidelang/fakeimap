@@ -41,19 +41,13 @@ sandbox_special_paths=plans,historical-plans,implementation-failure-logs,PRs,res
 # sandbox_dir=dev-ai-interaction
 # sandbox_dir=sandbox
 
-# REQUIRED: which build scripts this project gets. deploy-orchestration installs every file of
-# build-examples/<build_type>/ in orchestration-example (except README.md) into the project root
-# as project-local files (listed in rules.manifest.local) and fails loudly if this key is missing,
-# unknown, or the folder is missing. Values: none (no build scripts) or a folder under
-# build-examples/, e.g. android-app (build_app, deploy). A project's own diverged copy is never
-# overwritten silently: deploy-orchestration fails until it is brought into canon or replaced with
-# --override-path <file>.
-build_type=android-app
+# The project's build type is NOT here: it is the '- **Build type:**' line in the committed
+# project-facts.md ('## Build and commit'), read by deploy-orchestration.
 
 # Optional build gate for master-merge on non-Android hosts:
 # build_command=./build
 
-# Android build_app (authoritative copy: build-examples/android-app/build_app).
+# Android build_app (authoritative copy: build-examples/android-gradle/build_app).
 # Every build runs as coder_user (above); other invokers are re-executed via
 # sudo -n -u <coder_user> /usr/bin/env. Required: the JDK for Gradle and keytool (sudo drops
 # JAVA_HOME; a JDK home with a release file and bin/java, bin/javac, bin/keytool):
