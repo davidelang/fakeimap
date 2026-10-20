@@ -13,6 +13,11 @@
 #                       a side-by-side app, and/or instrumentation:<variant> = that variant's app
 #                       plus its androidTest APK)
 #     --play, --bundle  signed Play AAB   (release_* keys); needs a terminal for the passwords
+#   Single-user Play signing (no project.config; refused when one exists), passed explicitly:
+#     --signing-config FILE   key=value lines: release_keystore, release_key_alias,
+#                             release_bundle_task, release_bundle_path, release_gradle_args
+#     --release-keystore V --release-key-alias V --release-bundle-task V --release-bundle-path V
+#     --release-gradle-args V   (each key once: file and flag together for one key is an error)
 #
 #   What to build is declared in the committed project-facts.md, section '## Build and commit',
 #   one line each (strict: missing, duplicate or malformed lines stop the build):
@@ -187,19 +192,92 @@ BUILD_STANDARD=false
 BUILD_TEST=false
 BUILD_PLAY=false
 FLAG_SEEN=false
+# Single-user Play signing, given explicitly (no implicit lookup): --signing-config FILE and/or
+# --release-keystore/--release-key-alias/--release-bundle-task/--release-bundle-path/
+# --release-gradle-args VALUE. Stored as SIGN_<key>; a key given twice is an error.
+declare -A SIGN=()
+SIGN_KEYS="release_keystore release_key_alias release_bundle_task release_bundle_path release_gradle_args"
+SIGN_SOURCE=""
+sign_set() {  # sign_set KEY VALUE ORIGIN
+  if [ -n "${SIGN[$1]+x}" ]; then
+    echo "ERROR: $1 given twice (${SIGN_FROM[$1]} and $3)." >&2
+    exit 1
+  fi
+  if [ -z "$2" ]; then
+    echo "ERROR: $1 is empty ($3)." >&2
+    exit 1
+  fi
+  SIGN[$1]="$2"
+  SIGN_FROM[$1]="$3"
+}
+declare -A SIGN_FROM=()
+read_signing_config() {  # strict key=value file: comments and blank lines allowed, nothing else
+  local f="$1" line n=0 k v
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+    echo "ERROR: --signing-config $f: not a readable file." >&2
+    exit 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    if ! [[ "$line" =~ ^([a-z_]+)=(.*)$ ]]; then
+      echo "ERROR: $f line $n is not key=value: $line" >&2
+      exit 1
+    fi
+    k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+    if [[ " $SIGN_KEYS " != *" $k "* ]]; then
+      echo "ERROR: $f line $n: unknown key '$k' (signing keys: $SIGN_KEYS)." >&2
+      exit 1
+    fi
+    sign_set "$k" "$v" "$f line $n"
+  done < "$f"
+}
 while [ "$#" -ge 1 ]; do
   case "$1" in
+    --signing-config|--release-keystore|--release-key-alias|--release-bundle-task|--release-bundle-path|--release-gradle-args)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: $1 needs a value." >&2
+        exit 1
+      fi
+      SIGN_SOURCE="$SIGN_SOURCE $1"
+      if [ "$1" = --signing-config ]; then
+        read_signing_config "$2"
+      else
+        _k="${1#--}"; sign_set "${_k//-/_}" "$2" "$1"
+      fi
+      shift 2 ;;
     --standard) BUILD_STANDARD=true; FLAG_SEEN=true; shift ;;
     --test) BUILD_TEST=true; FLAG_SEEN=true; shift ;;
     --play|--bundle) BUILD_PLAY=true; FLAG_SEEN=true; shift ;;
     --) break ;;
     --*)
-      echo "ERROR: unknown flag '$1'. Build flags: --standard --test --play (--bundle)." >&2
+      echo "ERROR: unknown flag '$1'. Build flags: --standard --test --play (--bundle); single-user Play signing: --signing-config FILE, --release-keystore, --release-key-alias, --release-bundle-task, --release-bundle-path, --release-gradle-args." >&2
       exit 1
       ;;
     *) break ;;
   esac
 done
+if [ -n "$SIGN_SOURCE" ]; then
+  if [ "$SINGLE_USER" = false ]; then
+    echo "ERROR:$SIGN_SOURCE given, but this worktree has a project.config: the Play keys come from it." >&2
+    echo "  Explicit signing options are for single-user mode (no project.config) only." >&2
+    exit 1
+  fi
+  if [ "$BUILD_PLAY" != true ]; then
+    echo "ERROR:$SIGN_SOURCE given without --play." >&2
+    exit 1
+  fi
+fi
+# Play key $1: project.config in multi-user mode; in single-user mode only what was passed explicitly.
+play_key() {
+  if [ "$SINGLE_USER" = true ]; then
+    printf '%s' "${SIGN[$1]:-}"
+  else
+    cfg "$1"
+  fi
+}
+
 # The declaration (strict) is read before anything else happens.
 _BA_DECL=$("$_BA_INFO" decl) || exit 1
 TEST_DECL=$(printf '%s\n' "$_BA_DECL" | sed -n 's/^test=//p')
@@ -236,20 +314,22 @@ if [ "$BUILD_PLAY" = true ]; then
     echo "  Unattended or agent runs: select builds explicitly, e.g. ./build_app --standard --test ..." >&2
     exit 1
   fi
-  RELEASE_KEYSTORE=$(cfg release_keystore)
-  RELEASE_KEY_ALIAS=$(cfg release_key_alias)
-  RELEASE_BUNDLE_TASK=$(cfg release_bundle_task)
-  AAB=$(cfg release_bundle_path)
+  RELEASE_KEYSTORE=$(play_key release_keystore)
+  RELEASE_KEY_ALIAS=$(play_key release_key_alias)
+  RELEASE_BUNDLE_TASK=$(play_key release_bundle_task)
+  AAB=$(play_key release_bundle_path)
   _ba_missing=""
   [ -z "$RELEASE_KEYSTORE" ] && _ba_missing="$_ba_missing release_keystore"
   [ -z "$RELEASE_KEY_ALIAS" ] && _ba_missing="$_ba_missing release_key_alias"
   [ -z "$RELEASE_BUNDLE_TASK" ] && _ba_missing="$_ba_missing release_bundle_task"
   [ -z "$AAB" ] && _ba_missing="$_ba_missing release_bundle_path"
   if [ -n "$_ba_missing" ]; then
-    if [ -f project.config ]; then
+    if [ "$SINGLE_USER" = false ]; then
       echo "ERROR: the Play build is selected but these keys are unset in $(pwd)/project.config:$_ba_missing" >&2
     else
-      echo "ERROR: the Play build is selected but there is no $(pwd)/project.config; it needs:$_ba_missing" >&2
+      echo "ERROR: the Play build is selected in single-user mode; these signing keys were not given:$_ba_missing" >&2
+      echo "  Pass them with --signing-config FILE (key=value lines) or --release-keystore, --release-key-alias," >&2
+      echo "  --release-bundle-task, --release-bundle-path (no project.config is read for them)." >&2
     fi
     echo "  Example: release_keystore=/home/$PRIMARY_USER/keys/<app>-upload.jks" >&2
     echo "           release_key_alias=upload" >&2
@@ -277,7 +357,7 @@ if [ "$BUILD_PLAY" = true ]; then
   if [ "${KS_MODE: -1}" != "0" ]; then
     echo "WARNING: $RELEASE_KEYSTORE is mode $KS_MODE (world-accessible). Fix: chmod 640 '$RELEASE_KEYSTORE'" >&2
   fi
-  read -r -a RELEASE_GRADLE_ARGS <<< "$(cfg release_gradle_args)"
+  read -r -a RELEASE_GRADLE_ARGS <<< "$(play_key release_gradle_args)"
 fi
 
 # ai-shared + ai-code required (agent caches are ai-coder:ai-code). Do not sg one group.

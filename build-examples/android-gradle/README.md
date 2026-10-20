@@ -48,6 +48,13 @@ line each:
 - **No flag builds** standard, test (unless `none`) and, with a project.config, Play.
 - A Play build whose keys are missing stops naming each missing key. The keystore and
   passwords never leave this machine.
+- **Single-user Play signing** (no project.config): nothing is looked up implicitly. Pass the
+  keys with `--signing-config FILE` (key=value lines: `release_keystore`, `release_key_alias`,
+  `release_bundle_task`, `release_bundle_path`, optional `release_gradle_args`; comments and
+  blank lines allowed, unknown keys are errors) and/or `--release-keystore`, `--release-key-alias`,
+  `--release-bundle-task`, `--release-bundle-path`, `--release-gradle-args`. A key given twice
+  (file and flag) is an error; so is any of these options without `--play`, or with a
+  project.config (whose keys are then used, as before).
 - An unknown `--flag` is an error, so a typo is never taken as a commit message.
 - **The Play build needs a terminal** for the passwords. If it's selected, including by
   default, and stdin isn't a terminal, `build_app` stops before doing anything. Unattended

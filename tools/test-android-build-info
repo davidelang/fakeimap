@@ -95,5 +95,57 @@ meta androidTest/x86_64/debug x86_64DebugAndroidTest com.ex.app xt.apk; info sta
 info clean test
 [[ -d $R/app/build/outputs/apk/x86_64/debug && ! -d $R/app/build/outputs/apk/androidTest/x86_64/debug ]] && ok "clean test (instrumentation): only the androidTest output" || bad "clean instr"
 
+# liveimap master's real layout: output-metadata.json exactly as AGP wrote it there (abi flavors
+# arm64/x86_64, play flavor's debug disabled; androidTest only for x86_64Debug).
+realmeta() {  # realmeta DIR VARIANT APPID APK VERSIONCODE VERSIONNAME
+  local d=$R/app/build/outputs/apk/$1; mkdir -p $d; echo "$2 $RANDOM" >$d/$4
+  cat >$d/output-metadata.json <<J
+{
+  "version": 3,
+  "artifactType": {
+    "type": "APK",
+    "kind": "Directory"
+  },
+  "applicationId": "$3",
+  "variantName": "$2",
+  "elements": [
+    {
+      "type": "SINGLE",
+      "filters": [],
+      "attributes": [],
+      "versionCode": $5,
+      "versionName": "$6",
+      "outputFile": "$4"
+    }
+  ],
+  "elementType": "File",
+  "minSdkVersionForDexing": 26
+}
+J
+}
+liveimap_outputs() {
+  realmeta arm64/debug arm64Debug com.davidlang.liveimap app-arm64-debug.apk 1 v0.9.6-3-g0a838a99d
+  realmeta x86_64/debug x86_64Debug com.davidlang.liveimap app-x86_64-debug.apk 1 v0.9.6-3-g0a838a99d
+  realmeta androidTest/x86_64/debug x86_64DebugAndroidTest com.davidlang.liveimap.test app-x86_64-debug-androidTest.apk 0 ""
+}
+facts "$STD" '- **Test build:** instrumentation:x86_64Debug'
+info tasks standard; grep -qx assembleDebug $T/out && ok "liveimap: standard tasks assembleDebug" || bad "li std: $(cat $T/out)"
+info tasks test; grep -qx 'assembleX86_64Debug assembleX86_64DebugAndroidTest' $T/out && ok "liveimap: test tasks = the real task names (assembleX86_64DebugAndroidTest)" || bad "li tasks: $(cat $T/out)"
+liveimap_outputs; info stamp standard
+[[ $rc -eq 0 && $(grep -c '^standard app ' $T/out) -eq 2 ]] && ! grep -q liveimap.test $T/out && ok "liveimap: standard = arm64 + x86_64 debug, no androidTest" || bad "li stamp std: $(cat $T/out)"
+info stamp test; info select test
+[[ $rc -eq 0 && $(wc -l <$T/out) -eq 2 ]] && grep -qx "app app/build/outputs/apk/x86_64/debug/app-x86_64-debug.apk" $T/out \
+  && grep -qx "instr app/build/outputs/apk/androidTest/x86_64/debug/app-x86_64-debug-androidTest.apk com.davidlang.liveimap.test" $T/out \
+  && ok "liveimap: --test = x86_64 debug app + its androidTest APK (empty versionName ok)" || bad "li select: $(cat $T/out)"
+info select standard
+[[ $rc -eq 0 && $(grep -c '^app ' $T/out) -eq 2 ]] && ! grep -q '^instr' $T/out && ok "liveimap: standard deploy unaffected" || bad "li std select: $(cat $T/out)"
+echo rebuilt >>$R/app/build/outputs/apk/x86_64/debug/app-x86_64-debug.apk; info select test
+[[ $rc -ne 0 ]] && grep -q 'app-x86_64-debug.apk changed since the test build' $T/out && ok "liveimap: app rebuilt after the androidTest APK (same commit) refused" || bad "li stale same: $(cat $T/out)"
+liveimap_outputs; info stamp standard; info stamp test
+g commit -q --allow-empty -m newer; info stamp standard; info select test
+[[ $rc -ne 0 ]] && grep -q 'earlier commit than the regular build' $T/out && ok "liveimap: standard rebuilt at a newer commit, old test build refused" || bad "li older: $(cat $T/out)"
+rm -rf $R/app/build/outputs/apk/androidTest; info stamp test
+[[ $rc -ne 0 ]] && grep -q 'no instrumentation output for instrumentation:x86_64Debug' $T/out && ok "liveimap: missing androidTest output fails the test build" || bad "li noinstr: $(cat $T/out)"
+
 grep -qE '\|\| true|2>/dev/null|except:|except Exception' $I && bad "helper swallows errors" || ok "helper: no swallowed errors"
 echo "passed $pass failed $fail"; [[ $fail -eq 0 ]]

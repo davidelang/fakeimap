@@ -114,5 +114,39 @@ mk v2.0; git -C "$W" -c user.name=t -c user.email=t@t tag -a 'v2.0+2' -m x
 play 'pw123456\n\n'; rc=$?
 [[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'tag v2.0+2 already exists' "$T/out" && ok "existing tag: error before the bump" || bad "existing tag rc=$rc vc=$(vc) $(tail -3 "$T/out")"
 
+# Single-user mode (no project.config): Play signing only from explicit options.
+playargs() {  # playargs ANSWERS ARGS...: ./build_app --play ARGS in a pty
+  local a="$1"; shift
+  printf "$a" | (cd "$W" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+    script -qec "./build_app --play $*" /dev/null) >"$T/out" 2>&1
+}
+SC="$T/signing.conf"
+printf '# signing\nrelease_keystore=%s\nrelease_key_alias=upload\nrelease_bundle_task=bundleRelease\nrelease_bundle_path=app/build/outputs/bundle/release/app-release.aab\n' "$KS" >"$SC"
+mk v3.0; rm "$W/project.config"
+playargs 'pw123456\n\n' --signing-config "$SC"; rc=$?
+[[ $rc -eq 0 && "$(vc)" == 2 ]] && grep -q 'NOTICE: single-user mode' "$T/out" && git -C "$W" rev-parse -q --verify 'refs/tags/v3.0+2' >/dev/null && ok "single-user --play with --signing-config builds and tags" || bad "su signing-config rc=$rc $(tail -8 "$T/out")"
+mk v3.0; rm "$W/project.config"
+playargs 'pw123456\n\n' --release-keystore "$KS" --release-key-alias upload --release-bundle-task bundleRelease --release-bundle-path app/build/outputs/bundle/release/app-release.aab; rc=$?
+[[ $rc -eq 0 && "$(vc)" == 2 ]] && ok "single-user --play with individual flags" || bad "su flags rc=$rc $(tail -8 "$T/out")"
+mk v3.0; rm "$W/project.config"
+playargs 'pw123456\n\n' --release-keystore "$KS" --release-key-alias upload; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'signing keys were not given: release_bundle_task release_bundle_path' "$T/out" && ok "single-user: missing keys named, nothing committed" || bad "su missing rc=$rc $(tail -4 "$T/out")"
+mk v3.0; rm "$W/project.config"; cp "$KS" "$T/keys/other.jks"
+playargs 'pw123456\n\n' --signing-config "$SC" --release-keystore "$T/keys/other.jks"; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'release_keystore given twice' "$T/out" && ok "key from file and flag: error" || bad "su twice rc=$rc $(tail -4 "$T/out")"
+printf 'release_keystore=%s\nsecret=x\n' "$KS" >"$T/bad.conf"
+mk v3.0; rm "$W/project.config"
+playargs 'pw123456\n\n' --signing-config "$T/bad.conf"; rc=$?
+[[ $rc -ne 0 ]] && grep -q "line 2: unknown key 'secret'" "$T/out" && ok "unknown key in signing config: error" || bad "su unknown rc=$rc $(tail -4 "$T/out")"
+mk v3.0; rm "$W/project.config"
+playargs 'pw123456\n\n' --signing-config "$T/nope.conf"; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'nope.conf: not a readable file' "$T/out" && ok "missing signing config file: error" || bad "su nofile rc=$rc"
+mk v3.0
+playargs 'pw123456\n\n' --signing-config "$SC"; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'this worktree has a project.config' "$T/out" && ok "with project.config: explicit signing options refused (config behaviour kept)" || bad "mu refuse rc=$rc $(tail -4 "$T/out")"
+mk v3.0; rm "$W/project.config"
+(cd "$W" && ./build_app --standard --signing-config "$SC" </dev/null) >"$T/out" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'given without --play' "$T/out" && ok "signing options without --play: error" || bad "noplay rc=$rc $(tail -3 "$T/out")"
+
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]
