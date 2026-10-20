@@ -129,6 +129,13 @@ check(r.returncode == 1 and "deploy has uncommitted changes" in r.stdout and ope
       "dirty copy fails even with --override-path, left untouched")
 g(pa, "checkout", "--", "deploy")
 
+# --- uncommitted copy identical to canon's file is committed with the install
+write(canon + "/build-examples/android-app/build_app", "#!/bin/bash\necho build v3\n", 0o755); commit(canon, "build v3")
+write(pa + "/build_app", "#!/bin/bash\necho build v3\n", 0o755)
+r = deploy("--apply", "--repos", "p-and")
+check(r.returncode == 0 and g(pa, "status", "--porcelain", "--untracked-files=no") == ""
+      and g(pa, "show", "HEAD:build_app").endswith("build v3"), "dirty copy equal to canon: committed, root clean")
+
 # --- dirty canon example fails
 write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho uncommitted\n", 0o755)
 r = deploy("--apply", "--repos", "p-and")

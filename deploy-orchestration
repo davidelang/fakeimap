@@ -506,6 +506,11 @@ def plan_build_type(canon, canon_tree, canon_dirty, host, label):
         mode, blob = canon_tree[cp]
         cur = h_tree.get(rel)
         if rel in dirty:
+            # Uncommitted content identical to canon's file loses nothing: commit it with the install.
+            fp = os.path.join(host, rel)
+            if os.path.isfile(fp) and not os.path.islink(fp) and \
+               git(host, "hash-object", "--no-filters", "--", rel).strip() == blob:
+                acts.append(("update", rel, mode, blob)); continue
             probs.append("%s: %s has uncommitted changes in the project root" % (label, rel)); continue
         if cur is None:
             if os.path.lexists(os.path.join(host, rel)):
