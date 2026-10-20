@@ -114,6 +114,18 @@ mk v2.0; git -C "$W" -c user.name=t -c user.email=t@t tag -a 'v2.0+2' -m x
 play 'pw123456\n\n'; rc=$?
 [[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q 'tag v2.0+2 already exists' "$T/out" && ok "existing tag: error before the bump" || bad "existing tag rc=$rc vc=$(vc) $(tail -3 "$T/out")"
 
+# Multi-user mode: every mode re-executes as coder_user (sudo -n -u, invoker's git identity
+# carried) before anything else; a recording sudo shim stands in for sudo.
+mkdir -p "$T/sudoshim"; printf '#!/bin/sh\nprintf "%%s\\n" "$*" >"%s/sudo-args"\nexit 0\n' "$T" >"$T/sudoshim/sudo"; chmod 755 "$T/sudoshim/sudo"
+for m in "--play" "--standard --test" "" "--play --standard"; do
+  mk v4.0; sed -i 's/^coder_user=.*/coder_user=ai-coder-test/' "$W/project.config"; rm -f "$T/sudo-args"
+  (cd "$W" && git config user.name 'Inv Oker' && git config user.email inv@ex && PATH="$T/sudoshim:$PATH" ./build_app $m </dev/null) >"$T/out" 2>&1; rc=$?
+  a=$(cat "$T/sudo-args" 2>&1)
+  [[ $rc -eq 0 && "$a" == "-n -u ai-coder-test /usr/bin/env GIT_AUTHOR_NAME=Inv Oker GIT_AUTHOR_EMAIL=inv@ex GIT_COMMITTER_NAME=Inv Oker GIT_COMMITTER_EMAIL=inv@ex BUILD_APP_INVOKER=$me ./build_app${m:+ $m}" ]] \
+    && [[ "$(vc)" == 1 && "$(git -C "$W" log -1 --format=%s)" == init ]] \
+    && ok "re-exec as coder_user before any work: './build_app${m:+ $m}'" || bad "re-exec '$m': rc=$rc args='$a' $(tail -3 "$T/out")"
+done
+
 # Single-user mode (no project.config): Play signing only from explicit options.
 playargs() {  # playargs ANSWERS ARGS...: ./build_app --play ARGS in a pty
   local a="$1"; shift
