@@ -41,6 +41,15 @@ sandbox_special_paths=plans,historical-plans,implementation-failure-logs,PRs,res
 # sandbox_dir=dev-ai-interaction
 # sandbox_dir=sandbox
 
+# REQUIRED: which build scripts this project gets. deploy-orchestration installs every file of
+# build-examples/<build_type>/ in orchestration-example (except README.md) into the project root
+# as project-local files (listed in rules.manifest.local) and fails loudly if this key is missing,
+# unknown, or the folder is missing. Values: none (no build scripts) or a folder under
+# build-examples/, e.g. android-app (build_app, deploy). A project's own diverged copy is never
+# overwritten silently: deploy-orchestration fails until it is brought into canon or replaced with
+# --override-path <file>.
+build_type=android-app
+
 # Optional build gate for master-merge on non-Android hosts:
 # build_command=./build
 

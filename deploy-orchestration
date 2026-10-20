@@ -27,6 +27,14 @@ Rules:
   skipped (only that file, reported) when the worktree has its own modification: it differs
   from the root AND is dirty or has a commit on the worktree branch touching it since the
   merge-base with the root branch.
+- build_type= in each project's project.config (required; `none` or a folder under
+  build-examples/ in canon, e.g. android-app) installs canon's build-examples/<type>/* except
+  README.md into the project root, lists each file as `local` in rules.manifest.local (same
+  commit), and from there they reach the worktrees like any project-local file. A missing or
+  unknown build_type, a missing folder, or a dirty/untracked root copy fails that project
+  (nothing installed). A root copy that canon never published (DIVERGED) fails too unless
+  --override-path names it. Older published copies are updated. Not run with --host-only.
+  build_type=none installs nothing and removes nothing.
 - Class purge deletes the path everywhere it is tracked.
 - No write access to a target gives a read-only report for it, not a failure.
 - Commits use `git commit --only` on exactly the copied paths; other changes are untouched.
@@ -251,7 +259,10 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label, purge_pats=())
                 if os.path.lexists(os.path.join(wt, p)):
                     rep.warn.append("%s: skipped file %s (untracked file in the way)" % (label, p)); continue
                 acts.append(("add", p, mode, blob)); continue
-            if own_modification(src, wt, p) and not any(glob_match(g, p) for g in OVERRIDE_PATHS):
+            # A worktree copy that the root (or canon/another host) once published is not an own
+            # modification, even though the sync commit that brought it is on the worktree branch.
+            if own_modification(src, wt, p) and not known(src, wt, p, cur[1]) \
+               and not any(glob_match(g, p) for g in OVERRIDE_PATHS):
                 rep.warn.append("%s: skipped file %s (own commit since merge-base)" % (label, p)); continue
             acts.append(("update", p, mode, blob)); continue
         if p in dirty:
@@ -331,7 +342,7 @@ def apply_target(src, wt, acts, msg):
             paths.append(p)
             continue
         make_dirs(wt, os.path.dirname(p))
-        data = git(src, "cat-file", "blob", blob, binary=True)
+        data = blob if isinstance(blob, bytes) else git(src, "cat-file", "blob", blob, binary=True)
         if os.path.lexists(fp):
             os.remove(fp)
         if mode == "120000":
@@ -448,6 +459,112 @@ def check(src):
     print("check: %d problem(s), %d manifest paths" % (len(problems), len(sel)))
     return 1 if problems else 0
 
+BUILD_EXAMPLES = "build-examples"
+BUILD_TYPE_NONE = "none"
+
+def build_types(canon_tree):
+    return sorted({p.split("/")[1] for p in canon_tree if p.startswith(BUILD_EXAMPLES + "/") and p.count("/") >= 2})
+
+def build_type_files(canon_tree, bt):
+    """{project-root path: canon path} for build-examples/<bt>/*; README.md documents the type and is not installed."""
+    pre = "%s/%s/" % (BUILD_EXAMPLES, bt)
+    return {p[len(pre):]: p for p in canon_tree if p.startswith(pre) and p[len(pre):] != "README.md"}
+
+def plan_build_type(canon, canon_tree, canon_dirty, host, label):
+    """Plan installing build-examples/<build_type>/* into the project root as project-local files.
+    One defined path: build_type= in the host's project.config selects the folder. Returns (bt, acts,
+    problems). Any problem means nothing is installed for this host. A root copy that is not a
+    version canon ever published (diverged) is a problem unless --override-path names it; a dirty
+    or untracked copy is always a problem."""
+    probs = []
+    cfg = os.path.join(host, "project.config")
+    if not os.path.isfile(cfg):
+        return None, [], ["%s: project.config missing (build_type= is required)" % label]
+    vals = [l.split("=", 1)[1].strip() for l in open(cfg, errors="replace") if l.startswith("build_type=")]
+    types = build_types(canon_tree)
+    if not vals:
+        return None, [], ["%s: build_type= missing in project.config (one of: %s)" % (label, ", ".join([BUILD_TYPE_NONE] + types))]
+    if len(vals) > 1:
+        return None, [], ["%s: build_type= set %d times in project.config" % (label, len(vals))]
+    bt = vals[0]
+    if bt == BUILD_TYPE_NONE:
+        return bt, [], []
+    if bt not in types:
+        return bt, [], ["%s: unknown build_type=%s (one of: %s; folders under %s/%s/)" % (
+            label, bt, ", ".join([BUILD_TYPE_NONE] + types), canon, BUILD_EXAMPLES)]
+    files = build_type_files(canon_tree, bt)
+    if not files:
+        return bt, [], ["%s: %s/%s/ has no installable files" % (label, BUILD_EXAMPLES, bt)]
+    for rel, cp in sorted(files.items()):
+        if cp in canon_dirty:
+            probs.append("%s: canon %s has uncommitted changes (commit it first)" % (label, cp))
+    h_tree = tree(host)
+    status = git(host, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
+    dirty = {e[3:].decode(errors="replace") for e in status if len(e) > 3}
+    acts = []
+    for rel, cp in sorted(files.items()):
+        mode, blob = canon_tree[cp]
+        cur = h_tree.get(rel)
+        if rel in dirty:
+            probs.append("%s: %s has uncommitted changes in the project root" % (label, rel)); continue
+        if cur is None:
+            if os.path.lexists(os.path.join(host, rel)):
+                probs.append("%s: untracked %s in the way" % (label, rel)); continue
+            acts.append(("add", rel, mode, blob)); continue
+        if cur[1] == blob or cleaned(host, rel, cur[1]) == blob:
+            if cur[0] != mode:
+                acts.append(("update", rel, mode, blob))
+            continue
+        older = cur[1] in history(canon, cp) or cur[1] in history(canon, rel)
+        if older:
+            acts.append(("update", rel, mode, blob)); continue
+        if any(glob_match(g, rel) for g in OVERRIDE_PATHS):
+            acts.append(("update", rel, mode, blob)); continue
+        probs.append("%s: %s DIVERGED from canon %s (a project change canon never published). "
+                     "Bring it into canon, or replace it with --override-path %s" % (label, rel, cp, rel))
+    if probs:
+        return bt, [], probs
+    # Installed files are project-local: list each in rules.manifest.local (same commit) so they reach the worktrees.
+    lm = os.path.join(host, "rules.manifest.local")
+    if "rules.manifest.local" in dirty:
+        return bt, [], ["%s: rules.manifest.local has uncommitted changes" % label]
+    txt = git(host, "show", "HEAD:rules.manifest.local", check=False) if "rules.manifest.local" in h_tree else ""
+    listed = {pat for c, pat in parse_manifest(txt) if c == "local"}
+    add = [rel for rel in sorted(files) if rel not in listed]
+    if add:
+        if txt and not txt.endswith("\n"):
+            txt += "\n"
+        txt += "".join("local %s\n" % rel for rel in add)
+        acts.append(("update" if "rules.manifest.local" in h_tree else "add", "rules.manifest.local", "100644", txt.encode()))
+    return bt, acts, []
+
+def sync_build_type(canon, host, rep, hl, apply):
+    if not os.path.isdir(canon):
+        rep.fail.append("%s: build_type: canon %s missing" % (hl, canon)); return
+    c_tree = tree(canon)
+    c_dirty = {l[3:] for l in git(canon, "status", "--porcelain", "--untracked-files=no").splitlines()}
+    bt, acts, probs = plan_build_type(canon, c_tree, c_dirty, host, hl)
+    if probs:
+        rep.fail.extend(probs)
+        rep.row(hl, "(root)", "FAILED", "build_type=%s: %d problem(s), nothing installed" % (bt or "?", len(probs)))
+        return
+    if not acts:
+        rep.row(hl, "(root)", "up-to-date", "build_type=%s" % bt); return
+    desc = "build_type=%s: %s" % (bt, ", ".join("%s %s" % (k, p) for k, p, _, _ in acts))
+    if not apply:
+        rep.row(hl, "(root)", "WOULD-COMMIT", desc); return
+    if not writable(host):
+        rep.fail.append("%s: build_type: no write access to the project root" % hl); return
+    msg = "rules: install %s/%s from %s@%s" % (BUILD_EXAMPLES, bt, CANON_NAME, git(canon, "rev-parse", "--short", "HEAD").strip())
+    try:
+        sha, left = apply_target(canon, host, acts, msg)
+    except Exception as e:
+        rep.fail.append("%s: build_type install: %s" % (hl, e))
+        rep.row(hl, "(root)", "FAILED", str(e)[:120]); return
+    rep.row(hl, "(root)", "COMMITTED", "%s %s" % (sha, desc))
+    if left:
+        rep.fail.append("%s: build_type paths still differ after commit: %s" % (hl, left.replace("\n", "; ")))
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true")
@@ -540,6 +657,9 @@ def main():
                 rep.row(hl, "(root)", "WOULD-SEED", "rules.manifest.local from legacy update-rules.sh (%d paths)" % n)
             if os.path.realpath(host) == os.path.realpath(canon) and apply:
                 first_src = canon  # later hosts take from the canonical copy
+            elif os.path.realpath(host) != os.path.realpath(canon):
+                # Stage 1b: build-examples/<build_type>/* (canon only; not a manifest class) -> project root.
+                sync_build_type(canon, host, rep, hl, apply)
         # Stage 2: host root -> its worktrees (shared set + host-local set).
         h_tree = tree(host)
         man = src_man if os.path.realpath(host) == os.path.realpath(src) else parse_manifest(

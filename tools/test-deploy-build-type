@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Tests for deploy-orchestration's build_type stage (throwaway git_home under /tmp, no privileges):
+build_type= in project.config selects build-examples/<type>/ in canon; missing/unknown/missing-config
+fail loudly with nothing installed; none installs nothing; files land in the project root, are listed
+in rules.manifest.local and reach worktrees; older published copies update; a diverged copy fails
+unless --override-path names it; a dirty copy always fails; README.md is not installed; report mode
+and --host-only write nothing."""
+import os, shutil, subprocess, sys, tempfile
+sys.dont_write_bytecode = True
+canon_src = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
+passed = failed = 0
+def ok(m):
+    global passed; passed += 1; print("ok   " + m)
+def bad(m):
+    global failed; failed += 1; print("FAIL " + m)
+def check(cond, m): ok(m) if cond else bad(m)
+
+def sh(cwd, *a, check=True):
+    p = subprocess.run(list(a), cwd=cwd, capture_output=True, text=True)
+    if check and p.returncode:
+        raise RuntimeError("%s: %s" % (a, p.stderr))
+    return p
+def g(cwd, *a): return sh(cwd, "git", *a).stdout.strip()
+def write(path, text, mode=0o644):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f: f.write(text)
+    os.chmod(path, mode)
+def commit(repo, msg):
+    g(repo, "add", "-A"); g(repo, "commit", "-q", "-m", msg)
+
+home = tempfile.mkdtemp(prefix="test-build-type-")
+os.environ.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+canon = os.path.join(home, "orchestration-example")
+os.makedirs(canon); g(canon, "init", "-q", "-b", "master")
+for f in ("deploy-orchestration", "perm-engine.py", "perm-model.tsv"):
+    shutil.copy2(os.path.join(canon_src, f), os.path.join(canon, f))
+write(canon + "/rules.manifest", "shared AGENTS.md\n")
+write(canon + "/AGENTS.md", "agents\n"); write(canon + "/update-rules.sh", "#\n", 0o755)
+write(canon + "/.gitignore", "project.config\n")
+write(canon + "/project.config", "git_home=%s\n" % home)
+write(canon + "/build-examples/android-app/build_app", "#!/bin/bash\necho build v1\n", 0o755)
+write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho deploy v1\n", 0o755)
+write(canon + "/build-examples/android-app/README.md", "docs\n")
+commit(canon, "canon")
+
+def mkproj(name, cfg):
+    h = os.path.join(home, name); os.makedirs(h); g(h, "init", "-q", "-b", "orchestration")
+    write(h + "/AGENTS.md", "agents\n"); write(h + "/update-rules.sh", "#\n", 0o755)
+    write(h + "/rules.manifest", "shared AGENTS.md\n")
+    write(h + "/rules.manifest.local", "local .gitignore\n")
+    write(h + "/.gitignore", "project.config\nmaster/\n")
+    if cfg is not None: write(h + "/project.config", cfg)
+    commit(h, "init")
+    g(h, "worktree", "add", "-q", "-b", "master", os.path.join(h, "master"))
+    return h
+
+def deploy(*extra):
+    return sh(canon, sys.executable, "./deploy-orchestration", *extra, check=False)
+def head(r): return g(r, "rev-parse", "HEAD")
+
+# --- missing config, missing key, unknown type, none
+p_nocfg = mkproj("p-nocfg", None)
+p_nokey = mkproj("p-nokey", "x=1\n")
+p_unk = mkproj("p-unk", "build_type=ios-app\n")
+p_none = mkproj("p-none", "build_type=none\n")
+before = {p: head(p) for p in (p_nocfg, p_nokey, p_unk, p_none)}
+r = deploy("--apply", "--repos", "p-nocfg,p-nokey,p-unk,p-none")
+out = r.stdout
+check(r.returncode == 1, "missing/unknown build_type exits 1 (rc=%d)" % r.returncode)
+check("p-nocfg: project.config missing" in out, "missing project.config fails loudly")
+check("p-nokey: build_type= missing" in out and "none, android-app" in out, "missing key fails, lists valid types")
+check("p-unk: unknown build_type=ios-app" in out, "unknown type fails")
+check(all(head(p) == before[p] for p in before), "failed/none projects: no commit")
+check(not os.path.exists(p_none + "/build_app"), "build_type=none installs nothing")
+check("build_type=none" in out, "none reported")
+for p in (p_nocfg, p_nokey, p_unk, p_none): shutil.rmtree(p)
+
+# --- fresh android-app: report mode, then apply
+pa = mkproj("p-and", "build_type=android-app\n")
+h0 = head(pa)
+r = deploy("--repos", "p-and")
+check(r.returncode == 0 and "WOULD-COMMIT" in r.stdout and head(pa) == h0 and not os.path.exists(pa + "/build_app"),
+      "report mode: WOULD-COMMIT, nothing written")
+r = deploy("--apply", "--repos", "p-and")
+check(r.returncode == 0, "apply android-app exits 0 (%s)" % r.stdout[-300:].replace("\n", " | "))
+check(open(pa + "/build_app").read() == "#!/bin/bash\necho build v1\n" and os.access(pa + "/build_app", os.X_OK),
+      "build_app installed in root, executable")
+check(os.path.isfile(pa + "/deploy"), "deploy installed")
+check(not os.path.exists(pa + "/README.md"), "README.md not installed")
+lm = open(pa + "/rules.manifest.local").read()
+check("local build_app\n" in lm and "local deploy\n" in lm and "local .gitignore\n" in lm, "rules.manifest.local lists the files (old entries kept)")
+check(g(pa, "status", "--porcelain", "--untracked-files=no") == "", "root clean after commit")
+check(g(pa, "log", "-1", "--format=%s").startswith("rules: install build-examples/android-app from orchestration-example@"), "commit message names type and canon sha")
+check(open(pa + "/master/build_app").read().endswith("build v1\n"), "worktree receives build_app via rules.manifest.local")
+h1 = head(pa)
+r = deploy("--apply", "--repos", "p-and")
+check(r.returncode == 0 and head(pa) == h1, "rerun: up-to-date, no commit")
+
+# --- canon update reaches an older published copy
+write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho deploy v2\n", 0o755); commit(canon, "deploy v2")
+r = deploy("--apply", "--repos", "p-and")
+check(r.returncode == 0 and open(pa + "/deploy").read().endswith("deploy v2\n"), "older published copy updated")
+check(open(pa + "/master/deploy").read().endswith("deploy v2\n"), "worktree follows")
+
+# --- a worktree's own change to a local file is still skipped (only published copies update)
+write(pa + "/master/deploy", "#!/bin/bash\necho worktree-own\n", 0o755); commit(pa + "/master", "wt own deploy")
+write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho deploy v3\n", 0o755); commit(canon, "deploy v3")
+r = deploy("--apply", "--repos", "p-and")
+check(open(pa + "/deploy").read().endswith("deploy v3\n") and open(pa + "/master/deploy").read().endswith("worktree-own\n")
+      and "skipped file deploy (own commit since merge-base)" in r.stdout, "worktree's own deploy kept and reported")
+write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho deploy v2\n", 0o755); commit(canon, "deploy back to v2")
+deploy("--apply", "--repos", "p-and")
+
+# --- diverged project copy fails loudly, override replaces it
+write(pa + "/deploy", "#!/bin/bash\necho project-own deploy\n", 0o755); commit(pa, "own deploy")
+write(canon + "/build-examples/android-app/build_app", "#!/bin/bash\necho build v2\n", 0o755); commit(canon, "build v2")
+h2 = head(pa)
+r = deploy("--apply", "--repos", "p-and")
+check(r.returncode == 1 and "deploy DIVERGED" in r.stdout and "--override-path deploy" in r.stdout, "diverged copy: FAIL with override hint")
+check(head(pa) == h2 and open(pa + "/build_app").read().endswith("build v1\n"), "diverged: nothing installed (not even build_app)")
+r = deploy("--apply", "--repos", "p-and", "--override-path", "deploy")
+check(r.returncode == 0 and open(pa + "/deploy").read().endswith("deploy v2\n") and open(pa + "/build_app").read().endswith("build v2\n"),
+      "--override-path deploy replaces it")
+
+# --- dirty copy always fails, even with override
+write(pa + "/deploy", "#!/bin/bash\necho dirty\n", 0o755)
+r = deploy("--apply", "--repos", "p-and", "--override-path", "deploy")
+check(r.returncode == 1 and "deploy has uncommitted changes" in r.stdout and open(pa + "/deploy").read().endswith("dirty\n"),
+      "dirty copy fails even with --override-path, left untouched")
+g(pa, "checkout", "--", "deploy")
+
+# --- dirty canon example fails
+write(canon + "/build-examples/android-app/deploy", "#!/bin/bash\necho uncommitted\n", 0o755)
+r = deploy("--apply", "--repos", "p-and")
+check(r.returncode == 1 and "canon build-examples/android-app/deploy has uncommitted changes" in r.stdout, "uncommitted canon example fails")
+g(canon, "checkout", "--", "build-examples/android-app/deploy")
+
+# --- --host-only does not run the build stage
+write(pa + "/project.config", "build_type=bogus\n")
+r = sh(pa, sys.executable, os.path.join(canon, "deploy-orchestration"), "--host-only", check=False)
+check("unknown build_type" not in r.stdout, "--host-only skips build_type")
+shutil.rmtree(home)
+print("passed %d failed %d" % (passed, failed))
+sys.exit(1 if failed else 0)
