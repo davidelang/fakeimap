@@ -33,6 +33,7 @@ S
   cat >"$W/gradlew" <<'G'
 #!/bin/bash
 # stand-in gradle: records its umask, writes the outputs the tasks name
+[[ " $* " == *" --stop "* ]] && exit 0
 umask >"$GRADLE_USER_HOME/gradle-umask"
 [ -f "$GRADLE_USER_HOME/fail" ] && exit 1
 for a in "$@"; do

@@ -164,8 +164,9 @@ fi
 fi
 
 # Owners, groups, modes and umasks come from perm-model.tsv through perm-lib.sh (next to this
-# script). Gradle runs with --no-daemon, so the JVM that writes the outputs is a child of this
-# shell and inherits its umask (a long-lived daemon would keep the umask it was started with).
+# script). One Gradle daemon serves every gradle call of this run (see GRADLE_BASE). It is
+# started by the first call, inside the build umask, and keeps that umask; every call uses the
+# same umask, so the outputs get it too. The daemon is stopped when build_app exits.
 _BA_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ "$SINGLE_USER" = true ]; then
   BUILD_UMASK=$(umask)
@@ -648,7 +649,46 @@ if [ "$SINGLE_USER" = false ]; then
   fi
 fi
 
-GRADLE_BASE=( ./gradlew --no-daemon --no-configuration-cache
+# One daemon per build_app run, shared by its standard/test/play gradle calls (warm JVM and
+# in-memory caches after the first). Its registry is private to this run:
+# $GRADLE_USER_HOME/daemon-run.<pid>. 'gradlew --stop' with the same registry stops only this
+# run's daemon, not another build_app in this worktree, and not other worktrees (their
+# GRADLE_USER_HOME differs). The EXIT trap (also on INT/TERM) stops it, success or failure. The
+# idle timeout (10 min) is the backstop only for a build_app killed with SIGKILL.
+# org.gradle.daemon=false in gradle.properties is overridden by --daemon.
+DAEMON_REGISTRY="$GRADLE_USER_HOME/daemon-run.$$"
+if [ -e "$DAEMON_REGISTRY" ]; then
+  echo "ERROR: $DAEMON_REGISTRY already exists (a stale run with this pid); remove it." >&2
+  exit 1
+fi
+mkdir "$DAEMON_REGISTRY" || exit 1
+DAEMON_PROPS=( -Dorg.gradle.daemon.registry.base="$DAEMON_REGISTRY" -Dorg.gradle.daemon.idletimeout=600000 )
+stop_gradle_daemon() {
+  local rc=$? out
+  trap - EXIT INT TERM
+  if [ -n "$(find "$DAEMON_REGISTRY" -name registry.bin)" ]; then
+    if ! out=$( (umask "$BUILD_UMASK"; ./gradlew "${DAEMON_PROPS[@]}" --stop) 2>&1); then
+      echo "ERROR: could not stop this run's Gradle daemon (registry $DAEMON_REGISTRY):" >&2
+      printf '%s\n' "$out" >&2
+      if [ "$rc" -eq 0 ]; then
+        exit 1
+      fi
+      echo "ERROR: (the build had already failed, exit $rc)" >&2
+      exit "$rc"
+    fi
+    echo "Gradle daemon stopped (this run's only)."
+  fi
+  if ! rm -rf "$DAEMON_REGISTRY"; then
+    echo "ERROR: cannot remove $DAEMON_REGISTRY" >&2
+    if [ "$rc" -eq 0 ]; then exit 1; fi
+  fi
+  exit "$rc"
+}
+trap stop_gradle_daemon EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+GRADLE_BASE=( ./gradlew --daemon "${DAEMON_PROPS[@]}" --no-configuration-cache
   -Pandroid.aapt2FromMavenOverride="$_AAPT2"
   -Pkotlin.compiler.execution.strategy=in-process
   -Dkotlin.compiler.execution.strategy=in-process )
@@ -719,7 +759,7 @@ build_apks() {
   echo "=== $label build: ${tasks[*]} ==="
   rm -f "app/build/outputs/build_app/$label.json" || exit 1
   "$_BA_INFO" clean "$label" || exit 1
-  # No daemon: multi-worktree RAM; agent path does not keep Gradle daemons warm.
+  # This run's daemon (GRADLE_BASE); stopped by the EXIT trap.
   (umask "$BUILD_UMASK"; "${GRADLE_BASE[@]}" "${GRADLE_ARGS[@]}" "${tasks[@]}")
   ret=$?
   ve_reset_gradle_daemon_dir || exit 1

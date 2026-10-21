@@ -30,6 +30,8 @@ S
   cat >"$W/gradlew" <<G
 #!/bin/bash
 set -e
+printf '%s\n' "\$*" >>"$T/gradle-calls"
+[ -f "$T/fail-stop" ] && [[ " \$* " == *" --stop "* ]] && { echo "stand-in gradle: stop failed" >&2; exit 1; }
 [ -f "$T/fail-gradle" ] && { echo "stand-in gradle: forced failure" >&2; exit 1; }
 for a in "\$@"; do
   case "\$a" in
@@ -96,6 +98,26 @@ play 'pw123456\n\n'; rc=$?
 mk
 play 'pw123456\n\n'; rc=$?
 [[ $rc -eq 0 && "$(vc)" == 2 && -z "$(git -C "$W" tag -l '*+*')" ]] && ok "untagged repo: --play works, no tag" || bad "untagged repo rc=$rc tags=$(git -C "$W" tag | tr '\n' ' ') $(tail -5 "$T/out")"
+
+# One daemon per run, private registry, stopped at exit (success, failure, stop failure).
+mk v6.0; rm -f "$T/gradle-calls"
+play 'pw123456\n\n'; rc=$?
+reg=$(grep -o 'registry.base=[^ ]*' "$T/gradle-calls" | sort -u)
+[[ $rc -eq 0 && $(echo "$reg" | wc -l) == 1 && "$reg" == "registry.base=$W/.gradle-home/daemon-run."* ]] && ok "every gradle call uses one private daemon registry" || bad "registry: rc=$rc '$reg'"
+! grep -q -- '--no-daemon' "$T/gradle-calls" && grep -q -- '--daemon' "$T/gradle-calls" && ok "gradle runs with --daemon, never --no-daemon" || bad "flags: $(cat "$T/gradle-calls")"
+mk v6.0; rm -f "$T/gradle-calls"; mkdir -p "$W/.gradle-home"
+cat >"$W/gradlew.real" <"$W/gradlew"; cat >"$W/gradlew" <<'G'
+#!/bin/bash
+r=$(printf '%s\n' "$@" | sed -n 's/^-Dorg.gradle.daemon.registry.base=//p'); mkdir -p "$r/9.1"; : >"$r/9.1/registry.bin"
+exec "$(dirname "$0")/gradlew.real" "$@"
+G
+chmod 755 "$W/gradlew" "$W/gradlew.real"; git -C "$W" add -A; git -C "$W" -c user.name=t -c user.email=t@t commit -qm wrap
+play 'pw123456\n\n'; rc=$?
+[[ $rc -eq 0 && "$(tail -1 "$T/gradle-calls")" == *--stop* ]] && grep -q "Gradle daemon stopped" "$T/out" && [[ -z "$(ls -d "$W"/.gradle-home/daemon-run.* 2>&1 | grep -v 'No such')" ]] && ok "success: --stop is the last gradle call, registry removed" || bad "stop: rc=$rc $(tail -2 "$T/gradle-calls") $(tail -3 "$T/out")"
+touch "$T/fail-stop"; play 'pw123456\n\n'; rc=$?; rm -f "$T/fail-stop"
+[[ $rc -ne 0 ]] && grep -q "could not stop this run's Gradle daemon" "$T/out" && ok "a failing --stop after a good build exits non-zero" || bad "stopfail: rc=$rc $(tail -3 "$T/out")"
+touch "$T/fail-stop" "$T/fail-gradle"; rm -f "$T/gradle-calls"; play 'pw123456\n\n'; rc=$?; rm -f "$T/fail-stop" "$T/fail-gradle"
+[[ $rc -eq 1 && "$(tail -1 "$T/gradle-calls")" == *--stop* ]] && grep -q 'Build failed' "$T/out" && grep -q 'the build had already failed, exit 1' "$T/out" && ok "failed build + failing --stop: both reported, build's exit kept" || bad "both: rc=$rc $(tail -4 "$T/out")"
 
 mk v1.0; touch "$T/fail-gradle"
 play 'pw123456\n\n'; rc=$?; rm -f "$T/fail-gradle"

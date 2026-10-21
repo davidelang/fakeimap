@@ -125,9 +125,16 @@ is `./.gradle-home`. deploy refuses to run as root in this mode.
   versionName and versionCode are printed at the end.
 - The upload key must be readable by `coder_user`: give it a dedicated group, `chmod 640`,
   and the directory 750. It must not be world-readable.
+- **Gradle daemon:** one per build_app run, shared by its standard/test/play gradle calls, so
+  the later builds reuse the warm JVM. Its registry is private to the run
+  (`.gradle-home/daemon-run.<pid>`). An EXIT trap, which also fires on INT/TERM, runs
+  `./gradlew --stop` with that registry, on success or failure. That stops only this run's daemon,
+  not another build_app in the same worktree and not other worktrees. If `--stop` fails,
+  build_app exits non-zero; if the build had already failed, both errors are printed and the
+  build's exit code is kept. A 10-minute idle timeout covers a build_app killed with SIGKILL.
 - **Permissions** come from `perm-model.tsv` through `perm-lib.sh` (both ship next to
-  build_app). Gradle runs with `--no-daemon` under the `build-intermediates` umask (002), so
-  the JVM writing the outputs inherits it. Afterwards `app/build` and `.gradle` get group
+  build_app). Gradle runs under the `build-intermediates` umask (002), and the daemon started
+  by the first gradle call inherits it. Afterwards `app/build` and `.gradle` get group
   ai-code, group read/write and setgid dirs; "other" bits are never stripped.
 - **Deliverables** (every recorded APK, its
   `output-metadata.json`, and the AAB) are set to 644, and every directory from the worktree
