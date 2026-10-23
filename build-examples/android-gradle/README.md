@@ -75,22 +75,20 @@ line each:
      Answering No stops before anything is committed.
    - **Passwords:** `read -s`, checked with `keytool`.
    - So a long unattended stretch never stops part-way to ask.
-5. **Builds:** they run in sequence (standard, test, play), all from that one HEAD with the
-   committed `app/versionCode.txt` (N). The first failure stops everything and bumps nothing.
-6. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves to the built commit only after
-   every selected build succeeded.
-7. **versionCode bump (Play only, after the build):** once the bundle and its checks have
-   succeeded, `app/versionCode.txt` goes from N to N+1 and is committed alone as
-   `versionCode N+1 (next play build)`, by `coder_user` with the invoker's git identity.
-   - The built commit (the bump's parent, printed as `Commit:` in the summary) is exactly the
-     source of Play versionCode N. Tag it yourself if you want a tag; build_app creates none.
+5. **versionCode bump (Play only, before any build):** right after the checks above,
+   `app/versionCode.txt` goes from N to N+1 and is committed alone as
+   `versionCode N+1 (play build)`, by `coder_user` with the invoker's git identity.
+   - A missing file or a non-integer value stops the run loudly. Without `--play` nothing
+     is bumped. No git tag is created; tag the bump commit yourself if you want one.
+   - If a later build fails, the bump commit stays (history is never rewritten or undone);
+     the next `--play` bumps again. Gaps in versionCode are fine for Play. The run says so.
+6. **Builds:** they run in sequence (standard, test, play), all from that one HEAD (the bump
+   commit when `--play` is selected), so every record shares one commit and is current for
+   deploy. The first failure stops everything.
    - versionName is the `<branch>-start` describe when that tag exists, otherwise
-     `git describe --always --exclude '*+*'` of the built commit.
-   - If HEAD or `app/versionCode.txt` changed during the build, it stops with an error and
-     does not bump.
-   - **deploy staleness:** a build is current only when its recorded commit is HEAD. The bump
-     is a commit like any other, so builds made before it (including this run's standard/test
-     builds) are stale afterwards; rebuild before `deploy --test`.
+     `git describe --always --exclude '*+*'` of that commit.
+7. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves to the built commit only after
+   every selected build succeeded.
 
 For a release: commit your work (with build_app or git), then `./build_app --play`. No
 manual version number is needed. build_app makes no release tag; tag versions yourself
