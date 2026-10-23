@@ -59,6 +59,18 @@ Context · Recommended Approach · Critical Files · Existing utilities · **Pha
 - **Fewest phases.** One file → usually one phase (skip + encode-catch in the same `.cpp` is one observable). Split when files or revert-units differ. Docs last. Do not add phases so you hit ~3–8.
 - **Self-contained.** Executor re-reads this file + role pack only. Do not require memory of the last CODE LANDED plan. One sentence of prior-cycle context is enough.
 
+## Shared values
+
+For each value the plan writes, list every other path that writes or reads it. Include drafts, an open editor, and a load that started before the write. For each path, state the end result. The reviewer checks this list on the first pass.
+
+## Callers and tests
+
+Before the Critical Files list is frozen, search for every caller of a changed symbol, every route and `NavHost` argument that passes it, and every test that mentions a changed name or string. Add each of those files. A test that already covers the behavior stays on the list when its expected text must change.
+
+## Engineering log
+
+`ENGINEERING_LOG.md` only grows. The commit file list includes it. The edit is one new line at the end, added with `./append-to-engineering-log`. Do not replace, delete, or rewrite an existing line, and do not reset the file. A plan does not require a log line and also forbid a commit, or require a clean tree that the log line would dirty. A pin bump does not add a log line.
+
 ## Do not
 
 - Mandate Acknowledgment section
@@ -71,6 +83,9 @@ Context · Recommended Approach · Critical Files · Existing utilities · **Pha
 - Per-phase gate ritual repeated every phase (STANDARD BLOCK covers once)
 - `./build_app @file` syntax in plan text
 - Success lines that require discovering paths (“every native-null fallback”)
+- A caller, route, `NavHost` site, or test of a changed name left off Critical Files
+- A log line paired with "no commit" or "clean tree"
+- Replacing, deleting, or resetting `ENGINEERING_LOG.md`
 
 ## Good target style
 
