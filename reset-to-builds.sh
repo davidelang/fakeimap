@@ -1,7 +1,14 @@
 #!/bin/bash
 # Reset the tracked tree to this branch's builds tag, or to HEAD with --head.
-# ENGINEERING_LOG.md, TODO.md, and project-facts.md are put back afterward.
 # No other ref is accepted.
+#
+# ENGINEERING_LOG.md, TODO.md and project-facts.md are never touched: not
+# written, not copied over, not restored, no attribute changes. The log keeps
+# every entry, failures included (it is usually root-owned and append-only).
+# HEAD and the index move to the target; every other path in the worktree is
+# rewound to the target and untracked (non-ignored) files are removed. After
+# the reset the protected files show as unstaged changes if they differ from
+# the target. No scratch files are used.
 set -euo pipefail
 
 MODE=builds
@@ -12,66 +19,24 @@ elif [ -n "${1:-}" ]; then
   exit 2
 fi
 
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "ERROR: reset-to-builds.sh must be run from inside a git worktree." >&2
-  exit 1
-fi
-
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 
-specials=(ENGINEERING_LOG.md TODO.md project-facts.md)
-saved=$(mktemp -d)
-trap 'rm -rf "$saved"' EXIT
-
-for f in "${specials[@]}"; do
-  if [ -f "$f" ]; then
-    mkdir -p "$saved/$(dirname "$f")"
-    cp -a "$f" "$saved/$f"
-  fi
-done
-
-log_attr=
-if [ -f ENGINEERING_LOG.md ] && command -v lsattr >/dev/null 2>&1; then
-  log_attr=$(lsattr -a ENGINEERING_LOG.md 2>/dev/null | awk '{print $1}' || true)
-fi
-cleared_append=0
-case "$log_attr" in
-  *a*)
-    if chattr -a ENGINEERING_LOG.md 2>/dev/null; then
-      cleared_append=1
-    else
-      echo "ERROR: ENGINEERING_LOG.md is append-only and chattr -a failed. No reset was done." >&2
-      exit 1
-    fi
-    ;;
-esac
-
-restore_append() {
-  if [ "$cleared_append" -eq 1 ] && [ -f ENGINEERING_LOG.md ]; then
-    chattr +a ENGINEERING_LOG.md 2>/dev/null || \
-      echo "WARN: could not restore append-only on ENGINEERING_LOG.md" >&2
-  fi
-}
-trap 'restore_append; rm -rf "$saved"' EXIT
-
-git update-index --skip-worktree ENGINEERING_LOG.md 2>/dev/null || true
-
 if [ "$MODE" = head ]; then
-  git reset --hard HEAD
+  target=$(git rev-parse --verify HEAD^{commit})
 else
   tag=$(./get-builds-tag.sh)
-  git reset --hard "$tag"
+  target=$(git rev-parse --verify "$tag^{commit}")
 fi
 
-git update-index --no-skip-worktree ENGINEERING_LOG.md 2>/dev/null || true
+keep=(':(exclude)ENGINEERING_LOG.md' ':(exclude)TODO.md' ':(exclude)project-facts.md')
 
-for f in "${specials[@]}"; do
-  if [ -f "$saved/$f" ]; then
-    cp -a "$saved/$f" "$f"
-  fi
-done
+# HEAD and index to target; worktree untouched by this step.
+git reset --quiet --mixed "$target"
+# Worktree of every tracked path except the protected files to target.
+git restore --source="$target" --worktree -- . "${keep[@]}"
+# Untracked, non-ignored files (including paths only in the old HEAD).
+git clean -fd --quiet -- . "${keep[@]}"
 
-restore_append
-cleared_append=0
-echo "reset-to-builds: $MODE done. Special files restored, left unstaged."
+echo "reset-to-builds: $MODE done at ${target:0:12}. ENGINEERING_LOG.md, TODO.md, project-facts.md untouched (unstaged if they differ)."
+git status --short

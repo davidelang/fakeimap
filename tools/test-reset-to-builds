@@ -1,0 +1,59 @@
+#!/bin/bash
+# Tests for reset-to-builds.sh in throwaway repos under mktemp -d (or $TMPDIR).
+set -euo pipefail
+here=$(cd "$(dirname "$0")/.." && pwd)
+T=$(mktemp -d)
+trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
+fail=0; pass=0
+ok()  { pass=$((pass+1)); echo "ok   $1"; }
+bad() { fail=$((fail+1)); echo "FAIL $1"; }
+check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+
+mkrepo() {
+  r="$T/$1"; git init -q -b main "$r"; cd "$r"
+  git config user.email t@t; git config user.name t
+  cp "$here/reset-to-builds.sh" "$here/get-builds-tag.sh" .
+  printf 'log1\n' > ENGINEERING_LOG.md; printf 'todo1\n' > TODO.md; printf 'facts1\n' > project-facts.md
+  printf 'a1\n' > a.txt; printf 'b1\n' > b.txt; mkdir d; printf 'c\n' > d/c.txt; printf 'ign/\n' > .gitignore
+  git add -A; git commit -qm base; git tag main/builds
+  printf 'a2\n' > a.txt; printf 'new\n' > n.txt; git add -A; git commit -qm after
+}
+
+# 1: builds mode, log appended + read-only, dirty everything
+mkrepo r1
+printf 'log2 FAILED attempt\n' >> ENGINEERING_LOG.md; chmod a-w ENGINEERING_LOG.md
+printf 'todo2\n' >> TODO.md; printf 'facts2\n' >> project-facts.md
+sum=$(sha256sum ENGINEERING_LOG.md); ino=$(stat -c '%i %Y' ENGINEERING_LOG.md)
+rm b.txt d/c.txt; printf 'x\n' > a.txt; git add a.txt; printf 'u\n' > untracked.txt; mkdir -p ign u2; echo i > ign/i; echo z > u2/z
+out=$(./reset-to-builds.sh 2>&1) || { bad "builds run: $out"; }
+check "HEAD at builds"           '[ "$(git rev-parse HEAD)" = "$(git rev-parse main/builds^{commit})" ]'
+check "log byte-identical"       '[ "$(sha256sum ENGINEERING_LOG.md)" = "$sum" ]'
+check "log not rewritten"        '[ "$(stat -c "%i %Y" ENGINEERING_LOG.md)" = "$ino" ]'
+check "log still read-only"      '[ ! -w ENGINEERING_LOG.md ]'
+check "TODO kept"                'grep -q todo2 TODO.md'
+check "facts kept"               'grep -q facts2 project-facts.md'
+check "deletions restored"       '[ -f b.txt ] && [ -f d/c.txt ]'
+check "a.txt rewound"            '[ "$(cat a.txt)" = a1 ]'
+check "n.txt (post-tag) removed" '[ ! -e n.txt ]'
+check "untracked removed"        '[ ! -e untracked.txt ] && [ ! -e u2 ]'
+check "ignored kept"             '[ -f ign/i ]'
+check "nothing staged"           'git diff --cached --quiet'
+st=$(git status --porcelain | LC_ALL=C sort | tr "\n" ,); [ "$st" = " M ENGINEERING_LOG.md, M TODO.md, M project-facts.md," ] && ok "only protected unstaged" || bad "only protected unstaged: $st"
+
+# 2: --head mode, log staged change stays on disk, unstaged
+mkrepo r2
+printf 'log2\n' >> ENGINEERING_LOG.md; git add ENGINEERING_LOG.md; chmod a-w ENGINEERING_LOG.md
+sum=$(sha256sum ENGINEERING_LOG.md); printf 'x\n' > a.txt; rm n.txt; printf 'u\n' > u.txt
+out=$(./reset-to-builds.sh --head 2>&1) || bad "head run: $out"
+check "head: HEAD unchanged"     '[ "$(git log -1 --format=%s)" = after ]'
+check "head: log identical"      '[ "$(sha256sum ENGINEERING_LOG.md)" = "$sum" ]'
+check "head: a.txt = HEAD"       '[ "$(cat a.txt)" = a2 ] && [ -f n.txt ] && [ ! -e u.txt ]'
+check "head: log unstaged only"  '[ "$(git status --porcelain)" = " M ENGINEERING_LOG.md" ]'
+
+# 3: bad arg, and missing tag fails loudly with no change
+cd "$T/r2"; if ./reset-to-builds.sh --x >/dev/null 2>&1; then bad "bad arg accepted"; else ok "bad arg rejected"; fi
+git tag -d main/builds >/dev/null; printf 'y\n' > a.txt
+if out=$(./reset-to-builds.sh 2>&1); then bad "missing tag should fail"; else ok "missing tag fails: ${out%%$'\n'*}"; fi
+check "missing tag: no change"   '[ "$(cat a.txt)" = y ]'
+
+echo "$pass passed, $fail failed"; [ "$fail" -eq 0 ]
