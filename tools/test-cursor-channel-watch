@@ -31,7 +31,7 @@ NOTE: <text>
 }
 */
 D
-export CHANNEL_SYSLOG=0 CHANNEL_LOG_FILE="$T/log.txt" CHANNEL_AGENT=cursor CHANNEL_SEND_WAIT=0
+export CHANNEL_SYSLOG=0 CHANNEL_LOG_FILE="$T/log.txt" CHANNEL_AGENT=cursor
 cd "$T/repo"
 for n in a b; do "$A/channel-setup" "$P" $n >/dev/null || { echo "setup failed"; exit 1; }; done
 inbox="$T/repo/nodes/b/inbox"
