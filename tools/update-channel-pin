@@ -8,11 +8,12 @@
 #
 # Copies the three pinned paths from canon's committed blobs (never its working tree):
 #   third_party/agent-coordination-tickets/{libpin.toml,SOURCE.md,artifact/channel}
-# Refuses: not a tree root with the pin; staged changes; dirty pinned paths; a known blocker
-# (a tracked file still relying on behaviour the new pin removed); a comms diag the new
-# channel cannot parse. Verifies the artifact sha256 and the new --whatineedtoknow text,
-# then commits only the pinned paths. Never pushes. A running channel-arm keeps the old
-# binary until it is restarted (the file is replaced by rename).
+# It only puts the files in place and commits them; it never runs the channel tools.
+# Refuses: not a tree root with the pin; staged changes; pinned paths with local edits
+# (files already identical to canon's, e.g. from an interrupted run, are fine); a known
+# blocker (a tracked file still relying on behaviour the new pin removed). Verifies the
+# artifact sha256, then commits only the pinned paths. Never pushes. A running channel-arm
+# keeps the old binary until it is restarted (the file is replaced by rename).
 set -euo pipefail
 die() { echo "update-channel-pin: $*" >&2; exit 1; }
 
@@ -32,9 +33,18 @@ done
 [[ -z "$(git -C "$canon" status --porcelain -- "${paths[@]}")" ]] || die "canon has uncommitted changes in the pinned paths; commit them first"
 
 git diff --cached --quiet || die "the index has staged changes; commit or unstage them first"
-dirty="$(git status --porcelain -- "${paths[@]}" "$lib/artifact")"
-[[ -z "$dirty" ]] || die "pinned paths are dirty:
-$dirty"
+# artifact/ entries other than the pinned binary must be clean
+other="$(git status --porcelain -- "$lib/artifact" | grep -v " $lib/artifact/channel\$" || [[ $? -eq 1 ]])"
+[[ -z "$other" ]] || die "$lib/artifact has other uncommitted changes:
+$other"
+bad=""
+for p in "${paths[@]}"; do
+  if [[ -n "$(git status --porcelain -- "$p")" && "$(git hash-object "$p")" != "$(git -C "$canon" rev-parse "HEAD:$p")" ]]; then
+    bad+="$p"$'\n'
+  fi
+done
+[[ -z "$bad" ]] || die "pinned paths have local edits (not canon's version):
+$bad"
 
 same=1
 for p in "${paths[@]}"; do
@@ -55,44 +65,9 @@ tmp="$(mktemp -d /tmp/update-channel-pin.XXXXXX)"
 trap 'rm -rf "$tmp"' EXIT
 git -C "$canon" cat-file blob "HEAD:$lib/artifact/channel" > "$tmp/channel"
 chmod 0775 "$tmp/channel"
-ln -s channel "$tmp/channel-setup"
 want="$(git -C "$canon" show "HEAD:$lib/libpin.toml" | sed -n 's/^sha256 = "\(.*\)"$/\1/p')"
 [[ -n "$want" ]] || die "no artifact sha256 in canon's libpin.toml"
 [[ "$(sha256sum "$tmp/channel" | cut -d' ' -f1)" == "$want" ]] || die "canon's artifact/channel does not match its libpin.toml sha256"
-
-# Every comms diag in this tree must parse with the new channel (dry run, writes nothing).
-shopt -s nullglob
-for d in */agent-handoff/comms/*.diag */*/agent-handoff/comms/*.diag; do
-  n="$(awk '$1 == "node" { print $2; exit }' "$d")"
-  [[ -n "$n" ]] || die "$d has no node line"
-  out="$("$tmp/channel-setup" -n "$d" "$n" 2>&1)" || die "the new channel rejects $d:
-$out"
-  echo "diag OK with the new channel: $d"
-done
-shopt -u nullglob
-
-# The new header text, from a throwaway plan.
-mkdir "$tmp/p"
-cat > "$tmp/p/t.diag" <<D
-blockdiag { a <-> b; a -> c; }
-/*
-node a $tmp/p/nodes/a/inbox
-node b $tmp/p/nodes/b/inbox
-node c $tmp/p/nodes/c/inbox
-verb a b NOTE
-verb b a NOTE
-verb a c NOTE
-message NOTE {
-A note.
-body: {
-NOTE: <text>
-}
-}
-*/
-D
-hdr="$(CHANNEL_AGENT=grok "$tmp/channel-setup" -n "$tmp/p/t.diag" b --whatineedtoknow)"
-grep -q 'ends your part' <<<"$hdr" || die "new header lacks 'ends your part'"
-! grep -q 'DEST took it' <<<"$hdr" || die "new header still says 'DEST took it'"
 
 # Install by rename (a running channel-arm keeps its old inode), then commit only the pin.
 for p in "$lib/libpin.toml" "$lib/SOURCE.md"; do
@@ -103,7 +78,6 @@ done
 cp "$tmp/channel" "$lib/artifact/channel.update-channel-pin.tmp"
 mv -f "$lib/artifact/channel.update-channel-pin.tmp" "$lib/artifact/channel"
 [[ "$(sha256sum "$lib/artifact/channel" | cut -d' ' -f1)" == "$want" ]] || die "installed $lib/artifact/channel has the wrong sha256"
-"$lib/artifact/channel-setup" -n "$tmp/p/t.diag" b --whatineedtoknow | grep -q 'ends your part' || die "installed channel-setup does not print the new header"
 
 git commit -q --only -m "rules: sync from orchestration-example@$csha" -- "${paths[@]}"
 echo "update-channel-pin: committed $(git log -1 --format='%h %s') in $root"
