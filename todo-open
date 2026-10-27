@@ -1,0 +1,26 @@
+#!/bin/bash
+# todo-open — print open TODO.md items (read-only).
+# Open: "- [ ]" items anywhere, plus unchecked "- " bullets and bare lines under "# Future work"
+# (shown as [future]). Continuation lines (indented) belong to the item above.
+# Usage: todo-open [FILTER]   FILTER is a fixed string matched against the whole item text.
+# Exit: 0 printed >=1 item, 1 nothing matched, 2 usage error or TODO.md missing.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TODOFILE="$SCRIPT_DIR/TODO.md"
+[ $# -le 1 ] || { echo "Usage: $(basename "$0") [FILTER]" >&2; exit 2; }
+[ -r "$TODOFILE" ] || { echo "ERROR: $TODOFILE missing or unreadable" >&2; exit 2; }
+FILTER="${1:-}" awk '
+  function flush() {
+    if (item != "" && (ENVIRON["FILTER"] == "" || index(item, ENVIRON["FILTER"]) > 0)) { print item; n++ }
+    item = ""
+  }
+  /^# /                { flush(); future = ($0 ~ /^# Future work[[:space:]]*$/); next }
+  /^[[:space:]]*$/     { flush(); next }
+  /^[ \t]+[^ \t]/      { if (item != "") item = item "\n" $0; next }   # continuation
+  /^[-*] \[ \] /       { flush(); item = "L" NR ": " $0; next }
+  /^[-*] \[[xX]\] /    { flush(); next }
+  /^#/                 { flush(); next }                               # ## sub-headings
+  future               { flush(); item = "L" NR ": [future] " $0; next }
+                       { flush() }
+  END { flush(); exit (n > 0 ? 0 : 1) }
+' "$TODOFILE"

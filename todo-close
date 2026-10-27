@@ -1,31 +1,34 @@
 #!/bin/bash
-# todo-close
-# Controlled helper to mark TODO items as done [x] or remove.
-# Use after a turn completes the item. Do not bulk-edit or git reset the file.
-
+# todo-close — mark exactly one open "- [ ]" TODO.md item done ([x]).
+# Usage: todo-close 'exact text'   Fixed-string match on the open item's text (incl. continuations).
+# Exactly one open item must match; otherwise nothing changes and it exits 1 listing the matches.
 set -euo pipefail
-
-# Ensure group-writable files in multi-user environment
 umask 007
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TODOFILE="$SCRIPT_DIR/TODO.md"
-
-if [ $# -eq 0 ]; then
-  echo "Usage: $(basename "$0") 'exact text of the item to close or - [x] pattern'"
+[ $# -ge 1 ] && [ -n "$*" ] || { echo "Usage: $(basename "$0") 'exact text of one open - [ ] item'" >&2; exit 2; }
+[ -r "$TODOFILE" ] && [ -w "$TODOFILE" ] || { echo "ERROR: $TODOFILE missing or not writable by $(id -un)" >&2; exit 2; }
+export PAT="$*"
+# Line numbers of open items whose text (first line + continuations) contains PAT.
+matches=$(awk '
+  function flush() { if (start && index(text, ENVIRON["PAT"]) > 0) print start; start = 0; text = "" }
+  /^[ \t]+[^ \t]/ && start { text = text "\n" $0; next }
+  /^[-*] \[ \] /          { flush(); start = NR; text = $0; next }
+                          { flush() }
+  END { flush() }' "$TODOFILE")
+n=$(awk 'NF{c++} END{print c+0}' <<< "$matches")
+if [ "$n" -ne 1 ]; then
+  if [ "$n" -eq 0 ]; then
+    echo "ERROR: no open '- [ ]' item contains: $PAT" >&2
+    echo "Run ./todo-open to list open items. [future] items have no checkbox and cannot be closed here." >&2
+  else
+    echo "ERROR: $n open items contain: $PAT — quote more of one:" >&2
+    for l in $matches; do awk -v l="$l" 'NR == l { print "L" NR ": " $0 }' "$TODOFILE" >&2; done
+  fi
   exit 1
 fi
-
-PATTERN="$*"
-
-# Very conservative: only allow marking [ ] to [x] or removing specific lines.
-# Production would parse and edit precisely.
-if sed -i "s/\[ \] \($PATTERN\)/[x] \1/" "$TODOFILE" 2>/dev/null; then
-  echo "Marked item done in TODO.md (if matched)."
-else
-  # Fallback: comment it out as closed
-  sed -i "s/^\(- .*${PATTERN}.*\)/# CLOSED: \1/" "$TODOFILE" 2>/dev/null || true
-  echo "Closed/marked item (check file)."
-fi
-
-echo "TODO closed. Do not commit bulk changes to the file."
+tmp=$(mktemp "$SCRIPT_DIR/.TODO.md.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+awk -v l="$matches" 'NR == l { sub(/\[ \]/, "[x]") } { print }' "$TODOFILE" > "$tmp"
+cat "$tmp" > "$TODOFILE"
+echo "Closed L$matches: $(awk -v l="$matches" 'NR == l' "$TODOFILE")"

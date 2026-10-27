@@ -5,7 +5,7 @@ This is shared knowledge for every agent working on the project: a map of what i
 ## Triggers
 - Before touching <area/path>: read `docs/facts/<file>.md`.
 - Before building or testing: read the Testing section below.
-- Before editing TODO.md, ENGINEERING_LOG.md, or this file: use `./todo-append`, `./todo-close`, `./append-to-engineering-log`.
+- Before editing TODO.md, ENGINEERING_LOG.md, or this file: use `./todo-append`, `./todo-close`, `./append-to-engineering-log`. To read them: `./todo-open`, `./englog-recent`; never read ENGINEERING_LOG.md whole.
 
 ## Build and commit
 - **Build type:** android-gradle | command | none

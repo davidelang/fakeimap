@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Tests for englog-recent with a fixture ENGINEERING_LOG.md in a throwaway repo under /tmp.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/englog-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+git init -q "$T/r"
+cp "$canon/englog-recent" "$T/r/"
+S="$T/r/englog-recent"
+cat >"$T/r/ENGINEERING_LOG.md" <<'F'
+# Engineering log
+## [2026-06-01] - Legacy header
+old body
+## 2026-10-25 - A
+body a
+## 2026-10-24 - Out of order
+body b
+## 2026-10-26 - Dup
+d1
+## 2026-10-26 - Dup
+d2
+F
+cd "$T/r"
+out=$("$S" -n 2); rc=$?
+[[ $rc -eq 0 && $(wc -l <<<"$out") -eq 2 && "$out" == *"L8: ## 2026-10-26 - Dup"* && "$out" == *"L10: "* ]] && ok "-n 2 last two headers" || bad "-n: rc=$rc $out"
+out=$("$S"); rc=$?
+[[ $rc -eq 0 && "$out" == *"Legacy header"* ]] && ok "default lists legacy [date] header too" || bad "default: $out"
+out=$("$S" --since 2026-10-24); rc=$?
+[[ $rc -eq 0 && "$out" == *"Out of order"* && "$out" == *"- A"* && "$out" != *Legacy* ]] && ok "--since filters by date, not position" || bad "since: rc=$rc $out"
+"$S" --since 2027-01-01 >/dev/null 2>&1; rc=$?
+[[ $rc -eq 1 ]] && ok "--since nothing exits 1" || bad "since none rc=$rc"
+out=$("$S" --show '2026-10-25 - A'); rc=$?
+[[ $rc -eq 0 && "$out" == $'## 2026-10-25 - A\nbody a' ]] && ok "--show without ## prints one entry" || bad "show: rc=$rc $out"
+err=$("$S" --show '## 2026-10-26 - Dup' 2>&1); rc=$?
+[[ $rc -eq 2 && "$err" == *L8* && "$err" == *L10* ]] && ok "duplicate header exits 2 listing both" || bad "dup: rc=$rc $err"
+"$S" --show nope >/dev/null 2>&1; rc=$?
+[[ $rc -eq 1 ]] && ok "unknown header exits 1" || bad "unknown rc=$rc"
+"$S" --since 26-10-01 >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 ]] && ok "bad date exits 2" || bad "bad date rc=$rc"
+rm ENGINEERING_LOG.md
+"$S" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 ]] && ok "missing log exits 2" || bad "missing rc=$rc"
+echo "PASS $pass FAIL $fail"; [ "$fail" -eq 0 ]

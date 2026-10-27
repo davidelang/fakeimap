@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Tests for todo-close with a fixture TODO.md (throwaway dir under /tmp).
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/todo-close-test.XXXXXX)"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+cp "$canon/todo-close" "$T/"
+S="$T/todo-close"
+fixture() {
+cat >"$T/TODO.md" <<'F'
+# TODO
+- [ ] one foo/bar (plans/x-plan.md)
+  detail M3.3
+- [ ] dup one
+- [ ] dup two
+- [x] done dup three
+# Future work
+
+future only line
+F
+chmod 660 "$T/TODO.md"; cp "$T/TODO.md" "$T/orig"
+}
+fixture
+before=$(stat -c '%a %G' "$T/TODO.md")
+out=$("$S" 'foo/bar'); rc=$?
+[[ $rc -eq 0 && "$(diff "$T/orig" "$T/TODO.md" | grep -c '^>')" -eq 1 ]] && grep -qxF -- '- [x] one foo/bar (plans/x-plan.md)' "$T/TODO.md" && ok "one match closes only that line (pattern with /)" || bad "one: rc=$rc $out"
+[[ "$(stat -c '%a %G' "$T/TODO.md")" == "$before" ]] && ok "mode and group kept" || bad "perms changed: $before -> $(stat -c '%a %G' "$T/TODO.md")"
+fixture
+"$S" M3.3 >/dev/null; rc=$?
+[[ $rc -eq 0 ]] && grep -qxF -- '- [x] one foo/bar (plans/x-plan.md)' "$T/TODO.md" && ok "match in continuation closes its item" || bad "continuation rc=$rc"
+fixture
+"$S" '.*' >/dev/null 2>&1; rc=$?
+[[ $rc -eq 1 ]] && cmp -s "$T/orig" "$T/TODO.md" && ok "regex chars are literal; no match, file unchanged" || bad "inject rc=$rc"
+err=$("$S" dup 2>&1); rc=$?
+[[ $rc -eq 1 && "$err" == *"L4:"* && "$err" == *"L5:"* && "$err" != *three* ]] && cmp -s "$T/orig" "$T/TODO.md" && ok "two open matches exit 1 listing both, unchanged" || bad "dup: rc=$rc $err"
+err=$("$S" 'future only' 2>&1); rc=$?
+[[ $rc -eq 1 && "$err" == *"[future]"* ]] && cmp -s "$T/orig" "$T/TODO.md" && ok "[future] item refused with hint" || bad "future: rc=$rc $err"
+"$S" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 ]] && ok "no args exits 2" || bad "noargs rc=$rc"
+chmod 440 "$T/TODO.md"
+"$S" 'foo/bar' >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 ]] && cmp -s "$T/orig" "$T/TODO.md" && ok "read-only TODO.md exits 2" || bad "ro rc=$rc"
+echo "PASS $pass FAIL $fail"; [ "$fail" -eq 0 ]

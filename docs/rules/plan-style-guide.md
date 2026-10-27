@@ -25,7 +25,7 @@ Reference for planners. Full rules: `AGENT_MANDATES.md`.
 
 Stay in `plans/` until David runs `/validate-plans` (including CODE LANDED). Do not archive at land.
 
-Track progress with what already exists: plan Status lines, `plans/` versus `historical-plans/`, TODO.md items (`./todo-append`, `./todo-close`), recent `ENGINEERING_LOG.md` entries, and `git log`. Do not create separate status or tracking files.
+Track progress with what already exists: `./plans-scope` (plans, Status, commits since), `plans/` versus `historical-plans/`, `./todo-open [filter]` (open TODO items), `./englog-recent` (log headers; `--show '<header>'` for one entry), and `git log`. Never read `ENGINEERING_LOG.md` or `TODO.md` whole. Do not create separate status or tracking files.
 
 Required header on **new** plans:
 

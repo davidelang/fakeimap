@@ -56,6 +56,8 @@ shared get-builds-tag.sh
 shared reset-to-builds.sh
 shared prepare-pr-rewrite
 shared plans-scope
+shared todo-open
+shared englog-recent
 shared install-merge-drivers.sh
 shared merge-branch-into-master.sh
 shared git-merge-drivers/*

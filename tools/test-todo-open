@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Tests for todo-open with a fixture TODO.md (throwaway dir under /tmp).
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/todo-open-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+cp "$canon/todo-open" "$T/"
+S="$T/todo-open"
+cat >"$T/TODO.md" <<'F'
+# TODO
+- [ ] alpha a.b*[ (plans/x-plan.md)
+  continuation M3.3
+- [x] closed item
+  closed continuation
+## Backlog
+- [ ] beta (docs/specs/B.md)
+# Future work
+
+- plain bullet (research/r.md)
+
+bare future line
+F
+out=$("$S"); rc=$?
+[[ $rc -eq 0 && "$out" == *"L2: - [ ] alpha"* && "$out" == *"continuation M3.3"* && "$out" == *"L7: - [ ] beta"* && "$out" == *"[future] - plain bullet"* && "$out" == *"[future] bare future line"* ]] && ok "lists open and [future] items" || bad "no filter: rc=$rc $out"
+[[ "$out" != *"closed"* ]] && ok "[x] item and its continuation hidden" || bad "closed shown: $out"
+out=$("$S" M3.3); rc=$?
+[[ $rc -eq 0 && "$out" == *alpha* && "$out" != *beta* ]] && ok "filter matches continuation" || bad "filter: rc=$rc $out"
+out=$("$S" 'a.b*['); rc=$?
+[[ $rc -eq 0 && "$out" == *alpha* && "$out" != *beta* ]] && ok "filter is fixed-string" || bad "fixed: rc=$rc $out"
+"$S" '.*' >/dev/null; rc=$?
+[[ $rc -eq 1 ]] && ok "no match exits 1" || bad "no match rc=$rc"
+"$S" a b >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 ]] && ok "two args exit 2" || bad "two args rc=$rc"
+rm "$T/TODO.md"
+err=$("$S" 2>&1); rc=$?
+[[ $rc -eq 2 && "$err" == *ERROR* ]] && ok "missing TODO.md exits 2" || bad "missing: rc=$rc $err"
+echo "PASS $pass FAIL $fail"; [ "$fail" -eq 0 ]
