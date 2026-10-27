@@ -4,6 +4,8 @@
 # Additions are RARE: only when you identify a problem and *explicitly decide*
 # to defer it to a future turn (not per-commit noise).
 # Use this instead of direct edits or git add/commit on the whole file.
+# Format: one short line plus the path to the details (plan, review finding,
+# spec, research note). The details stay in that file, not in TODO.md.
 
 set -euo pipefail
 
@@ -14,8 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TODOFILE="$SCRIPT_DIR/TODO.md"
 
 if [ $# -eq 0 ]; then
-  echo "Usage: $(basename "$0") '## Future work item or - bullet under Future work'"
+  echo "Usage: $(basename "$0") '- [ ] <short description> (<path to details>)'"
   echo "   or: $(basename "$0") @file-with-item.txt"
+  echo "One short line plus the path to the details (plan, review finding, spec, research note). Not the details themselves."
   exit 1
 fi
 
