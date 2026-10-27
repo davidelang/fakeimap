@@ -4,6 +4,8 @@ refresh-shell
 *.local
 .android-shared/
 @@SANDBOX_PATH@@
+/master/
+/agent-*/
 
 # --- third_party consumer (managed by apply-third-party-gitignore.sh) ---
 # third_party: ignore checkouts/local state; track tool + pin contract under each lib dir

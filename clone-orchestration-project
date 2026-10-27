@@ -492,8 +492,12 @@ seed_sandbox_repo() {
   local meta="${GIT_HOME}/${NAME}.sandboxmetadata"
   local gitdir="$meta/git"
 
-  # /sandbox: dir in root, symlink in master/. /master/ and /agent-*/: worktrees inside the root tree.
-  step primary "ensure $DEST/.gitignore ignores /${SANDBOX_REL} /master/ /agent-*/"
+  # The sandbox is a dir in the root and a symlink in master/, so the pattern is the bare name
+  # (no leading or trailing slash): it matches both, and the manage-configs clean filter stores
+  # it as @@SANDBOX_PATH@@. A leading-slash form stays literal in git. Canon's .gitignore already
+  # has all three lines (smudged by the clone), so normally nothing is appended here.
+  # /master/ and /agent-*/: worktrees inside the root tree.
+  step primary "ensure $DEST/.gitignore ignores ${SANDBOX_REL} /master/ /agent-*/"
   if [ "$DRY" -eq 0 ]; then
     as_primary bash -c '
       file="$1"; shift
@@ -505,13 +509,13 @@ seed_sandbox_repo() {
         fi
         printf "%s\n" "$line" >> "$file"
       done
-    ' bash "$DEST/.gitignore" "/${SANDBOX_REL}" "/master/" "/agent-*/"
+    ' bash "$DEST/.gitignore" "${SANDBOX_REL}" "/master/" "/agent-*/"
   fi
 
   step primary "stop tracking ${SANDBOX_REL}/ in the product repository"
   if [ "$DRY" -eq 0 ]; then
     git_primary -C "$DEST" add -- .gitignore
-    git_primary -C "$DEST" rm -r --cached --ignore-unmatch -- "$SANDBOX_REL" || true
+    git_primary -C "$DEST" rm -r --cached --ignore-unmatch -- "$SANDBOX_REL"
     if ! git_primary -C "$DEST" diff --cached --quiet; then
       git_primary -C "$DEST" commit -m "Keep the sandbox in its own repository"
     fi

@@ -38,4 +38,28 @@ for sd in sandbox dev-ai-interaction; do
     git check-ignore -q "$p" && ok "$sd: ignores $p" || bad "$sd: does not ignore $p"
   done
 done
+# New project: clone-orchestration-project clones canon, installs the filter, smudges, then
+# runs its ensure-ignored snippet. The clone must already carry every line (nothing appended).
+snippet="$(python3 - "$canon/clone-orchestration-project" <<'PY'
+import sys, re
+s = open(sys.argv[1]).read()
+m = re.search(r"seed_sandbox_repo\(\).*?as_primary bash -c '(.*?)' bash \"\$DEST/\.gitignore\" (.*?)\n", s, re.S)
+if not m: sys.exit("ensure-ignored snippet not found in clone-orchestration-project")
+print(m.group(1)); print("ARGS:" + m.group(2))
+PY
+)" || { bad "could not extract clone-orchestration-project snippet"; snippet=""; }
+args="${snippet##*ARGS:}"; body="${snippet%ARGS:*}"
+[ "$args" = '"${SANDBOX_REL}" "/master/" "/agent-*/"' ] && ok "clone-orchestration-project ensures the bare \${SANDBOX_REL}" || bad "clone ensure args are: $args"
+for sd in sandbox dev-ai-interaction; do
+  P="$T/new-$sd"
+  git clone -q --no-hardlinks -- "$canon" "$P" || { bad "$sd: clone failed"; continue; }
+  sed "s/^sandbox_dir=.*/sandbox_dir=$sd/; s#^orch_root=.*#orch_root=$P#" "$canon/project.config" > "$P/project.config"
+  (cd "$P" && ./install-merge-drivers.sh >/dev/null && ./verify-smudge --fix >/dev/null) || { bad "$sd: filter install/smudge failed in new clone"; continue; }
+  grep -qx "$sd" "$P/.gitignore" && ok "$sd: new clone .gitignore has '$sd'" || bad "$sd: new clone .gitignore lacks '$sd'"
+  cp "$P/.gitignore" "$T/before"
+  SANDBOX_REL="$sd" bash -c "$body" bash "$P/.gitignore" "$sd" "/master/" "/agent-*/"
+  diff -q "$T/before" "$P/.gitignore" >/dev/null && ok "$sd: clone ensure step appends no duplicate" || { bad "$sd: clone ensure step changed .gitignore"; diff "$T/before" "$P/.gitignore"; }
+  [ -z "$(git -C "$P" status --porcelain -- .gitignore .gitattributes)" ] && ok "$sd: new clone .gitignore/.gitattributes clean" || bad "$sd: new clone shows changes"
+  git -C "$P" check-attr filter -- .gitignore | grep -q ': manage-configs$' && ok "$sd: new clone filters .gitignore" || bad "$sd: new clone .gitignore not filtered"
+done
 echo "pass=$pass fail=$fail"; [ "$fail" -eq 0 ]
