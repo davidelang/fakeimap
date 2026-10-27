@@ -35,7 +35,12 @@
 #     1. Check the config for every selected build. If the Play build is selected (also by
 #        default) and stdin is not a terminal, stop: pass --standard/--test explicitly.
 #     2. Commit phase: commit the named files (or nothing when no message is given).
-#     3. Integrity check: the tree must be clean; every build comes from that one commit.
+#        build_app never commits files it generates (GENERATED PATHS below), whatever the
+#        project's .gitignore says: named or pre-staged ones are unstaged (working files kept)
+#        with a stderr line per path, and already-tracked ones are reported with the
+#        'git rm --cached' command to untrack them (never run by build_app).
+#     3. Integrity check: the tree must be clean (generated paths aside); every build comes
+#        from that one commit.
 #     4. Play only: testing-version y/N check (only on a branch with a BRANCH-start tag) and
 #        password prompts, before any gradle work, so an unattended build never stalls part-way.
 #     5. Play only, before any gradle work: app/versionCode.txt goes N -> N+1, committed alone
@@ -438,6 +443,88 @@ if [ "$SINGLE_USER" = false ]; then
   done
 fi
 
+# GENERATED PATHS: everything build_app (and ve-resolve-orch) writes in the worktree. Never
+# committed, independent of .gitignore. A path is generated when it lies under:
+#   - a top-level .gradle-home/ (GRADLE_USER_HOME: caches, daemon registry daemon-run.<pid>),
+#     .android-shared/ (ANDROID_USER_HOME, incl. the copied debug.keystore), .gradle-shared/,
+#     or build/ (root project build dir);
+#   - a .gradle/ or .cxx/ directory at any depth (Gradle project dir, CMake/ndk output);
+#   - a build/ directory whose parent holds build.gradle or build.gradle.kts (a Gradle
+#     module's output, e.g. app/build incl. app/build/outputs/build_app/*.json). A source
+#     directory merely named build/ elsewhere is not matched.
+# Not generated: play-bundle.aab (tracked link) and app/versionCode.txt (--play bump commit).
+GENERATED_TOP_DIRS=(.gradle-home .android-shared .gradle-shared build)
+GENERATED_ANY_DEPTH_DIRS=(.gradle .cxx)
+GENERATED_MODULE_DIR=build
+GENERATED_PREFILTER='(^|/)(\.gradle-home|\.android-shared|\.gradle-shared|\.gradle|\.cxx|build)/'
+
+generated_root() {  # generated_root PATH: print the generated dir (with /) PATH lies under, or return 1
+  local path="$1" pre="" seg rest t
+  rest="$path"
+  while [[ "$rest" == */* ]]; do
+    seg="${rest%%/*}"; rest="${rest#*/}"
+    if [ -z "$pre" ]; then
+      for t in "${GENERATED_TOP_DIRS[@]}"; do
+        if [ "$seg" = "$t" ]; then printf '%s/\n' "$seg"; return 0; fi
+      done
+    fi
+    for t in "${GENERATED_ANY_DEPTH_DIRS[@]}"; do
+      if [ "$seg" = "$t" ]; then printf '%s%s/\n' "$pre" "$seg"; return 0; fi
+    done
+    if [ "$seg" = "$GENERATED_MODULE_DIR" ] && { [ -f "${pre}build.gradle" ] || [ -f "${pre}build.gradle.kts" ]; }; then
+      printf '%s%s/\n' "$pre" "$seg"; return 0
+    fi
+    pre="$pre$seg/"
+  done
+  return 1
+}
+
+# generated_counts: read NUL-separated paths on stdin, print '<count> <root>' per generated root.
+generated_counts() {
+  local f r
+  declare -A n=()
+  while IFS= read -r -d '' f; do
+    if r=$(generated_root "$f"); then n["$r"]=$(( ${n["$r"]:-0} + 1 )); fi
+  done
+  for r in "${!n[@]}"; do printf '%s %s\n' "${n[$r]}" "$r"; done | sort -k2
+}
+
+# list_prefiltered CMD...: run a NUL-output git command, keep paths with a generated-looking segment.
+list_prefiltered() {
+  local out rc
+  out=$(set -o pipefail; "$@" | tr '\0' '\n') || { echo "ERROR: '$*' failed." >&2; exit 1; }
+  # grep: 0 = matches, 1 = none (fine), anything else is an error.
+  printf '%s\n' "$out" | grep -E "$GENERATED_PREFILTER" | tr '\n' '\0'
+  rc=${PIPESTATUS[1]}
+  if [ "$rc" -gt 1 ]; then echo "ERROR: grep failed ($rc) filtering '$*'." >&2; exit 1; fi
+}
+
+# Already-tracked generated files (an old accident): report and give the untrack command.
+warn_tracked_generated() {
+  local counts c r roots=""
+  counts=$(set -o pipefail; list_prefiltered git ls-files -z | generated_counts) || exit 1
+  [ -n "$counts" ] || return 0
+  echo "WARNING: generated files are tracked in git (build_app never commits these; untrack them once):" >&2
+  while read -r c r; do
+    echo "  $c tracked file(s) under $r" >&2
+    roots="$roots '$r'"
+  done <<<"$counts"
+  echo "  Untrack (keeps the files on disk), then commit the removal:  git rm --cached -r --$roots" >&2
+}
+
+# Unstage every staged generated path (new, modified or deleted). Index only; working files kept.
+unstage_generated() {
+  local counts c r
+  counts=$(set -o pipefail; list_prefiltered git diff --cached --name-only -z --no-renames | generated_counts) || exit 1
+  [ -n "$counts" ] || return 0
+  while read -r c r; do
+    git reset -q -- ":(literal)$r" || { echo "ERROR: could not unstage $r" >&2; exit 1; }
+    echo "build_app: not committing $c generated file(s) under $r" >&2
+  done <<<"$counts"
+}
+
+warn_tracked_generated
+
 if [ "$#" -ge 1 ]; then
     MSG_ARG="$1"
     shift
@@ -479,8 +566,9 @@ if [ "$#" -ge 1 ]; then
         done
     fi
 
-    # 3. Commit Phase (staged changes from args above or pre-staged)
-    STAGED_CHANGES=$(git diff --cached --name-only)
+    # 3. Commit Phase (staged changes from args above or pre-staged), generated paths left out
+    unstage_generated
+    STAGED_CHANGES=$(git diff --cached --name-only) || { echo "ERROR: git diff --cached failed." >&2; exit 1; }
     if [ -n "$STAGED_CHANGES" ]; then
         if [ -n "$COMMIT_MSG" ]; then
             git commit -m "$COMMIT_MSG"
@@ -504,7 +592,16 @@ else
 fi
 
 # 4. Integrity Barrier: everything MUST be in git for accurate 'git describe' versioning.
-DIRTY_FILES=$(git status --porcelain -uno)
+# Generated paths are left out (an already-tracked one was reported above; it stays uncommitted).
+DIRTY_FILES=$(git status --porcelain -uno) || { echo "ERROR: git status failed." >&2; exit 1; }
+if [ -n "$DIRTY_FILES" ]; then
+    _dirty_kept=""
+    while IFS= read -r _line; do
+        _p="${_line:3}"; _p="${_p##* -> }"
+        generated_root "$_p" >/dev/null || _dirty_kept="$_dirty_kept$_line"$'\n'
+    done <<<"$DIRTY_FILES"
+    DIRTY_FILES="${_dirty_kept%$'\n'}"
+fi
 if [ -n "$DIRTY_FILES" ]; then
     echo "CRITICAL ERROR: Uncommitted tracked files detected:"
     echo "$DIRTY_FILES"

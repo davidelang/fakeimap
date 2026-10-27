@@ -64,8 +64,11 @@ line each:
 
 1. **Config check:** the config for every selected build is checked first. A bad config
    commits nothing.
-2. **Commit phase:** unchanged. The named files are committed, or nothing is when no message
-   is given.
+2. **Commit phase:** the named files are committed, or nothing is when no message is given.
+   Files build_app generates (`.gradle-home/`, `.android-shared/`, `.gradle-shared/`, `.gradle/`,
+   `.cxx/`, top-level `build/` and each Gradle module's `build/`) are never committed, whatever
+   `.gitignore` says: named or pre-staged ones are unstaged with a stderr line per path, and
+   already-tracked ones get a warning with the `git rm --cached -r -- ...` command to untrack them.
 3. **Integrity check:** the tree must be clean. Every selected build comes from that one
    commit, including the Play build. Committing and building Play in one run is allowed.
 4. **Play preflight, before any gradle work:**

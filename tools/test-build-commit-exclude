@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Tests that build_app never commits files it generates (.gradle-home, .android-shared,
+# .gradle-shared, .gradle, .cxx, Gradle module build/ dirs), whether named on the command line
+# or pre-staged; play-bundle.aab and app/versionCode.txt stay committable; a source dir named
+# build/ outside a Gradle module is committed; already-tracked generated files get a warning
+# with the untrack command. Runs the real build_app (single-user mode, no project.config) in
+# scratch repos with a stand-in ./gradlew and ve-resolve-orch. No sudo, no real gradle.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/buildexcl-test.XXXXXX)"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+G() { git -C "$W" -c user.name=t -c user.email=t@t "$@"; }
+
+mk() {  # fresh worktree repo in $W, no .gitignore for generated paths (the point of the test)
+  W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app/src" "$W/lib"
+  cp "$canon/build-examples/android-gradle/build_app" "$canon/build-examples/android-gradle/android-build-info" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
+  cat >"$W/ve-resolve-orch" <<'S'
+ve_resolve_orch() { ORCH_ROOT="$1"; }
+ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }
+ve_aapt2_from_sdk() { echo /bin/true; }
+ve_reset_gradle_daemon_dir() { return 0; }
+ve_wipe_foreign_app_build_outputs() { return 0; }
+S
+  cat >"$W/gradlew" <<'GR'
+#!/bin/bash
+set -e
+for a in "$@"; do
+  case "$a" in
+    assembleDebug) mkdir -p app/build/outputs/apk/debug
+      echo apk >app/build/outputs/apk/debug/app-debug.apk
+      printf '{"version":3,"artifactType":{"type":"APK","kind":"Directory"},"applicationId":"com.ex.app","variantName":"debug","elements":[{"type":"SINGLE","filters":[],"versionName":"1.0","outputFile":"app-debug.apk"}]}\n' >app/build/outputs/apk/debug/output-metadata.json ;;
+  esac
+done
+GR
+  chmod 755 "$W/gradlew"
+  echo 1 >"$W/app/versionCode.txt"
+  echo 'plugins {}' >"$W/app/build.gradle.kts"; echo 'plugins {}' >"$W/lib/build.gradle"; echo x >"$W/app/src/A.kt"
+  mkdir -p "$W/app/src/main/build" "$W/docs/build"
+  echo 'real source' >"$W/app/src/main/build/Gen.kt"; echo 'doc' >"$W/docs/build/notes.md"
+  printf '%s\n' '## Build and commit' '- **Standard build:** debug' '- **Test build:** none' >"$W/project-facts.md"
+  ln -s app/build/outputs/bundle/release/app-release.aab "$W/play-bundle.aab"
+  G init -q -b master && G add -A && G commit -qm init
+}
+caches() {  # generated files a real build leaves behind
+  mkdir -p "$W/.gradle-home/caches" "$W/.gradle" "$W/app/build/intermediates" "$W/app/.cxx/x" "$W/lib/build/tmp" "$W/lib/.gradle" "$W/.android-shared" "$W/.gradle-shared" "$W/build"
+  echo c >"$W/.gradle-home/caches/a"; echo c >"$W/.gradle-home/daemon-run.1"; echo c >"$W/.gradle/f"
+  echo c >"$W/app/build/intermediates/i"; echo c >"$W/app/.cxx/x/o"; echo c >"$W/lib/build/tmp/t"; echo c >"$W/lib/.gradle/g"
+  echo k >"$W/.android-shared/debug.keystore"; echo s >"$W/.gradle-shared/s"; echo b >"$W/build/r"
+}
+run() { (cd "$W" && ./build_app --standard "$@") >"$T/out" 2>&1; }
+tracked() { G ls-files --error-unmatch -- "$1" >/dev/null 2>&1; }
+has() { grep -qF -- "$1" "$T/out"; }
+
+# 1. Named '.' sweeps everything not ignored: caches stay out, real changes go in.
+mk; caches; echo y >"$W/app/src/A.kt"; echo 2 >"$W/app/versionCode.txt"; echo z >"$W/app/src/main/build/Gen.kt"
+if run "sweep" .; then ok "build with '.' succeeds"; else bad "build with '.' failed: $(cat "$T/out")"; fi
+for p in .gradle-home/caches/a .gradle-home/daemon-run.1 .gradle/f app/build/intermediates/i app/.cxx/x/o lib/build/tmp/t lib/.gradle/g .android-shared/debug.keystore .gradle-shared/s build/r app/build/outputs/build_app/standard.json; do
+  if tracked "$p"; then bad "$p committed"; else ok "$p not committed"; fi
+done
+[ -f "$W/.android-shared/debug.keystore" ] && [ -f "$W/.gradle-home/caches/a" ] && ok "working files kept" || bad "working files removed"
+[ "$(G show HEAD:app/src/A.kt)" = y ] && ok "source change committed" || bad "source change not committed"
+[ "$(G show HEAD:app/versionCode.txt)" = 2 ] && ok "app/versionCode.txt committed" || bad "versionCode.txt not committed"
+[ "$(G show HEAD:app/src/main/build/Gen.kt)" = z ] && ok "source dir named build/ (no build.gradle beside it) committed" || bad "app/src/main/build excluded"
+has "build_app: not committing 2 generated file(s) under .gradle-home/" && ok "loud line for .gradle-home/" || bad "no .gradle-home line: $(cat "$T/out")"
+has "build_app: not committing 1 generated file(s) under .android-shared/" && ok "loud line for .android-shared/" || bad "no .android-shared line"
+for r in .gradle/ app/build/ app/.cxx/ lib/build/ lib/.gradle/ .gradle-shared/ build/; do
+  has "generated file(s) under $r" && ok "loud line for $r" || bad "no line for $r"
+done
+has WARNING && bad "unexpected tracked warning" || ok "no tracked warning on a clean repo"
+
+# 2. Pre-staged caches (git add -f past any ignore) plus a named file.
+mk; caches; G add -f .gradle-home app/build .android-shared; echo y >"$W/app/src/A.kt"
+if run "prestaged" app/src/A.kt; then ok "pre-staged build succeeds"; else bad "pre-staged build failed: $(cat "$T/out")"; fi
+tracked .gradle-home/caches/a || tracked app/build/intermediates/i || tracked .android-shared/debug.keystore && bad "pre-staged cache committed" || ok "pre-staged caches not committed"
+[ "$(G show HEAD:app/src/A.kt)" = y ] && ok "named file committed" || bad "named file not committed"
+[ -z "$(G diff --cached --name-only)" ] && ok "index clean after commit" || bad "index not clean"
+
+# 3. Nothing left once caches are dropped: like 'no changes' with named files (error, nothing committed).
+mk; caches; head=$(G rev-parse HEAD)
+if run "only caches" .gradle-home app/build; then bad "only-caches run succeeded"; else ok "only-caches run stops (files named, nothing to commit)"; fi
+[ "$(G rev-parse HEAD)" = "$head" ] && ok "no commit made" || bad "commit made"
+has "Files provided but nothing to commit" && ok "says nothing to commit" || bad "wrong message: $(cat "$T/out")"
+# Pre-staged only caches, no message, no files: proceeds to build without committing.
+mk; caches; G add -f .gradle-home; head=$(G rev-parse HEAD)
+if run; then ok "no-arg run with staged caches builds"; else bad "no-arg run failed: $(cat "$T/out")"; fi
+[ "$(G rev-parse HEAD)" = "$head" ] && ok "no-arg run commits nothing" || bad "no-arg run committed"
+
+# 4. play-bundle.aab link change is still committed.
+mk; ln -sfn app/build/outputs/bundle/x/app-x.aab "$W/play-bundle.aab"
+if run "relink" play-bundle.aab; then ok "relink build succeeds"; else bad "relink failed: $(cat "$T/out")"; fi
+[ "$(G cat-file -p HEAD:play-bundle.aab)" = app/build/outputs/bundle/x/app-x.aab ] && ok "play-bundle.aab committed" || bad "play-bundle.aab not committed"
+
+# 5. Already-tracked generated files (old accident): warning + command, build not failed,
+#    a modified tracked cache is neither committed nor treated as a dirty tree.
+mk; caches; G add -f .gradle-home app/build && G commit -qm accident; echo changed >"$W/.gradle-home/caches/a"; echo y >"$W/app/src/A.kt"
+if run "with tracked" app/src/A.kt .gradle-home/caches/a; then ok "build with tracked caches succeeds"; else bad "tracked-cache build failed: $(cat "$T/out")"; fi
+has "WARNING: generated files are tracked in git" && ok "tracked warning" || bad "no tracked warning: $(cat "$T/out")"
+has "2 tracked file(s) under .gradle-home/" && has "1 tracked file(s) under app/build/" && ok "per-root tracked counts" || bad "tracked counts wrong"
+grep -E "git rm --cached -r -- '[^']+/' '[^']+/'$" "$T/out" | grep -qF "'.gradle-home/'" && grep "git rm --cached -r --" "$T/out" | grep -qF "'app/build/'" && ok "untrack command given" || bad "no untrack command: $(cat "$T/out")"
+[ "$(G show HEAD:.gradle-home/caches/a)" = c ] && ok "modified tracked cache not committed" || bad "modified tracked cache committed"
+tracked .gradle-home/caches/a && ok "build_app did not untrack it" || bad "build_app untracked it"
+[ "$(G show HEAD:app/src/A.kt)" = y ] && ok "source committed alongside" || bad "source not committed"
+[ "$(cat "$W/.gradle-home/caches/a")" = changed ] && ok "working copy of tracked cache kept" || bad "working copy changed"
+
+echo "passed $pass, failed $fail"
+[ "$fail" -eq 0 ]
