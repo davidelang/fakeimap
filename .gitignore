@@ -1,5 +1,9 @@
 project.config
 refresh-shell
+# Generated at launch by .grok/lib/grok-launch-common.sh (role sandbox profile).
+.grok/sandbox.toml
+.grok/sandbox.toml.lock
+.grok/sandbox.toml.tmp
 @@SANDBOX_PATH@@/.planning-agent-prompt.txt
 *.local
 .android-shared/

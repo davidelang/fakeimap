@@ -51,7 +51,12 @@ if [ "$common" -ge "$n_b" ]; then
 fi
 
 # Build branch-only tail (everything past common point on theirs)
-tmp=$(mktemp)
+# Not /tmp: that is a tmpfs, and abandoned files there are not what we want.
+if [ -d "$ROOT/work-history" ]; then
+  tmp=$(mktemp "$ROOT/work-history/.ve-englog.XXXXXX")
+else
+  tmp=$(mktemp "$ROOT/.ve-englog.XXXXXX")
+fi
 trap 'rm -f "$tmp"' EXIT
 if [ "$common" -eq 0 ]; then
   cat "$B" > "$tmp"

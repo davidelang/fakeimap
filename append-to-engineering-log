@@ -17,6 +17,7 @@ else
   ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 
+# Root path may be a symlink into work-history/. Append follows the symlink.
 LOGFILE="$ROOT/ENGINEERING_LOG.md"
 if [ ! -f "$LOGFILE" ]; then
   echo "ERROR: $LOGFILE not found" >&2

@@ -167,9 +167,12 @@ restore_lifted_logs() {
   return $rc
 }
 trap 'restore_lifted_logs' EXIT
+# chattr does not follow a symlink. The root log name links into work-history/.
 lift_log() {
-  chattr -a "$1"
-  LIFTED+=("$1")
+  local real
+  real=$(readlink -f -- "$1")
+  chattr -a "$real"
+  LIFTED+=("$real")
 }
 seal_log() {
   local f="$1" keep=() g
@@ -414,10 +417,13 @@ fix_worktree() {
 
   # Planner writes via ai-shared group rw (664), not other-write. 666 is a bug.
   for f in TODO.md project-facts.md; do
-    if [ -f "$wt/$f" ]; then
-      perm_apply planner-files "$wt/$f" --top-only
+    if [ -e "$wt/$f" ] || [ -L "$wt/$f" ]; then
+      perm_apply planner-files "$(readlink -f -- "$wt/$f")" --top-only
     fi
   done
+  if [ -d "$wt/work-history" ]; then
+    perm_apply work-history "$wt/work-history"
+  fi
 
   # .git handling (linked worktree file vs main common dir).
   WT_GITDIR=""
@@ -520,7 +526,7 @@ fix_log_wrapper() {
     echo "    wrapper: root:$SHARED_GROUP 2755 (content from git, not touched)"
   fi
 
-  LOG="$wt/ENGINEERING_LOG.md"
+  LOG=$(readlink -f -- "$wt/ENGINEERING_LOG.md")
   case " ${LIFTED[*]} " in
     *" $LOG "*) ;;
     *) lift_log "$LOG" ;;

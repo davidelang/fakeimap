@@ -1,5 +1,6 @@
 # Project Grok config (tracked; published by deploy-orchestration via rules.manifest).
-# Role tightening is done by Landlock (agent-landlock) and ROLE_KEY hooks in .grok/hooks/.
+# Role write limits are the Grok sandbox profile (cursor: agent-landlock) and ROLE_KEY hooks in .grok/hooks/.
+# Launchers pass --always-approve. These deny rules and the hooks still apply.
 # deny > ask > allow across all scopes. Agents commit only through the project-facts.md Commit path (./build_app or ./commit-build).
 
 [permission]

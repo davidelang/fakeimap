@@ -471,17 +471,23 @@ def resolve_grants(
 
     if role == "planner":
         dirs.extend(sandbox)
-        # Planner may only mutate TODO.md + ENGINEERING_LOG.md at worktree root
-        for name in ("TODO.md", "ENGINEERING_LOG.md"):
-            fp = worktree / name
-            if not fp.exists():
-                try:
-                    fp.touch()
-                except OSError:
-                    pass
-            if fp.is_file():
-                files.append(str(fp.resolve()))
-        # Helpers live at worktree root but only write those files; no full root grant.
+        # Directory grant: TODO.md and ENGINEERING_LOG.md live in work-history/
+        # and the root names are symlinks. A file rule cannot create the
+        # todo-close temp next to them. Before that move, keep the two file grants.
+        hist = worktree / "work-history"
+        root_todo = worktree / "TODO.md"
+        if hist.is_dir() and (root_todo.is_symlink() or (hist / "TODO.md").is_file()):
+            dirs.append(str(hist.resolve()))
+        else:
+            for name in ("TODO.md", "ENGINEERING_LOG.md"):
+                fp = worktree / name
+                if not fp.exists():
+                    try:
+                        fp.touch()
+                    except OSError:
+                        pass
+                if fp.is_file() and not fp.is_symlink():
+                    files.append(str(fp.resolve()))
     elif role in ("coder", "master"):
         dirs.append(str(worktree))
         dirs.extend(sandbox)

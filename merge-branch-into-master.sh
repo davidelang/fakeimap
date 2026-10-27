@@ -4,6 +4,9 @@
 #
 # Special files:
 #   ENGINEERING_LOG.md — chattr +a: never worktree-replace; ve-englog appends tail.
+#     After the move the blob is work-history/ENGINEERING_LOG.md and the root
+#     name is a symlink. Index updates use the blob path, never mode 100644
+#     on the symlink.
 #   TODO.md / project-facts.md — merge=ve-special-ours; restore_special enforces master.
 #
 # Leaves merge UNCOMMITTED. Master finishes special files, then ./build_app --standard --test.
@@ -50,9 +53,24 @@ while git stash list 2>/dev/null | head -1 | grep -q autostash; do
   git stash drop >/dev/null 2>&1 || break
 done
 
-pre_todo=$(git rev-parse HEAD:TODO.md 2>/dev/null || echo "")
-pre_facts=$(git rev-parse HEAD:project-facts.md 2>/dev/null || echo "")
 pre_head=$(git rev-parse HEAD)
+
+# Blob path. work-history/<name> once moved (root name is a symlink). Prefer the
+# worktree file so a staged move is honored before that commit exists.
+content_path() {
+  local name="$1"
+  if [ -f "work-history/$name" ] && [ ! -L "work-history/$name" ]; then
+    printf 'work-history/%s\n' "$name"
+  elif git cat-file -e "HEAD:work-history/$name" >/dev/null 2>&1; then
+    printf 'work-history/%s\n' "$name"
+  else
+    printf '%s\n' "$name"
+  fi
+}
+ENG_REL=$(content_path ENGINEERING_LOG.md)
+TODO_REL=$(content_path TODO.md)
+pre_todo=$(git rev-parse "HEAD:${TODO_REL}" 2>/dev/null || git rev-parse ":${TODO_REL}" 2>/dev/null || echo "")
+pre_facts=$(git rev-parse HEAD:project-facts.md 2>/dev/null || echo "")
 
 # Paths that change on the branch vs pre_head (for post-merge guard)
 branch_delta_paths() {
@@ -83,17 +101,21 @@ verify_index_blob() {
 # Index eng-log = HEAD blob (not worktree). Avoids "local changes would be overwritten"
 # when worktree already has a partial ve-englog append from a failed attempt.
 englog_reset_index_to_head() {
-  if [ ! -f ENGINEERING_LOG.md ]; then
+  if [ ! -f "$ENG_REL" ]; then
     return 0
   fi
-  git update-index --no-skip-worktree ENGINEERING_LOG.md 2>/dev/null || true
+  git update-index --no-skip-worktree -- "$ENG_REL" 2>/dev/null || true
   local hash
-  hash=$(git rev-parse HEAD:ENGINEERING_LOG.md 2>/dev/null || true)
+  hash=$(git rev-parse "HEAD:${ENG_REL}" 2>/dev/null || true)
+  if [ -z "$hash" ]; then
+    hash=$(git rev-parse ":${ENG_REL}" 2>/dev/null || true)
+  fi
   if [ -z "$hash" ]; then
     return 0
   fi
-  git update-index --cacheinfo 100644,"$hash",ENGINEERING_LOG.md
-  echo "  ENGINEERING_LOG.md: index reset to HEAD (${hash:0:8})"
+  # 100644 is the blob. Never apply that mode to the root symlink path.
+  git update-index --cacheinfo 100644,"$hash","$ENG_REL"
+  echo "  $ENG_REL: index reset to HEAD (${hash:0:8})"
 }
 
 # Clear partial/failed merge staging so read-tree can run.
@@ -115,9 +137,19 @@ englog_merge_via_driver() {
   ancestor=$(mktemp)
   ours=$(mktemp)
   theirs=$(mktemp)
-  git show "$base":ENGINEERING_LOG.md > "$ancestor" 2>/dev/null || : > "$ancestor"
-  git show "$pre_head":ENGINEERING_LOG.md > "$ours" 2>/dev/null || : > "$ours"
-  git show "$branch":ENGINEERING_LOG.md > "$theirs"
+  show_log() {
+    local rev="$1" dest="$2"
+    if git cat-file -e "$rev:work-history/ENGINEERING_LOG.md" >/dev/null 2>&1; then
+      git show "$rev:work-history/ENGINEERING_LOG.md" > "$dest"
+    elif git cat-file -e "$rev:ENGINEERING_LOG.md" >/dev/null 2>&1; then
+      git show "$rev:ENGINEERING_LOG.md" > "$dest"
+    else
+      : > "$dest"
+    fi
+  }
+  show_log "$base" "$ancestor"
+  show_log "$pre_head" "$ours"
+  show_log "$branch" "$theirs"
   ./git-merge-drivers/ve-englog "$ancestor" "$ours" "$theirs" "" ENGINEERING_LOG.md
   rm -f "$ancestor" "$ours" "$theirs"
   echo "  ENGINEERING_LOG.md: ve-englog append complete"
@@ -127,9 +159,9 @@ checkout_merged_worktree_skip_special() {
   local f
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    [ "$f" = "ENGINEERING_LOG.md" ] && continue
-    [ "$f" = "TODO.md" ] && continue
-    [ "$f" = "project-facts.md" ] && continue
+    case "$f" in
+      ENGINEERING_LOG.md|TODO.md|project-facts.md|work-history/ENGINEERING_LOG.md|work-history/TODO.md) continue ;;
+    esac
     # Never overwrite the merge helper mid-recovery
     [ "$f" = "merge-branch-into-master.sh" ] && continue
     git checkout-index -f -- "$f" 2>/dev/null || true
@@ -150,7 +182,7 @@ assert_staged_feature_files() {
   while IFS= read -r p; do
     [ -z "$p" ] && continue
     case "$p" in
-      ENGINEERING_LOG.md|TODO.md|project-facts.md) continue ;;
+      ENGINEERING_LOG.md|TODO.md|project-facts.md|work-history/ENGINEERING_LOG.md|work-history/TODO.md) continue ;;
       *) expected=$((expected + 1)) ;;
     esac
   done < <(branch_delta_paths)
@@ -163,7 +195,7 @@ assert_staged_feature_files() {
   while IFS= read -r p; do
     [ -z "$p" ] && continue
     case "$p" in
-      ENGINEERING_LOG.md|TODO.md|project-facts.md) continue ;;
+      ENGINEERING_LOG.md|TODO.md|project-facts.md|work-history/ENGINEERING_LOG.md|work-history/TODO.md) continue ;;
       *) staged_non_special=$((staged_non_special + 1)) ;;
     esac
   done < <(git diff --cached --name-only 2>/dev/null || true)
@@ -182,19 +214,20 @@ assert_staged_feature_files() {
 
 finish_specials_and_englog() {
   local branch="$1"
-  restore_special TODO.md "$pre_todo"
+  restore_special "$TODO_REL" "$pre_todo"
   restore_special project-facts.md "$pre_facts"
-  verify_index_blob TODO.md "$pre_todo"
+  verify_index_blob "$TODO_REL" "$pre_todo"
   verify_index_blob project-facts.md "$pre_facts"
   checkout_merged_worktree_skip_special
   write_merge_head
   englog_merge_via_driver "$branch" || true
-  # Stage eng-log only via hash (worktree may be +a; git add can fail)
-  if [ -f ENGINEERING_LOG.md ]; then
+  # Stage eng-log only via hash (worktree may be +a; git add can fail).
+  # The path is the blob, not the root symlink.
+  if [ -f "$ENG_REL" ]; then
     local h
-    h=$(git hash-object ENGINEERING_LOG.md)
-    git update-index --cacheinfo 100644,"$h",ENGINEERING_LOG.md 2>/dev/null || \
-      git add ENGINEERING_LOG.md 2>/dev/null || true
+    h=$(git hash-object "$ENG_REL")
+    git update-index --cacheinfo 100644,"$h","$ENG_REL" 2>/dev/null || \
+      git add -- "$ENG_REL" 2>/dev/null || true
   fi
 }
 
@@ -247,23 +280,23 @@ merge_git_ort() {
   local branch="$1"
   echo "  path: git merge --no-ff --no-commit"
   englog_reset_index_to_head
-  git update-index --skip-worktree ENGINEERING_LOG.md 2>/dev/null || true
+  git update-index --skip-worktree -- "$ENG_REL" 2>/dev/null || true
   if ! git merge --no-ff --no-commit --no-autostash "$branch"; then
-    git update-index --no-skip-worktree ENGINEERING_LOG.md 2>/dev/null || true
+    git update-index --no-skip-worktree -- "$ENG_REL" 2>/dev/null || true
     return 1
   fi
-  restore_special TODO.md "$pre_todo"
+  restore_special "$TODO_REL" "$pre_todo"
   restore_special project-facts.md "$pre_facts"
-  verify_index_blob TODO.md "$pre_todo"
+  verify_index_blob "$TODO_REL" "$pre_todo"
   verify_index_blob project-facts.md "$pre_facts"
   englog_merge_via_driver "$branch" || true
-  if [ -f ENGINEERING_LOG.md ]; then
+  if [ -f "$ENG_REL" ]; then
     local h
-    h=$(git hash-object ENGINEERING_LOG.md)
-    git update-index --cacheinfo 100644,"$h",ENGINEERING_LOG.md 2>/dev/null || \
-      git add ENGINEERING_LOG.md 2>/dev/null || true
+    h=$(git hash-object "$ENG_REL")
+    git update-index --cacheinfo 100644,"$h","$ENG_REL" 2>/dev/null || \
+      git add -- "$ENG_REL" 2>/dev/null || true
   fi
-  git update-index --no-skip-worktree ENGINEERING_LOG.md 2>/dev/null || true
+  git update-index --no-skip-worktree -- "$ENG_REL" 2>/dev/null || true
 }
 
 merge_rc=0
@@ -284,7 +317,7 @@ else
   if [ "$merge_rc" -ne 0 ]; then
     echo "  git merge failed (rc=$merge_rc); falling back to index-first +a-safe path" >&2
     git merge --abort 2>/dev/null || true
-    git update-index --no-skip-worktree ENGINEERING_LOG.md 2>/dev/null || true
+    git update-index --no-skip-worktree -- "$ENG_REL" 2>/dev/null || true
     merge_index_first "$BRANCH"
     merge_rc=$?
   fi

@@ -112,6 +112,7 @@ file_sig() {
   local mark=""
   if [[ "$f" == *grok-launch-common.sh ]]; then
     if grep -q 'agent-landlock' "$f" 2>/dev/null; then mark="+landlock"; else mark="-landlock"; fi
+    if grep -q 'build_grok_sandbox_profile' "$f" 2>/dev/null; then mark="${mark}+sandbox"; else mark="${mark}-sandbox"; fi
   fi
   echo "${sz}:${md}${mark}"
 }
@@ -207,6 +208,8 @@ for host in "${hosts[@]}"; do
       elif [[ "$cname" == "grok-launch-common" ]]; then
         if [[ "$hs" == *"-landlock"* && "$rs" == *"+landlock"* ]]; then
           echo "CRITICAL grok-launch-common missing agent-landlock wiring"
+        elif [[ "$hs" == *"-sandbox"* && "$rs" == *"+sandbox"* ]]; then
+          echo "CRITICAL grok-launch-common missing Grok sandbox profile wiring"
         else
           echo "HIGH grok-launch-common drift host=$hs ref=$rs"
         fi

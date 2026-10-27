@@ -48,7 +48,7 @@ existing dest without re-cloning:
 other +x; planner is not in `ai-code`). A sudo password prompt may still appear:
 host sudoers NOPASSWD lists the grok binary, not the landlock wrap.
 
-Landlock (mutation-only) wraps agents via `agent-landlock` from `run-grok*`.
+Grok launchers confine the process with a custom sandbox profile (`extends=read-only`). Cursor launchers still wrap with `agent-landlock`.
 
 ## Drift report
 

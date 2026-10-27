@@ -139,8 +139,9 @@ while true; do
   fi
   echo "Removing stale non-worktree directory agent-$N (failed prior setup_agent run)..."
   # Its log is root-owned and may be append-only, so the removal needs root.
-  if [ -f "agent-$N/ENGINEERING_LOG.md" ]; then
-    sudo chattr -a "agent-$N/ENGINEERING_LOG.md" || _setup_die "cannot lift chattr +a on agent-$N/ENGINEERING_LOG.md"
+  if [ -e "agent-$N/ENGINEERING_LOG.md" ] || [ -L "agent-$N/ENGINEERING_LOG.md" ]; then
+    _real=$(readlink -f -- "agent-$N/ENGINEERING_LOG.md")
+    sudo chattr -a -- "$_real" || _setup_die "cannot lift chattr +a on $_real"
   fi
   sudo rm -rf -- "agent-$N" || _setup_die "cannot remove stale agent-$N (try: sudo rm -rf agent-$N)"
   AGENT_ID="agent-$N"
@@ -476,9 +477,19 @@ if [ -f "$AGENT_ABS/run-as-primary.c" ]; then
 fi
 
 # Create log file with minimal header if missing (fixer will harden it)
-if [ ! -f "$AGENT_ABS/ENGINEERING_LOG.md" ]; then
-  echo "## $(date +%Y-%m-%d) - Initial log for $AGENT_ID" > "$AGENT_ABS/ENGINEERING_LOG.md" \
-    || _setup_die "cannot create $AGENT_ABS/ENGINEERING_LOG.md"
+mkdir -p "$AGENT_ABS/work-history" || _setup_die "cannot create $AGENT_ABS/work-history"
+if [ ! -e "$AGENT_ABS/work-history/ENGINEERING_LOG.md" ]; then
+  if [ -f "$AGENT_ABS/ENGINEERING_LOG.md" ] && [ ! -L "$AGENT_ABS/ENGINEERING_LOG.md" ]; then
+    : # still at the worktree root; move-work-history.sh relocates it
+  else
+    echo "## $(date +%Y-%m-%d) - Initial log for $AGENT_ID" > "$AGENT_ABS/work-history/ENGINEERING_LOG.md" \
+      || _setup_die "cannot create $AGENT_ABS/work-history/ENGINEERING_LOG.md"
+    ln -sfn work-history/ENGINEERING_LOG.md "$AGENT_ABS/ENGINEERING_LOG.md" \
+      || _setup_die "cannot link $AGENT_ABS/ENGINEERING_LOG.md"
+  fi
+elif [ ! -e "$AGENT_ABS/ENGINEERING_LOG.md" ]; then
+  ln -sfn work-history/ENGINEERING_LOG.md "$AGENT_ABS/ENGINEERING_LOG.md" \
+    || _setup_die "cannot link $AGENT_ABS/ENGINEERING_LOG.md"
 fi
 
 cd "$ORCH_ROOT" || _setup_die "cannot cd to $ORCH_ROOT"

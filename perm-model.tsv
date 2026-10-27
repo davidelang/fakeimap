@@ -17,6 +17,7 @@
 area	owner	group	dir	file	umask	writers	what
 worktree	-	code_group	u+rwx,g+rwxs,o+rx	u+rw,g+rw,o+r	002	coder,primary	one worktree's files (a path from git worktree list); prunes .git and nested areas
 planner-files	-	shared_group	-	664	002	planner	TODO.md and project-facts.md in a worktree
+work-history	-	shared_group	2775	664	002	planner	work-history/ directory (TODO and the log live here; the log file is then reset by englog)
 worktree-scripts	primary_user	code_group	-	2775	002	primary	scripts run by path (build_app, deploy, *.sh, ...) at a worktree's top level
 sandbox	-	sandbox_group	u+rwx,g+rwxs,o+rx	g+rwX	002	planner,primary	sandbox_dir (its own git repo included)
 common-git	-	shared_group	2770	660	007	git as any agent	git --git-common-dir

@@ -27,7 +27,13 @@ if [ "$n" -ne 1 ]; then
   fi
   exit 1
 fi
-tmp=$(mktemp "$SCRIPT_DIR/.TODO.md.XXXXXX")
+# Temp stays in work-history/ (the directory the planner can write). Not /tmp:
+# a rewrite uses cat onto the target, and /tmp is a tmpfs we do not leave files on.
+if [ -d "$SCRIPT_DIR/work-history" ]; then
+  tmp=$(mktemp "$SCRIPT_DIR/work-history/.TODO.md.XXXXXX")
+else
+  tmp=$(mktemp "$SCRIPT_DIR/.TODO.md.XXXXXX")
+fi
 trap 'rm -f "$tmp"' EXIT
 awk -v l="$matches" 'NR == l { sub(/\[ \]/, "[x]") } { print }' "$TODOFILE" > "$tmp"
 cat "$tmp" > "$TODOFILE"

@@ -52,6 +52,7 @@ shared exec-preflight
 shared append-to-engineering-log
 shared todo-append
 shared todo-close
+shared move-work-history.sh
 shared get-builds-tag.sh
 shared reset-to-builds.sh
 shared prepare-pr-rewrite

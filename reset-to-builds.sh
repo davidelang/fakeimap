@@ -29,7 +29,15 @@ else
   target=$(git rev-parse --verify "$tag^{commit}")
 fi
 
-keep=(':(exclude)ENGINEERING_LOG.md' ':(exclude)TODO.md' ':(exclude)project-facts.md')
+# Root names stay excluded so a symlink is not replaced. The work-history
+# blobs are the append-only log and the TODO content after the move.
+keep=(
+  ':(exclude)ENGINEERING_LOG.md'
+  ':(exclude)TODO.md'
+  ':(exclude)project-facts.md'
+  ':(exclude)work-history/ENGINEERING_LOG.md'
+  ':(exclude)work-history/TODO.md'
+)
 
 # HEAD and index to target; worktree untouched by this step.
 git reset --quiet --mixed "$target"

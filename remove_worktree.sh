@@ -128,16 +128,19 @@ else
 # 3. chmod -R u+rwX, so git worktree remove can unlink everything.
 _me=$(id -un)
 _log="$WORKTREE_DIR/ENGINEERING_LOG.md"
-if [ -e "$_log" ] && [ ! -L "$_log" ]; then
-    _attrs=$(lsattr -d -- "$_log") || {
-        echo "Error: lsattr failed on $_log; cannot tell whether it is append-only." >&2; exit 1; }
-    case "${_attrs%% *}" in
-        *a*)
-            echo "  $_log is append-only: sudo chattr -a"
-            sudo chattr -a -- "$_log" || {
-                echo "Error: sudo chattr -a $_log failed; the worktree cannot be removed." >&2; exit 1; }
-            ;;
-    esac
+if [ -e "$_log" ] || [ -L "$_log" ]; then
+    _real=$(readlink -f -- "$_log")
+    if [ -f "$_real" ]; then
+        _attrs=$(lsattr -d -- "$_real") || {
+            echo "Error: lsattr failed on $_real; cannot tell whether it is append-only." >&2; exit 1; }
+        case "${_attrs%% *}" in
+            *a*)
+                echo "  $_real is append-only: sudo chattr -a"
+                sudo chattr -a -- "$_real" || {
+                    echo "Error: sudo chattr -a $_real failed; the worktree cannot be removed." >&2; exit 1; }
+                ;;
+        esac
+    fi
 fi
 _foreign=$(find "$WORKTREE_DIR" ! -user "$_me" -print -quit) || {
     echo "Error: could not scan $WORKTREE_DIR for files owned by other users." >&2; exit 1; }
