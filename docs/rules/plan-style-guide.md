@@ -23,7 +23,9 @@ Reference for planners. Full rules: `AGENT_MANDATES.md`.
 | DONE / SUPERSEDED | Optional after intent satisfied |
 | Validated | `/validate-plans` then `mv` to `historical-plans/` |
 
-Stay in `plans/` until `/validate-plans` (including CODE LANDED). Do not archive at land.
+Stay in `plans/` until David runs `/validate-plans` (including CODE LANDED). Do not archive at land.
+
+Track progress with what already exists: plan Status lines, `plans/` versus `historical-plans/`, TODO.md items (`./todo-append`, `./todo-close`), recent `ENGINEERING_LOG.md` entries, and `git log`. Do not create separate status or tracking files.
 
 Required header on **new** plans:
 
@@ -33,31 +35,29 @@ Required header on **new** plans:
 
 Do not nag humans about stale DRAFT after they ordered execute — hygiene-fix or ignore when eng-log/git show execution.
 
-## Size (soft)
+## Scope of one plan
 
-| Target | Guidance |
-|--------|----------|
-| **~2–8 KB** | Typical single-feature plan |
-| **8–12 KB** | Multi-track locks with short “why large” |
-| **>12 KB** | Prefer **split** plans |
+- One plan per file set or behavior area. Put all pending related work (several roadmap items, a cleanup series, follow-ups in the same files) into that one plan, as ordered phases.
+- Split only when the file sets do not overlap, when one item's result changes another item's design, or when the combined change is too big to finish and build green in one go.
+- Do not write a successor plan whose files overlap a plan that has not landed. Write it after that plan lands, from the current tree.
 
 ## Structure
 
-Context · Recommended Approach · Critical Files · Existing utilities · **Phased Execution** (what + files + observable success) · Verification / **Acceptance**.
+Context · Recommended Approach · Critical Files (map) · Existing utilities · **Phases** (order of work) · **Acceptance** (the single checklist).
 
 **Compliance:** one line citing `standard-plan-compliance-block.md` — **do not paste**.
 
 ## Do
 
-- Product locks + Acceptance the coder can completeness-check.
+- State each change once, in Acceptance. Acceptance is the one checklist the coder and reviewer use; Aim and Phases do not repeat it.
 - One line `Review: diff` when Acceptance is behavior a diff can hide (state, migration, merge, persistence). A deletion, a doc edit, or a pin bump omits it.
-- High-signal only; cite paths not long code dumps.
+- Describe the problem and the fix: the predicate ("encoder writes every key; a missing tlsMode stays None"). A short code fragment is fine where it states the problem or the fix more clearly than English. The coder designs and writes the change. A plan that hands the coder text to paste in is overspecified.
 - Long forensics → `sandbox/research/<slug>.md` + link (or chat).
 - **Finish greps in planning.** Never leave `unless` / `grep X` / “if that path walks…” in a plan about to be approved. Write the answer (`Kotlin: no edits.` or the exact `fun`).
-- **Closed Critical Files table:** path + function + predicate. Last line: **Files not listed: no edits. Report extras in chat; do not implement.**
+- **Critical Files is a map**, not a fence. It says where to start, as path + function or symbol. For a large file, add the line range when you have it from the current branch tip; never copy line numbers from an older note or plan. List known callers and tests when you already found them, to save the coder a search. The Aim, not this list, sets what may change.
 - **Named functions**, not “energy path.” Copy the skip/guard predicate once.
-- **Fewest phases.** One file → usually one phase (skip + encode-catch in the same `.cpp` is one observable). Split when files or revert-units differ. Docs last. Do not add phases so you hit ~3–8.
-- **Self-contained.** Executor re-reads this file + role pack only. Do not require memory of the last CODE LANDED plan. One sentence of prior-cycle context is enough.
+- **Fewest phases.** Phases order the work; they are not commit or build points. One file → usually one phase. Docs last. Do not add phases so you hit ~3–8.
+- **Self-contained.** Executor re-reads this file + role pack only. Do not require memory of the last CODE LANDED plan. One sentence of prior-cycle context is enough. Behavior that must stay true lives in the project's spec and policy docs and tests (project-facts.md points to them); cite those by path instead of restating them.
 
 ## Shared values
 
@@ -65,7 +65,7 @@ For each value the plan writes, list every other path that writes or reads it. I
 
 ## Callers and tests
 
-Before the Critical Files list is frozen, search for every caller of a changed symbol, every route and `NavHost` argument that passes it, and every test that mentions a changed name or string. Add each of those files. A test that already covers the behavior stays on the list when its expected text must change.
+Callers, routes, `NavHost` arguments, and tests of a changed name are part of the change, whether or not the plan lists them; the coder updates them. When you already know them, list them under Critical Files so the coder does not repeat the search.
 
 ## Engineering log
 
@@ -80,10 +80,12 @@ Before the Critical Files list is frozen, search for every caller of a changed s
 - Optional extra sites (“and oriented energy if it walks a seed that small”)
 - Multi-plan LANDED audit tables inside the next feature plan
 - Device forensics novels in the execution contract
-- Per-phase gate ritual repeated every phase (STANDARD BLOCK covers once)
+- Commit or build steps inside phases (the STANDARD BLOCK commits and builds once, at the end)
+- Restating landed behavior or "keep" rules from earlier plans (cite the spec, policy doc, or test by path)
+- Code for the coder to paste in, or transcripts of current code
+- The same change stated in Aim, Phases, and Acceptance
 - `./build_app @file` syntax in plan text
 - Success lines that require discovering paths (“every native-null fallback”)
-- A caller, route, `NavHost` site, or test of a changed name left off Critical Files
 - A log line paired with "no commit" or "clean tree"
 - Replacing, deleting, or resetting `ENGINEERING_LOG.md`
 

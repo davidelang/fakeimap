@@ -26,7 +26,7 @@ You prepare a **local** PR document for Master review. This project does **not**
    - **f. Final check.** `./prepare-pr-rewrite --check [TARGET]`: the log at HEAD starts with the `backup-<branch>` copy and is fully committed, and every infra path equals its expected version (no conflict markers); on ERROR stop. It lists the product files that differ from `backup-<branch>` and the paths the original branch never changed. Run the project's tests (`project-facts.md` Testing) on the new tip. Review `git diff backup-<branch> HEAD` hunk by hunk: apart from the log, infra and `REVIEW` lines, it must consist only of the approved deviations. Any other difference: stop and report it. Print `Check n/3 done: <log+infra check|tests|deviation review> (<result>)` after each. Never go silent for long stretches.
 3. Run **`./generate_pr.sh`** with plan paths → `$SANDBOX/PRs/PR-<branch>.md`. Include the review summary, the approved **Deviations** list, and any TODO items that merge should **close**.
 4. **Third_party (VE consumers only):** if this branch touched `third_party/`, note in the PR: mode (ro/rw), lock sha vs HEAD, artifacts/patches, whether a library PR is also required.
-5. Plans stay in `$SANDBOX/plans/`; the planner archives them with `/validate-plans`.
+5. Plans stay in `$SANDBOX/plans/`; they are archived when David runs `/validate-plans`.
 6. `./append-to-engineering-log` note: PR prepared, path to PR doc.
 7. **Report** to David and stop: the plan, commits with build results, the test result, the deviations, the final diff, the original (`backup-<branch>`), and "ready for Master (launcher named in your skill) review + merge". Do not merge yourself.
 

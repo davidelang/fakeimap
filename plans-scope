@@ -1,7 +1,7 @@
 #!/bin/bash
 # plans-scope — /validate-plans state in one call (read-only): every plan in $SANDBOX/plans/
 # with its Status, Repo check, ignore-list hit, and the commits on HEAD since the plan's
-# timestamp that touch its Critical Files paths. The agent then judges intent only.
+# timestamp that touch any existing path the plan names. The agent then judges intent only.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 sb=$(sed -n 's/^sandbox_dir=//p' project.config 2>/dev/null | tr -d '\r' | tail -1)

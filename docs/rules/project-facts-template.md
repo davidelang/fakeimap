@@ -1,6 +1,6 @@
 # project-facts.md (trigger index)
 
-This is always relevant. Keep it ≤1.5 KB. Detail lives in `docs/facts/*.md`.
+This is shared knowledge for every agent working on the project: a map of what is where, and what exists to be found (spec and policy documents, helpers, conventions), so agents do not search for it. Never put the status of a branch, plan, or roadmap here. Keep it as small as that allows; leaving something out costs far more than the bytes (a large search, or an implementation that misses a spec). Detail lives in `docs/facts/*.md`, behind a trigger line here.
 
 ## Triggers
 - Before touching <area/path>: read `docs/facts/<file>.md`.

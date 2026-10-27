@@ -1,30 +1,7 @@
 #!/bin/bash
-# run-antigravity-planner
-# Launch a dedicated narrow-scoped Planning Agent for direct user interaction
-# during the research/planning phase using the Antigravity CLI.
-#
-# Primary supported mode: long-lived terminals.
-# Keep one terminal with the master (`run-antigravity-master`) and one dedicated
-# planning terminal (`run-antigravity-planner`). These stay open across many cycles.
-#
-# When you tell the master "New planning cycle" (optionally + one short sentence
-# of context or feedback), the master's built-in prompt automates the rest:
-# it reads project-facts.md + the latest standard-plan-compliance-block.md,
-# writes a complete narrow prompt (full dedicated planner template + embedded
-# guardrails + your context) to `@@SANDBOX_PATH@@/.planning-agent-prompt.txt`,
-# and tells you the exact one-line restart command.
-#
-# Usage:
-#   ./run-antigravity-planner           # uses @@SANDBOX_PATH@@/.planning-agent-prompt.txt
-#                                       # If missing: auto-generates a default prompt and
-#                                       # starts exactly as if the master had just handled
-#                                       # a "New planning cycle" trigger.
-#   ./run-antigravity-planner path/to/prompt.txt
-#
-#   In an existing planner terminal you can simply re-run the command
-#   (or use `exec ./run-antigravity-planner`) to replace the process with a fresh
-#   one using the latest prompt. This is the normal low-friction ritual for
-#   beginning a new planning cycle in the long-lived workflow.
+# run-antigravity-planner — Antigravity launcher for the planner role.
+# Same rules as run-grok-planner: law AGENTS.md (auto-loaded as GEMINI.md) + roles/planner.md.
+# Runs as planning_user. Args after `--` go to antigravity.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -52,110 +29,10 @@ umask 007
 DEFAULT_PLANNER_MODEL="Gemini 3.5 Flash (High)"
 PLANNER_MODEL="${ANTIGRAVITY_PLANNER_MODEL:-$DEFAULT_PLANNER_MODEL}"
 
-# Determine prompt file.
-if [ -n "${1:-}" ] && [ -f "$1" ]; then
-    PROMPT_FILE="$1"
-    shift
-else
-    PROMPT_FILE="${1:-$SANDBOX_DIR/.planning-agent-prompt.txt}"
-    if [ -n "$1" ]; then
-        shift
-    fi
-fi
-
-if [ ! -f "$PROMPT_FILE" ]; then
-    if [ "$PROMPT_FILE" != "$SANDBOX_DIR/.planning-agent-prompt.txt" ]; then
-        echo "ERROR: Specified planning prompt file not found: $PROMPT_FILE" >&2
-        exit 1
-    fi
-
-    echo "INFO: Planning prompt file not found: $PROMPT_FILE" >&2
-    echo "Falling back to fresh 'new planning cycle' mode..." >&2
-    echo "Generating a default dedicated planner prompt..." >&2
-
-    PROJECT_FACTS_FILE="$SCRIPT_DIR/project-facts.md"
-    STD_BLOCK_FILE="$SCRIPT_DIR/standard-plan-compliance-block.md"
-
-    PROJECT_FACTS=""
-    if [ -f "$PROJECT_FACTS_FILE" ]; then
-        PROJECT_FACTS=$(cat "$PROJECT_FACTS_FILE")
-    else
-        PROJECT_FACTS="(project-facts.md not found)"
-    fi
-
-    STD_BLOCK=""
-    if [ -f "$STD_BLOCK_FILE" ]; then
-        STD_BLOCK=$(cat "$STD_BLOCK_FILE")
-    else
-        STD_BLOCK="(standard-plan-compliance-block.md not found)"
-    fi
-
-    FAILURE_HINT=""
-    if ls "$SANDBOX_DIR/implementation-failure-logs/" 2>/dev/null | grep -q . ; then
-        FAILURE_HINT="There are files present in @@SANDBOX_PATH@@/implementation-failure-logs/. You must inspect them as one of your first tool-using steps."
-    fi
-
-    PLANNING_PROMPT="You are a dedicated Planning Agent running in a long-lived terminal. You are in plan mode and must stay there.
-
-**CRITICAL: FRESH STANDALONE LOAD (run-antigravity-planner started with no .planning-agent-prompt.txt) — TREAT EXACTLY AS 'NEW PLANNING CYCLE'**
-
-The prompt file was missing. This is equivalent to the master just having received a 'New planning cycle' from the user.
-
-**MANDATORY FIRST ACTIONS — DO THESE WITH TOOLS BEFORE ANY OTHER OUTPUT:**
-- list_dir on @@SANDBOX_PATH@@/implementation-failure-logs/
-- Read recent failure log files if present.
-- Use grep + read_file on code locations to verify current state.
-- Determine and report whether any failures are still unresolved.
-- Read the entire project-facts.md (full content, no offset/limit).
-- Perform hygiene on it (keep only stable layout facts).
-
-After the tool results:
-- If there are unresolved implementation failures: Lead with a clear summary of the open issue(s) and ask the user whether they want a recovery plan targeting exactly those gaps.
-- Otherwise: Briefly note that no unresolved failures were detected.
-- THEN solicit a clear problem statement / direction from the user for this planning cycle.
-
-Do not skip the failure scan + project-facts read on startup.
-
-**RESEARCH CAPABILITIES — FULL INVESTIGATION POWER:**
-Use the complete toolset for research. This includes full git history (git log -S, -p, ranges, git show, git diff, git describe, git blame, etc.), adb logcat (dumps, filters, all flags) + adb pull/shell, and file/artifact inspection (cat, tail, head, find, ls, jq). The project whitelists these.
-
-Your only job is research and iteratively producing/revising the highest-quality plan document in @@SANDBOX_PATH@@/plans/ using the standard structure. Literally include the exact verbatim content of the file standard-plan-compliance-block.md as a section titled 'Compliance & Execution Guardrails for This Turn (STANDARD BLOCK)'. Do not modify, add to, or rephrase anything inside that block. Reference the live mandates for background rules.
-
-This process is intended to be long-lived across multiple planning cycles. When the master indicates that a new planning cycle has begun (by telling you to restart with an updated prompt file), you must restart this terminal/process with the new prompt. Until a restart is requested, after every '**END OF EXECUTION TURN**' marker or when the user says 'new planning cycle', you must first perform the mandatory failure detection, then re-read project-facts.md (full read), start with a fresh high-signal plan, and follow all the rules. You have zero write access to any tracked source files outside the sandbox. You must never make source changes or run builds. You must not call exit_plan_mode on your own initiative. Talk directly with the user, incorporate their feedback into revisions of the plan file, and provide summaries of changes. Only when the user explicitly approves a plan using the magic phrasing, call exit_plan_mode (if appropriate) and stop.
-
-**WHEN A FORMAL PLAN DOCUMENT IS REQUIRED (CRITICAL RULE):**
-A formal sandbox plan document is required before any changes are made to tracked files outside the sandbox.
-- You have zero authority to edit, create, or modify any tracked file outside @@SANDBOX_PATH@@/ while in planning mode.
-- You are allowed and encouraged to freely work inside the sandbox (@@SANDBOX_PATH@@/**).
-- You may also edit project-facts.md and TODO.md (the explicit planner exceptions).
-- Pure research questions do not require creating a plan file.
-
-Multiline input convenience: At session start, remind the user they can enable multiline mode (focus prompt + Ctrl+M, or /multiline or /ml).
-
-$FAILURE_HINT
-
-=== project-facts.md ===
-$PROJECT_FACTS
-
-=== Current STANDARD BLOCK ===
-$STD_BLOCK
-
-Current cycle direction and context (HIGH-LEVEL ONLY):
-This is a fresh standalone launch / 'new planning cycle' with no prior master-provided context. Ask the user for the detailed problem statement or direction before producing research or a plan.
-"
-
-    mkdir -p "$(dirname "$PROMPT_FILE")"
-    printf '%s\n' "$PLANNING_PROMPT" > "$PROMPT_FILE"
-    echo "Generated default 'new planning cycle' prompt and wrote it to $PROMPT_FILE"
-    echo "You can now use exec ./run-antigravity-planner to restart with it."
-else
-    PLANNING_PROMPT=$(cat "$PROMPT_FILE")
-fi
 
 echo "Launching dedicated Planning Agent in $(pwd)..."
 echo "Antigravity binary: $ANTIGRAVITY_BIN"
 echo "Sandbox path: $SANDBOX_DIR"
-echo "Using narrow prompt from: $PROMPT_FILE"
 echo "Forcing planning model: $PLANNER_MODEL"
 echo "Tip: For easier multi-line plans and prompts, focus the input and press Ctrl+M (or type /multiline or /ml) to enable multiline input mode (Enter inserts newline; Shift+Enter or Alt+Enter sends)."
 
@@ -170,8 +47,7 @@ for arg in "$@"; do
   fi
 done
 
-PLANNING_PROMPT="${PLANNING_PROMPT//@@SANDBOX_PATH@@/${SANDBOX_REL}}"
-# Role card replaces the legacy long prompt above (rules v3).
+# Role card + law, as for run-grok-planner.
 PLANNING_PROMPT="$(cat "$SCRIPT_DIR/roles/planner.md" 2>/dev/null || cat "roles/planner.md")
 
 Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive."

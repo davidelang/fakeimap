@@ -41,7 +41,7 @@ Process every matching file still in `plans/`.
 
 ## Intent first
 
-Run this in the planner session that wrote the plan, right after a coder reports landing it. Use that session's memory of what David asked for and why, not only the plan text. Ask: does the result do what David meant? A plan can be followed to the letter and still miss the intent. Report any mismatch in chat as `INTENT-GAP: <what David wanted> vs <what landed>`. The coder and reviewer check code against the plan; this skill checks it against intent.
+David runs this, usually in the planner session that wrote the plans. Use that session's memory of what David asked for and why, not only the plan text. Ask: does the result do what David meant? A plan can be followed to the letter and still miss the intent. Report any mismatch in chat as `INTENT-GAP: <what David wanted> vs <what landed>`. The coder and reviewer check code against the plan; this skill checks it against intent.
 
 ## Completion
 
