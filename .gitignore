@@ -1,9 +1,9 @@
 project.config
 refresh-shell
-sandbox/.planning-agent-prompt.txt
+@@SANDBOX_PATH@@/.planning-agent-prompt.txt
 *.local
 .android-shared/
-sandbox/
+@@SANDBOX_PATH@@
 
 # --- third_party consumer (managed by apply-third-party-gitignore.sh) ---
 # third_party: ignore checkouts/local state; track tool + pin contract under each lib dir

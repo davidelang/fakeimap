@@ -15,7 +15,7 @@ ENGINEERING_LOG.md merge=ve-englog
 TODO.md merge=ve-special-ours
 project-facts.md merge=ve-special-ours
 
-# manage-configs (smudge/clean @@ tokens) — maintained by deploy-manage-configs-to-libs.sh
+# manage-configs (smudge/clean @@ tokens) — maintained by hand here (verify-smudge, deploy-orchestration, publish-smudge-fix read it via git check-attr)
 setup-project filter=manage-configs
 set-worktree-perms filter=manage-configs
 set-sandbox-perms filter=manage-configs
@@ -60,3 +60,4 @@ AGENT_CONTEXT.md filter=manage-configs
 .grok/prompts/planning-subagent.md filter=manage-configs
 .grok/agents/plan.md filter=manage-configs
 .grok/agents/explore.md filter=manage-configs
+.gitignore filter=manage-configs

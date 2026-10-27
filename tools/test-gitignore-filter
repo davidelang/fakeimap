@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# .gitignore goes through manage-configs: git stores @@SANDBOX_PATH@@, each checkout
+# smudges it to project.config sandbox_dir. The sandbox line has no trailing slash so
+# it matches the worktree symlink (sandbox -> ../sandbox) as well as the real directory.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$(mktemp -d /tmp/gitignore-filter-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+git -C "$canon" check-attr filter -- .gitignore | grep -q ': manage-configs$' \
+  && ok "canon .gitattributes: .gitignore filter=manage-configs" || bad "canon .gitignore not filtered"
+git -C "$canon" show HEAD:.gitignore | grep -qx '@@SANDBOX_PATH@@' \
+  && ok "canon HEAD:.gitignore stores @@SANDBOX_PATH@@" || bad "canon HEAD:.gitignore lacks @@SANDBOX_PATH@@ line"
+for sd in sandbox dev-ai-interaction; do
+  d="$T/$sd"; mkdir -p "$d"; cd "$d" || exit 1
+  git init -q
+  cp "$canon/filter-clean-config" "$canon/filter-apply-config" .
+  sed "s/^sandbox_dir=.*/sandbox_dir=$sd/" "$canon/project.config" > project.config
+  grep -qx "sandbox_dir=$sd" project.config || { bad "$sd: canon project.config has no sandbox_dir= line"; continue; }
+  echo project.config > .git/info/exclude
+  printf '.gitignore filter=manage-configs\nfilter-apply-config !filter\nfilter-clean-config !filter\n' > .gitattributes
+  git config filter.manage-configs.clean "bash ./filter-clean-config %f"
+  git config filter.manage-configs.smudge "bash ./filter-apply-config"
+  git config filter.manage-configs.required true
+  git -C "$canon" show HEAD:.gitignore | bash ./filter-apply-config > .gitignore
+  cp .gitignore "$T/in.$sd"
+  grep -qx "$sd" .gitignore && ok "$sd: smudged line is '$sd'" || bad "$sd: no '$sd' line after smudge"
+  git add .gitignore .gitattributes filter-clean-config filter-apply-config
+  git -c user.name=t -c user.email=t@t commit -qm t
+  git -C "$canon" show HEAD:.gitignore > "$T/canon.blob"
+  git show HEAD:.gitignore | diff -q - "$T/canon.blob" >/dev/null \
+    && ok "$sd: clean output identical to canon blob (no other line mangled)" || { bad "$sd: clean mangled .gitignore"; git show HEAD:.gitignore | diff "$T/canon.blob" -; }
+  rm .gitignore; git checkout -- .gitignore
+  diff -q "$T/in.$sd" .gitignore >/dev/null && ok "$sd: checkout round trip identical" || bad "$sd: checkout round trip differs"
+  mkdir "$sd" w; echo x > "$sd/f"; ln -s "../$sd" "w/$sd"
+  for p in "$sd" "$sd/f" "w/$sd"; do
+    git check-ignore -q "$p" && ok "$sd: ignores $p" || bad "$sd: does not ignore $p"
+  done
+done
+echo "pass=$pass fail=$fail"; [ "$fail" -eq 0 ]
