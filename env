@@ -24,8 +24,18 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 if [ -f "$SCRIPT_DIR/project.config" ]; then
-  # shellcheck disable=SC1091
-  . <(sed 's/=/ /; s/^/export /' "$SCRIPT_DIR/project.config" | grep -E '^(code_group|shared_group|sandbox_group|primary_user|planning_user|coder_user|orchestrator_user)' || true)
+  # Identity keys only. Other project.config lines hold paths and must not be sourced.
+  while IFS= read -r _env_line || [ -n "${_env_line:-}" ]; do
+    case "$_env_line" in
+      code_group=*|shared_group=*|sandbox_group=*|primary_user=*|planning_user=*|coder_user=*|orchestrator_user=*)
+        _env_key=${_env_line%%=*}
+        _env_val=${_env_line#*=}
+        _env_val=${_env_val%$'\r'}
+        export "${_env_key}=${_env_val}"
+        ;;
+    esac
+  done < "$SCRIPT_DIR/project.config"
+  unset _env_line _env_key _env_val
 fi
 
 CODE_GROUP=${code_group:-ai-code}
