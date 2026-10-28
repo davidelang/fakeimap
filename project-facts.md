@@ -3,7 +3,7 @@
 - Host: pure multi-agent orchestration template (no app)
 - Sandbox: `@@SANDBOX_PATH@@/`
 - git_home: set in project.config to absolute path (e.g. @@GIT_HOME@@)
-- Launch: `./run-grok-*` via `.grok/lib/grok-launch-common.sh` + a Grok sandbox profile (`extends=read-only`, generated `.grok/sandbox.toml`). Cursor launchers still use `agent-landlock`. Planner writes `work-history/` (root `TODO.md` and `ENGINEERING_LOG.md` are symlinks).
+- Launch: `./run-grok-*` via `.grok/lib/grok-launch-common.sh` + `agent-landlock` (Grok and cursor). Planner writes `work-history/` (root `TODO.md` and `ENGINEERING_LOG.md` are symlinks).
 - Groups: source `./env` (refresh-shell setuid)
 - Clone a sibling host: `./clone-orchestration-project <new-name>` → `git_home/<name>/` (branch `orchestration`) + `master/` worktree
 

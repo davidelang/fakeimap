@@ -3,8 +3,6 @@
 # Thin wrappers set GROK_LAUNCHER_DIR + ROLE_KEY, then source this and call
 # grok_launch_main "$@" (grok) or cursor_launch_main "$@" (cursor-agent; see
 # .cursor/lib/cursor-launch-common.sh).
-# Grok confinement is a custom sandbox profile (extends read-only). Cursor still
-# uses agent-landlock; Grok's profile does not apply to cursor-agent.
 #
 # Rules: AGENTS.md (auto-loaded) + roles/<ROLE_KEY>.md (grok: --rules; cursor: sessionStart
 # hook in .cursor/hooks.json); settings in roles.config (cursor: cursor_model=)
@@ -350,282 +348,6 @@ build_landlock_args() {
   return 0
 }
 
-# Grok sandbox profile for this launch. Cursor does not use this.
-# extends=read-only so the worktree is not writable unless listed, and so Grok
-# write-denies hook and config files. restrict_network=false keeps child-process
-# network, matching agent-landlock (the read-only base would block it).
-# read_write is directories only. /dev is the directory stand-in for the device
-# nodes agent-landlock granted as files (/dev/null and the rest); Unix mode still
-# blocks disks and memory devices. A same-named profile in the role user's
-# ~/.grok/sandbox.toml would override this file, so each launch uses a fresh name.
-SANDBOX_GRANT_DIRS=()
-append_grant_dir() {
-  local p="$1" resolved have
-  [[ -n "$p" && -d "$p" ]] || return 0
-  # Canonicalize when we can enter the directory. A role home runtime dir
-  # (mode 700) still gets granted when this launcher cannot cd into it.
-  if resolved="$(cd "$p" 2>/dev/null && pwd)"; then
-    p="$resolved"
-  fi
-  for have in "${SANDBOX_GRANT_DIRS[@]+"${SANDBOX_GRANT_DIRS[@]}"}"; do
-    [[ "$have" == "$p" ]] && return 0
-  done
-  SANDBOX_GRANT_DIRS+=("$p")
-}
-
-role_home_of() {
-  local u="$1" h
-  h="$(getent passwd "$u" | awk -F: 'NR==1{print $6}')"
-  if [[ -z "$h" || ! -d "$h" ]]; then
-    echo "ERROR: no home directory for user $u" >&2
-    exit 1
-  fi
-  printf '%s' "$h"
-}
-
-# landlock.config profile.* path= lines. env:HOME is the role user's home.
-load_landlock_profile_dirs() {
-  local home="$1"
-  local f="$SCRIPT_DIR/landlock.config"
-  [[ -f "$f" ]] || { echo "ERROR: missing $f" >&2; exit 1; }
-  local section="" line val rest var sub base
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [[ -z "$line" ]] && continue
-    if [[ "$line" == \[*\] ]]; then
-      section="${line#"["}"
-      section="${section%"]"}"
-      continue
-    fi
-    val=""
-    if [[ "$section" == profile.* && "$line" == path=* ]]; then
-      val="${line#path=}"
-    elif [[ "$line" == *_paths=* ]]; then
-      rest="${line#*=}"
-      local part
-      IFS=',' read -r -a _parts <<<"$rest"
-      for part in "${_parts[@]}"; do
-        part="${part#"${part%%[![:space:]]*}"}"
-        part="${part%"${part##*[![:space:]]}"}"
-        [[ -n "$part" ]] && resolve_one_grant "$part" "$home"
-      done
-      continue
-    fi
-    [[ -n "$val" ]] && resolve_one_grant "$val" "$home"
-  done <"$f"
-}
-
-resolve_one_grant() {
-  local tok="$1" home="$2" var sub base rest
-  if [[ -z "$tok" || "$tok" == *@@* ]]; then
-    echo "ERROR: $SCRIPT_DIR/landlock.config grant '$tok' is empty or an unsmudged @@ token" >&2
-    exit 1
-  fi
-  if [[ "$tok" == env:HOME/* ]]; then
-    tok="$home/${tok#env:HOME/}"
-  elif [[ "$tok" == env:* ]]; then
-    rest="${tok#env:}"
-    var="${rest%%/*}"
-    if [[ "$rest" == */* ]]; then
-      sub="${rest#*/}"
-    else
-      sub=""
-    fi
-    base="${!var:-}"
-    if [[ -z "$base" ]]; then
-      echo "ERROR: landlock grant '$tok' needs \$$var, which is unset" >&2
-      exit 1
-    fi
-    if [[ -n "$sub" ]]; then
-      tok="$base/$sub"
-    else
-      tok="$base"
-    fi
-  elif [[ "$tok" != /* ]]; then
-    tok="$SCRIPT_DIR/$tok"
-  fi
-  append_grant_dir "$tok"
-}
-
-git_common_grant() {
-  local p
-  if ! p="$(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" rev-parse --git-common-dir)"; then
-    echo "ERROR: git rev-parse --git-common-dir failed in $SCRIPT_DIR" >&2
-    return 1
-  fi
-  [[ -z "$p" ]] && return 0
-  if [[ "$p" != /* ]]; then
-    p="$SCRIPT_DIR/$p"
-  fi
-  append_grant_dir "$p"
-}
-
-libpin_host_git_grants() {
-  local pin name hostgit
-  for pin in "$SCRIPT_DIR"/third_party/*/libpin.toml; do
-    [[ -f "$pin" ]] || continue
-    name="$(basename "$(dirname "$pin")")"
-    hostgit="$GIT_HOME/$name/.git"
-    append_grant_dir "$hostgit"
-  done
-}
-
-build_role_grant_dirs() {
-  local run_user="$1" home uid
-  home="$(role_home_of "$run_user")"
-  SANDBOX_GRANT_DIRS=()
-  # Directory stand-in for the device-node file grants. See the comment above.
-  append_grant_dir /dev
-  uid="$(id -u "$run_user")"
-  append_grant_dir "/run/user/$uid"
-  case "$ROLE_KEY" in
-    planner)
-      if [[ ! -d "$SCRIPT_DIR/work-history" || ! -L "$SCRIPT_DIR/TODO.md" || ! -L "$SCRIPT_DIR/ENGINEERING_LOG.md" ]]; then
-        echo "ERROR: planner sandbox needs work-history/TODO.md and work-history/ENGINEERING_LOG.md, with symlinks at the old paths." >&2
-        echo "  A directory grant cannot name those two files at the worktree root." >&2
-        echo "  Run: sudo $SCRIPT_DIR/move-work-history.sh" >&2
-        exit 1
-      fi
-      append_grant_dir "$SANDBOX_DIR"
-      append_grant_dir "$SCRIPT_DIR/work-history"
-      ;;
-    coder|master)
-      append_grant_dir "$SCRIPT_DIR"
-      git_common_grant
-      libpin_host_git_grants
-      load_landlock_profile_dirs "$home"
-      ;;
-    orchestrator)
-      append_grant_dir "$SCRIPT_DIR"
-      load_landlock_profile_dirs "$home"
-      append_grant_dir "${ORCH_ROOT:-}/.gradle-shared"
-      append_grant_dir "${ORCH_ROOT:-}/.android-shared"
-      ;;
-    primary)
-      append_grant_dir "$GIT_HOME"
-      load_landlock_profile_dirs "$home"
-      append_grant_dir "$SCRIPT_DIR/.android-shared"
-      append_grant_dir "$home/.android"
-      append_grant_dir "$home/.gradle"
-      ;;
-    *)
-      echo "ERROR: no Grok sandbox profile for ROLE_KEY=$ROLE_KEY" >&2
-      exit 1
-      ;;
-  esac
-  if [[ ${#SANDBOX_GRANT_DIRS[@]} -eq 0 ]]; then
-    echo "ERROR: sandbox profile for $ROLE_KEY has no writable directory" >&2
-    exit 1
-  fi
-}
-
-# Writes .grok/sandbox.toml (gitignored) and sets GROK_SANDBOX_PROFILE.
-# Live launches keep their profiles; a dead pid's profile is dropped.
-build_grok_sandbox_profile() {
-  local run_user="$1"
-  build_role_grant_dirs "$run_user"
-  local profile="orch-launch-${ROLE_KEY}-$$"
-  local dest="$SCRIPT_DIR/.grok/sandbox.toml"
-  local lock="$SCRIPT_DIR/.grok/sandbox.toml.lock"
-  mkdir -p "$SCRIPT_DIR/.grok"
-  GROK_SANDBOX_PROFILE="$profile"
-  # The heredoc is Python's stdin, so the directory list travels in the environment.
-  local py_dirs="" d
-  for d in "${SANDBOX_GRANT_DIRS[@]}"; do
-    py_dirs+="$d"$'\n'
-  done
-  SANDBOX_GRANT_PATHS="$py_dirs" python3 - "$profile" "$dest" "$lock" <<'PY'
-import fcntl, os, re, sys
-
-profile, dest, lock = sys.argv[1], sys.argv[2], sys.argv[3]
-dirs = []
-seen = set()
-for line in os.environ.get("SANDBOX_GRANT_PATHS", "").split("\n"):
-    p = line.strip()
-    if not p or p in seen:
-        continue
-    seen.add(p)
-    dirs.append(p)
-if not dirs:
-    raise SystemExit("sandbox profile writer: no directories")
-
-def quote(s):
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-def section_text(name, paths):
-    lines = ["[profiles.%s]" % name, 'extends = "read-only"', "restrict_network = false", "read_write = ["]
-    for p in paths:
-        lines.append("  %s," % quote(p))
-    lines.append("]")
-    return "\n".join(lines) + "\n"
-
-mine = section_text(profile, dirs)
-header = (
-    "# Generated by .grok/lib/grok-launch-common.sh at launch. Do not edit.\n"
-    "# Custom profile: extends read-only, child network allowed, directory grants only.\n"
-    "# A same-named profile in the role user's ~/.grok/sandbox.toml would override this file.\n"
-)
-
-def parse(text):
-    sections = []
-    name = None
-    buf = []
-    for line in text.splitlines(True):
-        m = re.match(r"\[profiles\.([A-Za-z0-9_-]+)\]\s*$", line)
-        if m:
-            if name is not None:
-                sections.append((name, "".join(buf)))
-            name = m.group(1)
-            buf = [line]
-        elif name is not None:
-            buf.append(line)
-    if name is not None:
-        sections.append((name, "".join(buf)))
-    return sections
-
-def live(name):
-    m = re.search(r"-(\d+)$", name)
-    if not m:
-        return False
-    return os.path.isdir("/proc/%s" % m.group(1))
-
-os.makedirs(os.path.dirname(dest), exist_ok=True)
-fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
-try:
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    old = ""
-    if os.path.isfile(dest):
-        with open(dest, "r", encoding="utf-8", errors="replace") as f:
-            old = f.read()
-    kept = []
-    for name, body in parse(old):
-        if name == profile:
-            continue
-        if name.startswith("orch-launch-") and live(name):
-            kept.append(body if body.endswith("\n") else body + "\n")
-    kept.append(mine)
-    data = header + "\n" + "\n".join(kept)
-    tmp = dest + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, dest)
-    os.chmod(dest, 0o644)
-finally:
-    os.close(fd)
-PY
-  echo "Grok sandbox: $GROK_SANDBOX_PROFILE"
-  echo "  extends=read-only restrict_network=false"
-  echo "  read_write:"
-  for d in "${SANDBOX_GRANT_DIRS[@]}"; do
-    echo "    $d"
-  done
-}
-
 launch_grok_with_prompt() {
   local prompt="$1"
   local run_user
@@ -682,20 +404,15 @@ launch_grok_with_prompt() {
     grok_role_env+=(GROK_WORKFLOWS="${GROK_WORKFLOWS}")
     echo "GROK_WORKFLOWS=${GROK_WORKFLOWS}"
   fi
-  # The sandbox is the write boundary. Always-approve skips permission prompts.
-  # Hooks and project deny rules still apply. GROK_PERMISSION_MODE=default
-  # restores the ask mode. bypassPermissions is the same switch as --always-approve.
-  local grok_permission_mode perm_args=()
-  grok_permission_mode="${GROK_PERMISSION_MODE:-always-approve}"
-  case "$grok_permission_mode" in
-    always-approve|bypassPermissions|yolo)
-      perm_args=(--always-approve)
-      ;;
-    *)
-      perm_args=(--permission-mode "$grok_permission_mode")
-      ;;
-  esac
+  # User-scope [ui] permission_mode (always-approve on this host) must not
+  # override VE-wins “launchers stay ask”. CLI wins. GROK_PERMISSION_MODE overrides.
+  local grok_permission_mode
+  local grok_always_approve_args=()
+  grok_permission_mode="${GROK_PERMISSION_MODE:-default}"
   echo "GROK_PERMISSION_MODE=${grok_permission_mode}"
+  if [[ ${#grok_always_approve_args[@]} -gt 0 ]]; then
+    echo "GROK_ALWAYS_APPROVE=1"
+  fi
 
   # User-scope [models] default_reasoning_effort (xhigh on this host) must not
   # override VE-wins “coder/master --effort high”. CLI wins.
@@ -714,27 +431,32 @@ launch_grok_with_prompt() {
     echo "Context window: run '/context-window ${role_context}' once in the session (roles.config; no CLI flag)."
   fi
   echo "Role card (--rules): $ROLE_CARD"
-  # Profiles that extend read-only cannot create a Grok worktree. Feature
-  # worktrees are created by setup_agent.sh, not by grok -w.
-  if [[ -n "${GROK_WORKTREE:-}" && "${GROK_WORKTREE}" != "0" && "${GROK_WORKTREE}" != "false" ]]; then
-    echo "ERROR: GROK_WORKTREE cannot be used with the role sandbox (it extends read-only)." >&2
-    exit 1
+  local freeform_args=()
+  case "$ROLE_KEY" in
+    primary|orchestrator)
+      if [[ -z "${GROK_SANDBOX:-}" && "${GROK_SANDBOX_DEFAULT:-}" != "" ]]; then
+        GROK_SANDBOX="${GROK_SANDBOX_DEFAULT}"
+      fi
+      ;;
+  esac
+  if [[ -n "${GROK_SANDBOX:-}" && "${GROK_SANDBOX}" != "off" && "${GROK_SANDBOX}" != "0" ]]; then
+    freeform_args+=(--sandbox "${GROK_SANDBOX}")
+    echo "Grok sandbox: ${GROK_SANDBOX}"
   fi
-  local extra
-  for extra in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
-    if [[ "$extra" == "--sandbox" || "$extra" == --sandbox=* ]]; then
-      echo "ERROR: the launcher sets --sandbox; do not pass another one." >&2
-      exit 1
+  if [[ -n "${GROK_WORKTREE:-}" && "${GROK_WORKTREE}" != "0" && "${GROK_WORKTREE}" != "false" ]]; then
+    if [[ "${GROK_WORKTREE}" == "1" || "${GROK_WORKTREE}" == "true" || "${GROK_WORKTREE}" == "yes" ]]; then
+      freeform_args+=(--worktree)
+    else
+      freeform_args+=(--worktree="${GROK_WORKTREE}")
     fi
-  done
+    echo "Grok worktree: ${GROK_WORKTREE}"
+  fi
 
-  build_grok_sandbox_profile "$run_user"
-  local exec_script
-  exec_script="$(role_exec_bash "$LAUNCH_UMASK")"
+  build_landlock_args "$run_user"
+  local landlock_args=(${LANDLOCK_ARGS[@]+"${LANDLOCK_ARGS[@]}"})
 
   local mem_max
   mem_max="$(grok_memory_max)"
-  # cd so relative sandbox paths and project hooks use this worktree.
   # shellcheck disable=SC2086
   start_role_process "$mem_max" sudo -u "$run_user" -- env \
     ${ANDROID_SHARED:+ANDROID_USER_HOME="$ANDROID_SHARED"} \
@@ -745,19 +467,19 @@ launch_grok_with_prompt() {
     CHANNEL_AGENT=grok \
     GIT_HOME="$GIT_HOME" \
     ${grok_role_env[@]+"${grok_role_env[@]}"} \
-    bash -c "cd \"\$1\" || exit 1; shift; ${exec_script}" bash \
-      "$SCRIPT_DIR" \
+    bash -c "$(role_exec_bash "$LAUNCH_UMASK")" bash \
+      ${landlock_args[@]+"${landlock_args[@]}"} \
       "$GROK_BIN" \
       "$prompt" \
-      --cwd "$SCRIPT_DIR" \
       --rules "$(cat "$ROLE_CARD")" \
       ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
       ${TODO_GATE_FLAGS[@]+"${TODO_GATE_FLAGS[@]}"} \
       --no-alt-screen \
       --minimal \
-      ${perm_args[@]+"${perm_args[@]}"} \
-      --sandbox "$GROK_SANDBOX_PROFILE" \
+      --permission-mode "${grok_permission_mode}" \
+      ${grok_always_approve_args[@]+"${grok_always_approve_args[@]}"} \
       ${grok_effort_args[@]+"${grok_effort_args[@]}"} \
+      ${freeform_args[@]+"${freeform_args[@]}"} \
       ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 }
 
