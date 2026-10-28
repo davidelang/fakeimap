@@ -66,7 +66,8 @@ java_home=/usr/lib/jvm/java-17-openjdk-amd64
 # the Play passwords; agents and unattended runs pass --standard/--test explicitly.
 #
 # Play build (--play / --bundle, or the default): signed release AAB for Play upload. One upload key per app, outside
-# the repo, readable by coder_user through a dedicated group (e.g. ai-release, mode 640).
+# the repo, readable by coder_user and not world-readable. How is your choice (ACL, group, mode);
+# if coder_user can't read it, build_app shows each step of the path and the options.
 # Both keys are required for the Play build; no default.
 # release_keystore=/home/@@PRIMARY_USER@@/keys/<app>-upload.jks
 # release_key_alias=upload

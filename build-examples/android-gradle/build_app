@@ -338,6 +338,68 @@ SELECTED=""
 [ "$BUILD_PLAY" = true ] && SELECTED="$SELECTED play"
 echo "Selected builds:$SELECTED"
 
+in_own_group() {  # in_own_group GROUP: is the current user a member of GROUP
+  local g
+  for g in $(id -nG); do [ "$g" = "$1" ] && return 0; done
+  return 1
+}
+
+# keystore_access_report KEYSTORE: show every step of the path with its real owner, group and
+# mode, mark the first one the current user can't pass (directories need x, the keystore needs
+# r), then list the ways to grant access, narrowest first. It reports facts and options only;
+# which one fits is the machine owner's choice, so it never names a group or changes anything.
+keystore_access_report() {
+  local ks="$1" me cur="" comp path need line i last g b add_note=false
+  local -a comps paths=(/) blocked=()
+  me=$(id -un)
+  IFS=/ read -r -a comps <<< "${ks#/}"
+  for comp in "${comps[@]}"; do [ -n "$comp" ] && { cur="$cur/$comp"; paths+=("$cur"); }; done
+  last=$(( ${#paths[@]} - 1 ))
+  echo "  Each step of the path, as $me (groups: $(id -nG)):" >&2
+  for i in "${!paths[@]}"; do
+    path=${paths[$i]}
+    if [ ! -e "$path" ]; then
+      echo "    $path  does not exist" >&2
+      return 0
+    fi
+    line=$(stat -L -c '%A %U:%G' -- "$path") || exit 1
+    if (( i < last )); then need=x; else need=r; fi
+    if { [ "$need" = x ] && [ -x "$path" ]; } || { [ "$need" = r ] && [ -r "$path" ]; }; then
+      echo "    $line  $path" >&2
+    else
+      echo "    $line  $path  <- $me lacks $need" >&2
+      blocked+=("$need:$path")
+      [ "$need" = x ] && break
+    fi
+  done
+  (( ${#blocked[@]} )) || return 0
+  echo "  Ways to give $me access, narrowest first (choose what fits this machine):" >&2
+  echo "    ACL for $me only:" >&2
+  for b in "${blocked[@]}"; do echo "      setfacl -m u:$me:${b%%:*} '${b#*:}'" >&2; done
+  echo "    Through the owner or group each path already has:" >&2
+  for b in "${blocked[@]}"; do
+    path=${b#*:}; need=${b%%:*}
+    g=$(stat -L -c %G -- "$path") || exit 1
+    if [ "$(stat -L -c %U -- "$path")" = "$me" ]; then
+      echo "      chmod u+$need '$path'   ($me owns it)" >&2
+    elif in_own_group "$g"; then
+      echo "      chmod g+$need '$path'   ($me is already in group $g)" >&2
+    else
+      echo "      add $me to group $g, then chmod g+$need '$path' if the group lacks it" >&2
+      add_note=true
+    fi
+  done
+  for b in "${blocked[@]}"; do
+    if [ "${b%%:*}" = x ]; then
+      echo "    For everyone (directory traversal only; the keystore itself must not be world-readable):" >&2
+      echo "      chmod o+x '${b#*:}'" >&2
+    fi
+  done
+  if [ "$add_note" = true ]; then
+    echo "  A new group membership takes effect for $me at its next login." >&2
+  fi
+}
+
 # Resolve every selected build's config before the commit, so a bad config commits nothing.
 if [ "$BUILD_STANDARD" = true ]; then
   read -r -a STD_TASKS <<< "$("$_BA_INFO" tasks standard)" || exit 1
@@ -384,20 +446,18 @@ if [ "$BUILD_PLAY" = true ]; then
     echo "ERROR: release_keystore must be an absolute path: $RELEASE_KEYSTORE" >&2
     exit 1
   fi
-  if [ ! -f "$RELEASE_KEYSTORE" ]; then
-    echo "ERROR: release_keystore not found: $RELEASE_KEYSTORE" >&2
-    exit 1
-  fi
   if [ ! -r "$RELEASE_KEYSTORE" ]; then
-    echo "ERROR: $(id -un) cannot read $RELEASE_KEYSTORE." >&2
-    echo "  Give the release group read access (owner keeps write; not world-readable):" >&2
-    echo "    chgrp ai-release '$(dirname "$RELEASE_KEYSTORE")' '$RELEASE_KEYSTORE'" >&2
-    echo "    chmod 750 '$(dirname "$RELEASE_KEYSTORE")'; chmod 640 '$RELEASE_KEYSTORE'" >&2
+    echo "ERROR: $(id -un) cannot read release_keystore $RELEASE_KEYSTORE." >&2
+    keystore_access_report "$RELEASE_KEYSTORE"
     exit 1
   fi
-  KS_MODE=$(stat -c %a "$RELEASE_KEYSTORE") || exit 1
+  if [ ! -f "$RELEASE_KEYSTORE" ]; then
+    echo "ERROR: release_keystore is not a regular file: $RELEASE_KEYSTORE" >&2
+    exit 1
+  fi
+  KS_MODE=$(stat -L -c %a "$RELEASE_KEYSTORE") || exit 1
   if [ "${KS_MODE: -1}" != "0" ]; then
-    echo "WARNING: $RELEASE_KEYSTORE is mode $KS_MODE (world-accessible). Fix: chmod 640 '$RELEASE_KEYSTORE'" >&2
+    echo "WARNING: $RELEASE_KEYSTORE is mode $KS_MODE (world-accessible). Fix: chmod o= '$RELEASE_KEYSTORE'" >&2
   fi
   read -r -a RELEASE_GRADLE_ARGS <<< "$(play_key release_gradle_args)"
   check_play_link "$AAB"
@@ -642,8 +702,8 @@ play_bump_note() {
 # Play preflight on the committed HEAD: testing-version check and passwords, all before any
 # gradle work, so an unattended run never stops part-way waiting for input.
 if [ "$BUILD_PLAY" = true ]; then
-  # Runs as coder_user like every build. The upload keystore is group-readable by coder_user;
-  # what protects it is the password, which only the person at this terminal types.
+  # Runs as coder_user like every build. The upload keystore must be readable by coder_user
+  # (how is the machine owner's choice; see keystore_access_report); what protects it is the password, which only the person at this terminal types.
   # Same version string the gradle files compute for versionName: the BRANCH-start describe
   # when that tag exists, otherwise 'git describe --always --exclude '*+*''. A Play
   # versionCode is not a git tag and is not versionName. Only the BRANCH-start case is a

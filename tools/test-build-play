@@ -210,5 +210,25 @@ mk v5.0; git -C "$W" rm -q play-bundle.aab; git -C "$W" -c user.name=t -c user.e
 playargs 'pw123456\n\n' --signing-config "$SC"; rc=$?
 [[ $rc -ne 0 ]] && grep -q 'play-bundle.aab is not tracked' "$T/out" && ok "single-user --play without the link: same error" || bad "su nolink: rc=$rc $(tail -3 "$T/out")"
 
+# Keystore the builder can't read: build_app shows each step's real owner/group/mode and the
+# options, never a chgrp/chown or an invented group, and builds/commits nothing.
+mk v3.0; rm "$W/project.config"; chmod 000 "$KS"
+playargs 'pw123456\n\n' --signing-config "$SC"; rc=$?; chmod 640 "$KS"
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -q "cannot read release_keystore $KS" "$T/out" \
+  && grep -qF -- "---------- $me:$(id -gn)  $KS  <- $me lacks r" "$T/out" \
+  && grep -qF "setfacl -m u:$me:r '$KS'" "$T/out" && grep -qF "chmod u+r '$KS'" "$T/out" \
+  && ! grep -qE 'chgrp|chown|ai-release' "$T/out" && ! grep -q 'o+x' "$T/out" \
+  && ok "unreadable keystore: path report and options, no chgrp/chown" || bad "unreadable ks rc=$rc $(tail -12 "$T/out")"
+mk v3.0; rm "$W/project.config"; chmod 640 "$T/keys"
+playargs 'pw123456\n\n' --signing-config "$SC"; rc=$?; chmod 750 "$T/keys"
+[[ $rc -ne 0 && "$(vc)" == 1 ]] && grep -qF "$T/keys  <- $me lacks x" "$T/out" \
+  && grep -qF "setfacl -m u:$me:x '$T/keys'" "$T/out" && grep -qF "chmod o+x '$T/keys'" "$T/out" \
+  && ! grep -qF "$KS  <-" "$T/out" && ! grep -qE 'chgrp|chown|ai-release' "$T/out" \
+  && ok "untraversable keystore dir: stops at that step, offers x only" || bad "blocked dir rc=$rc $(tail -12 "$T/out")"
+mk v3.0; rm "$W/project.config"; sed "s|^release_keystore=.*|release_keystore=$T/keys/missing.jks|" "$SC" >"$T/miss.conf"
+playargs 'pw123456\n\n' --signing-config "$T/miss.conf"; rc=$?
+[[ $rc -ne 0 ]] && grep -qF "$T/keys/missing.jks  does not exist" "$T/out" && ! grep -q 'setfacl' "$T/out" \
+  && ok "missing keystore: says it does not exist, no permission advice" || bad "missing ks rc=$rc $(tail -8 "$T/out")"
+
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]
