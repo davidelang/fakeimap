@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests for build_app --play: versionCode used as committed, bumped + committed before any build (no tag), deliverable
+# Tests for build_app --play: versionCode used as committed, bumped + committed before any build (no release
+# tag unless --release-tag), deliverable
 # modes, and no bump when the build fails. Stand-ins: a fake ./gradlew that writes a
 # jar-signed AAB with the injected signing env (jarsigner from the JDK), a stub ve-resolve-orch,
 # a throwaway keystore; passwords are typed into a pty by script(1). No sudo, no real gradle.
@@ -38,6 +39,7 @@ for a in "\$@"; do
     assembleDebug) mkdir -p app/build/outputs/apk/debug
       echo apk >app/build/outputs/apk/debug/app-debug.apk
       printf '{"version":3,"artifactType":{"type":"APK","kind":"Directory"},"applicationId":"com.ex.app","variantName":"debug","elements":[{"type":"SINGLE","filters":[],"versionName":"1.0","outputFile":"app-debug.apk"}]}\n' >app/build/outputs/apk/debug/output-metadata.json
+      git describe --always >"$T/versionName-at-build"
       cat app/versionCode.txt >"$T/versionCode-at-standard" ;;
     bundleRelease)
       d=app/build/outputs/bundle/release; mkdir -p "\$d"
@@ -229,6 +231,67 @@ mk v3.0; rm "$W/project.config"; sed "s|^release_keystore=.*|release_keystore=$T
 playargs 'pw123456\n\n' --signing-config "$T/miss.conf"; rc=$?
 [[ $rc -ne 0 ]] && grep -qF "$T/keys/missing.jks  does not exist" "$T/out" && ! grep -q 'setfacl' "$T/out" \
   && ok "missing keystore: says it does not exist, no permission advice" || bad "missing ks rc=$rc $(tail -8 "$T/out")"
+
+# --release-tag: annotated, on the commit Gradle builds, no prompt. Absent: no tag.
+rel() {  # rel ARGS...: build_app ARGS with a git identity, no pty
+  (cd "$W" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+    ./build_app "$@" </dev/null) >"$T/out" 2>&1
+}
+tagtype() { git -C "$W" cat-file -t "refs/tags/$1" 2>/dev/null || echo missing; }
+mk v0.9
+rel --standard --release-tag v1.0.0; rc=$?
+[[ $rc -eq 0 && "$(vc)" == 1 && "$(git -C "$W" rev-parse 'v1.0.0^{}')" == "$(git -C "$W" rev-parse HEAD)" \
+  && "$(tagtype v1.0.0)" == tag && "$(cat "$T/versionName-at-build")" == v1.0.0 \
+  && "$(git -C "$W" rev-parse builds)" == "$(git -C "$W" rev-parse HEAD)" ]] \
+  && ! grep -q 'password' "$T/out" && grep -q 'Release tag v1.0.0' "$T/out" \
+  && ok "--standard --release-tag: annotated v1.0.0 is HEAD and the versionName, no bump, no prompt" \
+  || bad "std tag rc=$rc vc=$(vc) type=$(tagtype v1.0.0) name=$(cat "$T/versionName-at-build" 2>/dev/null) $(tail -8 "$T/out")"
+mk v0.9
+rel --release-tag v1.0.0; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 && "$(tagtype v1.0.0)" == missing ]] && grep -q 'including Play' "$T/out" \
+  && ok "--release-tag alone still selects Play and does not tag" || bad "alone rc=$rc $(tail -4 "$T/out")"
+mk v0.9
+play 'pw123456\n\n' --release-tag v1.2.0; rc=$?
+[[ $rc -eq 0 && "$(vc)" == 2 && "$(git -C "$W" rev-parse 'v1.2.0^{}')" == "$(git -C "$W" rev-parse HEAD)" \
+  && "$(tagtype v1.2.0)" == tag && "$(cat "$T/versionName-at-build")" == v1.2.0 \
+  && "$(git -C "$W" log -1 --format=%s)" == "versionCode 2 (play build)" \
+  && "$(git -C "$W" rev-parse 'v1.2.0^{}')" != "$(git -C "$W" rev-parse 'HEAD~1')" ]] \
+  && grep -q 'versionName: v1.2.0' "$T/out" \
+  && ok "--play --release-tag: tag is the bump commit and the built versionName" \
+  || bad "play tag rc=$rc vc=$(vc) type=$(tagtype v1.2.0) name=$(cat "$T/versionName-at-build" 2>/dev/null) $(tail -8 "$T/out")"
+mk v0.9; touch "$T/fail-gradle"
+play 'pw123456\n\n' --release-tag v2.0.0; rc=$?; rm -f "$T/fail-gradle"
+[[ $rc -ne 0 && "$(vc)" == 2 && "$(tagtype v2.0.0)" == missing ]] && grep -q 'release tag v2.0.0 removed' "$T/out" \
+  && grep -q 'That commit stays' "$T/out" \
+  && ok "failed --play --release-tag: bump stays, release tag removed" || bad "fail tag rc=$rc vc=$(vc) type=$(tagtype v2.0.0) $(tail -6 "$T/out")"
+mk v0.9; touch "$T/fail-gradle"
+rel --standard --release-tag v2.1.0; rc=$?; rm -f "$T/fail-gradle"
+[[ $rc -ne 0 && "$(vc)" == 1 && "$(tagtype v2.1.0)" == missing && "$(git -C "$W" log -1 --format=%s)" == init ]] \
+  && grep -q 'release tag v2.1.0 removed' "$T/out" \
+  && ok "failed --standard --release-tag: tag removed, nothing committed" || bad "fail std rc=$rc type=$(tagtype v2.1.0) $(tail -6 "$T/out")"
+mk v0.9
+rel --standard --release-tag v0.9; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 && "$(git -C "$W" log -1 --format=%s)" == init && "$(tagtype v0.9)" == tag ]] \
+  && grep -q "tag 'v0.9' already exists" "$T/out" \
+  && ok "existing tag: error, nothing committed" || bad "exists rc=$rc $(tail -4 "$T/out")"
+mk
+rel --standard --release-tag builds; rc=$?
+[[ $rc -ne 0 && "$(tagtype builds)" == missing ]] && grep -q 'moving builds tag' "$T/out" && ok "name builds refused" || bad "builds name rc=$rc $(tail -3 "$T/out")"
+rel --standard --release-tag feat/builds; rc=$?
+[[ $rc -ne 0 && "$(tagtype feat/builds)" == missing ]] && grep -q 'moving builds tag' "$T/out" && ok "name feat/builds refused" || bad "feat/builds rc=$rc $(tail -3 "$T/out")"
+rel --standard --release-tag v1-start; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'branch-start tag' "$T/out" && ok "name v1-start refused" || bad "start name rc=$rc $(tail -3 "$T/out")"
+rel --standard --release-tag 'v1.0.0+1'; rc=$?
+[[ $rc -ne 0 ]] && grep -q "contains '+'" "$T/out" && ok "name with + refused" || bad "plus rc=$rc $(tail -3 "$T/out")"
+rel --standard --release-tag 'a..b'; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'not a valid tag name' "$T/out" && ok "invalid tag name refused" || bad "bad name rc=$rc $(tail -3 "$T/out")"
+mk; git -C "$W" checkout -q -b feat; git -C "$W" tag feat-start
+rel --standard --release-tag v3.0.0; rc=$?
+[[ $rc -ne 0 && "$(vc)" == 1 && "$(tagtype v3.0.0)" == missing && "$(tagtype feat-start)" == commit ]] \
+  && grep -q 'feat-start' "$T/out" \
+  && ok "--release-tag on a -start branch: refused, nothing tagged" || bad "branch start rc=$rc $(tail -4 "$T/out")"
+rel --release-tag; rc=$?
+[[ $rc -ne 0 ]] && grep -q -- '--release-tag needs a value' "$T/out" && ok "--release-tag without a value: error" || bad "novalue rc=$rc $(tail -3 "$T/out")"
 
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]

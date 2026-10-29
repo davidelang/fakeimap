@@ -4,15 +4,20 @@
 # Authoritative copy: orchestration-example/build-examples/android-gradle/build_app
 #
 # Usage:
-#   ./build_app [--standard] [--test] [--play|--bundle] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
+#   ./build_app [--standard] [--test] [--play|--bundle] [--release-tag NAME] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
 #
 #   Build selection (flags first, any order, combinable). No flag = standard, test (unless the
-#   app declares none) and, with a project.config, play:
+#   app declares none) and, with a project.config, play. --release-tag does not change that.
 #     --standard        the app's standard build   ('- **Standard build:**' in project-facts.md)
 #     --test            the app's test build       ('- **Test build:**': a build type such as qa,
 #                       a side-by-side app, and/or instrumentation:<variant> = that variant's app
 #                       plus its androidTest APK)
 #     --play, --bundle  signed Play AAB   (release_* keys); needs a terminal for the passwords
+#     --release-tag NAME
+#                       annotated tag on the commit these builds use, created before Gradle so
+#                       versionName is exactly NAME. No prompt. Absent: no release tag. With
+#                       --play the tag is on the versionCode bump; without it, on the commit
+#                       the builds use. A failed run deletes that tag. A bump commit stays.
 #   Single-user Play signing (no project.config; refused when one exists), passed explicitly:
 #     --signing-config FILE   key=value lines: release_keystore, release_key_alias,
 #                             release_bundle_task, release_bundle_path, release_gradle_args
@@ -45,11 +50,16 @@
 #        password prompts, before any gradle work, so an unattended build never stalls part-way.
 #     5. Play only, before any gradle work: app/versionCode.txt goes N -> N+1, committed alone
 #        as "versionCode N+1 (play build)". Every selected build (standard, test, play) then
-#        comes from that bump commit, so all records share one commit. No git tag is created.
-#        If a build fails, the bump commit stays (history is never rewritten); the next --play
-#        bumps again (gaps are fine for Play). Without --play nothing is bumped.
-#     6. Builds in sequence: standard, test, play. The first failure stops everything.
-#     7. The builds tag moves only after every selected build succeeded.
+#        comes from that bump commit, so all records share one commit. Without --play nothing
+#        is bumped. If a build fails, the bump commit stays (history is never rewritten); the
+#        next --play bumps again (gaps are fine for Play).
+#     6. --release-tag only: an annotated tag of that name is created on the commit the builds
+#        will use (the bump commit when --play is selected). Refused when the name is missing,
+#        already exists, is 'builds' or '*/builds', ends in '-start', contains '+', or this
+#        branch has a <branch>-start tag (that describe would hide the release name). A failed
+#        run deletes the tag this run created. There is no prompt.
+#     7. Builds in sequence: standard, test, play. The first failure stops everything.
+#     8. The builds tag moves only after every selected build succeeded.
 #
 # Multi-user mode (a smudged project.config): every build, in every mode (--standard, --test,
 # --play, the default), runs as coder_user, so app/build, .gradle and the deliverables always have
@@ -234,6 +244,8 @@ BUILD_STANDARD=false
 BUILD_TEST=false
 BUILD_PLAY=false
 FLAG_SEEN=false
+RELEASE_TAG=""
+RELEASE_TAG_CREATED=false
 # Single-user Play signing, given explicitly (no implicit lookup): --signing-config FILE and/or
 # --release-keystore/--release-key-alias/--release-bundle-task/--release-bundle-path/
 # --release-gradle-args VALUE. Stored as SIGN_<key>; a key given twice is an error.
@@ -292,9 +304,20 @@ while [ "$#" -ge 1 ]; do
     --standard) BUILD_STANDARD=true; FLAG_SEEN=true; shift ;;
     --test) BUILD_TEST=true; FLAG_SEEN=true; shift ;;
     --play|--bundle) BUILD_PLAY=true; FLAG_SEEN=true; shift ;;
+    --release-tag)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: --release-tag needs a value." >&2
+        exit 1
+      fi
+      if [ -n "$RELEASE_TAG" ]; then
+        echo "ERROR: --release-tag given twice." >&2
+        exit 1
+      fi
+      RELEASE_TAG=$2
+      shift 2 ;;
     --) break ;;
     --*)
-      echo "ERROR: unknown flag '$1'. Build flags: --standard --test --play (--bundle); single-user Play signing: --signing-config FILE, --release-keystore, --release-key-alias, --release-bundle-task, --release-bundle-path, --release-gradle-args." >&2
+      echo "ERROR: unknown flag '$1'. Build flags: --standard --test --play (--bundle) --release-tag NAME; single-user Play signing: --signing-config FILE, --release-keystore, --release-key-alias, --release-bundle-task, --release-bundle-path, --release-gradle-args." >&2
       exit 1
       ;;
     *) break ;;
@@ -691,13 +714,76 @@ if [ ${#GRADLE_ARGS[@]} -gt 0 ]; then
 fi
 
 # On a failed run after the --play bump: say that the bump commit stays.
+# A release tag this run created is deleted on any failed exit. The commit stays.
 PLAY_BUMPED=false
+drop_release_tag() {
+  local rc=$1
+  if [ "$RELEASE_TAG_CREATED" = true ] && [ "$rc" -ne 0 ]; then
+    if git tag -d "$RELEASE_TAG"; then
+      echo "NOTE: release tag $RELEASE_TAG removed because the build failed. The commit stays." >&2
+    else
+      echo "ERROR: the build failed and release tag $RELEASE_TAG could not be deleted." >&2
+    fi
+    RELEASE_TAG_CREATED=false
+  fi
+}
 play_bump_note() {
   local rc=${1:-$?}
+  drop_release_tag "$rc"
   if [ "$PLAY_BUMPED" = true ] && [ "$rc" -ne 0 ]; then
     echo "NOTE: the build failed after versionCode $NEW_VERSION_CODE was committed ($(git rev-parse --short "$BUILT_COMMIT")). That commit stays; the next --play bumps to $((NEW_VERSION_CODE + 1)) (gaps are fine for Play)." >&2
   fi
 }
+# Refuse a name that git describe would not use as versionName. Nothing is committed.
+validate_release_tag() {
+  [ -n "$RELEASE_TAG" ] || return 0
+  local branch
+  branch=$(git rev-parse --abbrev-ref HEAD) || exit 1
+  if [ "$branch" = HEAD ]; then
+    echo "ERROR: --release-tag needs a branch; this checkout is detached." >&2
+    exit 1
+  fi
+  if ! git check-ref-format "refs/tags/$RELEASE_TAG"; then
+    echo "ERROR: --release-tag '$RELEASE_TAG' is not a valid tag name." >&2
+    exit 1
+  fi
+  case "$RELEASE_TAG" in
+    *+*)
+      echo "ERROR: --release-tag '$RELEASE_TAG' contains '+'; git describe excludes those tags, so it would not be the versionName." >&2
+      exit 1
+      ;;
+    builds|*/builds)
+      echo "ERROR: --release-tag '$RELEASE_TAG' is a moving builds tag, not a release name." >&2
+      exit 1
+      ;;
+    *-start)
+      echo "ERROR: --release-tag '$RELEASE_TAG' is a branch-start tag, not a release name." >&2
+      exit 1
+      ;;
+  esac
+  if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
+    echo "ERROR: tag '$RELEASE_TAG' already exists." >&2
+    exit 1
+  fi
+  if git rev-parse -q --verify "refs/tags/${branch}-start" >/dev/null; then
+    echo "ERROR: branch '$branch' has tag ${branch}-start, so versionName is that testing describe, not '$RELEASE_TAG'." >&2
+    echo "  Release tags are for a branch without a -start tag (e.g. master)." >&2
+    exit 1
+  fi
+}
+create_release_tag() {
+  [ -n "$RELEASE_TAG" ] || return 0
+  git tag -a "$RELEASE_TAG" -m "$RELEASE_TAG" || {
+    echo "ERROR: could not create annotated tag '$RELEASE_TAG'." >&2
+    exit 1
+  }
+  RELEASE_TAG_CREATED=true
+  echo "Release tag $RELEASE_TAG on $(git rev-parse --short HEAD) (annotated)"
+  trap play_bump_note EXIT
+}
+
+# Before the Play bump, so a refused name commits nothing and asks for no passwords.
+validate_release_tag
 
 # Play preflight on the committed HEAD: testing-version check and passwords, all before any
 # gradle work, so an unattended run never stops part-way waiting for input.
@@ -706,7 +792,8 @@ if [ "$BUILD_PLAY" = true ]; then
   # (how is the machine owner's choice; see keystore_access_report); what protects it is the password, which only the person at this terminal types.
   # Same version string the gradle files compute for versionName: the BRANCH-start describe
   # when that tag exists, otherwise 'git describe --always --exclude '*+*''. A Play
-  # versionCode is not a git tag and is not versionName. Only the BRANCH-start case is a
+  # versionCode is not versionName. A --release-tag, when given, is an annotated tag on
+  # the bump commit and is what that describe returns. Only the BRANCH-start case is a
   # testing version.
   BRANCH=$(git rev-parse --abbrev-ref HEAD) || exit 1
   if [ ! -f app/versionCode.txt ]; then
@@ -771,6 +858,12 @@ if [ "$BUILD_PLAY" = true ]; then
   BUILT_COMMIT=$(git rev-parse HEAD) || exit 1
   PLAY_BUMPED=true
   trap play_bump_note EXIT
+fi
+
+# After the bump when there is one, so the tag is on the commit Gradle is about to build.
+create_release_tag
+
+if [ "$BUILD_PLAY" = true ]; then
   if git rev-parse -q --verify "refs/tags/${BRANCH}-start" >/dev/null; then
     VERSION_DESC=$(git describe --tags --match "${BRANCH}-start") || exit 1
   else

@@ -8,7 +8,7 @@ project-facts.md; deploy-orchestration then installs build_app and deploy into t
 carry their own copy (`rules.manifest.local: local build_app`).
 
 ```
-./build_app [--standard] [--test] [--play|--bundle] ["msg" | @msg_file] [files...] [-- gradle-flags]
+./build_app [--standard] [--test] [--play|--bundle] [--release-tag NAME] ["msg" | @msg_file] [files...] [-- gradle-flags]
 ```
 
 ## Declaring the builds
@@ -44,7 +44,7 @@ line each:
 | `--test` | the test build | `- **Test build:**` |
 | `--play` / `--bundle` | signed Play AAB | project.config `release_keystore`, `release_key_alias`, `release_bundle_task`, `release_bundle_path` (required), `release_gradle_args` |
 
-- Flags come first, in any order, and can be combined.
+- Flags come first, in any order, and can be combined. `--release-tag NAME` may be among them; it does not select a build.
 - **No flag builds** standard, test (unless `none`) and, with a project.config, Play.
 - A Play build whose keys are missing stops naming each missing key. The keystore and
   passwords never leave this machine.
@@ -82,20 +82,47 @@ line each:
    `app/versionCode.txt` goes from N to N+1 and is committed alone as
    `versionCode N+1 (play build)`, by `coder_user` with the invoker's git identity.
    - A missing file or a non-integer value stops the run loudly. Without `--play` nothing
-     is bumped. No git tag is created; tag the bump commit yourself if you want one.
+     is bumped.
    - If a later build fails, the bump commit stays (history is never rewritten or undone);
      the next `--play` bumps again. Gaps in versionCode are fine for Play. The run says so.
-6. **Builds:** they run in sequence (standard, test, play), all from that one HEAD (the bump
+6. **Release tag (`--release-tag NAME` only, before any build):** an annotated tag of that
+   name is created on the commit these builds will use. With `--play` that is the bump
+   commit. Without `--play` nothing is bumped, and the tag is on the commit the selected
+   builds use. There is no prompt. Omitting the flag creates no release tag.
+   - Refused before any bump or tag when the name is missing, the tag already exists,
+     the name is `builds` or ends in `/builds`, the name ends in `-start`, the name
+     contains `+` (`git describe` excludes those, so it would not be the versionName),
+     the checkout is detached, or this branch has a `<branch>-start` tag. That testing
+     describe would hide the release name. Release tags are for a branch without one,
+     such as master.
+   - A name is used once. Tagging a commit `v1.0.0` uses that name up. A later `--play`
+     is a new commit and describes as `v1.0.0-1-g<hash>` unless that run passes its own
+     new tag. Pass `--release-tag` on the Play run when the upload must read `v1.0.0`.
+   - If a build fails, the tag this run created is deleted. A versionCode bump commit
+     stays.
+7. **Builds:** they run in sequence (standard, test, play), all from that one HEAD (the bump
    commit when `--play` is selected), so every record shares one commit and is current for
    deploy. The first failure stops everything.
    - versionName is the `<branch>-start` describe when that tag exists, otherwise
-     `git describe --always --exclude '*+*'` of that commit.
-7. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves to the built commit only after
+     `git describe --always --exclude '*+*'` of that commit. An exact `--release-tag` on
+     that commit is the whole versionName.
+8. **Tag:** the builds tag (`builds` / `<branch>/builds`) moves to the built commit only after
    every selected build succeeded.
 
-For a release: commit your work (with build_app or git), then `./build_app --play`. No
-manual version number is needed. build_app makes no release tag; tag versions yourself
-(`git tag -a v1.0.0`) when you want them.
+For a release whose upload must read `v1.0.0`:
+
+```
+./build_app --play --release-tag v1.0.0
+```
+
+The annotated tag is created after the versionCode bump and before Gradle, so standard,
+test, and Play all describe as `v1.0.0`. A run with no `--release-tag` creates no release
+tag and does not ask for one. The same flag tags without Play, and does not bump
+versionCode:
+
+```
+./build_app --standard --test --release-tag v1.0.0
+```
 
 ## Single-user mode
 
