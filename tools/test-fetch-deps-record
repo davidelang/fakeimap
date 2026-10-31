@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Tests for fetch-deps / get-artifacts --verify / --record (throwaway repos in /tmp, no sandbox,
+# Tests for fetch-deps / get-artifacts --verify / --record (throwaway repos in the sandbox (tools/scratch-dir), no sandbox,
 # no network: the library is a local git repo under a temporary --git-home).
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/fdrec-test.XXXXXX)"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" fdrec-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 SW='2>/dev/null || true'  # audit-swallow: pattern (what the no-swallow checks grep for)

@@ -33,14 +33,13 @@ DO_ALL=false
 TARGET_SPECIFIC=""
 FORWARD_ARGS=""
 _fp_orig=("$@")
-_fp_err=$(mktemp) || exit 1
-if ! parsed="$(getopt -o haqv -l help,all,quiet,verbose -- "$@" 2>"$_fp_err")"; then
-  _fp_bad=$(sed -n "s/.*'\\([^']*\\)'.*/\\1/p" "$_fp_err" | head -1)
+# getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
+if ! _fp_err=$(getopt -o haqv -l help,all,quiet,verbose -- "$@" 2>&1 >/dev/null); then
+  _fp_bad=$(printf '%s\n' "$_fp_err" | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | head -1)
   echo "ERROR: fix-perms: unknown option ${_fp_bad:-?} (usage: fix-perms [-a|--all] [-q|--quiet] [-v|--verbose] [WORKTREE])" >&2
-  rm -f "$_fp_err"
   exit 2
 fi
-rm -f "$_fp_err"
+parsed=$(getopt -o haqv -l help,all,quiet,verbose -- "$@")
 eval set -- "$parsed"
 while true; do
   case "$1" in

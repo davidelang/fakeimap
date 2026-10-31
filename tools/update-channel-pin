@@ -66,13 +66,9 @@ blk="$(git grep -nIE 'CHANNEL_SEND_WAIT|CONSUMED|outcome/|QUEUED|DEST took it|ev
 [[ -z "$blk" ]] || die "these tracked files rely on removed channel behaviour (CHANNEL_SEND_WAIT is now an error; no outcome/, CONSUMED, QUEUED or send --timeout); fix them first:
 $blk"
 
-tmp="$(mktemp -d /tmp/update-channel-pin.XXXXXX)"
-trap 'rm -rf "$tmp"' EXIT
-git -C "$canon" cat-file blob "HEAD:$lib/artifact/channel" > "$tmp/channel"
-chmod 0775 "$tmp/channel"
 want="$(git -C "$canon" show "HEAD:$lib/libpin.toml" | sed -n 's/^sha256 = "\(.*\)"$/\1/p')"
 [[ -n "$want" ]] || die "no artifact sha256 in canon's libpin.toml"
-[[ "$(sha256sum "$tmp/channel" | cut -d' ' -f1)" == "$want" ]] || die "canon's artifact/channel does not match its libpin.toml sha256"
+[[ "$(git -C "$canon" cat-file blob "HEAD:$lib/artifact/channel" | sha256sum | cut -d' ' -f1)" == "$want" ]] || die "canon's artifact/channel does not match its libpin.toml sha256"
 
 # Install by rename (a running channel-arm keeps its old inode), then commit only the pin.
 for p in "$lib/libpin.toml" "$lib/SOURCE.md"; do
@@ -80,7 +76,8 @@ for p in "$lib/libpin.toml" "$lib/SOURCE.md"; do
   chmod --reference="$p" "$p.update-channel-pin.tmp"
   mv -f "$p.update-channel-pin.tmp" "$p"
 done
-cp "$tmp/channel" "$lib/artifact/channel.update-channel-pin.tmp"
+git -C "$canon" cat-file blob "HEAD:$lib/artifact/channel" > "$lib/artifact/channel.update-channel-pin.tmp"
+chmod 0775 "$lib/artifact/channel.update-channel-pin.tmp"
 mv -f "$lib/artifact/channel.update-channel-pin.tmp" "$lib/artifact/channel"
 [[ "$(sha256sum "$lib/artifact/channel" | cut -d' ' -f1)" == "$want" ]] || die "installed $lib/artifact/channel has the wrong sha256"
 

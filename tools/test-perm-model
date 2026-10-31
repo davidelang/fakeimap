@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Tests for perm-model.tsv / perm-engine.py and their users (no privileges, throwaway /tmp dirs).
+"""Tests for perm-model.tsv / perm-engine.py and their users (no privileges, throwaway dirs in the sandbox, tools/scratch-dir).
 - the model parses (8 columns, unique areas, every mode spec valid, umask octal or '-');
 - every area named by perm_apply/perm_verify/perm_umask in the tools exists in the model;
 - the engine's symbolic modes agree with GNU chmod;
 - deploy-orchestration creates dirs/files with the worktree area's modes from any umask."""
 import importlib.util, os, re, subprocess, sys, tempfile, importlib.machinery
+
+def scratch_dir(name):
+    """A fresh dir from tools/scratch-dir (in the checkout's sandbox_dir; never /tmp),
+    removed at exit."""
+    import atexit, shutil
+    p = subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "scratch-dir"), name], capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.exit(p.stderr.strip() or "scratch-dir failed")
+    os.environ["GIT_CEILING_DIRECTORIES"] = os.path.dirname(p.stdout.strip())
+    atexit.register(shutil.rmtree, p.stdout.strip())
+    return p.stdout.strip()
 sys.dont_write_bytecode = True  # no __pycache__/ in canon
 
 canon = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
@@ -46,7 +57,7 @@ missing = sorted("%s:%s" % u for u in used if u[1] not in model)
 unused = sorted(set(model) - {a for _, a in used})
 (bad("areas nobody applies: %s" % unused) if unused else ok("every area is applied by some tool"))
 
-with tempfile.TemporaryDirectory() as d:
+with tempfile.TemporaryDirectory(prefix="test-perm-model-", dir=scratch_dir("test-perm-model")) as d:
     mism = 0
     for isdir in (False, True):
         for m0 in (0o600, 0o644, 0o755, 0o700, 0o2770, 0o640, 0o000):

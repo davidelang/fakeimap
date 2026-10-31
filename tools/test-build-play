@@ -6,7 +6,8 @@
 # a throwaway keystore; passwords are typed into a pty by script(1). No sudo, no real gradle.
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/buildplay-test.XXXXXX)"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" buildplay-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
 chmod 755 "$T"
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }

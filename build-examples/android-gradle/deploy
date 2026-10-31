@@ -177,14 +177,13 @@ for _dep_a in "$@"; do
     _dep_pre+=("$_dep_a")
   fi
 done
-_dep_err=$(mktemp) || exit 1
-if ! parsed="$(getopt -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${_dep_pre[@]+"${_dep_pre[@]}"} 2>"$_dep_err")"; then
-  cat "$_dep_err" >&2
+# getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
+if ! _dep_err=$(getopt -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${_dep_pre[@]+"${_dep_pre[@]}"} 2>&1 >/dev/null); then
+  printf '%s\n' "$_dep_err" >&2
   usage >&2
-  rm -f "$_dep_err"
   exit 1
 fi
-rm -f "$_dep_err"
+parsed=$(getopt -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${_dep_pre[@]+"${_dep_pre[@]}"})
 eval set -- "$parsed"
 while true; do
   case "$1" in

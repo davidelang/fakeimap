@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for fix-perms (run from the canon checkout as a normal user; throwaway repo in /tmp).
+# Tests for fix-perms (run from the canon checkout as a normal user; throwaway repo in the sandbox (tools/scratch-dir)).
 # fix-perms must only set ownership/modes, never write a tracked file or sudoers, refuse a
 # missing tracked wrapper/log and unknown arguments, and surface every failing step.
 # The run-as-root cases use an unprivileged user namespace (unshare -r: you are uid 0 there,
@@ -7,7 +7,8 @@
 # recording shims; chown/chmod/setfacl/getfacl/git are the real ones unless a case says so.
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/fixperms-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" fixperms-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }

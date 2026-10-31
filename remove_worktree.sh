@@ -6,14 +6,13 @@
 FORCE_LEVEL=0
 TARGET=""
 
-_rw_err=$(mktemp) || exit 1
-if ! parsed="$(getopt -o hf -l help,force -- "$@" 2>"$_rw_err")"; then
-    cat "$_rw_err" >&2
+# getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
+if ! _rw_err=$(getopt -o hf -l help,force -- "$@" 2>&1 >/dev/null); then
+    printf '%s\n' "$_rw_err" >&2
     echo "Usage: $0 [-f|--force] agent-N|branch-name" >&2
-    rm -f "$_rw_err"
     exit 1
 fi
-rm -f "$_rw_err"
+parsed=$(getopt -o hf -l help,force -- "$@")
 eval set -- "$parsed"
 while true; do
     case "$1" in

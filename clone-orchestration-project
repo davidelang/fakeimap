@@ -662,11 +662,10 @@ do_perms() {
 }
 
 # --- args ---
-_cl_err=$(mktemp) || exit 1
-if ! parsed="$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "$@" 2>"$_cl_err")"; then
-  if grep -q 'requires an argument' "$_cl_err"; then
-    _cl_opt=$(sed -n "s/.*'\\(--[^']*\\)'.*/\\1/p; s/.*option requires an argument -- '\\([^']*\\)'.*/-\\1/p" "$_cl_err" | head -1)
-    rm -f "$_cl_err"
+# getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
+if ! _cl_err=$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "$@" 2>&1 >/dev/null); then
+  if printf '%s\n' "$_cl_err" | grep -q 'requires an argument'; then
+    _cl_opt=$(printf '%s\n' "$_cl_err" | sed -n "s/.*'\\(--[^']*\\)'.*/\\1/p; s/.*option requires an argument -- '\\([^']*\\)'.*/-\\1/p" | head -1)
     case "$_cl_opt" in
       --source|-s) die "--source requires a directory" ;;
       --git-home|-g) die "--git-home requires a directory" ;;
@@ -674,11 +673,10 @@ if ! parsed="$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "
       *) die "${_cl_opt:-option} requires a directory" ;;
     esac
   fi
-  _cl_bad=$(sed -n "s/.*'\\([^']*\\)'.*/\\1/p" "$_cl_err" | head -1)
-  rm -f "$_cl_err"
+  _cl_bad=$(printf '%s\n' "$_cl_err" | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | head -1)
   die "unknown option: ${_cl_bad:-?} (see --help)"
 fi
-rm -f "$_cl_err"
+parsed=$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "$@")
 eval set -- "$parsed"
 while true; do
   case "$1" in

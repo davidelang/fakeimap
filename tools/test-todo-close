@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Tests for todo-close with a fixture TODO.md (throwaway dir under /tmp).
+# Tests for todo-close with a fixture TODO.md (throwaway dir in the sandbox (tools/scratch-dir)).
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/todo-close-test.XXXXXX)"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" todo-close-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }

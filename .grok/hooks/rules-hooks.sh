@@ -55,7 +55,9 @@ sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 inject_facts() {  # $1 = hook event name
   local pf="$root/project-facts.md" st h f
   if [[ -f "$pf" ]]; then
-    st="/tmp/grok-facts-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
+    sandbox_dir
+    st="$sb/.grok-facts-$(id -u)"
+    mkdir -p "$st" && chmod 700 "$st" || hook_error "cannot create hook state dir $st"
     h="$(sha "$pf")"; f="$st/${sid//\//_}"
     if [[ "$(cat "$f" 2>/dev/null)" != "$h" ]]; then
       printf '%s' "$h" >"$f" 2>/dev/null

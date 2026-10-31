@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scratch-dir NAME : make and print a fresh throwaway directory for a tools/test-* script, in
+# the sandbox_dir (project.config) of the checkout these tools belong to; never /tmp. The
+# caller removes it in its EXIT trap. The new dir looks like one from mktemp -d under /tmp:
+# mode 0700, the caller's own group, no setgid, even though the sandbox is a setgid dir of a
+# group the caller may not be in. Callers also set GIT_CEILING_DIRECTORIES to its parent, so
+# git inside it never finds the checkout the sandbox lives in. Exits 1, naming what is
+# missing, when there is no usable sandbox_dir.
+set -euo pipefail
+[[ $# -eq 1 && "$1" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "usage: scratch-dir NAME" >&2; exit 1; }
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cfg="$root/project.config"
+[[ -f "$cfg" ]] || { echo "scratch-dir: $cfg missing (it names sandbox_dir, where tests keep scratch)" >&2; exit 1; }
+d="$(sed -n 's/^sandbox_dir=//p' "$cfg" | tail -1)"
+[[ -n "$d" && "$d" != @@* ]] || { echo "scratch-dir: sandbox_dir has no value in $cfg" >&2; exit 1; }
+[[ "$d" = /* ]] || d="$root/$d"
+[[ -d "$d" && -w "$d" ]] || { echo "scratch-dir: sandbox_dir $d is not a writable directory" >&2; exit 1; }
+t="$(mktemp -d "$d/$1.XXXXXX")"
+chgrp "$(id -g)" "$t"
+chmod 0700 "$t"
+chmod g-s "$t"   # numeric chmod keeps a directory's setgid bit
+printf '%s\n' "$t"

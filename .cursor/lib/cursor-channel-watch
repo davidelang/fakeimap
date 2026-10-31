@@ -39,7 +39,15 @@ blocked() { echo "STATUS: BLOCKED channel artifact missing/too old in third_part
 [[ -x "$arm" ]] || blocked "no $arm"
 [[ "$("$arm" "$plan" "$node" --whatineedtoknow | head -n 1)" == "how to act:" ]] || blocked "no how-to-act header"
 command -v inotifywait >/dev/null 2>&1 || { echo "WATCH-ENDED inotifywait (inotify-tools) not installed"; exit 1; }
-st="/tmp/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
+# State (log, pid) in the project's sandbox_dir, per user, the same dir cursor-hooks.sh reads;
+# never /tmp. GROK_PROMPT_ROOT is the root the hooks use; without it, this repo's top.
+sroot="${GROK_PROMPT_ROOT:-$top}"
+[[ -f "$sroot/project.config" ]] || { echo "WATCH-ENDED $sroot/project.config missing (sandbox_dir holds the watch state)"; exit 1; }
+sbd="$(sed -n 's/^sandbox_dir=//p' "$sroot/project.config" | tail -1)"
+[[ -n "$sbd" && "$sbd" != @@* ]] || { echo "WATCH-ENDED sandbox_dir has no value in $sroot/project.config"; exit 1; }
+[[ "$sbd" = /* ]] || sbd="$sroot/$sbd"
+st="$sbd/.cursor-rules-$(id -u)"
+mkdir -p "$st" && chmod 700 "$st" || { echo "WATCH-ENDED cannot create watch state dir $st"; exit 1; }
 # Keyed by workspace too, so the same relative plan in another checkout is another watch.
 # The posttool hook computes the same key for this conversation's channel-armed-<cid>.
 key="$(printf '%s %s %s' "$top" "$plan" "$node" | sha256sum | cut -c1-12)"

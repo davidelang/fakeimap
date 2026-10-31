@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Tests for setup_agent.sh in a throwaway project in /tmp. Stand-ins: 'sudo' on PATH only
+# Tests for setup_agent.sh in a throwaway project in the sandbox (tools/scratch-dir). Stand-ins: 'sudo' on PATH only
 # records its arguments (nothing runs as root or another user); no fix-perms, chattr or
 # installer really runs. Checks the permission model (umask 002 worktree, 2775 dir), the
 # fix-perms call, and that failures stop setup loudly.
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/setupagent-test.XXXXXX)"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" setupagent-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 SW='2>/dev/null || true'  # audit-swallow: pattern (what the no-swallow checks grep for)

@@ -5,7 +5,8 @@
 # (adb install -r -t, verified, tag only on success), the --test refusals and single-user mode.
 set -uo pipefail
 C=$(git rev-parse --show-toplevel)
-T=$(mktemp -d /tmp/test-deploy-android.XXXXXX); trap 'rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" test-deploy-android)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'rm -rf "$T"' EXIT
 pass=0 fail=0; ok(){ pass=$((pass+1)); echo "ok   $*"; }; bad(){ fail=$((fail+1)); echo "FAIL $*"; }
 R=$T/repo; mkdir -p $R $T/bin $T/sdk/build-tools/99.0.0
 cp $C/build-examples/android-gradle/deploy $C/build-examples/android-gradle/android-build-info $C/ve-resolve-orch $R/

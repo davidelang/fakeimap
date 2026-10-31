@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Tests for tools/audit-swallow and hooks/pre-commit (throwaway repos under /tmp).
+# Tests for tools/audit-swallow and hooks/pre-commit (throwaway repos in the sandbox (tools/scratch-dir)).
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/audsw-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" audsw-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }

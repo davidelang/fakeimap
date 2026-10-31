@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Tests for ve-resolve-orch: no worktree guessing, and helpers that fail loudly.
-# Throwaway repo in /tmp; a chmod stand-in on PATH simulates a file this user cannot chmod.
+# Throwaway repo in the sandbox (tools/scratch-dir); a chmod stand-in on PATH simulates a file this user cannot chmod.
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/vero-test.XXXXXX)"; trap 'rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" vero-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 SW='2>/dev/null || true'  # audit-swallow: pattern (what the no-swallow checks grep for)

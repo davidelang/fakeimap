@@ -39,7 +39,14 @@ cid="$(j '.conversation_id // empty')"
 [[ -n "$cid" ]] || hook_error "hook input has no conversation_id"
 ws="$(j '.workspace_roots[0] // empty')"
 [[ -n "$ws" ]] || hook_error "hook input has no workspace_roots"
-st="/tmp/cursor-rules-$(id -u)"; mkdir -p "$st" && chmod 700 "$st"
+# Hook state lives in this project's sandbox_dir (project.config), per user; never /tmp.
+# cursor-channel-watch uses the same directory.
+[[ -f "$root/project.config" ]] || hook_error "$root/project.config missing (sandbox_dir holds hook state)"
+sbd="$(sed -n 's/^sandbox_dir=//p' "$root/project.config" | tail -1)"
+[[ -n "$sbd" && "$sbd" != @@* ]] || hook_error "sandbox_dir has no value in $root/project.config"
+[[ "$sbd" = /* ]] || sbd="$root/$sbd"
+st="$sbd/.cursor-rules-$(id -u)"
+mkdir -p "$st" && chmod 700 "$st" || hook_error "cannot create hook state dir $st"
 grok() {  # grok <mode> <json> -> rules-hooks output
   printf '%s' "$2" | ROLE_KEY="$role" bash "$rh" "$1"
 }

@@ -47,10 +47,9 @@ if [[ -z "$GIT_HOME" || "$GIT_HOME" != /* || ! -d "$GIT_HOME" ]]; then
   exit 1
 fi
 
-TARGET_FILE="$(mktemp)"
-trap 'rm -f "$TARGET_FILE"' EXIT
-git -c "safe.directory=$SRC" -C "$SRC" show "$BASE:$REL" > "$TARGET_FILE"
-if [[ ! -s "$TARGET_FILE" ]]; then
+# The target launcher is read straight from git by the patcher below; no temp file.
+TARGET_SPEC="$BASE:$REL"
+if [[ "$(git -c "safe.directory=$SRC" -C "$SRC" cat-file -s "$TARGET_SPEC")" -eq 0 ]]; then
   echo "ERROR: $BASE:$REL is empty" >&2
   exit 1
 fi
@@ -99,10 +98,10 @@ clear_skip_worktree() {
 # Print already, edit, missing, or diverged.
 patch_launcher() {
   local wt="$1"
-  python3 - "$wt/$REL" "$DRY" "$TARGET_FILE" <<'PY'
-import os, stat, sys
-path, dry, target_path = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
-target = open(target_path, "rb").read()
+  python3 - "$wt/$REL" "$DRY" "$SRC" "$TARGET_SPEC" <<'PY'
+import os, stat, subprocess, sys
+path, dry, src, spec = sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.argv[4]
+target = subprocess.run(["git", "-c", "safe.directory=" + src, "-C", src, "show", spec], check=True, capture_output=True).stdout
 # Published sandbox launcher, then the first-publish copy from before the
 # swallow-line fix. Both are replaced by the pre-profile launcher.
 replace = {

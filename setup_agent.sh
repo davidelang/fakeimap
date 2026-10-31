@@ -332,7 +332,8 @@ re_smudge_stamped_files() {
     if ! git cat-file -e "HEAD:$f" 2>/dev/null; then
       continue
     fi
-    tmp="$(mktemp)"
+    # Beside the file it replaces (same directory, so mv is a rename); never /tmp.
+    tmp="$(mktemp "$(dirname "$f")/.$(basename "$f").smudge.XXXXXX")" || { echo "Error: cannot create a temp file next to $f"; return 1; }
     if ! git show "HEAD:$f" | bash ./filter-apply-config > "$tmp"; then
       echo "Error: manual smudge failed for $f"
       rm -f "$tmp"

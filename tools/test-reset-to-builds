@@ -1,8 +1,9 @@
 #!/bin/bash
-# Tests for reset-to-builds.sh in throwaway repos under mktemp -d (or $TMPDIR).
+# Tests for reset-to-builds.sh in throwaway repos under mktemp -d (tools/scratch-dir).
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-T=$(mktemp -d)
+T="$("$(dirname "$0")/scratch-dir" reset-to-builds-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"
 trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
 fail=0; pass=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }

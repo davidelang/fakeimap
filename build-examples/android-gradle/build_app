@@ -341,19 +341,18 @@ for _ba_a in "$@"; do
     _ba_opt+=("$_ba_a")
   fi
 done
-_ba_err=$(mktemp) || exit 1
-if ! parsed="$(getopt -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,release-tag:,signing-config:,release-keystore:,release-key-alias:,release-bundle-task:,release-bundle-path:,release-gradle-args: -- ${_ba_opt[@]+"${_ba_opt[@]}"} 2>"$_ba_err")"; then
-  if grep -q 'requires an argument' "$_ba_err"; then
-    _ba_optname=$(sed -n "s/.*'\\(--[^']*\\)'.*/\\1/p; s/.*option requires an argument -- '\\([^']*\\)'.*/-\\1/p" "$_ba_err" | head -1)
+# getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
+if ! _ba_err=$(getopt -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,release-tag:,signing-config:,release-keystore:,release-key-alias:,release-bundle-task:,release-bundle-path:,release-gradle-args: -- ${_ba_opt[@]+"${_ba_opt[@]}"} 2>&1 >/dev/null); then
+  if printf '%s\n' "$_ba_err" | grep -q 'requires an argument'; then
+    _ba_optname=$(printf '%s\n' "$_ba_err" | sed -n "s/.*'\\(--[^']*\\)'.*/\\1/p; s/.*option requires an argument -- '\\([^']*\\)'.*/-\\1/p" | head -1)
     echo "ERROR: ${_ba_optname:-option} needs a value." >&2
   else
-    _ba_bad=$(sed -n "s/.*'\\([^']*\\)'.*/\\1/p" "$_ba_err" | head -1)
+    _ba_bad=$(printf '%s\n' "$_ba_err" | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | head -1)
     echo "ERROR: unknown flag '${_ba_bad:-?}'. Build flags: --standard --test --play (--bundle) --release-tag NAME; single-user Play signing: --signing-config FILE, --release-keystore, --release-key-alias, --release-bundle-task, --release-bundle-path, --release-gradle-args." >&2
   fi
-  rm -f "$_ba_err"
   exit 1
 fi
-rm -f "$_ba_err"
+parsed=$(getopt -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,release-tag:,signing-config:,release-keystore:,release-key-alias:,release-bundle-task:,release-bundle-path:,release-gradle-args: -- ${_ba_opt[@]+"${_ba_opt[@]}"})
 eval set -- "$parsed"
 _ba_need() {
   if [ -z "${2:-}" ]; then

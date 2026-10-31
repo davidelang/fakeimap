@@ -6,7 +6,8 @@
 # (build_app requires both) and is coder_user in the throwaway project.config.
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/buildperms-test.XXXXXX)"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" buildperms-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'chmod -R u+rwx "$T"; rm -rf "$T"' EXIT
 chmod 755 "$T"
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }

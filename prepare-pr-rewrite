@@ -90,7 +90,8 @@ def merge3(fv, rv, tv, labels):
     """3-way merge of blob ids (fork, reference, target): (content, clean). A side that deleted the file is
     merged as empty content, so the conflict shows what the other side has."""
     import tempfile
-    with tempfile.TemporaryDirectory() as d:
+    # Scratch in this repo's git dir (never committed, same machine); never /tmp.
+    with tempfile.TemporaryDirectory(prefix="prepare-pr-rewrite-", dir=git("rev-parse", "--absolute-git-dir").strip()) as d:
         fs = []
         for n, b in (("r", rv), ("o", fv), ("t", tv)):
             f = os.path.join(d, n)

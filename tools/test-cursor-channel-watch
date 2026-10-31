@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Race tests for .cursor/lib/cursor-channel-watch (run from the canon checkout; uses a
-# throwaway git repo in /tmp and the pinned artifact; touches no live inbox).
+# throwaway git repo in the sandbox (tools/scratch-dir) and the pinned artifact; touches no live inbox).
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/ccw-test.XXXXXX)"
+T="$("$(dirname "$0")/scratch-dir" ccw-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
@@ -13,6 +14,9 @@ mkdir -p "$T/repo/.cursor/lib" "$T/repo/third_party/agent-coordination-tickets"
 cp "$canon/.cursor/lib/cursor-channel-watch" "$T/repo/.cursor/lib/"
 cp -a "$canon/third_party/agent-coordination-tickets/artifact" "$T/repo/third_party/agent-coordination-tickets/"
 git -C "$T/repo" init -q
+# The wrapper keeps its state in the project's sandbox_dir (never /tmp).
+unset GROK_PROMPT_ROOT
+printf 'sandbox_dir=sb\n' >"$T/repo/project.config"; mkdir "$T/repo/sb"
 P="$T/repo/t.diag" W="$T/repo/.cursor/lib/cursor-channel-watch" A="$T/repo/third_party/agent-coordination-tickets/artifact"
 cat >"$P" <<D
 blockdiag {
@@ -36,7 +40,7 @@ cd "$T/repo"
 for n in a b; do "$A/channel-setup" "$P" $n >/dev/null || { echo "setup failed"; exit 1; }; done
 inbox="$T/repo/nodes/b/inbox"
 key="$(printf '%s %s %s' "$T/repo" "$P" b | sha256sum | cut -c1-12)"
-pidf="/tmp/cursor-rules-$(id -u)/channel-$key.pid" log="/tmp/cursor-rules-$(id -u)/channel-$key.log"
+pidf="$T/repo/sb/.cursor-rules-$(id -u)/channel-$key.pid" log="$T/repo/sb/.cursor-rules-$(id -u)/channel-$key.log"
 send() { "$A/channel-send" "$P" a b NOTE -m "NOTE: $1" 2>&1 | sed -n 's/^SENT //p'; }
 # watch OUT: start the wrapper in the background; its pid is in $wp
 watch() { "$W" "$P" b >"$1" 2>&1 & wp=$!; }

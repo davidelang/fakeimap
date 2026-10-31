@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Tests for remove_worktree.sh with stand-in sudo / lsattr (nothing real is chattr'd,
-# chowned or run as root). Throwaway repos under /tmp.
+# chowned or run as root). Throwaway repos in the sandbox (tools/scratch-dir).
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
-T="$(mktemp -d /tmp/rmwt-test.XXXXXX)"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
+T="$("$(dirname "$0")/scratch-dir" rmwt-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 SW='2>/dev/null || true'  # audit-swallow: pattern (what the no-swallow checks grep for)
