@@ -10,7 +10,7 @@
 ## Build and commit
 - **Build type:** none
 - Build: none (template host, no product)
-- Commit: none (no product build; when David says to commit, commit that change as David Lang <david@lang.hm>, no push)
+- Commit: `git add` the files of that change, then `git commit` as David Lang <david@lang.hm>. Do not push.
 
 ## Review after implement
 - Record HEAD before the executor starts. The executor makes all the plan's changes, `git diff`s them against Acceptance, then commits and builds once. Before handoff, re-read the plan once.
