@@ -9,12 +9,17 @@
 set -euo pipefail
 
 fix=0
-case "${1:-}" in
-  "") ;;
-  --fix) fix=1 ;;
-  *) echo "usage: ./verify-smudge [--fix]" >&2; exit 2 ;;
-esac
-[ $# -le 1 ] || { echo "usage: ./verify-smudge [--fix]" >&2; exit 2; }
+parsed="$(getopt -o hf -l help,fix -- "$@")" || exit 2
+eval set -- "$parsed"
+while true; do
+  case "$1" in
+    -h|--help) echo "usage: ./verify-smudge [-f|--fix]"; exit 0 ;;
+    -f|--fix) fix=1; shift ;;
+    --) shift; break ;;
+    *) echo "usage: ./verify-smudge [--fix]" >&2; exit 2 ;;
+  esac
+done
+[ $# -eq 0 ] || { echo "usage: ./verify-smudge [--fix]" >&2; exit 2; }
 
 root=$(git rev-parse --show-toplevel)
 [ "$root" = "$(pwd -P)" ] || { echo "verify-smudge: ERROR: run from the worktree root ($root)" >&2; exit 1; }

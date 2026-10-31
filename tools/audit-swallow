@@ -32,6 +32,7 @@ Classes (first command word in front of the redirect, after sudo/env/command):
                                                     decide on it explicitly
   other    anything else                         -> decide case by case
 """
+import argparse
 import os
 import re
 import subprocess
@@ -200,31 +201,44 @@ def against(repo, ref):
     return compare(repo, pairs)
 
 
-def main(argv):
-    repo, mode, ref, paths = ".", "report", None, []
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a in ("-h", "--help"):
-            print(__doc__)
-            return 0
-        if a == "--repo":
-            i += 1
-            if i >= len(argv):
-                die("--repo needs a directory")
-            repo = argv[i]
-        elif a == "--staged":
-            mode = "staged"
-        elif a == "--against":
-            i += 1
-            if i >= len(argv):
-                die("--against needs a ref")
-            mode, ref = "against", argv[i]
-        elif a.startswith("-"):
-            die(f"unknown option {a}")
+class _Mode(argparse.Action):
+    """Record --staged / --against in argv order. The last one wins."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        events = getattr(namespace, "events")
+        if option_string in ("-s", "--staged"):
+            events.append(("staged", None))
         else:
-            paths.append(a)
-        i += 1
+            events.append(("against", values))
+
+
+def main(argv):
+    class _Parser(argparse.ArgumentParser):
+        def error(self, message):
+            if "expected one argument" in message:
+                if "-R" in message or "--repo" in message:
+                    die("--repo needs a directory")
+                if "-a" in message or "--against" in message:
+                    die("--against needs a ref")
+            if message.startswith("unrecognized arguments"):
+                die("unknown option " + message.split(":", 1)[-1].strip())
+            die(message)
+
+    ap = _Parser(prog="tools/audit-swallow", add_help=False)
+    ap.set_defaults(events=[])
+    ap.add_argument("-h", "--help", action="store_true")
+    ap.add_argument("-R", "--repo", default=".")
+    ap.add_argument("-s", "--staged", action=_Mode, nargs=0)
+    ap.add_argument("-a", "--against", action=_Mode)
+    ap.add_argument("paths", nargs="*")
+    args = ap.parse_args(argv)
+    if args.help:
+        print(__doc__)
+        return 0
+    repo, mode, ref = args.repo, "report", None
+    if args.events:
+        mode, ref = args.events[-1]
+    paths = args.paths
     repo = git(repo, "rev-parse", "--show-toplevel").strip()
     if mode != "report" and paths:
         die("paths are only for the report mode")

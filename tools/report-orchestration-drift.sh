@@ -9,19 +9,25 @@ GIT_HOME=""
 REF=""
 JSON=0
 
-while [[ $# -gt 0 ]]; do
+parsed="$(getopt -o hg:r:j -l help,git-home:,ref:,json -- "$@")" || exit 2
+eval set -- "$parsed"
+while true; do
   case "$1" in
-    --git-home) shift; GIT_HOME="${1:-}" ;;
-    --ref) shift; REF="${1:-}" ;;
-    --json) JSON=1 ;;
     -h|--help)
-      echo "Usage: $0 [--git-home DIR] [--ref DIR] [--json]"
+      echo "Usage: $0 [-g|--git-home DIR] [-r|--ref DIR] [-j|--json] [-h|--help]"
       exit 0
       ;;
+    -g|--git-home) GIT_HOME="$2"; shift 2 ;;
+    -r|--ref) REF="$2"; shift 2 ;;
+    -j|--json) JSON=1; shift ;;
+    --) shift; break ;;
     *) echo "Unknown: $1" >&2; exit 2 ;;
   esac
-  shift
 done
+if [[ $# -gt 0 ]]; then
+  echo "Unknown: $1" >&2
+  exit 2
+fi
 
 # Resolve git_home
 if [[ -z "$GIT_HOME" && -f "$EXAMPLE_ROOT/project.config" ]]; then

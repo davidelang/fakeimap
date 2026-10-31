@@ -50,8 +50,15 @@ check "head: log identical"      '[ "$(sha256sum ENGINEERING_LOG.md)" = "$sum" ]
 check "head: a.txt = HEAD"       '[ "$(cat a.txt)" = a2 ] && [ -f n.txt ] && [ ! -e u.txt ]'
 check "head: log unstaged only"  '[ "$(git status --porcelain)" = " M ENGINEERING_LOG.md" ]'
 
-# 3: bad arg, and missing tag fails loudly with no change
-cd "$T/r2"; if ./reset-to-builds.sh --x >/dev/null 2>&1; then bad "bad arg accepted"; else ok "bad arg rejected"; fi
+# 3: help does not reset; a bad arg is rejected; a missing tag fails loudly with no change
+cd "$T/r2"
+st=$(git status --porcelain | LC_ALL=C sort)
+out=$(./reset-to-builds.sh -h); rc=$?
+st2=$(git status --porcelain | LC_ALL=C sort)
+[[ $rc -eq 0 && "$out" == *--head* && "$st2" == "$st" ]] && ok "-h exits 0 and does not reset" || bad "-h rc=$rc"
+out=$(./reset-to-builds.sh --help); rc=$?
+[[ $rc -eq 0 && "$out" == *--head* ]] && ok "--help exits 0" || bad "--help rc=$rc"
+if ./reset-to-builds.sh --x >/dev/null 2>&1; then bad "bad arg accepted"; else ok "bad arg rejected"; fi
 git tag -d main/builds >/dev/null; printf 'y\n' > a.txt
 if out=$(./reset-to-builds.sh 2>&1); then bad "missing tag should fail"; else ok "missing tag fails: ${out%%$'\n'*}"; fi
 check "missing tag: no change"   '[ "$(cat a.txt)" = y ]'

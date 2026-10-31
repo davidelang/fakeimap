@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./generate_pr.sh plan1.md [plan2.md ...]"
+  exit 0
+fi
+
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 plan1.md [plan2.md ...]" >&2
   exit 1

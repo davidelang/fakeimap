@@ -8,7 +8,7 @@ project-facts.md; deploy-orchestration then installs build_app and deploy into t
 carry their own copy (`rules.manifest.local: local build_app`).
 
 ```
-./build_app [--standard] [--test] [--play|--bundle] [--release-tag NAME] ["msg" | @msg_file] [files...] [-- gradle-flags]
+./build_app [-s|--standard] [-t|--test] [-p|--play|--bundle] [-T|--release-tag NAME] ["msg" | @msg_file] [files...] [-- gradle-flags]
 ```
 
 ## Declaring the builds
@@ -40,9 +40,10 @@ line each:
 
 | Flag | Build | Config |
 |------|-------|--------|
-| `--standard` | the standard build | `- **Standard build:**` |
-| `--test` | the test build | `- **Test build:**` |
-| `--play` / `--bundle` | signed Play AAB | project.config `release_keystore`, `release_key_alias`, `release_bundle_task`, `release_bundle_path` (required), `release_gradle_args` |
+| `-s` / `--standard` | the standard build | `- **Standard build:**` |
+| `-t` / `--test` | the test build | `- **Test build:**` |
+| `-p` / `--play` / `--bundle` | signed Play AAB | project.config `release_keystore`, `release_key_alias`, `release_bundle_task`, `release_bundle_path` (required), `release_gradle_args` |
+| `-T` / `--release-tag NAME` | annotated tag on the commit these builds use; does not select a build | |
 
 - Flags come first, in any order, and can be combined. `--release-tag NAME` may be among them; it does not select a build.
 - **No flag builds** standard, test (unless `none`) and, with a project.config, Play.
@@ -178,16 +179,16 @@ All keys are documented in `project.config.example`.
 must not run it. Like build_app, it is Android-only and kept local per project.
 
 ```
-./deploy [-h|--help] [--test] [--clean] [--rebuild] [--launch] [device...] [-- gradle-flag...]
+./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
 ```
 
 | Option | Effect |
 |---|---|
 | (none) | Install the recorded standard build on every online device |
-| `--test` | Install the recorded test build (its instrumentation APKs with `adb install -r -t`); the tag is `deployed-test`. Never falls back to the standard APKs |
-| `--clean` | Uninstall the APKs' own app id first, which removes its data (`UNINSTALL_FIRST=1`) |
-| `--rebuild` | Run `./build_app --standard` (or `--test`) first; flags after `--` go to build_app (`REBUILD=1`) |
-| `--launch` | Start the app's launcher activity after install |
+| `-t` / `--test` | Install the recorded test build (its instrumentation APKs with `adb install -r -t`); the tag is `deployed-test`. Never falls back to the standard APKs |
+| `-c` / `--clean` | Uninstall the APKs' own app id first, which removes its data (`UNINSTALL_FIRST=1`) |
+| `-r` / `--rebuild` | Run `./build_app --standard` (or `--test`) first; flags after `--` go to build_app (`REBUILD=1`) |
+| `-l` / `--launch` | Start the app's launcher activity after install |
 | `tablet`, `emulator` | emulator-5554 |
 | `phone` | `deploy_serial=` from project.config (error if unset) |
 | other words | adb serials |

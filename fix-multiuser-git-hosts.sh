@@ -17,15 +17,22 @@
 #   other access, planner gets Permission denied on git log (Unix, not Landlock).
 #
 # Usage (run as dlang; uses sudo for chgrp/chmod of mixed owners):
-#   ./fix-multiuser-git-hosts.sh --dry-run
+#   ./fix-multiuser-git-hosts.sh -n|--dry-run
 #   ./fix-multiuser-git-hosts.sh
-#   ./fix-multiuser-git-hosts.sh --audit-only
+#   ./fix-multiuser-git-hosts.sh -a|--audit-only
+#   -h|--help
 #   HOSTS="VehicleExpenses-automated orchestration-example" ./fix-multiuser-git-hosts.sh
 #
 # Default HOSTS:
 #   VehicleExpenses-automated remotetable extractmail orchestration-example
 #
 set -uo pipefail
+
+for a in "$@"; do
+  case "$a" in
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+  esac
+done
 
 if [[ "$(id -un)" != "dlang" && "$(id -un)" != "root" && "${ALLOW_NON_DLANG:-0}" != "1" ]]; then
   echo "ERROR: run as dlang (or root with GIT_HOME set). whoami=$(id -un)" >&2
@@ -34,20 +41,21 @@ fi
 
 DRY=0
 AUDIT_ONLY=0
-for a in "$@"; do
-  case "$a" in
-    --dry-run) DRY=1 ;;
-    --audit-only) AUDIT_ONLY=1 ;;
-    -h|--help)
-      sed -n '2,35p' "$0"
-      exit 0
-      ;;
-    *)
-      echo "unknown arg: $a" >&2
-      exit 2
-      ;;
+parsed="$(getopt -o hna -l help,dry-run,audit-only -- "$@")" || exit 2
+eval set -- "$parsed"
+while true; do
+  case "$1" in
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+    -n|--dry-run) DRY=1; shift ;;
+    -a|--audit-only) AUDIT_ONLY=1; shift ;;
+    --) shift; break ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+if [[ $# -gt 0 ]]; then
+  echo "unknown arg: $1" >&2
+  exit 2
+fi
 
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   _sh=$(getent passwd "$SUDO_USER" | cut -d: -f6)

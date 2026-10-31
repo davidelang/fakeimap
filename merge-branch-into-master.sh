@@ -20,6 +20,11 @@
 
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./merge-branch-into-master.sh <branch-name>"
+  exit 0
+fi
+
 BRANCH="${1:-}"
 if [ -z "$BRANCH" ]; then
   echo "Usage: $0 <branch-name>" >&2

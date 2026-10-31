@@ -33,6 +33,11 @@ out=$("$S" 'a.b*['); rc=$?
 [[ $rc -eq 1 ]] && ok "no match exits 1" || bad "no match rc=$rc"
 "$S" a b >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "two args exit 2" || bad "two args rc=$rc"
+sum=$(sha256sum "$T/TODO.md")
+out=$("$S" -h); rc=$?
+[[ $rc -eq 0 && "$out" == *FILTER* && "$(sha256sum "$T/TODO.md")" == "$sum" ]] && ok "-h exits 0 and does not write TODO.md" || bad "-h rc=$rc $out"
+out=$("$S" --help); rc=$?
+[[ $rc -eq 0 ]] && ok "--help exits 0" || bad "--help rc=$rc"
 rm "$T/TODO.md"
 err=$("$S" 2>&1); rc=$?
 [[ $rc -eq 2 && "$err" == *ERROR* ]] && ok "missing TODO.md exits 2" || bad "missing: rc=$rc $err"

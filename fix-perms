@@ -2,9 +2,8 @@
 # fix-perms: Unified recovery script for permissions.
 #
 # Usage:
-#   sudo ./fix-perms                 # from orchestration root: all worktrees + sandbox
-#   sudo ./fix-perms --all           # same
-#   sudo ./fix-perms /path/to/agent-N   # specific worktree only (from anywhere)
+#   sudo ./fix-perms [-a|--all] [-q|--quiet] [-v|--verbose]
+#   sudo ./fix-perms [-v|--verbose] /path/to/agent-N   # that worktree only
 #
 # Run from inside a worktree with no arg: fixes only current worktree (skips sandbox).
 #
@@ -29,17 +28,47 @@
 
 set -eEuo pipefail
 
+VERBOSE=false
+DO_ALL=false
+TARGET_SPECIFIC=""
+FORWARD_ARGS=""
+_fp_orig=("$@")
+_fp_err=$(mktemp) || exit 1
+if ! parsed="$(getopt -o haqv -l help,all,quiet,verbose -- "$@" 2>"$_fp_err")"; then
+  _fp_bad=$(sed -n "s/.*'\\([^']*\\)'.*/\\1/p" "$_fp_err" | head -1)
+  echo "ERROR: fix-perms: unknown option ${_fp_bad:-?} (usage: fix-perms [-a|--all] [-q|--quiet] [-v|--verbose] [WORKTREE])" >&2
+  rm -f "$_fp_err"
+  exit 2
+fi
+rm -f "$_fp_err"
+eval set -- "$parsed"
+while true; do
+  case "$1" in
+    -h|--help)
+      echo "usage: sudo ./fix-perms [-a|--all] [-q|--quiet] [-v|--verbose] [WORKTREE]"
+      echo "  -a, --all      every worktree plus the sandbox (same as a run from the orchestration root)"
+      echo "  -q, --quiet    keep stdout quiet (the default)"
+      echo "  -v, --verbose  print each step"
+      echo "  -h, --help     print this usage and exit"
+      exit 0 ;;
+    -a|--all) DO_ALL=true; shift ;;
+    -q|--quiet) FORWARD_ARGS="$FORWARD_ARGS $1"; shift ;;
+    -v|--verbose) VERBOSE=true; FORWARD_ARGS="$FORWARD_ARGS $1"; shift ;;
+    --) shift; break ;;
+    *)
+      echo "ERROR: fix-perms: unknown option $1 (usage: fix-perms [-a|--all] [-q|--quiet] [-v|--verbose] [WORKTREE])" >&2
+      exit 2 ;;
+  esac
+done
+
 if [ "$EUID" -ne 0 ]; then
-  echo "ERROR: fix-perms must run as root: sudo $0 $*" >&2
+  echo "ERROR: fix-perms must run as root: sudo $0 ${_fp_orig[*]}" >&2
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CURRENT_DIR="$(pwd)"
 
-VERBOSE=false
-DO_ALL=false
-TARGET_SPECIFIC=""
 SUDO_USER=${SUDO_USER:-}
 SUDO_USER_VAL=${SUDO_USER:-}
 
@@ -59,38 +88,16 @@ if [ "$(cd "$SCRIPT_DIR" && pwd)" = "$ORCH_ROOT" ]; then
   AT_ORCHESTRATION=true
 fi
 
-TARGET_SPECIFIC=""
-
-# Parse args and flags
-FORWARD_ARGS=""
 for arg in "$@"; do
-  case "$arg" in
-    --all)
-      DO_ALL=true
-      ;;
-    --quiet)
-      FORWARD_ARGS="$FORWARD_ARGS $arg"
-      ;;
-    --verbose)
-      VERBOSE=true
-      FORWARD_ARGS="$FORWARD_ARGS $arg"
-      ;;
-    -*)
-      echo "ERROR: fix-perms: unknown option $arg (usage: fix-perms [--all] [--quiet] [--verbose] [WORKTREE])" >&2
-      exit 2
-      ;;
-    *)
-      if [ -n "$TARGET_SPECIFIC" ]; then
-        echo "ERROR: fix-perms: one WORKTREE only (got $TARGET_SPECIFIC and $arg)" >&2
-        exit 2
-      fi
-      if [ ! -d "$arg" ]; then
-        echo "ERROR: fix-perms: $arg is not a directory" >&2
-        exit 2
-      fi
-      TARGET_SPECIFIC="$arg"
-      ;;
-  esac
+  if [ -n "$TARGET_SPECIFIC" ]; then
+    echo "ERROR: fix-perms: one WORKTREE only (got $TARGET_SPECIFIC and $arg)" >&2
+    exit 2
+  fi
+  if [ ! -d "$arg" ]; then
+    echo "ERROR: fix-perms: $arg is not a directory" >&2
+    exit 2
+  fi
+  TARGET_SPECIFIC="$arg"
 done
 
 if ! $VERBOSE; then

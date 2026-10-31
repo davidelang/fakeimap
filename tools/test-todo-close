@@ -37,6 +37,12 @@ err=$("$S" dup 2>&1); rc=$?
 [[ $rc -eq 1 && "$err" == *"L4:"* && "$err" == *"L5:"* && "$err" != *three* ]] && cmp -s "$T/orig" "$T/TODO.md" && ok "two open matches exit 1 listing both, unchanged" || bad "dup: rc=$rc $err"
 err=$("$S" 'future only' 2>&1); rc=$?
 [[ $rc -eq 1 && "$err" == *"[future]"* ]] && cmp -s "$T/orig" "$T/TODO.md" && ok "[future] item refused with hint" || bad "future: rc=$rc $err"
+fixture
+sum=$(sha256sum "$T/TODO.md")
+out=$("$S" -h); rc=$?
+[[ $rc -eq 0 && "$out" == *Usage* && "$(sha256sum "$T/TODO.md")" == "$sum" ]] && ok "-h exits 0 and does not write TODO.md" || bad "-h rc=$rc $out"
+out=$("$S" --help); rc=$?
+[[ $rc -eq 0 && "$(sha256sum "$T/TODO.md")" == "$sum" ]] && ok "--help exits 0 and does not write" || bad "--help rc=$rc"
 "$S" >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "no args exits 2" || bad "noargs rc=$rc"
 chmod 440 "$T/TODO.md"

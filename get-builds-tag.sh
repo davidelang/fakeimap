@@ -25,6 +25,12 @@
 
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./get-builds-tag.sh"
+  echo "Print this branch's builds tag (feature-foo/builds, or builds on master)."
+  exit 0
+fi
+
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "ERROR: get-builds-tag.sh must be run from inside a git worktree." >&2
     exit 1

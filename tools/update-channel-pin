@@ -15,6 +15,11 @@
 # artifact sha256, then commits only the pinned paths. Never pushes. A running channel-arm
 # keeps the old binary until it is restarted (the file is replaced by rename).
 set -euo pipefail
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./tools/update-channel-pin"
+  echo "Bring this tree's agent-coordination-tickets pin up to orchestration-example HEAD. No arguments."
+  exit 0
+fi
 die() { echo "update-channel-pin: $*" >&2; exit 1; }
 
 canon="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

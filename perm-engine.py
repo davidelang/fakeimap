@@ -88,11 +88,20 @@ def apply_spec(spec, mode, is_dir):
             cur = (cur & ~mask) | bits
     return cur
 
+_OPT_LONG = {
+    "-t": "--top-only",
+    "-p": "--prune",
+    "-P": "--prune-name",
+    "-d": "--maxdepth",
+    "-s": "--skip-glob",
+    "-o": "--owner",
+}
+
 def parse_opts(a):
     o = {"prune": [], "prune_name": [], "top_only": False, "maxdepth": None, "skip_glob": [], "owner": None}
     i = 0
     while i < len(a):
-        k = a[i]
+        k = _OPT_LONG.get(a[i], a[i])
         if k == "--top-only":
             o["top_only"] = True; i += 1; continue
         if k in ("--prune", "--prune-name", "--maxdepth", "--skip-glob", "--owner"):
@@ -309,6 +318,12 @@ def cmd_readable_nogroups(user, *paths):
 
 def main(argv):
     global model_path, config_path, MODEL
+    if argv and argv[0] in ("-h", "--help"):
+        print("usage: perm-engine.py MODEL CONFIG COMMAND [ARGS]")
+        print("  -h, --help")
+        print("command options: -t/--top-only -p/--prune PATH -P/--prune-name NAME")
+        print("                 -d/--maxdepth N -s/--skip-glob GLOB -o/--owner USER")
+        return 0
     if len(argv) < 3:
         die("usage: perm-engine.py MODEL CONFIG COMMAND [ARGS]")
     model_path, config_path, cmd, *args = argv
@@ -326,4 +341,4 @@ def main(argv):
         die(f"unknown user or group {e}")
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]) or 0)

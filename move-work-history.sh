@@ -19,10 +19,18 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY=0
-if [[ "${1:-}" == "--dry-run" ]]; then
-  DRY=1
-elif [[ -n "${1:-}" ]]; then
-  echo "usage: sudo $0 [--dry-run]" >&2
+parsed="$(getopt -o hn -l help,dry-run -- "$@")" || exit 2
+eval set -- "$parsed"
+while true; do
+  case "$1" in
+    -h|--help) echo "usage: sudo $0 [-n|--dry-run]"; exit 0 ;;
+    -n|--dry-run) DRY=1; shift ;;
+    --) shift; break ;;
+    *) echo "usage: sudo $0 [-n|--dry-run]" >&2; exit 2 ;;
+  esac
+done
+if [[ $# -gt 0 ]]; then
+  echo "usage: sudo $0 [-n|--dry-run]" >&2
   exit 2
 fi
 

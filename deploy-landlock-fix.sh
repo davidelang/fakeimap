@@ -14,10 +14,11 @@
 #
 # Usage:
 #   ./deploy-landlock-fix.sh                 # copy only
-#   ./deploy-landlock-fix.sh --commit        # copy + git add/commit per worktree
-#   ./deploy-landlock-fix.sh --commit --push
-#   ./deploy-landlock-fix.sh --dry-run
-#   ./deploy-landlock-fix.sh --also-ve       # also all VE worktrees (incl. SoT)
+#   ./deploy-landlock-fix.sh -c|--commit     # copy + git add/commit per worktree
+#   ./deploy-landlock-fix.sh -c|--commit -p|--push
+#   ./deploy-landlock-fix.sh -n|--dry-run
+#   ./deploy-landlock-fix.sh -a|--also-ve    # also all VE worktrees (incl. SoT)
+#   -h|--help
 #   HOSTS="remotetable extractmail" ./deploy-landlock-fix.sh --commit
 #
 # Env / config (no hard-coded machine paths as success defaults):
@@ -29,6 +30,12 @@
 set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+for a in "$@"; do
+  case "$a" in
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+  esac
+done
 
 if [[ -z "${GIT_HOME:-}" && -f "$SRC/project.config" ]]; then
   GIT_HOME=$(sed -n 's/^git_home=//p' "$SRC/project.config" | tr -d '\r' | head -1)
@@ -50,22 +57,23 @@ DO_COMMIT=0
 DO_PUSH=0
 DO_VE=0
 
-for a in "$@"; do
-  case "$a" in
-    --dry-run) DRY=1 ;;
-    --commit) DO_COMMIT=1 ;;
-    --push) DO_PUSH=1; DO_COMMIT=1 ;;
-    --also-ve) DO_VE=1 ;;
-    -h|--help)
-      sed -n '2,40p' "$0"
-      exit 0
-      ;;
-    *)
-      echo "unknown arg: $a (try --help)" >&2
-      exit 2
-      ;;
+parsed="$(getopt -o hncap -l help,dry-run,commit,push,also-ve -- "$@")" || exit 2
+eval set -- "$parsed"
+while true; do
+  case "$1" in
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -n|--dry-run) DRY=1; shift ;;
+    -c|--commit) DO_COMMIT=1; shift ;;
+    -p|--push) DO_PUSH=1; DO_COMMIT=1; shift ;;
+    -a|--also-ve) DO_VE=1; shift ;;
+    --) shift; break ;;
+    *) echo "unknown arg: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
+if [[ $# -gt 0 ]]; then
+  echo "unknown arg: $1 (try --help)" >&2
+  exit 2
+fi
 
 # Paths relative to SoT / each worktree root
 LANDLOCK_FILES=(

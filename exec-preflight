@@ -2,6 +2,12 @@
 # One-segment execute identity check. Optional plan path: Host:/Worktree: vs this tree.
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./exec-preflight [PLAN]"
+  echo "One-segment execute identity check. Optional plan path: Host:/Worktree: vs this tree."
+  exit 0
+fi
+
 echo "pwd=$(pwd)"
 host="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 echo "host=${host}"

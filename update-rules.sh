@@ -8,6 +8,15 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for a in "$@"; do
   case "$a" in
+    -h|--help)
+      echo "Usage: ./update-rules.sh [-h|--help] [deploy-orchestration flags...]"
+      echo "Syncs this host's rules. Default is a report. --apply commits."
+      echo "--force and -f are rejected."
+      exit 0 ;;
+  esac
+done
+for a in "$@"; do
+  case "$a" in
     --force|-f) echo "update-rules.sh: --force is not supported; dirty/diverged worktrees are skipped and reported." >&2; exit 2 ;;
   esac
 done

@@ -5,8 +5,8 @@
 # (Grok role launchers, packs, Landlock, setup_agent, fix-perms).
 #
 # Usage:
-#   ./clone-orchestration-project [--dry-run] [--source DIR] [--git-home DIR] <new-name>
-#   ./clone-orchestration-project [--dry-run] --repair DIR
+#   ./clone-orchestration-project [-n|--dry-run] [-s|--source DIR] [-g|--git-home DIR] <new-name>
+#   ./clone-orchestration-project [-n|--dry-run] [-r|--repair DIR]
 #
 # Layout of dest:
 #   git_home/<name>/         branch orchestration (managing tree)
@@ -33,17 +33,17 @@ NAME=""
 
 usage() {
   cat <<'EOF'
-Usage: clone-orchestration-project [--dry-run] [--source DIR] [--git-home DIR] <new-name>
-       clone-orchestration-project [--dry-run] --repair DIR
+Usage: clone-orchestration-project [-n|--dry-run] [-s|--source DIR] [-g|--git-home DIR] <new-name>
+       clone-orchestration-project [-n|--dry-run] [-r|--repair DIR]
 
 Clone this orchestration-example tree to git_home/<new-name> as a new
 multi-agent host (orchestration branch at dest root, master/ worktree).
 
-  --dry-run       Print resolved paths and planned steps; no writes, no sudo
-  --source DIR    Path to orchestration-example (default: this script's dir)
-  --git-home DIR  Override git_home (must be an absolute existing directory)
-  --repair DIR    Seed project.config, filter config + smudge check, dest-root DAC on an existing clone
-  -h, --help      Show this help
+  -n, --dry-run       Print resolved paths and planned steps; no writes, no sudo
+  -s, --source DIR    Path to orchestration-example (default: this script's dir)
+  -g, --git-home DIR  Override git_home (must be an absolute existing directory)
+  -r, --repair DIR    Seed project.config, filter config + smudge check, dest-root DAC on an existing clone
+  -h, --help          Show this help
 
 ./run-grok-* from a worktree (including master/) needs orch_root= in that
 worktree's project.config. This tool seeds dest and dest/master via
@@ -662,47 +662,48 @@ do_perms() {
 }
 
 # --- args ---
-while [ $# -gt 0 ]; do
+_cl_err=$(mktemp) || exit 1
+if ! parsed="$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "$@" 2>"$_cl_err")"; then
+  if grep -q 'requires an argument' "$_cl_err"; then
+    _cl_opt=$(sed -n "s/.*'\\(--[^']*\\)'.*/\\1/p; s/.*option requires an argument -- '\\([^']*\\)'.*/-\\1/p" "$_cl_err" | head -1)
+    rm -f "$_cl_err"
+    case "$_cl_opt" in
+      --source|-s) die "--source requires a directory" ;;
+      --git-home|-g) die "--git-home requires a directory" ;;
+      --repair|-r) die "--repair requires a directory" ;;
+      *) die "${_cl_opt:-option} requires a directory" ;;
+    esac
+  fi
+  _cl_bad=$(sed -n "s/.*'\\([^']*\\)'.*/\\1/p" "$_cl_err" | head -1)
+  rm -f "$_cl_err"
+  die "unknown option: ${_cl_bad:-?} (see --help)"
+fi
+rm -f "$_cl_err"
+eval set -- "$parsed"
+while true; do
   case "$1" in
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --dry-run)
-      DRY=1
-      shift
-      ;;
-    --source)
-      [ $# -ge 2 ] || die "--source requires a directory"
-      SOURCE_ARG="$2"
-      shift 2
-      ;;
-    --git-home)
-      [ $# -ge 2 ] || die "--git-home requires a directory"
-      GIT_HOME_ARG="$2"
-      shift 2
-      ;;
-    --repair)
-      [ $# -ge 2 ] || die "--repair requires a directory"
-      REPAIR_ARG="$2"
-      shift 2
-      ;;
-    --)
-      shift
-      break
-      ;;
-    -*)
-      die "unknown option: $1 (see --help)"
-      ;;
-    *)
-      if [ -z "$NAME" ]; then
-        NAME="$1"
-      else
-        die "unexpected argument: $1"
-      fi
-      shift
-      ;;
+    -h|--help) usage; exit 0 ;;
+    -n|--dry-run) DRY=1; shift ;;
+    -s|--source)
+      [ -n "${2:-}" ] || die "--source requires a directory"
+      SOURCE_ARG="$2"; shift 2 ;;
+    -g|--git-home)
+      [ -n "${2:-}" ] || die "--git-home requires a directory"
+      GIT_HOME_ARG="$2"; shift 2 ;;
+    -r|--repair)
+      [ -n "${2:-}" ] || die "--repair requires a directory"
+      REPAIR_ARG="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) die "unknown option: $1 (see --help)" ;;
   esac
+done
+while [ $# -gt 0 ]; do
+  if [ -z "$NAME" ]; then
+    NAME="$1"
+  else
+    die "unexpected argument: $1"
+  fi
+  shift
 done
 
 if [ -n "$REPAIR_ARG" ]; then

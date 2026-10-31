@@ -28,7 +28,7 @@ After an interrupted run, ./prepare-pr-rewrite --redo finishes it: uncommitted c
 reset sets (log, infra, the reset product paths) and untracked infra paths are allowed; the log is
 never written, the tag never touched.
 """
-import datetime, os, re, subprocess, sys
+import argparse, datetime, os, re, subprocess, sys
 
 def die(msg):
     print("ERROR: " + msg, file=sys.stderr)
@@ -382,20 +382,28 @@ def plan_input(c):
     print("PLAN-INPUT %s (%d commits, %d product files, %d infra in the first commit, %d cancelled-out, %d leftover candidates)"
           % (out, len(commits), len(c.changed), len(kept), len(gone), len(left)))
 
-def main():
-    a = sys.argv[1:]
-    mode = a.pop(0) if a and a[0].startswith("--") else "start"
-    if mode not in ("start", "--redo", "--check", "--plan-input") or len(a) > 1:
+_PR_USAGE = "usage: ./prepare-pr-rewrite [-h] [TARGET] | -r|--redo [TARGET] | -i|--plan-input [TARGET] | -c|--check [TARGET]"
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
         die("usage: ./prepare-pr-rewrite [TARGET] | --redo [TARGET] | --plan-input [TARGET] | --check [TARGET]")
-    target = a[0] if a else "master"
-    if mode == "start":
-        reset(Ctx(target, need_tag=False), redo=False)
-    elif mode == "--redo":
-        reset(Ctx(target, need_tag=True), redo=True)
-    elif mode == "--check":
-        check(Ctx(target, need_tag=True))
+
+def main():
+    ap = _Parser(prog="prepare-pr-rewrite", usage=_PR_USAGE)
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("-r", "--redo", action="store_true")
+    g.add_argument("-i", "--plan-input", action="store_true")
+    g.add_argument("-c", "--check", action="store_true")
+    ap.add_argument("target", nargs="?", default="master")
+    a = ap.parse_args()
+    if a.redo:
+        reset(Ctx(a.target, need_tag=True), redo=True)
+    elif a.check:
+        check(Ctx(a.target, need_tag=True))
+    elif a.plan_input:
+        plan_input(Ctx(a.target, need_tag=None))
     else:
-        plan_input(Ctx(target, need_tag=None))
+        reset(Ctx(a.target, need_tag=False), redo=False)
 
 if __name__ == "__main__":
     main()

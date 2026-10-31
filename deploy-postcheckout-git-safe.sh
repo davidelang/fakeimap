@@ -15,9 +15,10 @@
 #
 # Usage (run as dlang — needs write on host trees):
 #   ./deploy-postcheckout-git-safe.sh
-#   ./deploy-postcheckout-git-safe.sh --commit
-#   ./deploy-postcheckout-git-safe.sh --dry-run
-#   ./deploy-postcheckout-git-safe.sh --also-ve   # copy into VE worktrees too
+#   ./deploy-postcheckout-git-safe.sh -c|--commit
+#   ./deploy-postcheckout-git-safe.sh -n|--dry-run
+#   ./deploy-postcheckout-git-safe.sh -a|--also-ve   # copy into VE worktrees too
+#   -p|--push  -h|--help
 #   HOSTS="remotetable extractmail" ./deploy-postcheckout-git-safe.sh --commit
 #
 # Env:
@@ -29,6 +30,12 @@
 set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+for a in "$@"; do
+  case "$a" in
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+  esac
+done
 
 if [[ -z "${GIT_HOME:-}" && -f "$SRC/project.config" ]]; then
   GIT_HOME=$(sed -n 's/^git_home=//p' "$SRC/project.config" | tr -d '\r' | head -1)
@@ -49,22 +56,23 @@ DO_COMMIT=0
 DO_PUSH=0
 DO_VE=0
 
-for a in "$@"; do
-  case "$a" in
-    --dry-run) DRY=1 ;;
-    --commit) DO_COMMIT=1 ;;
-    --push) DO_PUSH=1; DO_COMMIT=1 ;;
-    --also-ve) DO_VE=1 ;;
-    -h|--help)
-      sed -n '2,35p' "$0"
-      exit 0
-      ;;
-    *)
-      echo "unknown arg: $a (try --help)" >&2
-      exit 2
-      ;;
+parsed="$(getopt -o hncap -l help,dry-run,commit,push,also-ve -- "$@")" || exit 2
+eval set -- "$parsed"
+while true; do
+  case "$1" in
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+    -n|--dry-run) DRY=1; shift ;;
+    -c|--commit) DO_COMMIT=1; shift ;;
+    -p|--push) DO_PUSH=1; DO_COMMIT=1; shift ;;
+    -a|--also-ve) DO_VE=1; shift ;;
+    --) shift; break ;;
+    *) echo "unknown arg: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
+if [[ $# -gt 0 ]]; then
+  echo "unknown arg: $1 (try --help)" >&2
+  exit 2
+fi
 
 # Tracked paths to publish (relative to repo root)
 PUBLISH_FILES=(

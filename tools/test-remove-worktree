@@ -63,4 +63,28 @@ rw b1.wt; rc=$?; chmod u+w "$R"
 grep -q 'rm -rf' "$RMWT_LOG" && bad "sudo rm -rf fallback ran" || ok "no sudo rm -rf"
 
 grep -c -F "$SW" "$canon/remove_worktree.sh" >/dev/null && bad "remove_worktree.sh still swallows" || ok "remove_worktree.sh has no swallow idiom"
+
+mk; export RMWT_ATTRS='--------------e-----'
+rw -h; rc=$?
+[ $rc -eq 0 ] && [ -d "$R/agent-1" ] && ! grep -q . "$RMWT_LOG" && ok "-h exits 0 and removes nothing" || bad "-h rc=$rc $(cat "$T/out") log=$(cat "$RMWT_LOG")"
+rw --help; rc=$?
+[ $rc -eq 0 ] && [ -d "$R/agent-1" ] && ok "--help exits 0 and removes nothing" || bad "--help rc=$rc"
+
+unique() { echo z >"$R/agent-1/extra"; G -C "$R/agent-1" add extra; G -C "$R/agent-1" commit -qm extra; }
+mk; export RMWT_ATTRS='--------------e-----'; unique
+rw b1.wt; rc=$?
+[ $rc -ne 0 ] && [ -d "$R/agent-1" ] && git -C "$R" rev-parse -q --verify b1 >/dev/null && ok "unmerged without force stays" || bad "unmerged rc=$rc $(tail -4 "$T/out")"
+mk; export RMWT_ATTRS='--------------e-----'; unique
+rw -f b1.wt; rc=$?
+[ $rc -eq 0 ] && [ ! -d "$R/agent-1" ] && git -C "$R" rev-parse -q --verify b1 >/dev/null && ok "-f removes the worktree and leaves the branch" || bad "-f rc=$rc $(tail -6 "$T/out")"
+mk; export RMWT_ATTRS='--------------e-----'; unique
+rw --force b1.wt; rc=$?
+[ $rc -eq 0 ] && [ ! -d "$R/agent-1" ] && git -C "$R" rev-parse -q --verify b1 >/dev/null && ok "--force matches -f" || bad "--force rc=$rc $(tail -6 "$T/out")"
+mk; export RMWT_ATTRS='--------------e-----'; unique
+rw -ff b1.wt; rc=$?
+[ $rc -eq 0 ] && [ ! -d "$R/agent-1" ] && ! git -C "$R" rev-parse -q --verify b1 >/dev/null && ok "-ff deletes the branch" || bad "-ff rc=$rc $(tail -6 "$T/out")"
+mk; export RMWT_ATTRS='--------------e-----'; unique
+rw --force --force b1.wt; rc=$?
+[ $rc -eq 0 ] && [ ! -d "$R/agent-1" ] && ! git -C "$R" rev-parse -q --verify b1 >/dev/null && ok "--force --force matches -ff" || bad "--force --force rc=$rc $(tail -6 "$T/out")"
+
 echo "passed $pass failed $fail"; [ $fail -eq 0 ]

@@ -1,25 +1,36 @@
 #!/bin/bash
 # remove_worktree.sh: Safely remove agent worktrees and their branches
-# Usage: ./remove_worktree.sh [-f|-ff] agent-N|branch-name
+# Usage: ./remove_worktree.sh [-h|--help] [-f|--force] agent-N|branch-name
+# -ff and --force --force are level 2 (getopt turns -ff into two -f).
 
 FORCE_LEVEL=0
 TARGET=""
 
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -ff)
-            FORCE_LEVEL=2
-            shift
-            ;;
-        -f|--force)
-            FORCE_LEVEL=$((FORCE_LEVEL + 1))
-            shift
-            ;;
+_rw_err=$(mktemp) || exit 1
+if ! parsed="$(getopt -o hf -l help,force -- "$@" 2>"$_rw_err")"; then
+    cat "$_rw_err" >&2
+    echo "Usage: $0 [-f|--force] agent-N|branch-name" >&2
+    rm -f "$_rw_err"
+    exit 1
+fi
+rm -f "$_rw_err"
+eval set -- "$parsed"
+while true; do
+    case "$1" in
+        -h|--help)
+            echo "Usage: $0 [-h|--help] [-f|--force] agent-N|branch-name"
+            echo "  -f, --force          remove even with local changes (level 1)"
+            echo "  -ff, --force --force also delete the branch (level 2)"
+            exit 0 ;;
+        -f|--force) FORCE_LEVEL=$((FORCE_LEVEL + 1)); shift ;;
+        --) shift; break ;;
         *)
-            TARGET="$1"
-            shift
-            ;;
+            echo "Usage: $0 [-f|--force] agent-N|branch-name" >&2
+            exit 1 ;;
     esac
+done
+for _rw_a in "$@"; do
+    TARGET="$_rw_a"
 done
 
 if [ -z "$TARGET" ]; then

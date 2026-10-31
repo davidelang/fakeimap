@@ -307,6 +307,11 @@ ve_ensure_tracked_exec_other_x() {
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
+  if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    echo "Usage: ./ve-resolve-orch [WORKTREE]"
+    echo "Print orch_root. With no argument, VE_RESOLVE_ORCH_WT must be set."
+    exit 0
+  fi
   ve_resolve_orch "${1:-}" || exit 1   # no argument and no VE_RESOLVE_ORCH_WT = error
   printf '%s\n' "$ORCH_ROOT"
 fi

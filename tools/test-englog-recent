@@ -39,7 +39,21 @@ err=$("$S" --show '## 2026-10-26 - Dup' 2>&1); rc=$?
 [[ $rc -eq 1 ]] && ok "unknown header exits 1" || bad "unknown rc=$rc"
 "$S" --since 26-10-01 >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "bad date exits 2" || bad "bad date rc=$rc"
+out=$("$S" --last 2); rc=$?
+[[ $rc -eq 0 && $(wc -l <<<"$out") -eq 2 && "$out" == *"L8: ## 2026-10-26 - Dup"* ]] && ok "--last 2 matches -n" || bad "--last: rc=$rc $out"
+out=$("$S" -S 2026-10-24); rc=$?
+[[ $rc -eq 0 && "$out" == *"Out of order"* && "$out" != *Legacy* ]] && ok "-S is --since" || bad "-S: rc=$rc $out"
+out=$("$S" -s '2026-10-25 - A'); rc=$?
+[[ $rc -eq 0 && "$out" == $'## 2026-10-25 - A\nbody a' ]] && ok "-s is --show" || bad "-s: rc=$rc $out"
+"$S" -n 2 --since 2026-10-24 >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 ]] && ok "two modes exit 2" || bad "two modes rc=$rc"
+"$S" -h >/dev/null; rc=$?
+[[ $rc -eq 0 ]] && ok "-h exits 0" || bad "-h rc=$rc"
+"$S" --help >/dev/null; rc=$?
+[[ $rc -eq 0 ]] && ok "--help exits 0" || bad "--help rc=$rc"
 rm ENGINEERING_LOG.md
 "$S" >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "missing log exits 2" || bad "missing rc=$rc"
+"$S" -h >/dev/null; rc=$?
+[[ $rc -eq 0 ]] && ok "-h exits 0 with the log missing" || bad "help missing rc=$rc"
 echo "PASS $pass FAIL $fail"; [ "$fail" -eq 0 ]

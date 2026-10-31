@@ -69,5 +69,13 @@ mk; touch "$T/fail-fixperms"; run feature-y; rc=$?; rm -f "$T/fail-fixperms"
 mk; mkdir -p "$R/agent-1"; : >"$R/agent-1/junk"; run feature-z; rc=$?
 grep -q "sudo rm -rf -- agent-1" "$T/sudo-calls" && ok "stale agent-1 removed with one explicit sudo rm (no silent retry)" || bad "stale dir: $(cat "$T/sudo-calls")"
 
+mk
+out=$(bash -c 'source "$1" -h; echo AFTER:$?' _ "$canon/setup_agent.sh")
+[[ "$out" == *"-f, --force"* && "$out" == *AFTER:0* ]] && ok "sourced -h returns 0 and the shell continues" || bad "sourced -h: $out"
+out=$(bash -c 'source "$1" --help; echo AFTER:$?' _ "$canon/setup_agent.sh")
+[[ "$out" == *AFTER:0* ]] && ok "sourced --help returns 0" || bad "sourced --help: $out"
+run -f feature-f; rc=$?
+[[ $rc -eq 0 && -d "$R/agent-1" ]] && ok "-f is --force and setup completes" || bad "-f rc=$rc $(tail -8 "$T/out")"
+
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]

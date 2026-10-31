@@ -547,9 +547,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--status", action="store_true", help="print Landlock ABI status")
-    ap.add_argument("--role", choices=ROLES, help="session role profile")
+    ap.add_argument("-s", "--status", action="store_true", help="print Landlock ABI status")
+    ap.add_argument("-r", "--role", choices=ROLES, help="session role profile")
     ap.add_argument(
+        "-w",
         "--worktree",
         default=os.environ.get("GROK_PROMPT_ROOT")
         or os.environ.get("AGENT_LANDLOCK_WORKTREE")
@@ -557,11 +558,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="start worktree root (default: cwd / GROK_PROMPT_ROOT)",
     )
     ap.add_argument(
+        "-d",
         "--dump-grants",
         action="store_true",
         help="print resolved dir/file grants and exit 0",
     )
     ap.add_argument(
+        "-a",
         "--apply-only",
         action="store_true",
         help="apply Landlock then exec remaining args (or exit 0 if none)",

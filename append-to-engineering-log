@@ -7,6 +7,12 @@
 
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./append-to-engineering-log MESSAGE"
+  echo "       ./append-to-engineering-log @file"
+  exit 0
+fi
+
 # Ensure group-writable files in multi-user environment
 umask 007
 

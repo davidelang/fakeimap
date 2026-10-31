@@ -3,6 +3,10 @@
 # Usage: todo-close 'exact text'   Fixed-string match on the open item's text (incl. continuations).
 # Exactly one open item must match; otherwise nothing changes and it exits 1 listing the matches.
 set -euo pipefail
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./todo-close 'exact text of one open - [ ] item'"
+  exit 0
+fi
 umask 007
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TODOFILE="$SCRIPT_DIR/TODO.md"

@@ -3,8 +3,9 @@
 # Replaces @@TOKEN@@ with values from project.config (next to this script).
 # Fails (non-zero) when project.config is missing or a token in the file has no value;
 # git then refuses the checkout (filter.manage-configs.required=true).
-#   bash ./filter-apply-config            smudge stdin to stdout
-#   bash ./filter-apply-config --tokens   print the known tokens (used by ./verify-smudge)
+#   bash ./filter-apply-config              smudge stdin to stdout
+#   bash ./filter-apply-config -t|--tokens  print the known tokens (used by ./verify-smudge)
+#   bash ./filter-apply-config -h|--help
 # Files that must keep a literal @@TOKEN@@ are not filter=manage-configs in .gitattributes.
 
 set -euo pipefail
@@ -31,7 +32,23 @@ declare -A TOKENS=(
   [orch_root]="@@ORCH_ROOT@@"
 )
 
-if [ "${1:-}" = --tokens ]; then
+parsed="$(getopt -o ht -l help,tokens -- "$@")" || exit 2
+eval set -- "$parsed"
+_fa_tokens=0
+while true; do
+  case "$1" in
+    -h|--help)
+      echo "usage: filter-apply-config [-t|--tokens] [-h|--help]"
+      echo "  no arguments: smudge stdin to stdout"
+      echo "  -t, --tokens: print the known tokens"
+      exit 0 ;;
+    -t|--tokens) _fa_tokens=1; shift ;;
+    --) shift; break ;;
+    *) echo "usage: filter-apply-config [--tokens] (smudge stdin to stdout)" >&2; exit 2 ;;
+  esac
+done
+if [ "$_fa_tokens" -eq 1 ]; then
+  [ $# -eq 0 ] || { echo "usage: filter-apply-config [--tokens] (smudge stdin to stdout)" >&2; exit 2; }
   for k in "${!TOKENS[@]}"; do printf '%s %s\n' "${TOKENS[$k]}" "$k"; done | sort
   exit 0
 fi

@@ -6,6 +6,12 @@
 
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./install-merge-drivers.sh"
+  echo "Configure repo-local merge drivers and the manage-configs filter. No arguments."
+  exit 0
+fi
+
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
 if [ -z "$ROOT" ]; then
   echo "install-merge-drivers: ERROR: not inside a git worktree" >&2

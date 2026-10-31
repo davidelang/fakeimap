@@ -4,25 +4,27 @@
 # Authoritative copy: orchestration-example/build-examples/android-gradle/build_app
 #
 # Usage:
-#   ./build_app [--standard] [--test] [--play|--bundle] [--release-tag NAME] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
+#   ./build_app [-s|--standard] [-t|--test] [-p|--play|--bundle] [-T|--release-tag NAME] [-c|--signing-config FILE] [-K|--release-keystore V] [-A|--release-key-alias V] [-B|--release-bundle-task V] [-P|--release-bundle-path V] [-G|--release-gradle-args V] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
 #
 #   Build selection (flags first, any order, combinable). No flag = standard, test (unless the
-#   app declares none) and, with a project.config, play. --release-tag does not change that.
-#     --standard        the app's standard build   ('- **Standard build:**' in project-facts.md)
-#     --test            the app's test build       ('- **Test build:**': a build type such as qa,
+#   app declares none) and, with a project.config, play. -T/--release-tag does not change that.
+#     -s, --standard    the app's standard build   ('- **Standard build:**' in project-facts.md)
+#     -t, --test        the app's test build       ('- **Test build:**': a build type such as qa,
 #                       a side-by-side app, and/or instrumentation:<variant> = that variant's app
 #                       plus its androidTest APK)
-#     --play, --bundle  signed Play AAB   (release_* keys); needs a terminal for the passwords
-#     --release-tag NAME
+#     -p, --play, --bundle
+#                       signed Play AAB   (release_* keys); needs a terminal for the passwords
+#     -T, --release-tag NAME
 #                       annotated tag on the commit these builds use, created before Gradle so
 #                       versionName is exactly NAME. No prompt. Absent: no release tag. With
 #                       --play the tag is on the versionCode bump; without it, on the commit
 #                       the builds use. A failed run deletes that tag. A bump commit stays.
 #   Single-user Play signing (no project.config; refused when one exists), passed explicitly:
-#     --signing-config FILE   key=value lines: release_keystore, release_key_alias,
+#     -c, --signing-config FILE   key=value lines: release_keystore, release_key_alias,
 #                             release_bundle_task, release_bundle_path, release_gradle_args
-#     --release-keystore V --release-key-alias V --release-bundle-task V --release-bundle-path V
-#     --release-gradle-args V   (each key once: file and flag together for one key is an error)
+#     -K, --release-keystore V  -A, --release-key-alias V  -B, --release-bundle-task V
+#     -P, --release-bundle-path V  -G, --release-gradle-args V
+#                       (each key once: file and flag together for one key is an error)
 #
 #   What to build is declared in the committed project-facts.md, section '## Build and commit',
 #   one line each (strict: missing, duplicate or malformed lines stop the build):
@@ -119,6 +121,44 @@ check_play_link() {  # check_play_link TARGET [built]
     fi
   fi
 }
+
+# Help before re-exec, JDK lookup, or any build. A failure here is left for the parser below.
+_ba_usage() {
+  cat <<'EOF'
+Usage: ./build_app [-s|--standard] [-t|--test] [-p|--play|--bundle] [-T|--release-tag NAME] [-c|--signing-config FILE] [-K|--release-keystore V] [-A|--release-key-alias V] [-B|--release-bundle-task V] [-P|--release-bundle-path V] [-G|--release-gradle-args V] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
+
+  -s, --standard              the app's standard build
+  -t, --test                  the app's test build
+  -p, --play, --bundle        signed Play AAB (needs a terminal)
+  -T, --release-tag NAME      annotated tag on the commit these builds use (does not select a build)
+  -c, --signing-config FILE   single-user Play signing file
+  -K, --release-keystore V
+  -A, --release-key-alias V
+  -B, --release-bundle-task V
+  -P, --release-bundle-path V
+  -G, --release-gradle-args V
+  -h, --help                  print this usage and exit
+
+Flags come first. No build flag selects standard, test (unless none), and play when
+project.config exists. A non-option ends flag parsing, so
+./build_app msg file --standard treats --standard as a file name.
+EOF
+}
+_ba_help_if_asked() {
+  local parsed
+  if ! parsed="$(getopt -q -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,release-tag:,signing-config:,release-keystore:,release-key-alias:,release-bundle-task:,release-bundle-path:,release-gradle-args: -- "$@")"; then
+    return 0
+  fi
+  eval set -- "$parsed"
+  while true; do
+    case "$1" in
+      -h|--help) _ba_usage; exit 0 ;;
+      --) break ;;
+      *) shift ;;
+    esac
+  done
+}
+_ba_help_if_asked "$@"
 
 # Mode: multi-user when project.config exists and is smudged; single-user otherwise.
 SINGLE_USER=false
@@ -287,42 +327,75 @@ read_signing_config() {  # strict key=value file: comments and blank lines allow
     sign_set "$k" "$v" "$f line $n"
   done < "$f"
 }
-while [ "$#" -ge 1 ]; do
+# Leading + stops at the first non-option. Split on the user's -- first so gradle
+# flags after it stay gradle flags (getopt would otherwise drop that --).
+_ba_opt=()
+_ba_gradle=()
+_ba_dd=0
+for _ba_a in "$@"; do
+  if [ "$_ba_dd" -eq 1 ]; then
+    _ba_gradle+=("$_ba_a")
+  elif [ "$_ba_a" = "--" ]; then
+    _ba_dd=1
+  else
+    _ba_opt+=("$_ba_a")
+  fi
+done
+_ba_err=$(mktemp) || exit 1
+if ! parsed="$(getopt -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,release-tag:,signing-config:,release-keystore:,release-key-alias:,release-bundle-task:,release-bundle-path:,release-gradle-args: -- ${_ba_opt[@]+"${_ba_opt[@]}"} 2>"$_ba_err")"; then
+  if grep -q 'requires an argument' "$_ba_err"; then
+    _ba_optname=$(sed -n "s/.*'\\(--[^']*\\)'.*/\\1/p; s/.*option requires an argument -- '\\([^']*\\)'.*/-\\1/p" "$_ba_err" | head -1)
+    echo "ERROR: ${_ba_optname:-option} needs a value." >&2
+  else
+    _ba_bad=$(sed -n "s/.*'\\([^']*\\)'.*/\\1/p" "$_ba_err" | head -1)
+    echo "ERROR: unknown flag '${_ba_bad:-?}'. Build flags: --standard --test --play (--bundle) --release-tag NAME; single-user Play signing: --signing-config FILE, --release-keystore, --release-key-alias, --release-bundle-task, --release-bundle-path, --release-gradle-args." >&2
+  fi
+  rm -f "$_ba_err"
+  exit 1
+fi
+rm -f "$_ba_err"
+eval set -- "$parsed"
+_ba_need() {
+  if [ -z "${2:-}" ]; then
+    echo "ERROR: $1 needs a value." >&2
+    exit 1
+  fi
+}
+while true; do
   case "$1" in
-    --signing-config|--release-keystore|--release-key-alias|--release-bundle-task|--release-bundle-path|--release-gradle-args)
-      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
-        echo "ERROR: $1 needs a value." >&2
-        exit 1
-      fi
-      SIGN_SOURCE="$SIGN_SOURCE $1"
-      if [ "$1" = --signing-config ]; then
-        read_signing_config "$2"
-      else
-        _k="${1#--}"; sign_set "${_k//-/_}" "$2" "$1"
-      fi
-      shift 2 ;;
-    --standard) BUILD_STANDARD=true; FLAG_SEEN=true; shift ;;
-    --test) BUILD_TEST=true; FLAG_SEEN=true; shift ;;
-    --play|--bundle) BUILD_PLAY=true; FLAG_SEEN=true; shift ;;
-    --release-tag)
-      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
-        echo "ERROR: --release-tag needs a value." >&2
-        exit 1
-      fi
+    -h|--help) _ba_usage; exit 0 ;;
+    -c|--signing-config)
+      _ba_need "$1" "${2:-}"; SIGN_SOURCE="$SIGN_SOURCE $1"; read_signing_config "$2"; shift 2 ;;
+    -K|--release-keystore)
+      _ba_need "$1" "${2:-}"; SIGN_SOURCE="$SIGN_SOURCE $1"; sign_set release_keystore "$2" "$1"; shift 2 ;;
+    -A|--release-key-alias)
+      _ba_need "$1" "${2:-}"; SIGN_SOURCE="$SIGN_SOURCE $1"; sign_set release_key_alias "$2" "$1"; shift 2 ;;
+    -B|--release-bundle-task)
+      _ba_need "$1" "${2:-}"; SIGN_SOURCE="$SIGN_SOURCE $1"; sign_set release_bundle_task "$2" "$1"; shift 2 ;;
+    -P|--release-bundle-path)
+      _ba_need "$1" "${2:-}"; SIGN_SOURCE="$SIGN_SOURCE $1"; sign_set release_bundle_path "$2" "$1"; shift 2 ;;
+    -G|--release-gradle-args)
+      _ba_need "$1" "${2:-}"; SIGN_SOURCE="$SIGN_SOURCE $1"; sign_set release_gradle_args "$2" "$1"; shift 2 ;;
+    -s|--standard) BUILD_STANDARD=true; FLAG_SEEN=true; shift ;;
+    -t|--test) BUILD_TEST=true; FLAG_SEEN=true; shift ;;
+    -p|--play|--bundle) BUILD_PLAY=true; FLAG_SEEN=true; shift ;;
+    -T|--release-tag)
+      _ba_need "$1" "${2:-}"
       if [ -n "$RELEASE_TAG" ]; then
         echo "ERROR: --release-tag given twice." >&2
         exit 1
       fi
       RELEASE_TAG=$2
       shift 2 ;;
-    --) break ;;
-    --*)
+    --) shift; break ;;
+    *)
       echo "ERROR: unknown flag '$1'. Build flags: --standard --test --play (--bundle) --release-tag NAME; single-user Play signing: --signing-config FILE, --release-keystore, --release-key-alias, --release-bundle-task, --release-bundle-path, --release-gradle-args." >&2
-      exit 1
-      ;;
-    *) break ;;
+      exit 1 ;;
   esac
 done
+if [ "$_ba_dd" -eq 1 ]; then
+  set -- "$@" -- ${_ba_gradle[@]+"${_ba_gradle[@]}"}
+fi
 if [ -n "$SIGN_SOURCE" ]; then
   if [ "$SINGLE_USER" = false ]; then
     echo "ERROR:$SIGN_SOURCE given, but this worktree has a project.config: the Play keys come from it." >&2

@@ -114,5 +114,11 @@ reset; (export ANDROID_HOME=$T/sdk; cd $R && ./deploy emulator) >$T/out 2>&1; rc
 [[ $rc -eq 0 ]] && ok "SDK from ANDROID_HOME" || bad "android_home: rc=$rc $(cat $T/out)"
 mv $T/lp $R/local.properties
 
+reset; run -h
+[[ $rc -eq 0 ]] && grep -q -- '-c, --clean' $T/out && ! grep -q adb $T/calls && ok "deploy -h exits 0 and does not install" || bad "help rc=$rc $(tail -3 $T/out)"
+reset; run tablet --clean
+[[ $rc -eq 0 ]] && grep -q 'nothing to uninstall' $T/out && grep -q 'install -r' $T/calls && ok "tablet --clean uninstalls before install" || bad "clean rc=$rc $(tail -5 $T/out) $(cat $T/calls)"
+reset; run -c tablet
+[[ $rc -eq 0 ]] && grep -q 'nothing to uninstall' $T/out && ok "-c is --clean" || bad "short clean rc=$rc $(tail -4 $T/out)"
 grep -qE '\|\| true|2>/dev/null' $C/build-examples/android-gradle/deploy && bad "deploy swallows errors" || ok "deploy: no '|| true', no '2>/dev/null'"
 echo "passed $pass failed $fail"; [[ $fail -eq 0 ]]

@@ -2,6 +2,11 @@
 # upgrade-probe: list probes to run (general + protected) and enforce that protected
 # probes never shrink. Exit 1 if protected count < probes/protected/COUNT.
 set -uo pipefail
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: tools/upgrade-probe [-h|--help]"
+  echo "List general and protected probes. Exit 1 if protected probes were removed."
+  exit 0
+fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 want="$(cat "$here/probes/protected/COUNT" 2>/dev/null || echo 0)"
 have=$(find "$here/probes/protected" -maxdepth 1 -name '*.md' ! -name README.md | wc -l)

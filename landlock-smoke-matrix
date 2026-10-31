@@ -4,6 +4,11 @@
 # Env: AGENT_LANDLOCK_STRICT=1 recommended for smoke (fail if ABI missing).
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./landlock-smoke-matrix [WORKTREE]"
+  exit 0
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WT="$(cd "${1:-$ROOT}" && pwd)"
 HELPER="$ROOT/agent-landlock"

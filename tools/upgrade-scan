@@ -3,6 +3,11 @@
 # Prints installed version, the last reviewed version (tools/upgrade-map.tsv), and
 # changelog lines mentioning the features in tools/upgrade-map.tsv.
 set -uo pipefail
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: tools/upgrade-scan [-h|--help]"
+  echo "Show installed and reviewed versions and changelog lines for tools/upgrade-map.tsv."
+  exit 0
+fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 map="$here/tools/upgrade-map.tsv"
 ver="$(grok --version 2>/dev/null | head -1 || echo unknown)"

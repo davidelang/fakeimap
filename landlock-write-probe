@@ -38,18 +38,20 @@ def try_write(path: Path) -> tuple[bool, str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
+        "-a",
         "--allow",
         action="append",
         default=[],
         help="path that must be writable (dir or file)",
     )
     ap.add_argument(
+        "-d",
         "--deny",
         action="append",
         default=[],
         help="path that must NOT be writable",
     )
-    ap.add_argument("--label", default="", help="role/label prefix for lines")
+    ap.add_argument("-l", "--label", default="", help="role/label prefix for lines")
     args = ap.parse_args()
     failed = 0
     prefix = args.label + "|" if args.label else ""

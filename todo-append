@@ -9,6 +9,12 @@
 
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./todo-append '- [ ] <short description> (<path to details>)'"
+  echo "       ./todo-append @file-with-item.txt"
+  exit 0
+fi
+
 # Ensure group-writable files in multi-user environment
 umask 007
 

@@ -5,9 +5,10 @@
 # be stored safely). Source refresh-shell.c IS tracked.
 #
 # Usage:
-#   ./install-refresh-shell.sh              # install into cwd
-#   ./install-refresh-shell.sh /path/to/wt  # install into that worktree
-#   ./install-refresh-shell.sh --all        # orch root + all worktrees
+#   ./install-refresh-shell.sh                 # install into cwd
+#   ./install-refresh-shell.sh /path/to/wt     # install into that worktree
+#   ./install-refresh-shell.sh -a|--all        # orch root + all worktrees
+#   ./install-refresh-shell.sh -h|--help
 #
 # Requires sudo for chown root + chmod 4755. Idempotent.
 # NEVER leaves setuid bit on a non-root-owned binary (kills terminals via env).
@@ -77,8 +78,31 @@ install_one() {
   return 1
 }
 
+parsed="$(getopt -o ha -l help,all -- "$@")" || exit 2
+eval set -- "$parsed"
+ALL=0
+while true; do
+  case "$1" in
+    -h|--help)
+      echo "Usage: ./install-refresh-shell.sh [-a|--all] [-h|--help] [DIR]"
+      echo "  no DIR: install into the current directory"
+      echo "  -a, --all: orchestration root and every worktree"
+      exit 0 ;;
+    -a|--all) ALL=1; shift ;;
+    --) shift; break ;;
+    *) echo "usage: ./install-refresh-shell.sh [--all] [DIR]" >&2; exit 2 ;;
+  esac
+done
+if [ "$ALL" -eq 1 ] && [ $# -gt 0 ]; then
+  echo "usage: ./install-refresh-shell.sh [--all] [DIR]" >&2
+  exit 2
+fi
+if [ "$ALL" -eq 0 ] && [ $# -gt 1 ]; then
+  echo "usage: ./install-refresh-shell.sh [--all] [DIR]" >&2
+  exit 2
+fi
 MODE="${1:-.}"
-if [ "$MODE" = "--all" ]; then
+if [ "$ALL" -eq 1 ]; then
   echo "install-refresh-shell: orchestration + worktrees under $ORCH"
   install_one "$ORCH" || true
   for d in "$ORCH"/agent-* "$ORCH"/master; do

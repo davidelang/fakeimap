@@ -2,7 +2,7 @@
 # Install the last-built APKs on connected devices. Human-only: agents must not run this.
 # Authoritative copy: orchestration-example/build-examples/android-gradle/deploy
 #
-# Usage: ./deploy [-h|--help] [--test] [--clean] [--rebuild] [--launch] [device...] [-- gradle-flag...]
+# Usage: ./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
 #
 # Which APKs: the ones the last ./build_app --standard (default) or --test recorded in
 # app/build/outputs/build_app/<standard|test>.json (from Gradle's output-metadata.json; see
@@ -15,6 +15,65 @@
 # is hard-coded. Everything about the APKs is checked before the first adb call.
 
 set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: ./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
+
+Install the last-built APKs with adb install -r. The default path does not compile.
+
+  -t, --test   Install the test build ('- **Test build:**' in project-facts.md) instead of the
+               standard build. Its app id is read from the APKs (e.g. a .test suffix).
+               Refused when the test build is missing, not from HEAD, from an earlier commit
+               than the standard build, or (a test build type) has the standard app's id.
+  -c, --clean  Uninstall the APKs' own app id before install (UNINSTALL_FIRST=1). That
+               removes that app's data; no other package is touched. An app that is not
+               installed is reported and skipped; a failed uninstall stops that device.
+  -r, --rebuild
+               Run ./build_app --standard (or --test) first (REBUILD=1). Gradle flags after
+               -- go to build_app.
+  -l, --launch Start the app's launcher activity after a successful install.
+  -h, --help   Print this usage and exit.
+
+Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
+anything else is an adb serial. With no device arguments, every online device.
+Flags may follow a device (deploy tablet --clean). -- ends options; the rest are gradle flags.
+
+deploy stops before any adb call if aapt2 is missing or fails, if the APKs name different
+apps, or if they mix ABI-specific and universal APKs. After each install it checks
+(pm list packages, exact match) that the app id is installed. The deployed tag
+(deployed / <branch>/deployed; deployed-test for --test) moves only when every device
+succeeded. With --test, the test build's instrumentation (androidTest) APKs are installed on
+every device (adb install -r -t) after the app, each verified by its own package id; a
+missing, unreadable or not-installed one fails that device.
+USAGE
+}
+
+# Help before re-exec or group checks. Other arguments stay for the parser below.
+_deploy_help_if_asked() {
+  local parsed pre=() a seen=0
+  for a in "$@"; do
+    if [ "$seen" -eq 1 ]; then
+      continue
+    elif [ "$a" = "--" ]; then
+      seen=1
+    else
+      pre+=("$a")
+    fi
+  done
+  if ! parsed="$(getopt -q -o htcrl -l help,test,clean,rebuild,launch -- ${pre[@]+"${pre[@]}"})"; then
+    return 0
+  fi
+  eval set -- "$parsed"
+  while true; do
+    case "$1" in
+      -h|--help) usage; exit 0 ;;
+      --) break ;;
+      *) shift ;;
+    esac
+  done
+}
+_deploy_help_if_asked "$@"
 
 # Mode: multi-user when project.config exists and is smudged; single-user otherwise (no
 # re-exec, no role or group checks; it must not run as root, which would own the adb server).
@@ -80,37 +139,6 @@ if [ -n "$MISSING" ]; then
 fi
 fi
 
-usage() {
-  cat <<'USAGE'
-Usage: ./deploy [-h|--help] [--test] [--clean] [--rebuild] [--launch] [device...] [-- gradle-flag...]
-
-Install the last-built APKs with adb install -r. The default path does not compile.
-
-  --test       Install the test build ('- **Test build:**' in project-facts.md) instead of the
-               standard build. Its app id is read from the APKs (e.g. a .test suffix).
-               Refused when the test build is missing, not from HEAD, from an earlier commit
-               than the standard build, or (a test build type) has the standard app's id.
-  --clean      Uninstall the APKs' own app id before install (UNINSTALL_FIRST=1). That
-               removes that app's data; no other package is touched. An app that is not
-               installed is reported and skipped; a failed uninstall stops that device.
-  --rebuild    Run ./build_app --standard (or --test) first (REBUILD=1). Gradle flags after
-               -- go to build_app.
-  --launch     Start the app's launcher activity after a successful install.
-  -h, --help   Print this usage and exit.
-
-Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
-anything else is an adb serial. With no device arguments, every online device.
-
-deploy stops before any adb call if aapt2 is missing or fails, if the APKs name different
-apps, or if they mix ABI-specific and universal APKs. After each install it checks
-(pm list packages, exact match) that the app id is installed. The deployed tag
-(deployed / <branch>/deployed; deployed-test for --test) moves only when every device
-succeeded. With --test, the test build's instrumentation (androidTest) APKs are installed on
-every device (adb install -r -t) after the app, each verified by its own package id; a
-missing, unreadable or not-installed one fails that device.
-USAGE
-}
-
 rebuild=0
 if [ "${REBUILD:-0}" = "1" ]; then rebuild=1; fi
 uninstall_first=0
@@ -119,27 +147,48 @@ mode="standard"
 launch=0
 device_args=()
 gradle_flags=()
-seen_dd=0
-for arg in "$@"; do
-  if [ "$seen_dd" -eq 1 ]; then
-    gradle_flags+=("$arg")
-    continue
+# Permuting getopt: deploy tablet --clean is valid. Split on the user's -- first so
+# gradle flags after it are not parsed and the separator is not dropped.
+_dep_pre=()
+_dep_gradle=()
+_dep_dd=0
+for _dep_a in "$@"; do
+  if [ "$_dep_dd" -eq 1 ]; then
+    _dep_gradle+=("$_dep_a")
+  elif [ "$_dep_a" = "--" ]; then
+    _dep_dd=1
+  else
+    _dep_pre+=("$_dep_a")
   fi
-  case "$arg" in
-    --) seen_dd=1 ;;
+done
+_dep_err=$(mktemp) || exit 1
+if ! parsed="$(getopt -o htcrl -l help,test,clean,rebuild,launch -- ${_dep_pre[@]+"${_dep_pre[@]}"} 2>"$_dep_err")"; then
+  cat "$_dep_err" >&2
+  usage >&2
+  rm -f "$_dep_err"
+  exit 1
+fi
+rm -f "$_dep_err"
+eval set -- "$parsed"
+while true; do
+  case "$1" in
     -h|--help) usage; exit 0 ;;
-    --test) mode="test" ;;
-    --clean) uninstall_first=1 ;;
-    --rebuild) rebuild=1 ;;
-    --launch) launch=1 ;;
-    -*)
-      echo "ERROR: unknown flag: $arg" >&2
+    -t|--test) mode="test"; shift ;;
+    -c|--clean) uninstall_first=1; shift ;;
+    -r|--rebuild) rebuild=1; shift ;;
+    -l|--launch) launch=1; shift ;;
+    --) shift; break ;;
+    *)
+      echo "ERROR: unknown flag: $1" >&2
       usage >&2
       exit 1
       ;;
-    *) device_args+=("$arg") ;;
   esac
 done
+device_args=("$@")
+if [ "$_dep_dd" -eq 1 ]; then
+  gradle_flags=("${_dep_gradle[@]+"${_dep_gradle[@]}"}")
+fi
 if [ "$rebuild" -ne 1 ] && [ "${#gradle_flags[@]}" -gt 0 ]; then
   echo "ERROR: gradle flags require --rebuild" >&2
   exit 1
