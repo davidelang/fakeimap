@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""play-publish: upload the recorded Play bundle to Internal testing, then promote it to alpha.
+
+Called by ./deploy --play (which selects the bundle and checks it against HEAD). Standard
+library plus the openssl binary (RS256 signing of the service-account JWT); nothing else.
+
+  play-publish --aab FILE --version-code N --aapt2 PATH --key SA.json
+               [--notes-file FILE] [--dry-run]
+
+Every failure prints one ERROR line and exits 1. --dry-run inserts an edit, reads the tracks
+and bundles, computes and shows the notes, then deletes the edit (no upload, no commit).
+"""
+import argparse, base64, json, os, re, shlex, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request, zipfile
+
+API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/"
+UPLOAD = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/"
+SCOPE = "https://www.googleapis.com/auth/androidpublisher"
+NOTES_LIMIT = 500
+HASH_RX = re.compile(r"-g([0-9a-f]{7,40})(?:\+|$)")
+
+def die(msg):
+    print("ERROR: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+def run(cmd, **kw):
+    p = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    if p.returncode:
+        die("%s failed: %s" % (" ".join(cmd), p.stderr.strip()))
+    return p.stdout
+
+def b64(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+def token(key_path):
+    try:
+        sa = json.load(open(key_path))
+    except (OSError, ValueError) as e:
+        die("cannot read service-account JSON %s: %s" % (key_path, e))
+    for k in ("client_email", "private_key", "token_uri"):
+        if not sa.get(k):
+            die("service-account JSON %s has no '%s'" % (key_path, k))
+    now = int(time.time())
+    head = b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    claim = b64(json.dumps({"iss": sa["client_email"], "scope": SCOPE, "aud": sa["token_uri"],
+                            "iat": now, "exp": now + 3600}).encode())
+    signing = (head + "." + claim).encode()
+    fd, pem = tempfile.mkstemp(prefix="play-key-")
+    try:
+        os.write(fd, sa["private_key"].encode())
+        os.close(fd)
+        p = subprocess.run(["openssl", "dgst", "-sha256", "-sign", pem], input=signing, capture_output=True)
+    finally:
+        os.unlink(pem)
+    if p.returncode:
+        die("openssl could not sign the JWT: %s" % p.stderr.decode().strip())
+    jwt = head + "." + claim + "." + b64(p.stdout)
+    body = urllib.parse.urlencode({"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                                   "assertion": jwt}).encode()
+    r = http("POST", sa["token_uri"], body=body, ctype="application/x-www-form-urlencoded", auth=None)
+    if not r.get("access_token"):
+        die("token endpoint returned no access_token")
+    return r["access_token"], sa["client_email"]
+
+TOKEN = None
+
+def http(method, url, body=None, ctype="application/json", auth=True, length=None, timeout=120):
+    h = {}
+    if auth:
+        h["Authorization"] = "Bearer " + TOKEN
+    if body is not None:
+        h["Content-Type"] = ctype
+        if length is not None:
+            h["Content-Length"] = str(length)
+    req = urllib.request.Request(url, data=body, method=method, headers=h)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read()
+    except urllib.error.HTTPError as e:
+        die("%s %s -> HTTP %d: %s" % (method, url.split("?")[0], e.code, e.read().decode(errors="replace").strip()[:2000]))
+    except urllib.error.URLError as e:
+        die("%s %s failed: %s" % (method, url.split("?")[0], e.reason))
+    if not data:
+        return {}
+    return json.loads(data)
+
+def badging(aab, aapt2):
+    """applicationId, versionCode, versionName from the bundle's base manifest (proto) via aapt2."""
+    with tempfile.TemporaryDirectory(prefix="play-badging-") as d:
+        apk = os.path.join(d, "base.apk")
+        try:
+            z = zipfile.ZipFile(aab)
+            with zipfile.ZipFile(apk, "w") as o:
+                o.writestr("AndroidManifest.xml", z.read("base/manifest/AndroidManifest.xml"))
+                o.writestr("resources.pb", z.read("base/resources.pb"))
+        except (OSError, KeyError, zipfile.BadZipFile) as e:
+            die("cannot read the base manifest of %s: %s" % (aab, e))
+        out = run([aapt2, "dump", "badging", apk])
+    m = re.search(r"^package: name='([^']+)' versionCode='([0-9]+)' versionName='([^']*)'", out, re.M)
+    if not m:
+        die("%s dump badging printed no package line for %s" % (aapt2, aab))
+    return m.group(1), int(m.group(2)), m.group(3)
+
+def read_state(pkg, edit):
+    tracks = http("GET", API + pkg + "/edits/" + edit + "/tracks").get("tracks", [])
+    bundles = http("GET", API + pkg + "/edits/" + edit + "/bundles").get("bundles", [])
+    return tracks, bundles
+
+def releases(tracks):
+    for t in tracks:
+        for r in t.get("releases", []):
+            for vc in r.get("versionCodes", []):
+                yield t["track"], int(vc), r.get("name", "")
+
+def get_notes(base, notes_file):
+    if notes_file:
+        try:
+            text = open(notes_file).read()
+        except OSError as e:
+            die("cannot read --notes-file %s: %s" % (notes_file, e))
+    else:
+        log = run(["git", "log", "--no-merges", "--format=- %s", base + "..HEAD"])
+        editor = os.environ.get("EDITOR", "")
+        if not editor:
+            die("EDITOR is unset; set it or pass --notes-file FILE")
+        fd, path = tempfile.mkstemp(prefix="play-notes-", suffix=".txt")
+        with os.fdopen(fd, "w") as f:
+            f.write(log)
+        if subprocess.run(shlex.split(editor) + [path]).returncode:
+            os.unlink(path)
+            die("editor '%s' exited non-zero; nothing uploaded" % editor)
+        text = open(path).read()
+        os.unlink(path)
+    text = text.strip()
+    if not text:
+        die("release notes are empty; nothing uploaded")
+    if len(text) > NOTES_LIMIT:
+        die("release notes are %d characters; Play's en-US limit is %d. Shorten them (--notes-file)" % (len(text), NOTES_LIMIT))
+    return text
+
+def track_release(pkg, edit, track, vc, name, notes):
+    body = {"track": track, "releases": [{"name": name, "versionCodes": [str(vc)], "status": "completed",
+                                          "releaseNotes": [{"language": "en-US", "text": notes}]}]}
+    http("PUT", API + pkg + "/edits/" + edit + "/tracks/" + track, body=json.dumps(body).encode())
+
+def verify(pkg, track, vc):
+    edit = http("POST", API + pkg + "/edits", body=b"{}")["id"]
+    t = http("GET", API + pkg + "/edits/" + edit + "/tracks/" + track)
+    http("DELETE", API + pkg + "/edits/" + edit)
+    st = [r.get("status") for r in t.get("releases", []) if str(vc) in r.get("versionCodes", [])]
+    if not st:
+        die("after commit, the %s track does not list versionCode %d" % (track, vc))
+    print("verified: %s track has versionCode %d (status %s)" % (track, vc, ",".join(st)))
+
+def main():
+    global TOKEN
+    sys.stdout.reconfigure(line_buffering=True)
+    ap = argparse.ArgumentParser(prog="play-publish")
+    ap.add_argument("--aab", required=True)
+    ap.add_argument("--version-code", required=True, type=int, help="versionCode the build recorded")
+    ap.add_argument("--aapt2", required=True)
+    ap.add_argument("--key", required=True)
+    ap.add_argument("--notes-file")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+    pkg, vc, vname = badging(a.aab, a.aapt2)
+    if vc != a.version_code:
+        die("%s has versionCode %d but build_app recorded %d" % (a.aab, vc, a.version_code))
+    print("Bundle: %s  versionCode %d  versionName %s" % (pkg, vc, vname))
+    TOKEN, who = token(a.key)
+    print("Service account: %s" % who)
+    edit = http("POST", API + pkg + "/edits", body=b"{}")["id"]
+    try:
+        tracks, bundles = read_state(pkg, edit)
+        rel = list(releases(tracks))
+        for track, code, _ in rel:
+            if code == vc:
+                die("Play already has versionCode %d on the %s track; run ./build_app --play for a new one" % (vc, track))
+        for b in bundles:
+            if int(b.get("versionCode", -1)) == vc:
+                die("Play already has a bundle with versionCode %d (uploaded before); run ./build_app --play" % vc)
+        if not rel:
+            die("Play lists no release on any track, so there is no base commit for the notes")
+        top = max(rel, key=lambda x: x[1])
+        m = HASH_RX.search(top[2])
+        if not m:
+            die("highest release (versionCode %d on %s) is named '%s'; no -g<hash> to base the notes on" % (top[1], top[0], top[2]))
+        base = m.group(1)
+        if subprocess.run(["git", "cat-file", "-e", base + "^{commit}"]).returncode:
+            die("base commit %s (from '%s') is not in this repository" % (base, top[2]))
+        if subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"]).returncode:
+            die("base commit %s (from '%s') is not an ancestor of HEAD" % (base, top[2]))
+        print("Play now: highest versionCode %d on %s ('%s'); notes from %s..HEAD" % (top[1], top[0], top[2], base))
+        for t in tracks:
+            for r in t.get("releases", []):
+                print("  %-10s %-10s %s %s" % (t["track"], r.get("status", ""), ",".join(r.get("versionCodes", [])), r.get("name", "")))
+        notes = get_notes(base, a.notes_file)
+        print("Release notes (%d/%d chars):\n%s" % (len(notes), NOTES_LIMIT, notes))
+        if a.dry_run:
+            http("DELETE", API + pkg + "/edits/" + edit)
+            edit = None
+            print("DRY RUN: edit deleted; nothing uploaded or committed.")
+            return 0
+        size = os.path.getsize(a.aab)
+        print("Uploading %s (%d MB)..." % (a.aab, size // 1048576))
+        with open(a.aab, "rb") as f:
+            up = http("POST", UPLOAD + pkg + "/edits/" + edit + "/bundles?uploadType=media", body=f,
+                      ctype="application/octet-stream", length=size, timeout=3600)
+        if int(up.get("versionCode", -1)) != vc:
+            die("upload returned versionCode %s, expected %d" % (up.get("versionCode"), vc))
+        track_release(pkg, edit, "internal", vc, "%d (%s)" % (vc, vname), notes)
+        http("POST", API + pkg + "/edits/" + edit + ":commit")
+        edit = None
+        print("committed: internal <- versionCode %d" % vc)
+    finally:
+        if edit:
+            try:
+                http("DELETE", API + pkg + "/edits/" + edit)
+            except SystemExit:
+                pass
+    verify(pkg, "internal", vc)
+    edit = http("POST", API + pkg + "/edits", body=b"{}")["id"]
+    track_release(pkg, edit, "alpha", vc, "%d (%s)" % (vc, vname), notes)
+    http("POST", API + pkg + "/edits/" + edit + ":commit?changesNotSentForReview=false")
+    print("committed: alpha <- versionCode %d (sent for review)" % vc)
+    verify(pkg, "alpha", vc)
+    print("==================================================================")
+    print("Play release done: %s versionCode %d (%s)" % (pkg, vc, vname))
+    print("  internal: completed   alpha (closed testing): completed, submitted for review")
+    print("==================================================================")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -3,6 +3,7 @@
 # Authoritative copy: orchestration-example/build-examples/android-gradle/deploy
 #
 # Usage: ./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
+#        ./deploy -p|--play [-n|--dry-run] [-N|--notes-file FILE]
 #
 # Which APKs: the ones the last ./build_app --standard (default) or --test recorded in
 # app/build/outputs/build_app/<standard|test>.json (from Gradle's output-metadata.json; see
@@ -19,6 +20,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
+       ./deploy -p|--play [-n|--dry-run] [-N|--notes-file FILE]
 
 Install the last-built APKs with adb install -r. The default path does not compile.
 
@@ -33,6 +35,17 @@ Install the last-built APKs with adb install -r. The default path does not compi
                Run ./build_app --standard (or --test) first (REBUILD=1). Gradle flags after
                -- go to build_app.
   -l, --launch Start the app's launcher activity after a successful install.
+  -p, --play   Upload the Play bundle the last ./build_app --play recorded to Internal testing,
+               then promote that versionCode to alpha (closed testing) and send it for review.
+               Refused when the bundle is missing, not from HEAD, changed since the build, or
+               its versionCode is already on Play. Needs play_service_account_json= in
+               project.config. No adb, devices, or gradle flags.
+  -n, --dry-run
+               With --play: open an edit, read the tracks, compute and show the notes, then
+               delete the edit. Nothing is uploaded or committed.
+  -N, --notes-file FILE
+               With --play: release notes from FILE instead of $EDITOR on the git log since
+               the commit in the highest versionName on Play (en-US, max 500 characters).
   -h, --help   Print this usage and exit.
 
 Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
@@ -61,7 +74,7 @@ _deploy_help_if_asked() {
       pre+=("$a")
     fi
   done
-  if ! parsed="$(getopt -q -o htcrl -l help,test,clean,rebuild,launch -- ${pre[@]+"${pre[@]}"})"; then
+  if ! parsed="$(getopt -q -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${pre[@]+"${pre[@]}"})"; then
     return 0
   fi
   eval set -- "$parsed"
@@ -145,6 +158,9 @@ uninstall_first=0
 if [ "${UNINSTALL_FIRST:-0}" = "1" ]; then uninstall_first=1; fi
 mode="standard"
 launch=0
+play=0
+dry_run=0
+notes_file=""
 device_args=()
 gradle_flags=()
 # Permuting getopt: deploy tablet --clean is valid. Split on the user's -- first so
@@ -162,7 +178,7 @@ for _dep_a in "$@"; do
   fi
 done
 _dep_err=$(mktemp) || exit 1
-if ! parsed="$(getopt -o htcrl -l help,test,clean,rebuild,launch -- ${_dep_pre[@]+"${_dep_pre[@]}"} 2>"$_dep_err")"; then
+if ! parsed="$(getopt -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${_dep_pre[@]+"${_dep_pre[@]}"} 2>"$_dep_err")"; then
   cat "$_dep_err" >&2
   usage >&2
   rm -f "$_dep_err"
@@ -177,6 +193,9 @@ while true; do
     -c|--clean) uninstall_first=1; shift ;;
     -r|--rebuild) rebuild=1; shift ;;
     -l|--launch) launch=1; shift ;;
+    -p|--play) play=1; shift ;;
+    -n|--dry-run) dry_run=1; shift ;;
+    -N|--notes-file) notes_file="$2"; shift 2 ;;
     --) shift; break ;;
     *)
       echo "ERROR: unknown flag: $1" >&2
@@ -192,6 +211,73 @@ fi
 if [ "$rebuild" -ne 1 ] && [ "${#gradle_flags[@]}" -gt 0 ]; then
   echo "ERROR: gradle flags require --rebuild" >&2
   exit 1
+fi
+
+if [ "$play" -ne 1 ] && { [ "$dry_run" -eq 1 ] || [ -n "$notes_file" ]; }; then
+  echo "ERROR: --dry-run and --notes-file need --play" >&2
+  exit 1
+fi
+if [ "$play" -eq 1 ]; then
+  _play_bad=""
+  [ "$mode" = "test" ] && _play_bad="$_play_bad --test"
+  [ "$uninstall_first" -eq 1 ] && _play_bad="$_play_bad --clean"
+  [ "$rebuild" -eq 1 ] && _play_bad="$_play_bad --rebuild"
+  [ "$launch" -eq 1 ] && _play_bad="$_play_bad --launch"
+  [ "${#device_args[@]}" -gt 0 ] && _play_bad="$_play_bad devices(${device_args[*]})"
+  [ "${#gradle_flags[@]}" -gt 0 ] && _play_bad="$_play_bad gradle-flags"
+  if [ -n "$_play_bad" ]; then
+    echo "ERROR: --play takes only --dry-run and --notes-file; also given:$_play_bad" >&2
+    exit 1
+  fi
+  if [ -n "$notes_file" ] && [ ! -r "$notes_file" ]; then
+    echo "ERROR: --notes-file $notes_file is missing or unreadable" >&2
+    exit 1
+  fi
+  _DEPLOY_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for _f in android-build-info play-publish; do
+    if [ ! -x "$_DEPLOY_HERE/$_f" ]; then
+      echo "ERROR: $_DEPLOY_HERE/$_f missing (ships with the android-gradle build type)" >&2
+      exit 1
+    fi
+  done
+  for _bin in python3 openssl; do
+    if ! command -v "$_bin" >/dev/null; then
+      echo "ERROR: deploy --play needs $_bin on PATH" >&2
+      exit 1
+    fi
+  done
+  if [ ! -f project.config ]; then
+    echo "ERROR: deploy --play needs play_service_account_json= in project.config, and $(pwd) has none" >&2
+    exit 1
+  fi
+  PLAY_KEY=$(cfg play_service_account_json)
+  if [ -z "$PLAY_KEY" ]; then
+    echo "ERROR: play_service_account_json unset in project.config (absolute path to the Play service-account JSON)" >&2
+    exit 1
+  fi
+  if [ ! -f "$PLAY_KEY" ] || [ ! -r "$PLAY_KEY" ]; then
+    echo "ERROR: play_service_account_json=$PLAY_KEY is missing or not readable by $(id -un)" >&2
+    exit 1
+  fi
+  read -r _kw PLAY_AAB PLAY_VC _rest <<< "$("$_DEPLOY_HERE/android-build-info" select play)"
+  if [ "$_kw" != "bundle" ] || [ -z "$PLAY_VC" ] || [ -n "$_rest" ]; then
+    echo "ERROR: android-build-info select play printed '$_kw $PLAY_AAB $PLAY_VC $_rest'" >&2
+    exit 1
+  fi
+  if [ ! -f "$_DEPLOY_HERE/ve-resolve-orch" ]; then
+    echo "ERROR: $_DEPLOY_HERE/ve-resolve-orch missing (needed to locate the SDK aapt2)" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  . "$_DEPLOY_HERE/ve-resolve-orch"
+  if ! AAPT2=$(ve_aapt2_from_sdk "$_DEPLOY_HERE"); then
+    echo "ERROR: cannot locate the SDK aapt2 (sdk.dir in local.properties, or ANDROID_HOME) to read the bundle" >&2
+    exit 1
+  fi
+  _pp=(--aab "$PLAY_AAB" --version-code "$PLAY_VC" --aapt2 "$AAPT2" --key "$PLAY_KEY")
+  [ -n "$notes_file" ] && _pp+=(--notes-file "$notes_file")
+  [ "$dry_run" -eq 1 ] && _pp+=(--dry-run)
+  exec "$_DEPLOY_HERE/play-publish" "${_pp[@]}"
 fi
 
 if [ "$rebuild" -eq 1 ]; then

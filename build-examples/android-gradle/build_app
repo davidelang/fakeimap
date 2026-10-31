@@ -1117,6 +1117,7 @@ build_apks() {
 build_play() {
   local ret cert aab_sha256 version_code
   echo "=== play build: $RELEASE_BUNDLE_TASK ${RELEASE_GRADLE_ARGS[*]} ==="
+  rm -f app/build/outputs/build_app/play.json || exit 1
   # Signing via AGP's injected-signing properties (android.injected.signing.*), which override
   # the build's own release signingConfig with no per-app gradle code. They are passed as
   # ORG_GRADLE_PROJECT_* environment variables rather than -P so the passwords never appear in
@@ -1156,6 +1157,8 @@ os.execvp(sys.argv[1], sys.argv[1:])
   fi
   publish_deliverables "$AAB"
   check_play_link "$AAB" built
+  # Record the bundle for deploy --play (app/build/outputs/build_app/play.json).
+  (umask "$BUILD_UMASK"; "$_BA_INFO" stamp-play "$AAB" "$NEW_VERSION_CODE") || exit 1
   version_code="$NEW_VERSION_CODE"
   PLAY_SUMMARY="Play bundle ready for upload:
   Path:        $(pwd)/$AAB

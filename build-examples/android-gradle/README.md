@@ -180,6 +180,7 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 
 ```
 ./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
+./deploy -p|--play [-n|--dry-run] [-N|--notes-file FILE]
 ```
 
 | Option | Effect |
@@ -189,6 +190,9 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 | `-c` / `--clean` | Uninstall the APKs' own app id first, which removes its data (`UNINSTALL_FIRST=1`) |
 | `-r` / `--rebuild` | Run `./build_app --standard` (or `--test`) first; flags after `--` go to build_app (`REBUILD=1`) |
 | `-l` / `--launch` | Start the app's launcher activity after install |
+| `-p` / `--play` | Upload the recorded Play bundle to Internal testing, then promote it to alpha (closed testing) and send it for review. See [deploy --play](#deploy---play) |
+| `-n` / `--dry-run` | With `--play`: open an edit, read the tracks, show the notes, delete the edit; nothing uploaded or committed |
+| `-N` / `--notes-file FILE` | With `--play`: release notes from FILE instead of `$EDITOR` |
 | `tablet`, `emulator` | emulator-5554 |
 | `phone` | `deploy_serial=` from project.config (error if unset) |
 | other words | adb serials |
@@ -217,8 +221,31 @@ and needs the ai-shared and ai-code groups (`source ./env`).
 Per-app config:
 - project-facts.md: the build declaration above.
 - project.config (multi-user mode): `primary_user`, `planning_user`, `coder_user`; optional
-  `deploy_serial`.
+  `deploy_serial`; `play_service_account_json` for `--play`.
 - local.properties `sdk.dir`, or `ANDROID_HOME` (Android SDK with build-tools/*/aapt2).
+
+### deploy --play
+
+`./build_app --play` records the signed bundle in `app/build/outputs/build_app/play.json`
+(commit, path, SHA256, versionCode; written by `android-build-info stamp-play`). `deploy --play`
+(`play-publish`, next to deploy) then:
+
+1. Selects that bundle (`android-build-info select play`) and refuses it when it is missing, not
+   from HEAD, or changed since the build. applicationId, versionCode and versionName come from
+   the bundle's base manifest (SDK aapt2). Play is never asked for a package the bundle does not name.
+2. Refuses when Play already has that versionCode on any track or as an uploaded bundle.
+3. Release notes: the base commit is the `-g<hash>` in the release name of the highest versionCode
+   on any track (an error when it is missing or not an ancestor of HEAD). `git log --no-merges
+   --format='- %s' base..HEAD` opens in `$EDITOR` (error when unset), or `--notes-file FILE` is
+   used. Trimmed; empty or over 500 characters (Play's en-US limit) is an error, never truncated.
+4. Edit 1: upload the bundle, release it to `internal` (status completed, en-US notes), commit,
+   and check with a fresh read that internal lists the versionCode.
+5. Edit 2: the same versionCode and notes to `alpha` (closed testing), committed with
+   `changesNotSentForReview=false` so it goes to review; checked with a fresh read.
+
+`--dry-run` does everything except the upload and the commits, and deletes its edit.
+Needs `python3` and `openssl` (standard library only; the JWT is signed with openssl) and
+`play_service_account_json=` in project.config (absolute path, readable by primary_user).
 
 App-specific data features (for example VehicleExpenses' `--backup`/`--restore-data`) are not
 part of this script. VehicleExpenses plans to replace them with the adb export/import

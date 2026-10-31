@@ -19,6 +19,10 @@ applicationId, versionName). Nothing comes from project.config, no app id is har
                              app/build/outputs/build_app/<kind>.json; fails if anything is missing
   select standard|test       for deploy: check the stamp against HEAD, the files and (test) the
                              standard stamp, then print 'app <apk>' / 'instr <apk> <id>' lines
+  stamp-play AAB VERSIONCODE after build_app --play: record the signed bundle (commit, path,
+                             sha256, versionCode) in app/build/outputs/build_app/play.json
+  select play                for deploy --play: check that stamp against HEAD and the file, then
+                             print 'bundle <aab> <versionCode>'
 Exit 1 with an ERROR line on any problem.
 """
 import hashlib, json, os, re, shutil, subprocess, sys
@@ -250,7 +254,41 @@ def select(d, kind):
         else:
             print("instr %s %s" % (e["apk"], e["application_id"]))
 
+def stamp_play(aab, version_code):
+    head = git("rev-parse", "HEAD").strip()
+    if not os.path.isfile(aab):
+        die("Play bundle %s is missing; cannot record it" % aab)
+    if not re.fullmatch(r"[1-9][0-9]*", version_code):
+        die("versionCode '%s' is not a positive integer" % version_code)
+    os.makedirs(STAMP_DIR, exist_ok=True)
+    data = {"kind": "play", "commit": head, "aab": aab, "sha256": sha256(aab), "version_code": int(version_code)}
+    tmp = os.path.join(STAMP_DIR, "play.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, os.path.join(STAMP_DIR, "play.json"))
+    print("play bundle %s (versionCode %s, %s)" % (aab, version_code, head[:12]))
+
+def select_play():
+    head = git("rev-parse", "HEAD").strip()
+    s = load_stamp("play")
+    for k in ("commit", "aab", "sha256", "version_code"):
+        if k not in s:
+            die("%s/play.json lacks '%s'; run ./build_app --play" % (STAMP_DIR, k))
+    if s["commit"] != head:
+        die("the Play bundle is from %s, not HEAD %s; run ./build_app --play" % (s["commit"][:12], head[:12]))
+    if not os.path.isfile(s["aab"]):
+        die("%s (recorded by the play build) is missing; run ./build_app --play" % s["aab"])
+    if sha256(s["aab"]) != s["sha256"]:
+        die("%s changed since the play build recorded it; run ./build_app --play" % s["aab"])
+    print("bundle %s %d" % (s["aab"], s["version_code"]))
+
 def main(argv):
+    if len(argv) == 3 and argv[0] == "stamp-play":
+        stamp_play(argv[1], argv[2])
+        return 0
+    if argv == ["select", "play"]:
+        select_play()
+        return 0
     if len(argv) == 1 and argv[0] == "decl":
         d = decl()
         print("standard=%s" % d["standard"])
