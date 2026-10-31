@@ -274,7 +274,14 @@ if [ "$play" -eq 1 ]; then
     echo "ERROR: cannot locate the SDK aapt2 (sdk.dir in local.properties, or ANDROID_HOME) to read the bundle" >&2
     exit 1
   fi
-  _pp=(--aab "$PLAY_AAB" --version-code "$PLAY_VC" --aapt2 "$AAPT2" --key "$PLAY_KEY")
+  # Scratch files (release-notes edit file, manifest copy for aapt2) stay in the worktree's build
+  # output next to play.json, never in /tmp.
+  PLAY_WORK="$(pwd)/app/build/outputs/build_app"
+  if [ ! -d "$PLAY_WORK" ] || [ ! -w "$PLAY_WORK" ]; then
+    echo "ERROR: $PLAY_WORK is missing or not writable by $(id -un) (build_app --play creates it)" >&2
+    exit 1
+  fi
+  _pp=(--aab "$PLAY_AAB" --version-code "$PLAY_VC" --aapt2 "$AAPT2" --key "$PLAY_KEY" --work-dir "$PLAY_WORK")
   [ -n "$notes_file" ] && _pp+=(--notes-file "$notes_file")
   [ "$dry_run" -eq 1 ] && _pp+=(--dry-run)
   exec "$_DEPLOY_HERE/play-publish" "${_pp[@]}"

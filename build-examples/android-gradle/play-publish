@@ -44,13 +44,15 @@ def token(key_path):
     claim = b64(json.dumps({"iss": sa["client_email"], "scope": SCOPE, "aud": sa["token_uri"],
                             "iat": now, "exp": now + 3600}).encode())
     signing = (head + "." + claim).encode()
-    fd, pem = tempfile.mkstemp(prefix="play-key-")
+    # The private key goes to openssl through a pipe, never onto disk.
+    rfd, wfd = os.pipe()
     try:
-        os.write(fd, sa["private_key"].encode())
-        os.close(fd)
-        p = subprocess.run(["openssl", "dgst", "-sha256", "-sign", pem], input=signing, capture_output=True)
+        os.write(wfd, sa["private_key"].encode())
+        os.close(wfd)
+        p = subprocess.run(["openssl", "dgst", "-sha256", "-sign", "/dev/fd/%d" % rfd], input=signing,
+                           capture_output=True, pass_fds=(rfd,))
     finally:
-        os.unlink(pem)
+        os.close(rfd)
     if p.returncode:
         die("openssl could not sign the JWT: %s" % p.stderr.decode().strip())
     jwt = head + "." + claim + "." + b64(p.stdout)
@@ -62,6 +64,7 @@ def token(key_path):
     return r["access_token"], sa["client_email"]
 
 TOKEN = None
+WORK_DIR = None  # set from --work-dir; scratch files never go to /tmp
 
 def http(method, url, body=None, ctype="application/json", auth=True, length=None, timeout=120):
     h = {}
@@ -85,7 +88,7 @@ def http(method, url, body=None, ctype="application/json", auth=True, length=Non
 
 def badging(aab, aapt2):
     """applicationId, versionCode, versionName from the bundle's base manifest (proto) via aapt2."""
-    with tempfile.TemporaryDirectory(prefix="play-badging-") as d:
+    with tempfile.TemporaryDirectory(prefix="play-badging-", dir=WORK_DIR) as d:
         apk = os.path.join(d, "base.apk")
         try:
             z = zipfile.ZipFile(aab)
@@ -122,7 +125,7 @@ def get_notes(base, notes_file):
         editor = os.environ.get("EDITOR", "")
         if not editor:
             die("EDITOR is unset; set it or pass --notes-file FILE")
-        fd, path = tempfile.mkstemp(prefix="play-notes-", suffix=".txt")
+        fd, path = tempfile.mkstemp(prefix="play-notes-", suffix=".txt", dir=WORK_DIR)
         with os.fdopen(fd, "w") as f:
             f.write(log)
         if subprocess.run(shlex.split(editor) + [path]).returncode:
@@ -161,7 +164,12 @@ def main():
     ap.add_argument("--key", required=True)
     ap.add_argument("--notes-file")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--work-dir", required=True, help="scratch dir for the notes file and manifest copy (never /tmp)")
     a = ap.parse_args()
+    global WORK_DIR
+    if not (os.path.isdir(a.work_dir) and os.access(a.work_dir, os.W_OK)):
+        die("--work-dir %s is missing or not writable" % a.work_dir)
+    WORK_DIR = a.work_dir
     pkg, vc, vname = badging(a.aab, a.aapt2)
     if vc != a.version_code:
         die("%s has versionCode %d but build_app recorded %d" % (a.aab, vc, a.version_code))
