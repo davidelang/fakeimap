@@ -2,9 +2,13 @@
 # Tests for fix-perms (run from the canon checkout as a normal user; throwaway repo in the sandbox (tools/scratch-dir)).
 # fix-perms must only set ownership/modes, never write a tracked file or sudoers, refuse a
 # missing tracked wrapper/log and unknown arguments, and surface every failing step.
-# The run-as-root cases use an unprivileged user namespace (unshare -r: you are uid 0 there,
-# only uid/gid 0 are mapped). usermod/gpasswd/chattr need real root, so they are replaced by
-# recording shims; chown/chmod/setfacl/getfacl/git are the real ones unless a case says so.
+# Runs as an ordinary user: no root, sudo, user namespaces or mounts. Except for the
+# "refuses to run as non-root" case, each case runs a copy of fix-perms with only its EUID gate
+# removed, against a project.config whose users are you and whose groups are your primary
+# group, and a perm-model.tsv copy whose 'root' owner/group cells (englog, englog-wrapper,
+# setuid-refresh-shell) name primary_user/code_group instead; every other line is the real one.
+# usermod/gpasswd/chattr would change the system, so they are recording shims;
+# chown/chmod/setfacl/getfacl/git are the real ones.
 set -uo pipefail
 canon="$(git rev-parse --show-toplevel)"
 T="$("$(dirname "$0")/scratch-dir" fixperms-test)" || exit 1
@@ -12,7 +16,13 @@ export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
-unshare -r true || { echo "FAIL unshare -r (user namespaces) not available"; exit 1; }
+[[ "$EUID" -ne 0 ]] || { echo "FAIL run this as an ordinary user, not root (the failing-chmod case points fix-perms at /etc/passwd)"; exit 1; }
+ME="$(id -un)" MYG="$(id -gn)"
+# Preconditions for the failure cases; a missing one is a failure, never a skip.
+[[ "$(stat -c '%U:%G %a' /etc/passwd)" == "root:root 644" ]] || { echo "FAIL precondition: /etc/passwd is $(stat -c '%U:%G %a' /etc/passwd), not root:root 644"; exit 1; }
+getent group nogroup >/dev/null || { echo "FAIL precondition: group nogroup does not exist"; exit 1; }
+id -nG | grep -qw nogroup && { echo "FAIL precondition: $ME is in nogroup"; exit 1; }
+id -nG | grep -qw root && { echo "FAIL precondition: $ME is in group root"; exit 1; }
 
 # static
 grep -n -e '|| *true' -e '2>/dev/null' "$canon/fix-perms" >"$T/swallow" && bad "fix-perms still swallows errors: $(cat "$T/swallow")" || ok "no '|| true' or '2>/dev/null' in fix-perms"
@@ -25,15 +35,21 @@ S="$T/shims"; mkdir -p "$S"
 for c in usermod gpasswd chattr; do printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$T" >"$S/$c"; chmod +x "$S/$c"; done
 mk() {  # mk SHARED_GROUP : fresh repo in $R
   R="$T/repo"; rm -rf "$R"; mkdir -p "$R/sandbox"
-  cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$canon/append-to-engineering-log" "$R/"
+  cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/append-to-engineering-log" "$R/"
+  # Only the EUID gate goes (3 lines); refuse to run if fix-perms' gate changed shape.
+  grep -c '^if \[ "\$EUID" -ne 0 \]; then$' "$canon/fix-perms" | grep -qx 1 || { echo "FAIL fix-perms EUID gate not found; update mk()"; exit 1; }
+  sed -i '/^if \[ "\$EUID" -ne 0 \]; then$/,/^fi$/d' "$R/fix-perms"
+  [[ "$(( $(wc -l <"$canon/fix-perms") - $(wc -l <"$R/fix-perms") ))" == 4 ]] || { echo "FAIL removing the EUID gate did not remove exactly 4 lines"; exit 1; }
+  awk -F'\t' -v OFS='\t' '!/^#/ && $1!="area" { if ($2=="root") $2="primary_user"; if ($3=="root") $3="code_group" } 1' "$canon/perm-model.tsv" >"$R/perm-model.tsv"
+  [[ "$(diff "$canon/perm-model.tsv" "$R/perm-model.tsv" | grep -c '^>')" == 3 ]] || { echo "FAIL perm-model.tsv: expected exactly 3 root rows to rewrite: $(diff "$canon/perm-model.tsv" "$R/perm-model.tsv")"; exit 1; }
   printf '## 2026-01-01 init\n' >"$R/ENGINEERING_LOG.md"
   cat >"$R/project.config" <<C
-primary_user=root
-planning_user=root
-coder_user=root
-orchestrator_user=root
-code_group=root
-sandbox_group=root
+primary_user=$ME
+planning_user=$ME
+coder_user=$ME
+orchestrator_user=$ME
+code_group=$MYG
+sandbox_group=$MYG
 shared_group=$1
 sandbox_dir=sandbox
 orch_root=$R
@@ -41,10 +57,10 @@ C
   git -C "$R" init -q && git -C "$R" add -A && git -C "$R" -c user.name=t -c user.email=t@t commit -qm init
   : >"$T/calls"
 }
-asroot() { (cd "$R" && unshare -r env PATH="$S:$PATH" "$@"); }
+asroot() { (cd "$R" && env PATH="$S:$PATH" "$@"); }  # name kept: "the run that would be sudo"
 
-mk root
-(cd "$R" && ./fix-perms "$R") >"$T/r0" 2>&1; rc=$?
+mk "$MYG"
+(cd "$R" && "$canon/fix-perms" "$R") >"$T/r0" 2>&1; rc=$?
 [[ $rc -eq 1 ]] && grep -q 'must run as root' "$T/r0" && ok "refuses to run as non-root" || bad "non-root: rc=$rc $(cat "$T/r0")"
 
 before="$(git -C "$R" rev-parse HEAD:append-to-engineering-log)"
@@ -87,22 +103,24 @@ asroot ./fix-perms --skip-sudoers "$R" >"$T/r4" 2>&1; rc=$?
 asroot ./fix-perms "$R/nope" >"$T/r5" 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "non-directory argument is an error" || bad "non-directory: rc=$rc $(cat "$T/r5")"
 
-# A failing chown surfaces: nogroup is not mapped in the namespace, so chown :nogroup fails.
+# A failing chown surfaces: you are not in nogroup, so chown :nogroup fails (EPERM).
 mk nogroup
 asroot ./fix-perms "$R" >"$T/r6" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q '^chown: ' "$T/r6" && ok "failing chown gives nonzero exit and its message (rc $rc)" || bad "failing chown: rc=$rc $(cat "$T/r6")"
 
-# A failing chmod surfaces: FAILME has the wrong mode (0600, whatever the umask) and sits on
-# a read-only bind mount in a private mount namespace, so perm-engine's real chmod fails
-# (EROFS) and fix-perms must report it and exit nonzero.
+# A failing chmod surfaces, on the real planner-files pass: TODO.md is a symlink, which
+# fix-perms resolves (readlink -f) and passes to perm_apply. It points at /etc/passwd
+# (root:root 644): the group already matches shared_group=root and the owner is kept, so the
+# only difference is the mode (664 wanted) and perm-engine's real chmod fails with EPERM.
 mk root
-: >"$R/FAILME"; chmod 600 "$R/FAILME"
-(cd "$R" && unshare -rm bash -c 'mount --bind "$1" "$1" && mount -o remount,bind,ro "$1" && shift && exec "$@"' _ "$R/FAILME" /usr/bin/env PATH="$S:$PATH" ./fix-perms "$R") >"$T/r7" 2>&1; rc=$?
-[[ $rc -ne 0 ]] && grep -q "ERROR: perm-lib: 'chmod .*FAILME' failed" "$T/r7" && ok "failing chmod gives nonzero exit and its message (rc $rc)" || bad "failing chmod: rc=$rc $(cat "$T/r7")"
+ln -s /etc/passwd "$R/TODO.md"
+asroot ./fix-perms "$R" >"$T/r7" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q "ERROR: perm-lib: 'chmod 00664 /etc/passwd' failed .*not owned by $ME" "$T/r7" && grep -q '^chmod: .*/etc/passwd' "$T/r7" && ok "failing chmod gives nonzero exit and its message (rc $rc)" || bad "failing chmod: rc=$rc $(cat "$T/r7")"
 tail -1 "$T/calls" | grep -qx "chattr +a $R/ENGINEERING_LOG.md" && grep -q "chattr -a $R/ENGINEERING_LOG.md" "$T/calls" && ok "a failure mid-pass still restores chattr +a on the lifted log (EXIT trap)" || bad "no +a after failure: $(cat "$T/calls")"
+[[ "$(stat -c '%U:%G %a' /etc/passwd)" == "root:root 644" ]] && ok "/etc/passwd unchanged" || bad "/etc/passwd is now $(stat -c '%U:%G %a' /etc/passwd)"
 
 # Tree boundaries: a pass never enters another worktree, the sandbox or the shared homes.
-mk root
+mk "$MYG"
 git -C "$R" worktree add -q "$R/wt2" -b wt2
 mkdir -p "$R/sandbox/notes" "$R/.gradle-shared/c"
 for f in "$R/rootfile" "$R/wt2/wtfile" "$R/sandbox/notes/sbfile" "$R/.gradle-shared/c/g"; do : >"$f"; chmod 600 "$f"; done
