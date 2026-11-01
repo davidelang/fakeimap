@@ -44,7 +44,7 @@ Install the last-built APKs with adb install -r. The default path does not compi
                With --play: open an edit, read the tracks, compute and show the notes, then
                delete the edit. Nothing is uploaded or committed.
   -N, --notes-file FILE
-               With --play: release notes from FILE instead of $EDITOR on the git log since
+               With --play: release notes from FILE instead of $EDITOR (vi when unset) on the git log since
                the commit in the highest versionName on Play (en-US, max 500 characters).
   -h, --help   Print this usage and exit.
 

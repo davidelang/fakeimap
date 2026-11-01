@@ -192,7 +192,7 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 | `-l` / `--launch` | Start the app's launcher activity after install |
 | `-p` / `--play` | Upload the recorded Play bundle to Internal testing, then promote it to alpha (closed testing) and send it for review. See [deploy --play](#deploy---play) |
 | `-n` / `--dry-run` | With `--play`: open an edit, read the tracks, show the notes, delete the edit; nothing uploaded or committed |
-| `-N` / `--notes-file FILE` | With `--play`: release notes from FILE instead of `$EDITOR` |
+| `-N` / `--notes-file FILE` | With `--play`: release notes from FILE instead of `$EDITOR` (vi when unset) |
 | `tablet`, `emulator` | emulator-5554 |
 | `phone` | `deploy_serial=` from project.config (error if unset) |
 | other words | adb serials |
@@ -236,7 +236,7 @@ Per-app config:
 2. Refuses when Play already has that versionCode on any track or as an uploaded bundle.
 3. Release notes: the base commit is the `-g<hash>` in the release name of the highest versionCode
    on any track (an error when it is missing or not an ancestor of HEAD). `git log --no-merges
-   --format='- %s' base..HEAD` opens in `$EDITOR` (error when unset), or `--notes-file FILE` is
+   --format='- %s' base..HEAD` opens in `$EDITOR` (vi when unset), or `--notes-file FILE` is
    used. Trimmed; empty or over 500 characters (Play's en-US limit) is an error, never truncated.
 4. Edit 1: upload the bundle, release it to `internal` (status completed, en-US notes), commit,
    and check with a fresh read that internal lists the versionCode.

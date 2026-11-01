@@ -122,9 +122,7 @@ def get_notes(base, notes_file):
             die("cannot read --notes-file %s: %s" % (notes_file, e))
     else:
         log = run(["git", "log", "--no-merges", "--format=- %s", base + "..HEAD"])
-        editor = os.environ.get("EDITOR", "")
-        if not editor:
-            die("EDITOR is unset; set it or pass --notes-file FILE")
+        editor = os.environ.get("EDITOR") or "vi"  # unset or empty EDITOR means vi
         fd, path = tempfile.mkstemp(prefix="play-notes-", suffix=".txt", dir=WORK_DIR)
         with os.fdopen(fd, "w") as f:
             f.write(log)
