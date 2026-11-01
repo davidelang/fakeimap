@@ -72,6 +72,7 @@ ls "$R/third_party/toy/" | grep -q before-upgrade && bad "backup left behind" ||
 mkrepo false 'printf "built %s\n" "$(cat src/content)" >src/out.bin'
 fd ro toy; fd upgrade toy --ref "$V2"; rc=$?
 [[ $rc -eq 0 ]] && ! grep -q 'second build' "$T/out" && pin | grep -q "sha256 = \"$H2\"" && ok "reproducible = false: single build, recorded" || bad "non-repro pin rc=$rc $(tail -6 "$T/out")"
+! grep -q 'reading source_kind' "$T/out" && ok "absent optional source_kind: no read-failure message" || bad "absent source_kind reported as a failure: $(grep 'reading source_kind' "$T/out")"
 
 # an older per-tree get-artifacts (no --record): verify builds work, recording fails loudly
 mkrepo false 'printf "built %s\n" "$(cat src/content)" >src/out.bin'

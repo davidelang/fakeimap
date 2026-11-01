@@ -244,14 +244,15 @@ PY
 # Optional TOML key: prints the value, or nothing when the key is absent (exit 3 of
 # pin_get). An unreadable or unparsable pin is an error, never "absent".
 pin_get_opt() {
-  local file="$1" key="$2" out rc
+  local file="$1" key="$2" out rc=0
   [[ "$file" == *.toml ]] || { echo "fetch-deps: pin_get_opt needs a .toml pin, got $file" >&2; return 2; }
   [[ -r "$file" ]] || { echo "fetch-deps: cannot read $file" >&2; return 2; }
-  if out="$(pin_get "$file" "$key")"; then
+  # rc from the assignment itself: after 'if …; fi' $? is 0, which hid every failure.
+  out="$(pin_get "$file" "$key")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
     printf '%s\n' "$out"
     return 0
   fi
-  rc=$?
   [[ "$rc" -eq 3 ]] && return 0
   echo "fetch-deps: reading $key from $file failed (exit $rc)" >&2
   return "$rc"
