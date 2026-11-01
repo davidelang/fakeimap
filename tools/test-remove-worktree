@@ -42,7 +42,9 @@ rw() { (cd "$R" && ./remove_worktree.sh "$@") >"$T/out" 2>&1; }
 mk; export RMWT_ATTRS='-----a--------e-----'
 rw b1.wt; rc=$?
 [ $rc -eq 0 ] && [ ! -e "$R/agent-1" ] && ok "append-only log, read-only lib src: removed (rc 0)" || bad "rc=$rc $(cat "$T/out")"
-grep -qx "sudo chattr -a -- agent-1/ENGINEERING_LOG.md" "$RMWT_LOG" && ok "sudo chattr -a only on the log" || bad "sudo log: $(cat "$RMWT_LOG")"
+# remove_worktree.sh hands sudo the resolved absolute path (readlink -f), never a relative
+# or symlinked one. (The worktree is gone by now, so resolve the scratch dir instead.)
+grep -qxF "sudo chattr -a -- $(readlink -f -- "$T")/r/agent-1/ENGINEERING_LOG.md" "$RMWT_LOG" && ok "sudo chattr -a only on the log" || bad "sudo log: $(cat "$RMWT_LOG")"
 grep -q 'chown' "$RMWT_LOG" && bad "chown without foreign files" || ok "no sudo chown when every file is ours"
 git -C "$R" rev-parse -q --verify refs/tags/b1-start >/dev/null && bad "start tag kept" || ok "start tag deleted with the merged branch"
 [ ! -L "$R/b1.wt" ] && ok "symlink removed" || bad "symlink kept"

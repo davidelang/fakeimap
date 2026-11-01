@@ -92,13 +92,13 @@ mk nogroup
 asroot ./fix-perms "$R" >"$T/r6" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q '^chown: ' "$T/r6" && ok "failing chown gives nonzero exit and its message (rc $rc)" || bad "failing chown: rc=$rc $(cat "$T/r6")"
 
-# A failing chmod surfaces (shim fails for one file; find -exec passes its status on).
+# A failing chmod surfaces: FAILME has the wrong mode (0600, whatever the umask) and sits on
+# a read-only bind mount in a private mount namespace, so perm-engine's real chmod fails
+# (EROFS) and fix-perms must report it and exit nonzero.
 mk root
-printf '#!/bin/sh\ncase "$*" in *FAILME*) echo "chmod: forced failure on FAILME" >&2; exit 1;; esac\nexec /usr/bin/chmod "$@"\n' >"$S/chmod"; chmod +x "$S/chmod"
-: >"$R/FAILME"
-asroot ./fix-perms "$R" >"$T/r7" 2>&1; rc=$?
-rm -f "$S/chmod"
-[[ $rc -ne 0 ]] && grep -q 'forced failure on FAILME' "$T/r7" && ok "failing chmod gives nonzero exit and its message (rc $rc)" || bad "failing chmod: rc=$rc $(cat "$T/r7")"
+: >"$R/FAILME"; chmod 600 "$R/FAILME"
+(cd "$R" && unshare -rm bash -c 'mount --bind "$1" "$1" && mount -o remount,bind,ro "$1" && shift && exec "$@"' _ "$R/FAILME" /usr/bin/env PATH="$S:$PATH" ./fix-perms "$R") >"$T/r7" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q "ERROR: perm-lib: 'chmod .*FAILME' failed" "$T/r7" && ok "failing chmod gives nonzero exit and its message (rc $rc)" || bad "failing chmod: rc=$rc $(cat "$T/r7")"
 tail -1 "$T/calls" | grep -qx "chattr +a $R/ENGINEERING_LOG.md" && grep -q "chattr -a $R/ENGINEERING_LOG.md" "$T/calls" && ok "a failure mid-pass still restores chattr +a on the lifted log (EXIT trap)" || bad "no +a after failure: $(cat "$T/calls")"
 
 # Tree boundaries: a pass never enters another worktree, the sandbox or the shared homes.
