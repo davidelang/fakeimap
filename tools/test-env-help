@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# env help/check text for an unusable refresh-shell: states the root-owned mode-4755 requirement and
+# points at a new login session; never prints a chown/chgrp command. Runs the real ./env on a copy.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$("$(dirname "$0")/scratch-dir" env-help-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+cp "$canon/env" "$T/env"
+printf '#!/bin/sh\nexit 0\n' >"$T/refresh-shell"; chmod 755 "$T/refresh-shell"
+(cd "$T" && bash ./env check) >"$T/check" 2>&1
+grep -q "refresh-shell: present but not setuid-root at $T/refresh-shell" "$T/check" \
+  && grep -q 'only works when owned by root with mode 4755' "$T/check" \
+  && grep -q "start a new login session (e.g. su - $(id -un), ssh localhost)" "$T/check" \
+  && ok "check: non-setuid refresh-shell explained, new login session suggested" || bad "check: $(cat "$T/check")"
+for sub in check how-to-fix-groups help; do
+  (cd "$T" && bash ./env "$sub") >"$T/out-$sub" 2>&1
+  ! grep -qE 'chown|chgrp' "$T/out-$sub" && ok "env $sub prints no chown/chgrp" || bad "env $sub: $(grep -E 'chown|chgrp' "$T/out-$sub")"
+done
+grep -q 'new login session' "$T/out-how-to-fix-groups" && ok "how-to-fix-groups suggests a new login session" || bad "how-to-fix-groups: $(cat "$T/out-how-to-fix-groups")"
+echo "passed $pass, failed $fail"
+[[ $fail -eq 0 ]]

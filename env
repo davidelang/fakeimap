@@ -14,7 +14,8 @@
 #
 # One-time install of the group refresh helper (sudo):
 #   gcc -O2 -Wall -o refresh-shell refresh-shell.c
-#   sudo chown root:root refresh-shell && sudo chmod 4755 refresh-shell
+#   refresh-shell only works when it is owned by root with mode 4755 (setuid root).
+#   Until it is, start a new login session (e.g. su - $USER, ssh localhost) to pick up groups.
 #   # or: sudo ./fix-perms   (builds/installs when present)
 #
 # Do NOT use newgrp for multi-group restore — it switches primary GID and drops others.
@@ -139,7 +140,8 @@ _env_try_refresh_shell() {
     REFRESH=${REFRESH:-$SCRIPT_DIR/refresh-shell}
     if [ -x "$REFRESH" ] && [ -u "$REFRESH" ] && [ "$(stat -c '%U' "$REFRESH" 2>/dev/null)" != "root" ]; then
       echo "env: refusing to exec $REFRESH (setuid but owner=$(stat -c '%U' "$REFRESH") — would kill this terminal)." >&2
-      echo "  Fix:  sudo chown root:root $REFRESH && sudo chmod 4755 $REFRESH" >&2
+      echo "  $REFRESH only works when owned by root with mode 4755 (setuid root)." >&2
+      echo "  Until then, start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups." >&2
       echo "  Or:   sudo rm -f $REFRESH   # then use orch root helper" >&2
       echo "  Or:   sudo ./install-refresh-shell.sh --all" >&2
     elif [ ! -e "$REFRESH" ]; then
@@ -169,8 +171,9 @@ without a full desktop logout). One-time setup from the *orchestration root*
 
   cd /path/to/VehicleExpenses-automated   # orchestration root
   gcc -O2 -Wall -o refresh-shell refresh-shell.c
-  sudo chown root:root refresh-shell
-  sudo chmod 4755 refresh-shell
+  # refresh-shell only works when owned by root with mode 4755 (setuid root).
+
+Until then, start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups.
 
 Or:  sudo ./fix-perms --verbose   # builds/installs the helper when source is present
 
@@ -232,18 +235,20 @@ _env_check() {
     echo "refresh-shell: OK (setuid root) at $REFRESH"
   elif [ -x "$REFRESH" ] && [ -u "$REFRESH" ]; then
     echo "refresh-shell: BROKEN — setuid but owner=$(stat -c '%U' "$REFRESH" 2>/dev/null) (must be root)"
-    echo "  Fix:  sudo chown root:root $REFRESH && sudo chmod 4755 $REFRESH"
-    echo "  Until fixed, source ./env will NOT re-exec (avoids closing the terminal)."
+    echo "  It only works when owned by root with mode 4755 (setuid root)."
+    echo "  Until then, source ./env will NOT re-exec (avoids closing the terminal); start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups."
     bad=1
   elif [ -e "$REFRESH" ]; then
     echo "refresh-shell: present but not setuid-root at $REFRESH"
-    echo "  Fix:  sudo chown root:root $REFRESH && sudo chmod 4755 $REFRESH"
+    echo "  It only works when owned by root with mode 4755 (setuid root)."
+    echo "  Until then, start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups."
     bad=1
   else
     echo "refresh-shell: NOT found under $SCRIPT_DIR or parents — group auto-fix disabled"
     echo "  One install at orchestration root is enough (parent of agent-N)."
     echo "  cd <orch-root> && gcc -O2 -Wall -o refresh-shell refresh-shell.c"
-    echo "  sudo chown root:root refresh-shell && sudo chmod 4755 refresh-shell"
+    echo "  refresh-shell only works when owned by root with mode 4755 (setuid root)."
+    echo "  Until then, start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups."
     bad=1
   fi
 
@@ -279,7 +284,7 @@ _env_check() {
       if _env_refresh_installed; then
         echo "FIX:  source ./env     # will re-exec shell with full groups (no full logout)"
       else
-        echo "FIX:  install refresh-shell once, then source ./env"
+        echo "FIX:  install refresh-shell once, then source ./env; until then start a new login session (e.g. su - $u, ssh localhost)"
         echo "      details: ./env how-to-fix-groups"
       fi
       echo "NOT:  newgrp (wrong tool for multi-group restore)"
