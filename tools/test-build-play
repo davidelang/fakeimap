@@ -306,10 +306,10 @@ mk v0.9
 rel msg file --standard; rc=$?
 [[ $rc -ne 0 ]] && grep -q 'including Play' "$T/out" \
   && ok "msg file --standard: --standard stays a file name" || bad "positional standard rc=$rc $(tail -4 "$T/out")"
-mk v0.9
+mk
 rel -s -T v8.8.8; rc=$?
 [[ $rc -eq 0 && "$(vc)" == 1 && "$(git -C "$W" rev-parse 'v8.8.8^{}')" == "$(git -C "$W" rev-parse HEAD)" \
-  && "$(tagtype v8.8.8)" == tag ]] && grep -q 'Release tag v8.8.8' "$T/out" \
+  && "$(tagtype v8.8.8)" == tag && "$(cat "$T/versionName-at-build")" == v8.8.8 ]] && grep -q 'Release tag v8.8.8' "$T/out" \
   && ok "-s -T creates annotated v8.8.8 on HEAD" || bad "short tag rc=$rc vc=$(vc) type=$(tagtype v8.8.8) $(tail -6 "$T/out")"
 mk v0.9
 rel -p -T v4.0.0; rc=$?
