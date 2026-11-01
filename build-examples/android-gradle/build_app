@@ -86,6 +86,9 @@
 #   The release_* keys have no default: a Play build whose keys are unset stops before the commit
 #   phase, naming each missing key (also in single-user mode: signing stays local to this machine).
 #   release_gradle_args Play build: extra space-separated gradle args (e.g. -Pfuelsmoothing.official=true)
+#   fuelsmoothing_official  --standard only: 1 appends -Pfuelsmoothing.official=true;
+#                       absent or empty appends nothing; any other value is
+#                       -Pfuelsmoothing.official=<value>. Not applied to --play.
 
 # play-bundle.aab: a TRACKED relative symlink at the worktree top pointing at release_bundle_path,
 # so a file picker (Play Console filters *.aab) reaches the bundle without walking app/build/...
@@ -782,6 +785,20 @@ for arg in "$@"; do
     SEEN_DASHDASH=true
   fi
 done
+# --standard only. Args after -- stay Gradle args; this property is added as well.
+# 1 -> -Pfuelsmoothing.official=true. Absent or empty adds nothing. Any other value
+# is passed through, so Gradle's existing check fires. No error of our own. Not --play.
+STANDARD_OFFICIAL=()
+if [ "$BUILD_STANDARD" = true ]; then
+  _fs_off=$(cfg fuelsmoothing_official)
+  if [ -n "$_fs_off" ]; then
+    if [ "$_fs_off" = 1 ]; then
+      STANDARD_OFFICIAL+=(-Pfuelsmoothing.official=true)
+    else
+      STANDARD_OFFICIAL+=(-Pfuelsmoothing.official="$_fs_off")
+    fi
+  fi
+fi
 if [ ${#GRADLE_ARGS[@]} -gt 0 ]; then
   echo "Passing gradle flags: ${GRADLE_ARGS[*]}"
 fi
@@ -1107,12 +1124,19 @@ publish_deliverables() {
 build_apks() {
   local label="$1"
   shift
-  local tasks=( "$@" ) ret apks=() stamped
-  echo "=== $label build: ${tasks[*]} ==="
+  local tasks=( "$@" ) ret apks=() stamped extra=()
+  if [ "$label" = standard ]; then
+    extra=("${STANDARD_OFFICIAL[@]}")
+  fi
+  if [ ${#extra[@]} -gt 0 ]; then
+    echo "=== $label build: ${extra[*]} ${tasks[*]} ==="
+  else
+    echo "=== $label build: ${tasks[*]} ==="
+  fi
   rm -f "app/build/outputs/build_app/$label.json" || exit 1
   "$_BA_INFO" clean "$label" || exit 1
   # This run's daemon (GRADLE_BASE); stopped by the EXIT trap.
-  (umask "$BUILD_UMASK"; "${GRADLE_BASE[@]}" "${GRADLE_ARGS[@]}" "${tasks[@]}")
+  (umask "$BUILD_UMASK"; "${GRADLE_BASE[@]}" "${GRADLE_ARGS[@]}" "${extra[@]}" "${tasks[@]}")
   ret=$?
   ve_reset_gradle_daemon_dir || exit 1
   repair_build_perms

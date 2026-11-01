@@ -77,6 +77,9 @@ java_home=/usr/lib/jvm/java-17-openjdk-amd64
 # release_bundle_path=app/build/outputs/bundle/playRelease/app-play-release.aab
 # Optional extra gradle args for the release build only, space-separated:
 # release_gradle_args=-Pfuelsmoothing.official=true
+# Fuel Smoothing only, --standard builds only (not --play): 1 passes -Pfuelsmoothing.official=true;
+# absent or empty passes nothing; any other value is passed through as -Pfuelsmoothing.official=<value>.
+# fuelsmoothing_official=1
 #
 # deploy --play (upload to Internal testing, promote to alpha, send for review): absolute path
 # to the Play Developer API service-account JSON, readable by primary_user (who runs deploy) and

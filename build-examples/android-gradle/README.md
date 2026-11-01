@@ -40,7 +40,7 @@ line each:
 
 | Flag | Build | Config |
 |------|-------|--------|
-| `-s` / `--standard` | the standard build | `- **Standard build:**` |
+| `-s` / `--standard` | the standard build | `- **Standard build:**`; optional project.config `fuelsmoothing_official` |
 | `-t` / `--test` | the test build | `- **Test build:**` |
 | `-p` / `--play` / `--bundle` | signed Play AAB | project.config `release_keystore`, `release_key_alias`, `release_bundle_task`, `release_bundle_path` (required), `release_gradle_args` |
 | `-T` / `--release-tag NAME` | annotated tag on the commit these builds use; does not select a build | |
