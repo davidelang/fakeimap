@@ -601,7 +601,8 @@ fetch_one_source() {
         cp -a "$resolved" "$dest"
         ;;
       https://*|http://*)
-        src_tmp="$(mktemp)"
+        # Download beside the destination (same dir, so mv is a rename); never /tmp.
+        src_tmp="$(mktemp "$(dirname "$dest")/.$(basename "$dest").download.XXXXXX")" || { echo "    FAIL: cannot create a temp file beside $dest" >&2; return 1; }
         echo "    source fetch $url → $relpath"
         if command -v curl >/dev/null 2>&1; then
           if ! curl -fsSL --proto '=https,http' --proto-redir '=https,http' -o "$src_tmp" "$url"; then

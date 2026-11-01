@@ -1,14 +1,14 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "89df8eda034af394ecc99d9cc1594b3b2b8ba851"
-git_describe = "89df8ed"
+git_sha = "b7ac84c852fcd6815ca4eb2d209c383e90fe61cc"
+git_describe = "b7ac84c"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
 requires_writable_src = false
-# GOCACHE in src/build (the pin's writable build scratch), never /tmp; removed after the build.
-build = ["mkdir -p src/build && d=$(mktemp -d \"$PWD/src/build/gocache.XXXXXX\") && cd src/go && GOCACHE=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -buildvcs=false -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
+# GOCACHE and GOTMPDIR (go build's work dir) in src/build, the pin's writable build scratch, never /tmp; removed after the build.
+build = ["mkdir -p src/build && d=$(mktemp -d \"$PWD/src/build/gocache.XXXXXX\") && cd src/go && GOCACHE=$d GOTMPDIR=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -buildvcs=false -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
 consumer_note = "Channel handoff tools. The built go/channel is committed as artifact/channel (multi-call: artifact/channel-{setup,arm,send,ping,status} are symlinks to it); agents run only those from the repo root and never need src/. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them. Consumers do not rerun the connector's tests."
 
 [[artifact]]
