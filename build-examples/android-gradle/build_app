@@ -58,7 +58,8 @@
 #     6. --release-tag only: an annotated tag of that name is created on the commit the builds
 #        will use (the bump commit when --play is selected). Refused when the name is missing,
 #        already exists, is 'builds' or '*/builds', ends in '-start', contains '+', or this
-#        branch has a <branch>-start tag (that describe would hide the release name). A failed
+#        branch has a <branch>-start tag (that describe would hide the release name), or, without
+#        --play, when HEAD already has another annotated tag (describe could pick it). A failed
 #        run deletes the tag this run created. There is no prompt.
 #     7. Builds in sequence: standard, test, play. The first failure stops everything.
 #     8. The builds tag moves only after every selected build succeeded.
@@ -842,6 +843,17 @@ validate_release_tag() {
     echo "  Release tags are for a branch without a -start tag (e.g. master)." >&2
     exit 1
   fi
+  # Without --play the tag goes on HEAD itself; another annotated tag there would tie with it
+  # in git describe (same commit, often the same second), so versionName could be the old name.
+  if [ "$BUILD_PLAY" != true ]; then
+    local others
+    others=$(git for-each-ref --points-at HEAD --format='%(objecttype) %(refname:short)' refs/tags | awk '$1 == "tag" && $2 !~ /\+/ {print $2}') || exit 1
+    if [ -n "$others" ]; then
+      echo "ERROR: HEAD already has annotated tag(s): $(printf '%s ' $others)so git describe may not return '$RELEASE_TAG' as versionName." >&2
+      echo "  Commit something first, or use --play (the tag then goes on the new versionCode commit)." >&2
+      exit 1
+    fi
+  fi
 }
 create_release_tag() {
   [ -n "$RELEASE_TAG" ] || return 0
@@ -850,8 +862,14 @@ create_release_tag() {
     exit 1
   }
   RELEASE_TAG_CREATED=true
-  echo "Release tag $RELEASE_TAG on $(git rev-parse --short HEAD) (annotated)"
   trap play_bump_note EXIT
+  local desc
+  desc=$(git describe --always --exclude '*+*') || exit 1
+  if [ "$desc" != "$RELEASE_TAG" ]; then
+    echo "ERROR: after tagging, git describe gives '$desc', not '$RELEASE_TAG'; versionName would be wrong." >&2
+    exit 1
+  fi
+  echo "Release tag $RELEASE_TAG on $(git rev-parse --short HEAD) (annotated)"
 }
 
 # Before the Play bump, so a refused name commits nothing and asks for no passwords.
