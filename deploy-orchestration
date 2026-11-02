@@ -620,15 +620,26 @@ def sync_build_type(canon, host, rep, hl, apply):
         rep.fail.append("%s: build_type paths still differ after commit: %s" % (hl, left.replace("\n", "; ")))
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-a", "--apply", action="store_true")
-    ap.add_argument("-p", "--push", action="store_true")
-    ap.add_argument("-R", "--repos", default="")
-    ap.add_argument("-H", "--host-only", action="store_true")
-    ap.add_argument("-l", "--list", metavar="CLASS")
-    ap.add_argument("-c", "--check", action="store_true")
-    ap.add_argument("-o", "--override", action="append", default=[], metavar="WT")
-    ap.add_argument("-O", "--override-path", action="append", default=[], metavar="GLOB")
+    # -h shows a short summary; the full rules are the docstring at the top of this file.
+    ap = argparse.ArgumentParser(
+        description="Publish the shared rule set (rules.manifest) to every host. With no options it\n"
+                    "only reports what would happen; nothing is written.",
+        epilog="Rules (what is published where, what is skipped and why): the comment at the top\n"
+               "of deploy-orchestration.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-a", "--apply", action="store_true",
+                    help="write and commit: canonical first, then each host root, then its worktrees")
+    ap.add_argument("-p", "--push", action="store_true", help="with --apply, also push each changed branch")
+    ap.add_argument("-R", "--repos", default="", help="comma-separated hosts to limit to (names under git_home or paths)")
+    ap.add_argument("-H", "--host-only", action="store_true", help="only this host: root to its worktrees")
+    ap.add_argument("-l", "--list", metavar="CLASS", help="print the manifest paths of a class (e.g. law)")
+    ap.add_argument("-c", "--check", action="store_true", help="manifest consistency check on the source host")
+    ap.add_argument("-o", "--override", action="append", default=[], metavar="WT",
+                    help="in worktree or root WT, the source wins over ahead/diverged rule files "
+                         "(repeatable; dirty files are still skipped)")
+    ap.add_argument("-O", "--override-path", action="append", default=[], metavar="GLOB",
+                    help="publish project-local files matching GLOB even where a worktree modified them "
+                         "(repeatable; for clean/smudge files; dirty files are still skipped)")
     ap.add_argument("-n", "--dry-run", action="store_true", help="same as the default report")
     a = ap.parse_args()
     src = toplevel(os.path.dirname(os.path.realpath(__file__)))
