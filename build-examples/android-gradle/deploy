@@ -35,8 +35,8 @@ Install the last-built APKs with adb install -r. The default path does not compi
                Run ./build_app --standard (or --test) first (REBUILD=1). Gradle flags after
                -- go to build_app.
   -l, --launch Start the app's launcher activity after a successful install.
-  -p, --play   Upload the Play bundle the last ./build_app --play recorded to Internal testing,
-               then promote that versionCode to alpha (closed testing) and send it for review.
+  -p, --play   Upload the Play bundle the last ./build_app --play recorded and release it to
+               Internal testing and alpha (closed testing) in one commit, sent for review.
                Refused when the bundle is missing, not from HEAD, changed since the build, or
                its versionCode is already on Play. Needs play_service_account_json= in
                project.config. No adb, devices, or gradle flags.

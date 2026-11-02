@@ -238,10 +238,10 @@ Per-app config:
    on any track (an error when it is missing or not an ancestor of HEAD). `git log --no-merges
    --format='- %s' base..HEAD` opens in `$EDITOR` (vi when unset), or `--notes-file FILE` is
    used. Trimmed; empty or over 500 characters (Play's en-US limit) is an error, never truncated.
-4. Edit 1: upload the bundle, release it to `internal` (status completed, en-US notes), commit,
-   and check with a fresh read that internal lists the versionCode.
-5. Edit 2: the same versionCode and notes to `alpha` (closed testing), committed with
-   `changesNotSentForReview=false` so it goes to review; checked with a fresh read.
+4. One edit: upload the bundle and release it to both `internal` and `alpha` (closed testing),
+   status completed, same en-US notes.
+5. One commit with `changesNotSentForReview=false`, so Play records a single submission that
+   goes to review; a fresh read then checks that each track lists the versionCode.
 
 `--dry-run` does everything except the upload and the commits, and deletes its edit.
 Needs `python3` and `openssl` (standard library only; the JWT is signed with openssl) and
