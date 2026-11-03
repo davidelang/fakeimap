@@ -86,6 +86,24 @@ build; rc=$?
 chmod 755 "$T"
 [[ $rc -ne 0 ]] && grep -q "NOT-READABLE user=nobody .* blocker=$T class=other" "$T/out" && ok "unreadable path fails the build, naming the blocker (rc $rc)" || bad "blocked path: rc=$rc $(tail -5 "$T/out")"
 
+# The source tree is not the build's: an editor's swap file (any owner, any mode) and a directory
+# nobody can read under app/src are never walked, changed or named, and the build succeeds.
+mk; mkdir -p "$W/app/src/main/assets" "$W/app/src/main/locked"
+echo swap >"$W/app/src/main/assets/.settings-tree.json.swp"; chmod 0600 "$W/app/src/main/assets/.settings-tree.json.swp"
+chmod 0000 "$W/app/src/main/locked"
+build; rc=$?
+chmod 0755 "$W/app/src/main/locked"
+[[ $rc -eq 0 ]] && ok "stray swap file and unreadable dir in app/src do not stop the build" || bad "app/src stray: rc=$rc $(tail -5 "$T/out")"
+[[ "$(stat -c %a "$W/app/src/main/assets/.settings-tree.json.swp")" == 600 ]] && ok "swap file left at its own mode (600)" || bad "swap mode changed to $(stat -c %a "$W/app/src/main/assets/.settings-tree.json.swp")"
+grep -q 'settings-tree.json.swp\|app/src/main/locked' "$T/out" && bad "output names a file the build does not own: $(grep 'swp\|locked' "$T/out")" || ok "output never names the stray files"
+
+# Caller != coder_user and the re-exec cannot happen: the build fails loudly and nothing is built
+# as the caller (no fallback). coder_user names a user that does not exist, so sudo -n always fails.
+mk; sed -i "s/^coder_user=.*/coder_user=no-such-user-zz/" "$W/project.config"
+build; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'Re-executing as no-such-user-zz' "$T/out" && [ ! -e "$W/app/build" ] && [ ! -e "$W/.gradle-home" ] \
+  && ok "failed re-exec as coder_user stops before any build work (rc $rc, no app/build or .gradle-home)" || bad "re-exec failure: rc=$rc $(tail -5 "$T/out"); $(ls -a "$W")"
+
 # A deliverable chmod failure surfaces with chmod's error and the path's owner/mode.
 mk
 mkdir -p "$T/shim"; printf '#!/bin/sh\ncase "$*" in *app-debug.apk*) echo "chmod: forced failure" >&2; exit 1;; esac\nexec /usr/bin/chmod "$@"\n' >"$T/shim/chmod"; chmod 755 "$T/shim/chmod"
@@ -131,12 +149,12 @@ awk '/perm_preflight build-intermediates/{p=NR} /^if \[ "\$#" -ge 1 \]; then/{c=
 mkdir -p "$T/pf/d"; chmod 0755 "$T/pf/d"
 perm_preflight build-intermediates "$T/pf/d" --top-only >"$T/o" 2>&1 && [ ! -s "$T/o" ] && ok "preflight: own path with the wrong mode is fixable (no output)" || bad "pf own: $(cat "$T/o")"
 perm_preflight build-intermediates /etc --top-only >"$T/o" 2>&1; rc=$?
-[[ $rc -ne 0 ]] && grep -q '^CANNOT-FIX area=build-intermediates path=/etc got=root:root' "$T/o" && grep -q "sudo ./fix-perms" "$T/o" && ok "preflight: someone else's path with the wrong mode/owner is CANNOT-FIX, hint given" || bad "pf foreign: $(cat "$T/o")"
+[[ $rc -ne 0 ]] && grep -q '^CANNOT-FIX area=build-intermediates path=/etc got=root:root' "$T/o" && grep -q "have each owner remove the ones that are not needed, or run ./fix-perms" "$T/o" && ! grep -q sudo "$T/o" && ok "preflight: someone else's path with the wrong mode/owner is CANNOT-FIX, hint given" || bad "pf foreign: $(cat "$T/o")"
 sed "s/^coder_user=.*/coder_user=nobody/" "$W/project.config" >"$T/pc-nobody"
 ( perm_init "$T/pc-nobody"; perm_preflight build-intermediates "$T/pf/d" --top-only ) >"$T/o" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q 'owner should be nobody:ai-code' "$T/o" && ok "preflight: build outputs owned by someone other than coder_user are CANNOT-FIX" || bad "pf owner: $(cat "$T/o")"
 perm_apply deliverable-dirs /etc --top-only >"$T/o" 2>&1; rc=$?
-[[ $rc -ne 0 ]] && grep -q "is not owned by $me, so only its owner or root can change it: run 'sudo ./fix-perms'" "$T/o" && ok "failing chmod on another user's path names the fix" || bad "apply hint: $(cat "$T/o")"
+[[ $rc -ne 0 ]] && grep -q "is not owned by $me, so only root can change it: run ./fix-perms from the orchestration root" "$T/o" && ok "failing chmod on another user's path names the fix" || bad "apply hint: $(cat "$T/o")"
 # readable-nogroups evaluates POSIX ACLs (acl(5)), not "any ACL = unreadable".
 mkdir -p "$T/acl/d"; : >"$T/acl/d/f"; chmod 755 "$T/acl" "$T/acl/d"; chmod 644 "$T/acl/d/f"
 setfacl -m u:ai-planner:r-x "$T/acl"

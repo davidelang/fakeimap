@@ -586,7 +586,7 @@ if [ "$SINGLE_USER" = false ]; then
     if [ -d "$_d" ]; then
       perm_preflight deliverable-dirs "$_d" --top-only || {
         echo "ERROR: $(cd "$_d" && pwd) must be searchable by everyone (o+rx) so $PRIMARY_USER can reach the APK/AAB," >&2
-        echo "  and $(id -un) does not own it. Fix once: sudo ./fix-perms   (from the orchestration root); nothing was committed or built." >&2
+        echo "  and $(id -un) does not own it. Fix once: run ./fix-perms from the orchestration root (it must run as root); nothing was committed or built." >&2
         exit 1
       }
     fi
@@ -595,7 +595,7 @@ if [ "$SINGLE_USER" = false ]; then
     if [ -d "$_d" ]; then
       perm_preflight build-intermediates "$_d" || {
         echo "ERROR: $(pwd)/$_d has paths $(id -un) cannot fix (CANNOT-FIX above); nothing was committed or built." >&2
-        echo "  Fix once: sudo ./fix-perms   (from the orchestration root; makes app/build and .gradle $(cfg coder_user)-owned)" >&2
+        echo "  Fix once: run ./fix-perms from the orchestration root (it must run as root; it makes app/build and .gradle $(cfg coder_user)-owned)" >&2
         exit 1
       }
     fi
@@ -1063,10 +1063,12 @@ GRADLE_BASE=( ./gradlew --daemon "${DAEMON_PROPS[@]}" --no-configuration-cache
   -Dkotlin.compiler.execution.strategy=in-process )
 
 # Post-build permission repair for this worktree only (not orch caches). Runs after every
-# gradle invocation, successful or not: app/build and .gradle get the build-intermediates
-# area (group ai-code, group rw, setgid dirs; 'other' bits are left as the umask made them),
-# app/src the worktree area. Paths whose owner is someone else and whose modes differ make
-# chmod fail, and the build stops with that error.
+# gradle invocation, successful or not, on what the build produces and nothing else:
+# app/build and .gradle get the build-intermediates area (group ai-code, group rw, setgid dirs;
+# 'other' bits are left as the umask made them). The source tree (app/src) is never walked: it
+# holds everyone's files (sources, an editor's swap file) and the build writes nothing there
+# (generated sources go to app/build). A path in app/build or .gradle owned by someone else whose
+# mode differs makes chmod fail, and the build stops naming the path, its owner and the fix.
 repair_build_perms() {
   local d
   [ "$SINGLE_USER" = true ] && return 0
@@ -1075,9 +1077,6 @@ repair_build_perms() {
       perm_apply build-intermediates "$d" || exit 1
     fi
   done
-  if [ -d app/src ]; then
-    perm_apply worktree app/src || exit 1
-  fi
 }
 
 # Deliverables (the files someone uploads or sideloads, possibly from a desktop session that

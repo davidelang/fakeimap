@@ -181,7 +181,11 @@ def name_g(gid):
     try: return grp.getgrgid(gid).gr_name
     except KeyError: return str(gid)
 
-FIX_HINT = "only its owner or root can change it: run 'sudo ./fix-perms' from the orchestration root"
+def fix_hint(uid):
+    if uid == 0:
+        return "only root can change it: run ./fix-perms from the orchestration root (it must run as root)"
+    return (f"only {name_u(uid)} (its owner) or root can change it: have {name_u(uid)} remove it if "
+            f"it is not needed, or run ./fix-perms from the orchestration root (it must run as root)")
 
 def run(argv, path, st):
     r = subprocess.run(argv)
@@ -189,7 +193,7 @@ def run(argv, path, st):
         me = pwd.getpwuid(os.geteuid()).pw_name
         hint = ""
         if os.geteuid() != 0 and st.st_uid != os.geteuid():
-            hint = f"; it is not owned by {me}, so {FIX_HINT}"
+            hint = f"; it is not owned by {me}, so {fix_hint(st.st_uid)}"
         print(f"ERROR: perm-lib: '{' '.join(argv)}' failed (exit {r.returncode}); "
               f"{path} is {name_u(st.st_uid)}:{name_g(st.st_gid)} {format(st.st_mode & 0o7777, '04o')}, "
               f"running as {me}{hint}", file=sys.stderr)
@@ -215,7 +219,9 @@ def cmd_preflight(area, root, *a):
                   f"{format(st.st_mode & 0o7777, '04o')} ({'; '.join(why)})")
     if bad:
         print(f"ERROR: perm-lib: {bad} path(s) in area '{area}' differ from perm-model.tsv and are not "
-              f"owned by {name_u(me)}; {FIX_HINT}", file=sys.stderr)
+              f"owned by {name_u(me)}; only their owners or root can change them: have each owner remove "
+              f"the ones that are not needed, or run ./fix-perms from the orchestration root (it must run as root)",
+              file=sys.stderr)
         sys.exit(1)
 
 def cmd_apply(area, root, *a):
