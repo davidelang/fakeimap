@@ -10,6 +10,9 @@ TARGET defaults to master. The reference is backup-<branch> (or HEAD before the 
 Kinds of paths:
   log    paths with merge=ve-englog in .gitattributes (ENGINEERING_LOG.md). Append-only: never written
          by a reset; the worktree keeps its full content; this helper appends the start entries.
+         Compared by content with symlinks followed on both sides (ENGINEERING_LOG.md is a symlink to
+         work-history/ENGINEERING_LOG.md since the work-history move; a reference from before the
+         move holds the regular file, whose content must prefix the current log).
   infra  rules.manifest paths (law/shared/opt/replace/retired/purge), the project root's
          rules.manifest.local paths, third_party pins (third_party/*/libpin.toml, third_party/*/SOURCE.md)
          and third_party/fetch-deps. Expected version: TARGET's when the reference copy is TARGET's or
@@ -28,7 +31,7 @@ After an interrupted run, ./prepare-pr-rewrite --redo finishes it: uncommitted c
 reset sets (log, infra, the reset product paths) and untracked infra paths are allowed; the log is
 never written, the tag never touched.
 """
-import argparse, datetime, os, re, subprocess, sys
+import argparse, datetime, os, posixpath, re, subprocess, sys
 
 def die(msg):
     print("ERROR: " + msg, file=sys.stderr)
@@ -178,13 +181,73 @@ def append_log(entry):
 
 def log_prefix_ok(c, data_by_path):
     for lp in c.logs:
-        ref = show(c.ref, lp)
+        ref = log_at(c.ref, lp) or b""
         cur = data_by_path[lp]
-        if not cur.startswith(ref):
+        if cur is None or not cur.startswith(ref):
             die("%s does not start with the %s copy: the log is append-only, it was rewritten" % (lp, c.tag))
 
-def read(p):
-    return open(p, "rb").read() if os.path.isfile(p) else b""
+def tree_entry(rev, path):
+    """(mode, type, sha) of path in rev's tree, or None."""
+    out = git("ls-tree", "-z", rev, "--", path, binary=True).split(b"\0")[0]
+    if not out:
+        return None
+    mode, typ, sha = out.split(b"\t", 1)[0].decode().split()
+    return mode, typ, sha
+
+def log_at(rev, lp):
+    """Content of log path lp at rev with git symlinks (mode 120000) followed inside the tree, on
+    every path component, the way open() follows them in the worktree. None when lp is not in rev;
+    a dangling, looping, absolute or escaping link is an error."""
+    path, hops = posixpath.normpath(lp), 0
+    while True:
+        parts, i, e = path.split("/"), 0, None
+        while i < len(parts):
+            cur = "/".join(parts[:i + 1])
+            e = tree_entry(rev, cur)
+            if e is None:
+                if hops:
+                    die("%s at %s: symlink resolves to %s, which is not in the tree (dangling)" % (lp, rev[:9], path))
+                return None
+            if e[0] == "120000":
+                hops += 1
+                if hops > 40:
+                    die("%s at %s: too many symlink levels (loop?)" % (lp, rev[:9]))
+                t = git("cat-file", "blob", e[2], binary=True).decode(errors="replace")
+                if t.startswith("/"):
+                    die("%s at %s: symlink %s has absolute target %s" % (lp, rev[:9], cur, t))
+                new = posixpath.normpath(posixpath.join(posixpath.dirname(cur), t, *parts[i + 1:]))
+                if new == ".." or new.startswith("../") or new == ".":
+                    die("%s at %s: symlink %s target %s leaves the repo" % (lp, rev[:9], cur, t))
+                path = new
+                break
+            if i < len(parts) - 1 and e[1] != "tree":
+                die("%s at %s: %s is not a directory" % (lp, rev[:9], cur))
+            i += 1
+        else:
+            if e[1] != "blob":
+                die("%s at %s: resolves to %s, not a file" % (lp, rev[:9], path))
+            return git("cat-file", "blob", e[2], binary=True)
+
+def read_log(lp):
+    """Worktree content of log path lp, symlinks followed by open(). None when lp does not exist;
+    a dangling symlink or a non-file is an error, never empty content."""
+    if not os.path.lexists(lp):
+        return None
+    if not os.path.exists(lp):
+        die("%s is a dangling symlink (-> %s)" % (lp, os.readlink(lp)))
+    if not os.path.isfile(lp):
+        die("%s is not a regular file" % lp)
+    with open(lp, "rb") as f:
+        return f.read()
+
+def read_logs(c):
+    out = {}
+    for lp in c.logs:
+        d = read_log(lp)
+        if d is None and log_at(c.ref, lp) is not None:
+            die("%s is missing from the worktree but is in %s" % (lp, c.tag))
+        out[lp] = d
+    return out
 
 def preflight(c, paths):
     """Every path the reset may write must be replaceable by this user; report all offenders at once."""
@@ -235,7 +298,7 @@ def reset(c, redo):
         die("untracked files are tracked at the base or the reference; move them away first:\n" + "\n".join(hit))
     if c.conflict:
         print("NOTE: also changed on %s since the fork (their steps must keep %s's change): %s" % (c.target, c.target, ", ".join(c.conflict)))
-    logs0 = {lp: read(lp) for lp in c.logs}
+    logs0 = read_logs(c)
     log_prefix_ok(c, logs0)
     preflight(c, sorted(product | set(c.infra)))
     if not redo:
@@ -274,7 +337,7 @@ def reset(c, redo):
         if blob(c.base, p) != want:
             kept.append(p)
     for lp in c.logs:
-        if read(lp) != logs0[lp]:
+        if read_log(lp) != logs0[lp]:
             die("%s changed during the reset (tag %s keeps the history)" % (lp, c.tag))
     allowed = set(c.logs) | set(kept)
     left = [l for l in git("status", "--porcelain", "--untracked-files=no", "--no-renames").splitlines() if l[3:] not in allowed]
@@ -284,7 +347,7 @@ def reset(c, redo):
     what = "redo (backup tag %s kept)" % c.tag if redo else "started (backup tag %s)" % c.tag
     append_log("## %s - history rewrite %s\n\n- Branch %s, reference %s (%s)." % (today, what, c.branch, c.tag, c.ref[:9]))
     append_log("## %s - reset to %s done\n\n- Reset to merge-base with %s; log kept; infra kept: %d path(s)." % (today, c.base[:9], c.target, len(kept)))
-    log_prefix_ok(c, {lp: read(lp) for lp in c.logs})
+    log_prefix_ok(c, read_logs(c))
     os.remove(c.state)
     print("REWRITE-%s branch=%s tag=%s ref=%s base=%s target=%s" % ("REDO" if redo else "START", c.branch, c.tag, c.ref[:9], c.base[:9], c.target))
     print("FIRST COMMIT (commit path, before any product step): %s" % " ".join(c.logs + kept))
@@ -297,10 +360,13 @@ def reset(c, redo):
 def check(c):
     bad = []
     for lp in c.logs:
-        h = show("HEAD", lp)
-        if not h.startswith(show(c.ref, lp)):
+        h = log_at("HEAD", lp)
+        if h is None:
+            bad.append("%s is not in HEAD" % lp)
+            continue
+        if not h.startswith(log_at(c.ref, lp) or b""):
             bad.append("%s at HEAD does not start with the %s copy (append-only)" % (lp, c.tag))
-        if read(lp) != h:
+        if read_log(lp) != h:
             bad.append("%s in the worktree differs from HEAD (commit the appended entries)" % lp)
     for p in c.infra:
         rev, want = c.expect[p]

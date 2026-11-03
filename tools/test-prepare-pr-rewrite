@@ -1,0 +1,90 @@
+#!/bin/bash
+# Tests for prepare-pr-rewrite's append-only log checks with ENGINEERING_LOG.md as a symlink to
+# work-history/ENGINEERING_LOG.md, in throwaway repos (tools/scratch-dir). PRP=<file> runs another
+# copy of the helper (e.g. an older revision) against the same cases.
+set -euo pipefail
+here=$(cd "$(dirname "$0")/.." && pwd)
+prp="${PRP:-$here/prepare-pr-rewrite}"
+T="$("$(dirname "$0")/scratch-dir" prepare-pr-rewrite-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"
+trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
+fail=0; pass=0
+ok()  { pass=$((pass+1)); echo "ok   $1"; }
+bad() { fail=$((fail+1)); echo "FAIL $1"; }
+check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+
+# mkrepo NAME MOVED_ON_MASTER(1|0): master with the log; branch feat with log entries + a product change.
+mkrepo() {
+  r="$T/$1"; git init -q -b master "$r"; cd "$r"
+  git config user.email t@t; git config user.name t
+  cp "$prp" prepare-pr-rewrite; chmod +x prepare-pr-rewrite
+  printf '#!/bin/bash\nset -euo pipefail\nprintf "%%s\\n\\n" "$1" >> ENGINEERING_LOG.md\n' > append-to-engineering-log
+  chmod +x append-to-engineering-log
+  printf 'shared prepare-pr-rewrite\n' > rules.manifest
+  mkdir -p "$T/sb-$1/PRs"; printf 'sandbox_dir=%s\n' "$T/sb-$1" > project.config
+  printf 'ENGINEERING_LOG.md merge=ve-englog\n' > .gitattributes
+  printf '# log\n\n## old entry one\n\n' > ENGINEERING_LOG.md
+  printf 'p1\n' > product.txt
+  if [ "$2" = 1 ]; then movelog; fi
+  git add -A; git commit -qm base
+  git checkout -q -b feat
+  if [ "$2" = 0 ]; then movelog; git add -A; git commit -qm "move log"; fi
+  printf '## branch entry\n\n' >> work-history/ENGINEERING_LOG.md
+  printf 'p2\n' > product.txt; git add -A; git commit -qm "product change"
+}
+movelog() {
+  mkdir -p work-history; mv ENGINEERING_LOG.md work-history/ENGINEERING_LOG.md
+  ln -s work-history/ENGINEERING_LOG.md ENGINEERING_LOG.md
+  printf 'ENGINEERING_LOG.md merge=ve-englog\nwork-history/ENGINEERING_LOG.md merge=ve-englog\n' > .gitattributes
+}
+run() { out=$(./prepare-pr-rewrite "$@" 2>&1); rc=$?; }
+
+# 1: start with the symlinked log (moved on master)
+mkrepo r1 1
+before=$(cat work-history/ENGINEERING_LOG.md); set +e; run master; set -e
+check "start succeeds (rc=$rc: $out)" '[ $rc -eq 0 ]'
+check "tag backup-feat created"      'git rev-parse -q --verify refs/tags/backup-feat >/dev/null'
+check "HEAD at merge-base"           '[ "$(git rev-parse HEAD)" = "$(git rev-parse master)" ]'
+check "log still a symlink"          '[ -L ENGINEERING_LOG.md ] && [ "$(readlink ENGINEERING_LOG.md)" = work-history/ENGINEERING_LOG.md ]'
+check "log kept, grew by 2 entries"  '[ "$(head -c ${#before} work-history/ENGINEERING_LOG.md)" = "$before" ] && [ "$(grep -c "^## .* - " work-history/ENGINEERING_LOG.md)" = 2 ]'
+check "product at base"              '[ "$(cat product.txt)" = p1 ]'
+# 2: --check after committing
+git add -A; git commit -qm rewritten
+set +e; run --check master; set -e
+check "--check passes (rc=$rc: $out)" '[ $rc -eq 0 ] && [[ "$out" == *LOG-OK* ]]'
+# 3: a rewritten log is refused
+mkrepo r3 1
+sed -i 's/old entry one/edited/' work-history/ENGINEERING_LOG.md; git commit -qam "rewrite log"
+# the reference (tag) holds the original log; the current log edited an old line
+head0=$(git rev-parse HEAD); git tag backup-feat HEAD~1; set +e; run --redo master; set -e
+check "rewritten log refused (rc=$rc)" '[ $rc -ne 0 ] && [[ "$out" == *"append-only, it was rewritten"* ]]'
+check "rewritten: nothing reset"       '[ "$(git rev-parse HEAD)" = "$head0" ]'
+# 4: fork before the move: master has the regular-file log, the branch moved it
+mkrepo r4 0
+before=$(cat work-history/ENGINEERING_LOG.md); set +e; run master; set -e
+check "pre-move fork: start succeeds (rc=$rc: $out)" '[ $rc -eq 0 ]'
+check "pre-move fork: symlink + log kept" '[ -L ENGINEERING_LOG.md ] && [ "$(head -c ${#before} work-history/ENGINEERING_LOG.md)" = "$before" ]'
+git add -A; git commit -qm rewritten
+set +e; run --check master; set -e
+check "pre-move fork: --check passes (rc=$rc: $out)" '[ $rc -eq 0 ]'
+# 4b: pre-move reference whose old log is not a prefix of the moved log is refused
+mkrepo r4b 0
+git checkout -q master; printf '## master-only\n\n' >> ENGINEERING_LOG.md; git commit -qam m; git checkout -q feat
+git tag backup-feat master; set +e; run --redo master; set -e
+check "pre-move ref not a prefix refused (rc=$rc)" '[ $rc -ne 0 ] && [[ "$out" == *"append-only"* ]]'
+git tag -d backup-feat >/dev/null
+# 5: dangling symlink in the worktree fails loudly (--check: no dirty-tree gate in front of it)
+mkrepo r5 1
+set +e; run master; set -e; git add -A; git commit -qm rewritten
+mv work-history/ENGINEERING_LOG.md "$T/r5-away"
+set +e; run --check master; set -e
+check "dangling worktree symlink refused (rc=$rc: $out)" '[ $rc -ne 0 ] && [[ "$out" == *"dangling symlink"* ]]'
+# 5b: a symlink dangling in the HEAD tree fails loudly (the worktree file is still there)
+mkrepo r5b 1
+set +e; run master; set -e; git add -A; git commit -qm rewritten
+git rm -q --cached work-history/ENGINEERING_LOG.md; git commit -qm "drop target"
+set +e; run --check master; set -e
+check "dangling in tree refused (rc=$rc: $out)" '[ $rc -ne 0 ] && [[ "$out" == *"(dangling)"* ]]'
+
+echo "passed $pass failed $fail"
+[ "$fail" -eq 0 ]
