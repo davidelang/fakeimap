@@ -3,11 +3,23 @@
 # with its Status, Repo check, ignore-list hit, and the commits on HEAD since the plan's
 # timestamp that touch any existing path the plan names. The agent then judges intent only.
 set -euo pipefail
-if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: ./plans-scope"
-  echo "Read-only /validate-plans state for every plan in the sandbox. No arguments."
-  exit 0
-fi
+USAGE_LINE="usage: ./plans-scope [-h]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Read-only /validate-plans state for every plan in the sandbox.
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./plans-scope.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "plans-scope: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
 cd "$(git rev-parse --show-toplevel)"
 sb=$(sed -n 's/^sandbox_dir=//p' project.config 2>/dev/null | tr -d '\r' | tail -1)
 [ -n "$sb" ] && [[ "$sb" != *@@* ]] && [ -d "$sb/plans" ] || { echo "ERROR: project.config sandbox_dir has no value or $sb/plans is missing" >&2; exit 1; }

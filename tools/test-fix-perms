@@ -99,7 +99,7 @@ asroot ./fix-perms "$R" >"$T/r3" 2>&1; rc=$?
 git -C "$R" checkout -q -- append-to-engineering-log
 
 asroot ./fix-perms --skip-sudoers "$R" >"$T/r4" 2>&1; rc=$?
-[[ $rc -eq 2 ]] && grep -q 'unknown option --skip-sudoers' "$T/r4" && ok "unknown option is an error" || bad "unknown option: rc=$rc $(cat "$T/r4")"
+[[ $rc -eq 2 ]] && grep -q "unrecognized option '--skip-sudoers'" "$T/r4" && ok "unknown option is an error" || bad "unknown option: rc=$rc $(cat "$T/r4")"
 asroot ./fix-perms "$R/nope" >"$T/r5" 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "non-directory argument is an error" || bad "non-directory: rc=$rc $(cat "$T/r5")"
 

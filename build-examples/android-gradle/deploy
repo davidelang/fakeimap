@@ -14,52 +14,68 @@
 # its own package id.
 # The app id comes from one place: the APKs themselves (SDK aapt2 dump packagename). Nothing
 # is hard-coded. Everything about the APKs is checked before the first adb call.
+#
+# Full option reference (formerly --help):
+#   Install the last-built APKs with adb install -r. The default path does not compile.
+#
+#     -t, --test   Install the test build ('- **Test build:**' in project-facts.md) instead of the
+#                  standard build. Its app id is read from the APKs (e.g. a .test suffix).
+#                  Refused when the test build is missing, not from HEAD, from an earlier commit
+#                  than the standard build, or (a test build type) has the standard app's id.
+#     -c, --clean  Uninstall the APKs' own app id before install (UNINSTALL_FIRST=1). That
+#                  removes that app's data; no other package is touched. An app that is not
+#                  installed is reported and skipped; a failed uninstall stops that device.
+#     -r, --rebuild
+#                  Run ./build_app --standard (or --test) first (REBUILD=1). Gradle flags after
+#                  -- go to build_app.
+#     -l, --launch Start the app's launcher activity after a successful install.
+#     -p, --play   Upload the Play bundle the last ./build_app --play recorded and release it to
+#                  Internal testing and alpha (closed testing) in one commit, sent for review.
+#                  Refused when the bundle is missing, not from HEAD, changed since the build, or
+#                  its versionCode is already on Play. Needs play_service_account_json= in
+#                  project.config. No adb, devices, or gradle flags.
+#     -n, --dry-run
+#                  With --play: open an edit, read the tracks, compute and show the notes, then
+#                  delete the edit. Nothing is uploaded or committed.
+#     -N, --notes-file FILE
+#                  With --play: release notes from FILE instead of $EDITOR (vi when unset) on the git log
+#                  since the commit in the highest versionName on Play, minus subjects matching
+#                  play-notes-exclude(.local) (en-US, max 500 characters; over it, Enter re-edits).
+#     -h, --help   Print this usage and exit.
+#
+#   Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
+#   anything else is an adb serial. With no device arguments, every online device.
+#   Flags may follow a device (deploy tablet --clean). -- ends options; the rest are gradle flags.
+#
+#   deploy stops before any adb call if aapt2 is missing or fails, if the APKs name different
+#   apps, or if they mix ABI-specific and universal APKs. After each install it checks
+#   (pm list packages, exact match) that the app id is installed. The deployed tag
+#   (deployed / <branch>/deployed; deployed-test for --test) moves only when every device
+#   succeeded. With --test, the test build's instrumentation (androidTest) APKs are installed on
+#   every device (adb install -r -t) after the app, each verified by its own package id; a
+#   missing, unreadable or not-installed one fails that device.
 
 set -euo pipefail
 
+USAGE_LINE="usage: ./deploy [-h] [-t] [-c] [-r] [-l] [DEVICE ...] [-- GRADLE-FLAG ...] | -p [-n] [-N FILE]"
 usage() {
-  cat <<'USAGE'
-Usage: ./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
-       ./deploy -p|--play [-n|--dry-run] [-N|--notes-file FILE]
+  cat <<USAGE
+$USAGE_LINE
 
-Install the last-built APKs with adb install -r. The default path does not compile.
+Install the last-built APKs with adb install -r (no compile), or with -p upload the
+last Play bundle. DEVICE: tablet, emulator, phone, or an adb serial (default: all online).
 
-  -t, --test   Install the test build ('- **Test build:**' in project-facts.md) instead of the
-               standard build. Its app id is read from the APKs (e.g. a .test suffix).
-               Refused when the test build is missing, not from HEAD, from an earlier commit
-               than the standard build, or (a test build type) has the standard app's id.
-  -c, --clean  Uninstall the APKs' own app id before install (UNINSTALL_FIRST=1). That
-               removes that app's data; no other package is touched. An app that is not
-               installed is reported and skipped; a failed uninstall stops that device.
-  -r, --rebuild
-               Run ./build_app --standard (or --test) first (REBUILD=1). Gradle flags after
-               -- go to build_app.
-  -l, --launch Start the app's launcher activity after a successful install.
-  -p, --play   Upload the Play bundle the last ./build_app --play recorded and release it to
-               Internal testing and alpha (closed testing) in one commit, sent for review.
-               Refused when the bundle is missing, not from HEAD, changed since the build, or
-               its versionCode is already on Play. Needs play_service_account_json= in
-               project.config. No adb, devices, or gradle flags.
-  -n, --dry-run
-               With --play: open an edit, read the tracks, compute and show the notes, then
-               delete the edit. Nothing is uploaded or committed.
-  -N, --notes-file FILE
-               With --play: release notes from FILE instead of $EDITOR (vi when unset) on the git log
-               since the commit in the highest versionName on Play, minus subjects matching
-               play-notes-exclude(.local) (en-US, max 500 characters; over it, Enter re-edits).
-  -h, --help   Print this usage and exit.
+options:
+  -h, --help             show this help message and exit
+  -t, --test             install the test build instead of the standard build
+  -c, --clean            uninstall the APKs' own app id first (removes that app's data)
+  -r, --rebuild          run ./build_app --standard (or --test) first
+  -l, --launch           start the app's launcher activity after the install
+  -p, --play             upload the recorded Play bundle to Internal testing and alpha
+  -n, --dry-run          with --play: show everything, upload and commit nothing
+  -N, --notes-file FILE  with --play: release notes from FILE instead of the editor
 
-Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
-anything else is an adb serial. With no device arguments, every online device.
-Flags may follow a device (deploy tablet --clean). -- ends options; the rest are gradle flags.
-
-deploy stops before any adb call if aapt2 is missing or fails, if the APKs name different
-apps, or if they mix ABI-specific and universal APKs. After each install it checks
-(pm list packages, exact match) that the app id is installed. The deployed tag
-(deployed / <branch>/deployed; deployed-test for --test) moves only when every device
-succeeded. With --test, the test build's instrumentation (androidTest) APKs are installed on
-every device (adb install -r -t) after the app, each verified by its own package id; a
-missing, unreadable or not-installed one fails that device.
+Details: the comment at the top of ./deploy.
 USAGE
 }
 
@@ -75,8 +91,11 @@ _deploy_help_if_asked() {
       pre+=("$a")
     fi
   done
-  if ! parsed="$(getopt -q -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${pre[@]+"${pre[@]}"})"; then
-    return 0
+  # An unknown option is rejected here too, before any re-exec or group check:
+  # getopt's one-line error, then the usage line, exit 2.
+  if ! parsed="$(getopt -n deploy -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${pre[@]+"${pre[@]}"})"; then
+    echo "$USAGE_LINE" >&2
+    exit 2
   fi
   eval set -- "$parsed"
   while true; do
@@ -181,8 +200,8 @@ done
 # getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
 if ! _dep_err=$(getopt -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${_dep_pre[@]+"${_dep_pre[@]}"} 2>&1 >/dev/null); then
   printf '%s\n' "$_dep_err" >&2
-  usage >&2
-  exit 1
+  echo "$USAGE_LINE" >&2
+  exit 2
 fi
 parsed=$(getopt -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${_dep_pre[@]+"${_dep_pre[@]}"})
 eval set -- "$parsed"
@@ -198,9 +217,9 @@ while true; do
     -N|--notes-file) notes_file="$2"; shift 2 ;;
     --) shift; break ;;
     *)
-      echo "ERROR: unknown flag: $1" >&2
-      usage >&2
-      exit 1
+      echo "$USAGE_LINE" >&2
+      echo "deploy: error: unrecognized option: $1" >&2
+      exit 2
       ;;
   esac
 done

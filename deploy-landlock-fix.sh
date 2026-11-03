@@ -31,9 +31,29 @@ set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+USAGE_LINE="usage: deploy-landlock-fix.sh [-h] [-n] [-c] [-p] [-a]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Copy the agent-session Landlock files from this orchestration root to each
+host under GIT_HOME and its worktrees; optionally commit them.
+
+options:
+  -h, --help       show this help message and exit
+  -n, --dry-run    report what would be copied; write nothing
+  -c, --commit     also commit the copied paths in each worktree
+  -p, --push       also push (implies --commit)
+  -a, --also-ve    also every worktree of this orchestration root
+
+Files copied, host selection (HOSTS, GIT_HOME) and what is never copied: the
+comment at the top of deploy-landlock-fix.sh.
+EOF
+}
+
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
   esac
 done
 
@@ -57,21 +77,22 @@ DO_COMMIT=0
 DO_PUSH=0
 DO_VE=0
 
-parsed="$(getopt -o hncap -l help,dry-run,commit,push,also-ve -- "$@")" || exit 2
+parsed="$(getopt -n deploy-landlock-fix.sh -o hncap -l help,dry-run,commit,push,also-ve -- "$@")" || { echo "$USAGE_LINE" >&2; exit 2; }
 eval set -- "$parsed"
 while true; do
   case "$1" in
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     -n|--dry-run) DRY=1; shift ;;
     -c|--commit) DO_COMMIT=1; shift ;;
     -p|--push) DO_PUSH=1; DO_COMMIT=1; shift ;;
     -a|--also-ve) DO_VE=1; shift ;;
     --) shift; break ;;
-    *) echo "unknown arg: $1 (try --help)" >&2; exit 2 ;;
+    *) echo "$USAGE_LINE" >&2; echo "deploy-landlock-fix.sh: error: unrecognized option: $1" >&2; exit 2 ;;
   esac
 done
 if [[ $# -gt 0 ]]; then
-  echo "unknown arg: $1 (try --help)" >&2
+  echo "$USAGE_LINE" >&2
+  echo "deploy-landlock-fix.sh: error: unrecognized argument: $1" >&2
   exit 2
 fi
 

@@ -25,11 +25,23 @@
 
 set -euo pipefail
 
-if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: ./get-builds-tag.sh"
-  echo "Print this branch's builds tag (feature-foo/builds, or builds on master)."
-  exit 0
-fi
+USAGE_LINE="usage: ./get-builds-tag.sh [-h]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Print this branch's builds tag (feature-foo/builds, or builds on master).
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./get-builds-tag.sh.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "get-builds-tag.sh: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "ERROR: get-builds-tag.sh must be run from inside a git worktree." >&2

@@ -340,18 +340,18 @@ cmd="${1:-activate}"
 case "$cmd" in
   help|-h|--help)
     cat <<'EOF'
-env — umask + project groups for this multi-user tree
+usage: source ./env [activate] | ./env {check,how-to-fix-groups,help}
 
-  source ./env              # umask 002; if groups stale, re-exec fixed shell
-  source ./env activate     # same
-  ./env check               # diagnose only
-  ./env how-to-fix-groups   # install helper / alternatives
-  ./env help
+Project shell environment: umask 002 plus this tree's project groups. When the
+groups are stale in this shell only, re-exec this terminal with them.
 
-Group refresh does NOT require logging out of the whole desktop. It re-execs
-this terminal via setuid helper refresh-shell (one-time sudo install).
+commands:
+  activate           (default, sourced) set umask; refresh groups if stale
+  check              diagnose only
+  how-to-fix-groups  how to get the group refresh helper, and alternatives
+  help, -h, --help   show this help message and exit
 
-Do not use newgrp for multi-group restore.
+Details: the comment at the top of ./env.
 EOF
     ;;
   how-to-fix-groups|fix-groups)
@@ -370,7 +370,10 @@ EOF
     fi
     ;;
   *)
-    echo "Unknown: $cmd (activate | check | how-to-fix-groups | help)"
+    echo "usage: source ./env [activate] | ./env {check,how-to-fix-groups,help}" >&2
+    echo "env: error: unrecognized command: $cmd" >&2
+    # Sourced: return, so a typo does not close the caller's shell.
+    if [ "$_ENV_SOURCED" -eq 1 ]; then return 2; fi
     exit 2
     ;;
 esac

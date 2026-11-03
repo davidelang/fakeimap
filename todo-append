@@ -9,11 +9,23 @@
 
 set -euo pipefail
 
-if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: ./todo-append '- [ ] <short description> (<path to details>)'"
-  echo "       ./todo-append @file-with-item.txt"
-  exit 0
-fi
+USAGE_LINE="usage: ./todo-append [-h] '- [ ] ITEM (DETAILS)'|@FILE"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Append one item to TODO.md (the text, or the contents of FILE).
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./todo-append.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "todo-append: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
 
 # Ensure group-writable files in multi-user environment
 umask 007

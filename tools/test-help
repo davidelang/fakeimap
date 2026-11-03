@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# --help and unknown-option behaviour of canon's tools (help modelled on deploy-orchestration):
+#   --help: exit 0, first line "usage: ...", short (<= 35 lines), never suggests sudo/chown/chgrp,
+#           points at the top comment (or a README) for the details.
+#   --zz:   exit 2, nothing on stdout, a "usage: ..." line and exactly one line naming --zz on stderr.
+# Runs the real tools in place: both paths exit before any side effect.
+set -uo pipefail
+canon="$(git rev-parse --show-toplevel)"
+T="$("$(dirname "$0")/scratch-dir" help-test)" || exit 1
+trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+tools=(
+  deploy-landlock-fix.sh fix-multiuser-git-hosts.sh
+  third_party/libpin-bwrap third_party/libpin-sandbox third_party/libpin-landlock third_party/fetch-deps
+  build-examples/android-gradle/deploy build-examples/android-gradle/build_app build-examples/android-gradle/play-publish
+  agent-landlock tools/publish-smudge-fix tools/audit-swallow clone-orchestration-project prepare-pr-rewrite
+  landlock-write-probe fix-perms move-work-history.sh publish-env-fix.sh publish-release-tag.sh
+  publish-revert-grok-launch.sh publish-work-history.sh perm-engine.py env
+  todo-append get-builds-tag.sh install-merge-drivers.sh plans-scope setup-project
+  tools/upgrade-probe tools/upgrade-scan tools/update-channel-pin exec-preflight landlock-smoke-matrix
+  merge-branch-into-master.sh
+)
+cd "$canon" || exit 1
+for t in "${tools[@]}"; do
+  if [[ "$t" == *.py ]]; then run=(python3 "./$t"); else run=("./$t"); fi
+  "${run[@]}" --help >"$T/h.out" 2>"$T/h.err"; rc=$?
+  n=$(wc -l <"$T/h.out")
+  if [[ $rc -eq 0 && ! -s "$T/h.err" ]] && head -1 "$T/h.out" | grep -q '^usage: ' && [[ $n -le 35 ]] \
+     && ! grep -qE 'sudo|chown|chgrp' "$T/h.out" && grep -qE 'top of|README' "$T/h.out"; then
+    ok "$t --help"
+  else
+    bad "$t --help: rc=$rc lines=$n $(head -2 "$T/h.out") $(grep -E 'sudo|chown|chgrp' "$T/h.out") $(head -2 "$T/h.err")"
+  fi
+  extra=()  # argparse reports missing required options before unknown ones
+  [[ "$t" == */play-publish ]] && extra=(--aab A --version-code 1 --aapt2 X --key K --work-dir W)
+  "${run[@]}" ${extra[@]+"${extra[@]}"} --zz >"$T/u.out" 2>"$T/u.err"; rc=$?
+  if [[ $rc -eq 2 && ! -s "$T/u.out" ]] && grep -q '^usage: ' "$T/u.err" \
+     && [[ $(grep -c -- '--zz' "$T/u.err") -eq 1 ]] && [[ $(wc -l <"$T/u.err") -le 5 ]]; then
+    ok "$t --zz"
+  else
+    bad "$t --zz: rc=$rc $(cat "$T/u.err") stdout=$(head -2 "$T/u.out")"
+  fi
+done
+echo "passed $pass, failed $fail"
+[[ $fail -eq 0 ]]

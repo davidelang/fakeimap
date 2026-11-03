@@ -17,6 +17,26 @@
 # Root sudo is only for chown/chmod/setuid/fix-perms.
 # Never git clone as root. Does not create Unix users. Does not write sudoers.
 # Does not mutate the source repo's branches.
+#
+# ./run-grok-* from a worktree (including master/) needs orch_root= in that
+# worktree's project.config. This tool seeds dest and dest/master via
+# ve_seed_worktree_project_config. Use --repair on a dest that was cloned
+# before that seed existed. --repair seeds project.config, the filter config and
+# smudge check, and the dest-root DAC on an existing clone.
+#
+# Source: --source DIR, else the directory holding this script. It must have
+# run-grok-orchestrator, setup_agent.sh, AGENT_MANDATES.md and project.config
+# sandbox_dir naming an existing dir. git_home: --git-home, else source git_home
+# (--git-home must be an absolute existing directory).
+#
+# new-name: one path component matching [A-Za-z0-9._-]+, not . .. master
+# orchestration or agent-N. Dest git_home/<name> must not already exist.
+#
+# Examples:
+#   ./clone-orchestration-project NEWHOST
+#   ./orchestration-example/clone-orchestration-project NEWHOST    # from git_home
+#   /path/to/orchestration-example/clone-orchestration-project --source /path/to/orchestration-example NEWHOST
+#   ./clone-orchestration-project --repair GIT_HOME/NEWHOST
 
 set -euo pipefail
 
@@ -31,37 +51,22 @@ GIT_HOME_ARG=""
 REPAIR_ARG=""
 NAME=""
 
+USAGE_LINE="usage: ./clone-orchestration-project [-h] [-n] [-s DIR] [-g DIR] NEW-NAME | [-n] -r DIR"
 usage() {
-  cat <<'EOF'
-Usage: clone-orchestration-project [-n|--dry-run] [-s|--source DIR] [-g|--git-home DIR] <new-name>
-       clone-orchestration-project [-n|--dry-run] [-r|--repair DIR]
+  cat <<EOF
+$USAGE_LINE
 
-Clone this orchestration-example tree to git_home/<new-name> as a new
-multi-agent host (orchestration branch at dest root, master/ worktree).
+Clone this orchestration-example tree to git_home/NEW-NAME as a new multi-agent
+host (orchestration branch at the dest root, master/ worktree).
 
-  -n, --dry-run       Print resolved paths and planned steps; no writes, no sudo
-  -s, --source DIR    Path to orchestration-example (default: this script's dir)
-  -g, --git-home DIR  Override git_home (must be an absolute existing directory)
-  -r, --repair DIR    Seed project.config, filter config + smudge check, dest-root DAC on an existing clone
-  -h, --help          Show this help
+options:
+  -h, --help          show this help message and exit
+  -n, --dry-run       print resolved paths and planned steps; change nothing
+  -s, --source DIR    the orchestration-example to clone (default: this script's dir)
+  -g, --git-home DIR  git_home to clone into (default: the source's git_home)
+  -r, --repair DIR    bring an existing clone DIR up to date instead of cloning
 
-./run-grok-* from a worktree (including master/) needs orch_root= in that
-worktree's project.config. This tool seeds dest and dest/master via
-ve_seed_worktree_project_config. Use --repair on a dest that was cloned
-before that seed existed.
-
-Source: --source DIR, else the directory holding this script. It must have
-run-grok-orchestrator, setup_agent.sh, AGENT_MANDATES.md and project.config
-sandbox_dir naming an existing dir. git_home: --git-home, else source git_home.
-
-new-name: one path component matching [A-Za-z0-9._-]+, not . .. master
-orchestration or agent-N. Dest git_home/<name> must not already exist.
-
-Examples:
-  ./clone-orchestration-project MyHost
-  ./orchestration-example/clone-orchestration-project MyHost    # from git_home
-  /path/to/orchestration-example/clone-orchestration-project --source /path/to/orchestration-example MyHost
-  ./clone-orchestration-project --repair /home/dlang/git/MyHost
+Details: the comment at the top of ./clone-orchestration-project.
 EOF
 }
 
@@ -674,7 +679,9 @@ if ! _cl_err=$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "
     esac
   fi
   _cl_bad=$(printf '%s\n' "$_cl_err" | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | head -1)
-  die "unknown option: ${_cl_bad:-?} (see --help)"
+  echo "$USAGE_LINE" >&2
+  echo "clone-orchestration-project: error: unrecognized option: ${_cl_bad:-?}" >&2
+  exit 2
 fi
 parsed=$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "$@")
 eval set -- "$parsed"
@@ -692,7 +699,7 @@ while true; do
       [ -n "${2:-}" ] || die "--repair requires a directory"
       REPAIR_ARG="$2"; shift 2 ;;
     --) shift; break ;;
-    *) die "unknown option: $1 (see --help)" ;;
+    *) echo "$USAGE_LINE" >&2; echo "clone-orchestration-project: error: unrecognized option: $1" >&2; exit 2 ;;
   esac
 done
 while [ $# -gt 0 ]; do
@@ -736,7 +743,8 @@ if [ -n "$REPAIR_ARG" ]; then
 fi
 
 if [ -z "$NAME" ]; then
-  usage >&2
+  echo "$USAGE_LINE" >&2
+  echo "clone-orchestration-project: error: NEW-NAME is required" >&2
   exit 1
 fi
 

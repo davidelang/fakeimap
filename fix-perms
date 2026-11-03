@@ -33,30 +33,34 @@ DO_ALL=false
 TARGET_SPECIFIC=""
 FORWARD_ARGS=""
 _fp_orig=("$@")
-# getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
-if ! _fp_err=$(getopt -o haqv -l help,all,quiet,verbose -- "$@" 2>&1 >/dev/null); then
-  _fp_bad=$(printf '%s\n' "$_fp_err" | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | head -1)
-  echo "ERROR: fix-perms: unknown option ${_fp_bad:-?} (usage: fix-perms [-a|--all] [-q|--quiet] [-v|--verbose] [WORKTREE])" >&2
-  exit 2
-fi
-parsed=$(getopt -o haqv -l help,all,quiet,verbose -- "$@")
+USAGE_LINE="usage: ./fix-perms [-h] [-a] [-q] [-v] [WORKTREE]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Recovery tool: reset owners, groups and modes from perm-model.tsv (root only).
+With no WORKTREE, fixes the worktree it is run from.
+
+options:
+  -h, --help     show this help message and exit
+  -a, --all      every worktree plus the sandbox (same as a run from the orchestration root)
+  -q, --quiet    keep stdout quiet (the default)
+  -v, --verbose  print each step
+
+Details: the comment at the top of ./fix-perms.
+EOF
+}
+# getopt prints its own one-line error (named fix-perms); then the usage line.
+parsed=$(getopt -n fix-perms -o haqv -l help,all,quiet,verbose -- "$@") || { echo "$USAGE_LINE" >&2; exit 2; }
 eval set -- "$parsed"
 while true; do
   case "$1" in
-    -h|--help)
-      echo "usage: sudo ./fix-perms [-a|--all] [-q|--quiet] [-v|--verbose] [WORKTREE]"
-      echo "  -a, --all      every worktree plus the sandbox (same as a run from the orchestration root)"
-      echo "  -q, --quiet    keep stdout quiet (the default)"
-      echo "  -v, --verbose  print each step"
-      echo "  -h, --help     print this usage and exit"
-      exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     -a|--all) DO_ALL=true; shift ;;
     -q|--quiet) FORWARD_ARGS="$FORWARD_ARGS $1"; shift ;;
     -v|--verbose) VERBOSE=true; FORWARD_ARGS="$FORWARD_ARGS $1"; shift ;;
     --) shift; break ;;
-    *)
-      echo "ERROR: fix-perms: unknown option $1 (usage: fix-perms [-a|--all] [-q|--quiet] [-v|--verbose] [WORKTREE])" >&2
-      exit 2 ;;
+    *) echo "$USAGE_LINE" >&2; echo "fix-perms: error: unrecognized option: $1" >&2; exit 2 ;;
   esac
 done
 

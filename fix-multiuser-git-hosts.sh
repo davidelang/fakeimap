@@ -16,7 +16,7 @@
 #   If objects/refs/HEAD/config are group ai-code and mode 660/2770 without
 #   other access, planner gets Permission denied on git log (Unix, not Landlock).
 #
-# Usage (run as dlang; uses sudo for chgrp/chmod of mixed owners):
+# Usage (run as the primary user; uses sudo for chgrp/chmod of mixed owners):
 #   ./fix-multiuser-git-hosts.sh -n|--dry-run
 #   ./fix-multiuser-git-hosts.sh
 #   ./fix-multiuser-git-hosts.sh -a|--audit-only
@@ -28,9 +28,27 @@
 #
 set -uo pipefail
 
+USAGE_LINE="usage: fix-multiuser-git-hosts.sh [-h] [-n] [-a]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Repair group access on the host git repos under GIT_HOME so every agent in the
+shared group can run git log, status and commit.
+
+options:
+  -h, --help        show this help message and exit
+  -n, --dry-run     report what would change; change nothing
+  -a, --audit-only  only report paths that do not match the model
+
+The permission model, who must run it, and host selection (HOSTS, GIT_HOME):
+the comment at the top of fix-multiuser-git-hosts.sh.
+EOF
+}
+
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
   esac
 done
 
@@ -41,19 +59,20 @@ fi
 
 DRY=0
 AUDIT_ONLY=0
-parsed="$(getopt -o hna -l help,dry-run,audit-only -- "$@")" || exit 2
+parsed="$(getopt -n fix-multiuser-git-hosts.sh -o hna -l help,dry-run,audit-only -- "$@")" || { echo "$USAGE_LINE" >&2; exit 2; }
 eval set -- "$parsed"
 while true; do
   case "$1" in
-    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     -n|--dry-run) DRY=1; shift ;;
     -a|--audit-only) AUDIT_ONLY=1; shift ;;
     --) shift; break ;;
-    *) echo "unknown arg: $1" >&2; exit 2 ;;
+    *) echo "$USAGE_LINE" >&2; echo "fix-multiuser-git-hosts.sh: error: unrecognized option: $1" >&2; exit 2 ;;
   esac
 done
 if [[ $# -gt 0 ]]; then
-  echo "unknown arg: $1" >&2
+  echo "$USAGE_LINE" >&2
+  echo "fix-multiuser-git-hosts.sh: error: unrecognized argument: $1" >&2
   exit 2
 fi
 

@@ -194,14 +194,18 @@ def verify(pkg, track, vc):
 def main():
     global TOKEN
     sys.stdout.reconfigure(line_buffering=True)
-    ap = argparse.ArgumentParser(prog="play-publish")
-    ap.add_argument("--aab", required=True)
-    ap.add_argument("--version-code", required=True, type=int, help="versionCode the build recorded")
-    ap.add_argument("--aapt2", required=True)
-    ap.add_argument("--key", required=True)
-    ap.add_argument("--notes-file")
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--work-dir", required=True, help="scratch dir for the notes file and manifest copy (never /tmp)")
+    ap = argparse.ArgumentParser(
+        prog="play-publish",
+        description="Upload the recorded Play bundle to Internal testing, then promote it to alpha. "
+                    "Called by ./deploy --play.",
+        epilog="Details: the docstring at the top of play-publish.")
+    ap.add_argument("--aab", required=True, metavar="FILE", help="the bundle to upload")
+    ap.add_argument("--version-code", required=True, type=int, metavar="N", help="versionCode the build recorded")
+    ap.add_argument("--aapt2", required=True, metavar="PATH", help="aapt2 binary, to read the bundle manifest")
+    ap.add_argument("--key", required=True, metavar="SA.json", help="service-account key file")
+    ap.add_argument("--notes-file", metavar="FILE", help="release notes (default: computed from the commits)")
+    ap.add_argument("--dry-run", action="store_true", help="read and show everything, then delete the edit (no upload)")
+    ap.add_argument("--work-dir", required=True, metavar="DIR", help="scratch dir for the notes file and manifest copy (never /tmp)")
     a = ap.parse_args()
     global WORK_DIR
     if not (os.path.isdir(a.work_dir) and os.access(a.work_dir, os.W_OK)):

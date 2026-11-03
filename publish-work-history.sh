@@ -28,18 +28,33 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Pre-change orchestration-example master. git show BASE:path is the old blob.
 BASE="20d7fe7c446a1598694fc4eeebab28cce51135f1"
 DRY=0
-parsed="$(getopt -o hn -l help,dry-run -- "$@")" || exit 2
+USAGE_LINE="usage: ./publish-work-history.sh [-h] [-n]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Copy the work-history / sandbox changes into every sibling project (root only).
+
+options:
+  -h, --help     show this help message and exit
+  -n, --dry-run  print what would change and change nothing
+
+Details: the comment at the top of ./publish-work-history.sh.
+EOF
+}
+parsed="$(getopt -n publish-work-history.sh -o hn -l help,dry-run -- "$@")" || { echo "$USAGE_LINE" >&2; exit 2; }
 eval set -- "$parsed"
 while true; do
   case "$1" in
-    -h|--help) echo "usage: sudo $0 [-n|--dry-run]"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     -n|--dry-run) DRY=1; shift ;;
     --) shift; break ;;
-    *) echo "usage: sudo $0 [-n|--dry-run]" >&2; exit 2 ;;
+    *) echo "$USAGE_LINE" >&2; exit 2 ;;
   esac
 done
 if [[ $# -gt 0 ]]; then
-  echo "usage: sudo $0 [-n|--dry-run]" >&2
+  echo "$USAGE_LINE" >&2
+  echo "publish-work-history.sh: error: unexpected argument: $1" >&2
   exit 2
 fi
 

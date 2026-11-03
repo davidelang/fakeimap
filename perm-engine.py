@@ -324,12 +324,28 @@ def cmd_readable_nogroups(user, *paths):
 
 def main(argv):
     global model_path, config_path, MODEL
+    usage_line = "usage: perm-engine.py [-h] MODEL CONFIG COMMAND [ARGS] [options]"
     if argv and argv[0] in ("-h", "--help"):
-        print("usage: perm-engine.py MODEL CONFIG COMMAND [ARGS]")
-        print("  -h, --help")
-        print("command options: -t/--top-only -p/--prune PATH -P/--prune-name NAME")
-        print("                 -d/--maxdepth N -s/--skip-glob GLOB -o/--owner USER")
+        print(f"""{usage_line}
+
+The engine behind perm-lib.sh: owners, groups and modes from MODEL (perm-model.tsv).
+COMMAND is apply|verify|preflight AREA ROOT, umask AREA, or readable-nogroups USER PATH...
+
+options:
+  -h, --help             show this help message and exit
+  -t, --top-only         ROOT itself, not below it
+  -p, --prune PATH       skip PATH (repeatable)
+  -P, --prune-name NAME  skip every entry named NAME (repeatable)
+  -d, --maxdepth N       descend at most N levels
+  -s, --skip-glob GLOB   skip paths matching GLOB (repeatable)
+  -o, --owner USER       owner to set instead of the model's owner column
+
+Details: the comment at the top of perm-engine.py, and perm-lib.sh.""")
         return 0
+    if argv and argv[0].startswith("-"):
+        print(usage_line, file=sys.stderr)
+        print(f"perm-engine.py: error: unrecognized option: {argv[0]}", file=sys.stderr)
+        return 2
     if len(argv) < 3:
         die("usage: perm-engine.py MODEL CONFIG COMMAND [ARGS]")
     model_path, config_path, cmd, *args = argv

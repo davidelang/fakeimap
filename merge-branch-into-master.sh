@@ -20,10 +20,23 @@
 
 set -euo pipefail
 
-if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: ./merge-branch-into-master.sh <branch-name>"
-  exit 0
-fi
+USAGE_LINE="usage: ./merge-branch-into-master.sh [-h] BRANCH"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Merge BRANCH into master, index-first, and leave the merge uncommitted.
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./merge-branch-into-master.sh.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "merge-branch-into-master.sh: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
 
 BRANCH="${1:-}"
 if [ -z "$BRANCH" ]; then

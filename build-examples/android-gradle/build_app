@@ -4,7 +4,10 @@
 # Authoritative copy: orchestration-example/build-examples/android-gradle/build_app
 #
 # Usage:
-#   ./build_app [-s|--standard] [-t|--test] [-p|--play|--bundle] [-T|--release-tag NAME] [-c|--signing-config FILE] [-K|--release-keystore V] [-A|--release-key-alias V] [-B|--release-bundle-task V] [-P|--release-bundle-path V] [-G|--release-gradle-args V] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
+#   ./build_app [-s|--standard] [-t|--test] [-p|--play|--bundle] [-T|--release-tag NAME]
+#               [-c|--signing-config FILE] [-K|--release-keystore V] [-A|--release-key-alias V]
+#               [-B|--release-bundle-task V] [-P|--release-bundle-path V] [-G|--release-gradle-args V]
+#               ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
 #
 #   Build selection (flags first, any order, combinable). No flag = standard, test (unless the
 #   app declares none) and, with a project.config, play. -T/--release-tag does not change that.
@@ -127,32 +130,53 @@ check_play_link() {  # check_play_link TARGET [built]
 }
 
 # Help before re-exec, JDK lookup, or any build. A failure here is left for the parser below.
+USAGE_LINE='usage: ./build_app [-h] [-s] [-t] [-p] [-T NAME] [signing options] ["MESSAGE" | @MSGFILE] [FILE ...] [-- GRADLE-FLAG ...]'
 _ba_usage() {
-  cat <<'EOF'
-Usage: ./build_app [-s|--standard] [-t|--test] [-p|--play|--bundle] [-T|--release-tag NAME] [-c|--signing-config FILE] [-K|--release-keystore V] [-A|--release-key-alias V] [-B|--release-bundle-task V] [-P|--release-bundle-path V] [-G|--release-gradle-args V] ["Commit Message" | "@msg_file.txt"] [file1 file2 ...] [-- gradle-flag ...]
+  cat <<EOF
+$USAGE_LINE
 
-  -s, --standard              the app's standard build
-  -t, --test                  the app's test build
-  -p, --play, --bundle        signed Play AAB (needs a terminal)
-  -T, --release-tag NAME      annotated tag on the commit these builds use (does not select a build)
-  -c, --signing-config FILE   single-user Play signing file
-  -K, --release-keystore V
-  -A, --release-key-alias V
-  -B, --release-bundle-task V
-  -P, --release-bundle-path V
-  -G, --release-gradle-args V
-  -h, --help                  print this usage and exit
+The only way to build: commit the named FILEs with MESSAGE, check the tree is clean,
+then build from that one commit and move the builds tag. No build flag selects
+standard, test (unless none) and, with a project.config, play.
 
-Flags come first. No build flag selects standard, test (unless none), and play when
-project.config exists. A non-option ends flag parsing, so
-./build_app msg file --standard treats --standard as a file name.
+options:
+  -h, --help                   show this help message and exit
+  -s, --standard               the app's standard build
+  -t, --test                   the app's test build
+  -p, --play, --bundle         signed Play AAB (needs a terminal for the passwords)
+  -T, --release-tag NAME       annotated tag on the commit these builds use
+  -c, --signing-config FILE    single-user Play signing: key=value file
+  -K, --release-keystore V     single-user Play signing: release_keystore
+  -A, --release-key-alias V    single-user Play signing: release_key_alias
+  -B, --release-bundle-task V  single-user Play signing: release_bundle_task
+  -P, --release-bundle-path V  single-user Play signing: release_bundle_path
+  -G, --release-gradle-args V  single-user Play signing: release_gradle_args
+
+Flags come first: a non-option ends them (./build_app msg file --standard
+treats --standard as a file). Details: the comment at the top of ./build_app.
 EOF
 }
+_ba_bad_option() {
+  echo "$USAGE_LINE" >&2
+  echo "build_app: error: unrecognized option: $1" >&2
+  exit 2
+}
+# Help, and an unknown option, before re-exec, JDK lookup, or any build. A missing option
+# value is left for the parser below (it names the option).
 _ba_help_if_asked() {
-  local parsed
-  if ! parsed="$(getopt -q -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,release-tag:,signing-config:,release-keystore:,release-key-alias:,release-bundle-task:,release-bundle-path:,release-gradle-args: -- "$@")"; then
-    return 0
+  local parsed err bad a pre=()
+  for a in "$@"; do
+    [ "$a" = "--" ] && break
+    pre+=("$a")
+  done
+  if ! err=$(getopt -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,release-tag:,signing-config:,release-keystore:,release-key-alias:,release-bundle-task:,release-bundle-path:,release-gradle-args: -- ${pre[@]+"${pre[@]}"} 2>&1 >/dev/null); then
+    if printf '%s\n' "$err" | grep -q 'requires an argument'; then
+      return 0
+    fi
+    bad=$(printf '%s\n' "$err" | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | head -1)
+    _ba_bad_option "${bad:-?}"
   fi
+  parsed="$(getopt -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,release-tag:,signing-config:,release-keystore:,release-key-alias:,release-bundle-task:,release-bundle-path:,release-gradle-args: -- ${pre[@]+"${pre[@]}"})"
   eval set -- "$parsed"
   while true; do
     case "$1" in
@@ -352,7 +376,7 @@ if ! _ba_err=$(getopt -o +hstpT:c:K:A:B:P:G: -l help,standard,test,play,bundle,r
     echo "ERROR: ${_ba_optname:-option} needs a value." >&2
   else
     _ba_bad=$(printf '%s\n' "$_ba_err" | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | head -1)
-    echo "ERROR: unknown flag '${_ba_bad:-?}'. Build flags: --standard --test --play (--bundle) --release-tag NAME; single-user Play signing: --signing-config FILE, --release-keystore, --release-key-alias, --release-bundle-task, --release-bundle-path, --release-gradle-args." >&2
+    _ba_bad_option "${_ba_bad:-?}"
   fi
   exit 1
 fi
@@ -391,9 +415,7 @@ while true; do
       RELEASE_TAG=$2
       shift 2 ;;
     --) shift; break ;;
-    *)
-      echo "ERROR: unknown flag '$1'. Build flags: --standard --test --play (--bundle) --release-tag NAME; single-user Play signing: --signing-config FILE, --release-keystore, --release-key-alias, --release-bundle-task, --release-bundle-path, --release-gradle-args." >&2
-      exit 1 ;;
+    *) _ba_bad_option "$1" ;;
   esac
 done
 if [ "$_ba_dd" -eq 1 ]; then

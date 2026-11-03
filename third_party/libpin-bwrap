@@ -24,8 +24,26 @@ TP_ROOT="$HERE"
 MODE=""
 LIB=""
 
+USAGE_LINE="usage: libpin-bwrap [-h] --mode MODE [--lib NAME] -- COMMAND..."
 usage() {
-  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<USAGE
+$USAGE_LINE
+
+Run COMMAND under bubblewrap with only one third_party area writable.
+
+options:
+  -h, --help     show this help message and exit
+  --mode MODE    writable area: third_party, lib, src or artifact
+  --lib NAME     the library for modes lib, src and artifact
+
+Modes and environment: the comment at the top of libpin-bwrap.
+USAGE
+}
+
+bad_option() {
+  echo "$USAGE_LINE" >&2
+  echo "libpin-bwrap: error: unrecognized option: $1" >&2
+  exit 2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -34,10 +52,7 @@ while [[ $# -gt 0 ]]; do
     --mode) MODE="$2"; shift 2 ;;
     --lib) LIB="$2"; shift 2 ;;
     --) shift; break ;;
-    -*)
-      echo "libpin-bwrap: unknown option: $1" >&2
-      exit 2
-      ;;
+    -*) bad_option "$1" ;;
     *) break ;;
   esac
 done

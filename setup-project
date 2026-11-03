@@ -16,11 +16,23 @@
 
 set -euo pipefail
 
-if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: ./setup-project [-h|--help]"
-  echo "One-time permission stamp. No other arguments."
-  exit 0
-fi
+USAGE_LINE="usage: ./setup-project [-h]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+One-time permission stamp for this tree.
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./setup-project.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "setup-project: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1

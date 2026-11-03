@@ -177,9 +177,15 @@ def label(path, git_home):
     return os.path.relpath(path, git_home)
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-a", "--apply", action="store_true")
-    ap.add_argument("-x", "--exclude", action="append", default=[], metavar="NAME")
+    ap = argparse.ArgumentParser(
+        prog="tools/publish-smudge-fix",
+        description="Publish canon rules and make every tree's smudge filter strict and verified. "
+                    "With no option: a dry run that changes nothing, writes the report and prints the summary.",
+        epilog="Details, including the --apply steps: the docstring at the top of tools/publish-smudge-fix.")
+    ap.add_argument("-a", "--apply", action="store_true",
+                    help="run the fix (refused while the dry run has any BLOCKER; pause the agents first)")
+    ap.add_argument("-x", "--exclude", action="append", default=[], metavar="NAME",
+                    help="leave project NAME and all its trees untouched (repeatable)")
     a = ap.parse_args()
     canon_cfg = conf(os.path.join(CANON, "project.config")) or die("canon project.config missing")
     gh = canon_cfg.get("git_home", "")

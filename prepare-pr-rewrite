@@ -383,19 +383,22 @@ def plan_input(c):
     print("PLAN-INPUT %s (%d commits, %d product files, %d infra in the first commit, %d cancelled-out, %d leftover candidates)"
           % (out, len(commits), len(c.changed), len(kept), len(gone), len(left)))
 
-_PR_USAGE = "usage: ./prepare-pr-rewrite [-h] [TARGET] | -r|--redo [TARGET] | -i|--plan-input [TARGET] | -c|--check [TARGET]"
-
-class _Parser(argparse.ArgumentParser):
-    def error(self, message):
-        die("usage: ./prepare-pr-rewrite [TARGET] | --redo [TARGET] | --plan-input [TARGET] | --check [TARGET]")
-
 def main():
-    ap = _Parser(prog="prepare-pr-rewrite", usage=_PR_USAGE)
+    # argparse's own error: the usage line, then one "prepare-pr-rewrite: error: ..." line, exit 2.
+    ap = argparse.ArgumentParser(
+        prog="./prepare-pr-rewrite",
+        description="The /prepare-local-pr history-rewrite helper. With no option: tag the tip "
+                    "backup-<branch> and reset to merge-base(TARGET, HEAD).",
+        epilog="Details: the docstring at the top of ./prepare-pr-rewrite.")
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("-r", "--redo", action="store_true")
-    g.add_argument("-i", "--plan-input", action="store_true")
-    g.add_argument("-c", "--check", action="store_true")
-    ap.add_argument("target", nargs="?", default="master")
+    g.add_argument("-r", "--redo", action="store_true",
+                   help="backup-<branch> exists and stays; reset to merge-base(TARGET, HEAD) again")
+    g.add_argument("-i", "--plan-input", action="store_true",
+                   help="read-only: write $SANDBOX/PRs/rewrite-input-<branch>.md")
+    g.add_argument("-c", "--check", action="store_true",
+                   help="final check")
+    ap.add_argument("target", nargs="?", default="master", metavar="TARGET",
+                    help="the branch to rewrite onto (default: master)")
     a = ap.parse_args()
     if a.redo:
         reset(Ctx(a.target, need_tag=True), redo=True)

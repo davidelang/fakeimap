@@ -27,6 +27,30 @@
 #   patches + build      → write under third_party/<lib>/src/
 #   get-artifacts        → write under third_party/<lib>/artifact/
 # Disable: LIBPIN_NO_BWRAP=1 LIBPIN_NO_LANDLOCK=1 or --no-bwrap / --no-landlock
+#
+# Commands in detail:
+#   upgrade NAME --ref REF  try ref, build, collect artifacts, update libpin.toml
+#     (git_sha, git_describe and every changed [[artifact]] sha256; a pin with
+#     reproducible = true is built a second time and must give the same bytes)
+#   build   runs build[] from libpin.toml, then get-artifacts (artifacts must match sha256)
+#   --record: write the new [[artifact]] sha256 values into libpin.toml instead of
+#     failing on them (old -> new printed per row)
+#
+# libpin.toml = pin contract only (no checkout mode). Mode is status.local (gitignored).
+#
+# Non-git pins ([[source]] tables):
+#   url      https://… | http://… | file:relative | file:///abs  (no git@ / ssh)
+#   seed     path under third_party/<lib>/ (copy; same as file: seed)
+#   path     destination under third_party/<lib>/src/
+#   sha256   required content hash (hex)
+#
+# Sandbox write surfaces (missing tools → unsandboxed, still correct):
+#   materialize + status.local  write → third_party/<lib>/  (mode=lib)
+#   patches                     write → third_party/<lib>/src/ only
+#   build steps                 write → third_party/<lib>/src/ only
+#   get-artifacts               write → third_party/<lib>/artifact/ only
+#   Landlock: mutation rights only (read/exec unrestricted). Stacks under bwrap.
+#   bubblewrap: single-level only (no nest). libpin-sandbox = bwrap outer + landlock inner.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,54 +72,45 @@ FAILURES=0
 git_home=@@GIT_HOME@@
 WORKTREE_SEARCH="${WORKTREE_SEARCH:-}"
 
+USAGE_LINE="usage: fetch-deps [-h] [COMMAND] [options] [NAME...]"
 usage() {
-  cat <<'EOF'
-Usage:
-  third_party/fetch-deps [options] [NAME…]
-  third_party/fetch-deps <command> [options] [NAME…]
+  cat <<EOF
+$USAGE_LINE
 
-Commands:
-  (default)   Read-only pin (git @ git_sha and/or [[source]] files; then RO)
-  ro          Same as default; force back to pin
-  rw          Writable branch (git pins: VE branch @ pin sha). File pins: writable src
-  status      Show mode / HEAD / pin / dirty (-v / -vv)
-  refresh     Advance pin SHA from library master tip + materialize ro (git only)
-  upgrade     NAME --ref REF  try ref, build, collect artifacts, update libpin.toml
-              (git_sha, git_describe and every changed [[artifact]] sha256; a pin with
-              reproducible = true is built a second time and must give the same bytes)
-  build       Run build[] from libpin.toml, then get-artifacts (artifacts must match sha256)
+Materialize, switch and upgrade the third_party pins listed in each
+third_party/<name>/libpin.toml.
 
-Options:
-  --allow-ssh          Permit git@ for *git* transport only (maintainer machines)
-  --git-home DIR       Override smudged git_home
-  --branch NAME        rw branch name (default: VE HEAD branch)
-  --base REF           rw base (default: pin git_sha)
-  --ref REF            upgrade source ref
-  --depth N            optional shallow clone (not default)
-  --record             build: write the new [[artifact]] sha256 values into libpin.toml
-                       instead of failing on them (old -> new printed per row)
-  --worktree-search P  extra local roots (colon-separated)
-  --no-bwrap           Disable bubblewrap (or LIBPIN_NO_BWRAP=1)
-  --no-landlock        Disable Landlock (or LIBPIN_NO_LANDLOCK=1)
-  -v, -vv              status verbosity
-  -h, --help
+commands:
+  (none), ro     read-only checkout at the pinned commit or files
+  rw             writable branch at the pin (default: this checkout's branch)
+  status         show mode, HEAD, pin and dirty state (-v / -vv for more)
+  refresh        advance the pin to the library's master tip, then ro (git pins)
+  upgrade NAME   try --ref REF, build, collect artifacts, update libpin.toml
+  build          run build[] from libpin.toml, then collect artifacts
 
-libpin.toml = pin contract only (no checkout mode). Mode is status.local (gitignored).
+options:
+  -h, --help            show this help message and exit
+  --allow-ssh           permit git@ for git transport only
+  --git-home DIR        override the smudged git_home
+  --branch NAME         rw branch name
+  --base REF            rw base (default: the pinned git_sha)
+  --ref REF             upgrade source ref
+  --depth N             shallow clone depth (default: full)
+  --record              build: write new artifact sha256 values to libpin.toml
+  --worktree-search P   extra local roots (colon-separated)
+  --no-bwrap            do not use bubblewrap (or LIBPIN_NO_BWRAP=1)
+  --no-landlock         do not use Landlock (or LIBPIN_NO_LANDLOCK=1)
+  -v, -vv               status verbosity
 
-Non-git pins ([[source]] tables):
-  url      https://… | http://… | file:relative | file:///abs  (no git@ / ssh)
-  seed     path under third_party/<lib>/ (copy; same as file: seed)
-  path     destination under third_party/<lib>/src/
-  sha256   required content hash (hex)
-
-Sandbox (optional Linux; missing tools → unsandboxed, still correct):
-  materialize + status.local  write → third_party/<lib>/  (mode=lib)
-  patches                     write → third_party/<lib>/src/ only
-  build steps                 write → third_party/<lib>/src/ only
-  get-artifacts               write → third_party/<lib>/artifact/ only
-  Landlock: mutation rights only (read/exec unrestricted). Stacks under bwrap.
-  bubblewrap: single-level only (no nest). libpin-sandbox = bwrap outer + landlock inner.
+Transport, non-git pins and sandbox write surfaces: the comment at the top of
+fetch-deps.
 EOF
+}
+
+bad_option() {
+  echo "$USAGE_LINE" >&2
+  echo "fetch-deps: error: unrecognized option: $1" >&2
+  exit 2
 }
 
 # --- parse ---
@@ -117,11 +132,7 @@ while [[ $# -gt 0 ]]; do
     -vv) VERBOSE=2; shift ;;
     -v) VERBOSE=1; shift ;;
     --) shift; break ;;
-    -*)
-      echo "fetch-deps: unknown option: $1" >&2
-      usage >&2
-      exit 2
-      ;;
+    -*) bad_option "$1" ;;
     *) NAMES+=("$1"); shift ;;
   esac
 done

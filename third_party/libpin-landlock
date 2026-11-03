@@ -296,13 +296,19 @@ def resolve_mode_paths(mode: str, lib: Optional[str], tp_root: Path) -> List[str
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", help="third_party|lib|src|artifact")
-    ap.add_argument("--lib", help="library name under third_party/")
-    ap.add_argument("--path", action="append", default=[], help="extra RW root (repeatable)")
-    ap.add_argument("--status", action="store_true", help="print landlock availability and exit")
-    ap.add_argument("--tp-root", default=str(Path(__file__).resolve().parent), help="third_party root")
-    ap.add_argument("command", nargs=argparse.REMAINDER, help="command after --")
+    ap = argparse.ArgumentParser(
+        prog="libpin-landlock",
+        description="Run COMMAND with filesystem writes confined to the given paths "
+        "(reads and execution stay unrestricted).",
+        epilog="Modes, environment and what is always writable: the docstring at the top "
+        "of libpin-landlock.",
+    )
+    ap.add_argument("--mode", help="writable area: third_party, lib, src or artifact")
+    ap.add_argument("--lib", metavar="NAME", help="the library for modes lib, src and artifact")
+    ap.add_argument("--path", metavar="DIR", action="append", default=[], help="extra writable directory (repeatable)")
+    ap.add_argument("--status", action="store_true", help="print Landlock availability and exit")
+    ap.add_argument("--tp-root", metavar="DIR", default=str(Path(__file__).resolve().parent), help="third_party root (default: this script's directory)")
+    ap.add_argument("command", nargs=argparse.REMAINDER, help="the command to run, after --")
     args = ap.parse_args(argv)
 
     # strip leading --

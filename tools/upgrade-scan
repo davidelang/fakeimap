@@ -3,11 +3,23 @@
 # Prints installed version, the last reviewed version (tools/upgrade-map.tsv), and
 # changelog lines mentioning the features in tools/upgrade-map.tsv.
 set -uo pipefail
-if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: tools/upgrade-scan [-h|--help]"
-  echo "Show installed and reviewed versions and changelog lines for tools/upgrade-map.tsv."
-  exit 0
-fi
+USAGE_LINE="usage: ./tools/upgrade-scan [-h]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Show installed and reviewed versions and changelog lines for tools/upgrade-map.tsv.
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./tools/upgrade-scan.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "upgrade-scan: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 map="$here/tools/upgrade-map.tsv"
 ver="$(grok --version 2>/dev/null | head -1 || echo unknown)"
