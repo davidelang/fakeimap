@@ -235,9 +235,13 @@ Per-app config:
    the bundle's base manifest (SDK aapt2). Play is never asked for a package the bundle does not name.
 2. Refuses when Play already has that versionCode on any track or as an uploaded bundle.
 3. Release notes: the base commit is the `-g<hash>` in the release name of the highest versionCode
-   on any track (an error when it is missing or not an ancestor of HEAD). `git log --no-merges
-   --format='- %s' base..HEAD` opens in `$EDITOR` (vi when unset), or `--notes-file FILE` is
-   used. Trimmed; empty or over 500 characters (Play's en-US limit) is an error, never truncated.
+   on any track (an error when it is missing or not an ancestor of HEAD). The subjects of
+   `git log --no-merges base..HEAD`, minus those matching a pattern in `play-notes-exclude`
+   (shared, ships here) or the project's optional `play-notes-exclude.local` (Python regexes,
+   one per line, `#` comments), open as `- subject` lines in `$EDITOR`. With EDITOR unset it is
+   vi with a status line showing the live character count. Trimmed; over 500 characters (Play's
+   en-US limit) reports the count, waits for Enter and reopens the editor; empty is an error.
+   `--notes-file FILE` is used as is (no filtering); empty or over 500 there is an error.
 4. One edit: upload the bundle and release it to both `internal` and `alpha` (closed testing),
    status completed, same en-US notes.
 5. One commit with `changesNotSentForReview=false`, so Play records a single submission that

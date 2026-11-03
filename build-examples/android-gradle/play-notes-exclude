@@ -1,0 +1,8 @@
+# Commit subjects left out of the release notes deploy --play generates (Python regexes,
+# one per line, matched anywhere in the subject; # starts a comment). Shared by every
+# project; add project-only patterns to play-notes-exclude.local in the project.
+# build_app --play versionCode bump
+^versionCode [0-9]+ \(play build\)$
+# deploy-orchestration publishing rules and build scripts from orchestration-example
+^rules: sync from .+@[0-9a-f]+$
+^rules: install build-examples/\S+ from \S+@[0-9a-f]+$

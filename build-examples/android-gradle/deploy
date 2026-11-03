@@ -44,8 +44,9 @@ Install the last-built APKs with adb install -r. The default path does not compi
                With --play: open an edit, read the tracks, compute and show the notes, then
                delete the edit. Nothing is uploaded or committed.
   -N, --notes-file FILE
-               With --play: release notes from FILE instead of $EDITOR (vi when unset) on the git log since
-               the commit in the highest versionName on Play (en-US, max 500 characters).
+               With --play: release notes from FILE instead of $EDITOR (vi when unset) on the git log
+               since the commit in the highest versionName on Play, minus subjects matching
+               play-notes-exclude(.local) (en-US, max 500 characters; over it, Enter re-edits).
   -h, --help   Print this usage and exit.
 
 Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
