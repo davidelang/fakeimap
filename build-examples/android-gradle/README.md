@@ -224,6 +224,9 @@ Per-app config:
 - project.config (multi-user mode): `primary_user`, `planning_user`, `coder_user`; optional
   `deploy_serial`; `play_service_account_json` for `--play`.
 - local.properties `sdk.dir`, or `ANDROID_HOME` (Android SDK with build-tools/*/aapt2).
+- app/packaged-assets.py (optional): after each standard/test build, build_app runs
+  `python3 app/packaged-assets.py check-apk app|instrumentation APK` on every recorded APK and
+  stops on a failure. Without the file there is no check.
 
 ### deploy --play
 

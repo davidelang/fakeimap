@@ -1214,8 +1214,32 @@ build_apks() {
     echo "ERROR: the $label build recorded no APKs." >&2
     exit 1
   fi
+  check_recorded_apk_assets "$stamped" || exit 1
   publish_deliverables "${apks[@]}"
   echo "=== $label build OK ==="
+}
+
+# Optional project hook: when app/packaged-assets.py exists, every recorded APK must pass
+# its `check-apk ROLE APK` (role app or instrumentation); any failure stops the build.
+check_recorded_apk_assets() {
+  local stamped="$1" line role apk
+  [ -f app/packaged-assets.py ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    role=$(printf '%s\n' "$line" | awk '{print $2}')
+    apk=$(printf '%s\n' "$line" | awk '{print $3}')
+    case "$role" in
+      app|instrumentation)
+        PYTHONDONTWRITEBYTECODE=1 python3 app/packaged-assets.py check-apk "$role" "$apk" || return 1
+        ;;
+      *)
+        echo "ERROR: recorded APK line has unknown role: $line" >&2
+        return 1
+        ;;
+    esac
+  done <<EOF
+$stamped
+EOF
 }
 
 build_play() {
