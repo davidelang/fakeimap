@@ -181,5 +181,21 @@ mkdir -p "$T/p/keep" "$T/p/other" "$T/p/.git"; : >"$T/p/other/f"; : >"$T/p/.git/
 perm_apply worktree "$T/p" --prune "$T/p/other" --prune-name .git
 [[ "$(stat -c %a "$T/p/keep/f")" == 664 && "$(stat -c %a "$T/p/other/f")" == 600 && "$(stat -c %a "$T/p/.git/f")" == 600 ]] && ok "--prune and --prune-name are never entered" || bad "prune: keep=$(stat -c %a "$T/p/keep/f") other=$(stat -c %a "$T/p/other/f") git=$(stat -c %a "$T/p/.git/f")"
 
+# Hard links to someone else's file (Gradle links the NDK's libc++_shared.so into app/build):
+# never chowned or chmodded, since that would change the file outside the tree too.
+mkdir -p "$T/hl/ndk" "$T/hl/d"; printf x >"$T/hl/ndk/lib.so"; chmod 600 "$T/hl/ndk/lib.so"; ln "$T/hl/ndk/lib.so" "$T/hl/d/lib.so"
+( perm_init "$T/pc-nobody"; perm_apply build-intermediates "$T/hl/d/lib.so" --top-only ) >"$T/o" 2>&1; rc=$?
+[[ $rc -eq 0 && "$(stat -c %a "$T/hl/ndk/lib.so")" == 600 ]] && grep -q "left 1 hard-linked file(s) owned by $me unchanged" "$T/o" \
+  && ok "apply: hard link to another owner's file is left unchanged, with a note" || bad "hardlink apply: rc=$rc mode=$(stat -c %a "$T/hl/ndk/lib.so") $(cat "$T/o")"
+( perm_init "$T/pc-nobody"; perm_preflight build-intermediates "$T/hl/d/lib.so" --top-only ) >"$T/o" 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ! grep -q CANNOT-FIX "$T/o" && ok "preflight: hard link to another owner's readable file is not CANNOT-FIX" || bad "hardlink preflight: rc=$rc $(cat "$T/o")"
+chmod 000 "$T/hl/ndk/lib.so"
+( perm_init "$T/pc-nobody"; perm_preflight build-intermediates "$T/hl/d/lib.so" --top-only ) >"$T/o" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q "^CANNOT-READ area=build-intermediates path=$T/hl/d/lib.so" "$T/o" && ! grep -q 'sudo\|fix-perms' "$T/o" \
+  && ok "preflight: unreadable hard-linked file is CANNOT-READ, owner named, no root hint" || bad "hardlink unreadable: rc=$rc $(cat "$T/o")"
+chmod 600 "$T/hl/ndk/lib.so"
+perm_apply build-intermediates "$T/hl/d/lib.so" --top-only --owner "$me" >"$T/o" 2>&1; rc=$?
+[[ $rc -eq 0 && "$(stat -c %a "$T/hl/ndk/lib.so")" == 660 ]] && ok "apply: a hard-linked file the area owner owns is still fixed" || bad "hardlink own: rc=$rc mode=$(stat -c %a "$T/hl/ndk/lib.so") $(cat "$T/o")"
+
 echo "passed $pass failed $fail"
 [[ $fail -eq 0 ]]

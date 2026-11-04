@@ -164,10 +164,36 @@ def wanted_mode(row, st):
         return apply_spec(row["file"], st.st_mode, False)
     return None
 
-def diffs(area, root, o):
+def shared_inode(st, uid):
+    """A regular file with other hard links, owned by someone other than the area's owner. Its
+    other links are outside this walk (Gradle hard-links the NDK's libc++_shared.so into
+    app/build), so a chown or chmod here would change that file too: it is never changed."""
+    return uid is not None and stat.S_ISREG(st.st_mode) and st.st_nlink > 1 and st.st_uid != uid
+
+def shared_unreadable(path):
+    return os.geteuid() != 0 and not os.access(path, os.R_OK)
+
+def report_shared(area, kept, unreadable):
+    if kept:
+        print(f"NOTE: perm-lib: area '{area}': left {len(kept)} hard-linked file(s) owned by "
+              f"{', '.join(sorted({name_u(st.st_uid) for _, st in kept}))} unchanged (other links "
+              f"outside this tree, e.g. {kept[0][0]})", file=sys.stderr)
+    for path, st in unreadable:
+        print(f"CANNOT-READ area={area} path={path} got={name_u(st.st_uid)}:{name_g(st.st_gid)} "
+              f"{format(st.st_mode & 0o7777, '04o')} links={st.st_nlink}")
+    if unreadable:
+        die(f"{len(unreadable)} hard-linked file(s) in area '{area}' are not readable by "
+            f"{name_u(os.geteuid())}; only their owner can change that, or delete them from this "
+            f"tree (the build makes them again)")
+
+def diffs(area, root, o, kept=None):
     row = area_row(area)
     uid, gid, owner, group = principals(row, o)
     for path, st in walk(root, o):
+        if shared_inode(st, uid):
+            if kept is not None:
+                kept.append((path, st))
+            continue
         mode = wanted_mode(row, st)
         own = (uid is not None and st.st_uid != uid) or (gid is not None and st.st_gid != gid)
         md = (mode is not None and not stat.S_ISLNK(st.st_mode) and (st.st_mode & 0o7777) != mode)
@@ -184,8 +210,7 @@ def name_g(gid):
 def fix_hint(uid):
     if uid == 0:
         return "only root can change it: run ./fix-perms from the orchestration root (it must run as root)"
-    return (f"only {name_u(uid)} (its owner) or root can change it: have {name_u(uid)} remove it if "
-            f"it is not needed, or run ./fix-perms from the orchestration root (it must run as root)")
+    return f"only {name_u(uid)} (its owner) can change it: have {name_u(uid)} delete it if it is not needed"
 
 def run(argv, path, st):
     r = subprocess.run(argv)
@@ -207,7 +232,9 @@ def cmd_preflight(area, root, *a):
         return
     me = os.geteuid()
     bad = 0
-    for path, st, owner, group, mode, own, md in diffs(area, root, o):
+    root_owned = False
+    kept = []
+    for path, st, owner, group, mode, own, md in diffs(area, root, o, kept):
         why = []
         if own and ((owner and pwd.getpwnam(owner).pw_uid != st.st_uid) or st.st_uid != me):
             why.append(f"owner should be {owner or name_u(st.st_uid)}:{group or name_g(st.st_gid)}")
@@ -215,12 +242,15 @@ def cmd_preflight(area, root, *a):
             why.append(f"mode should be {format(mode, '04o')}")
         if why:
             bad += 1
+            root_owned = root_owned or st.st_uid == 0
             print(f"CANNOT-FIX area={area} path={path} got={name_u(st.st_uid)}:{name_g(st.st_gid)} "
                   f"{format(st.st_mode & 0o7777, '04o')} ({'; '.join(why)})")
+    report_shared(area, [], [k for k in kept if shared_unreadable(k[0])])
     if bad:
+        tail = ", or run ./fix-perms from the orchestration root for the root-owned ones (it must run as root)" if root_owned else ""
         print(f"ERROR: perm-lib: {bad} path(s) in area '{area}' differ from perm-model.tsv and are not "
-              f"owned by {name_u(me)}; only their owners or root can change them: have each owner remove "
-              f"the ones that are not needed, or run ./fix-perms from the orchestration root (it must run as root)",
+              f"owned by {name_u(me)}; only their owners can change them: have each owner remove "
+              f"the ones that are not needed{tail}",
               file=sys.stderr)
         sys.exit(1)
 
@@ -228,7 +258,8 @@ def cmd_apply(area, root, *a):
     o = parse_opts(list(a))
     # Streamed: a directory is fixed before os.walk lists it, so a pass can descend into a
     # directory whose search bit it is restoring.
-    for path, st, owner, group, mode, own, md in diffs(area, root, o):
+    kept = []
+    for path, st, owner, group, mode, own, md in diffs(area, root, o, kept):
         if own:
             spec = (owner or "") + (":" + group if group else "")
             run(["chown", "-h", spec, path], path, st)
@@ -236,16 +267,19 @@ def cmd_apply(area, root, *a):
             # Five digits: GNU chmod applies them exactly (with four it keeps a directory's
             # setuid/setgid bits that the model does not list).
             run(["chmod", format(mode, "05o"), path], path, st)
+    report_shared(area, kept, [k for k in kept if shared_unreadable(k[0])])
 
 def cmd_verify(area, root, *a):
     o = parse_opts(list(a))
     bad = 0
-    for path, st, owner, group, mode, own, md in diffs(area, root, o):
+    kept = []
+    for path, st, owner, group, mode, own, md in diffs(area, root, o, kept):
         bad += 1
         got = f"{name_u(st.st_uid)}:{name_g(st.st_gid)} {format(st.st_mode & 0o7777, '04o')}"
         want = f"{owner or '*'}:{group or '*'} {format(mode, '04o') if mode is not None else '*'}"
         print(f"PERM-MISMATCH area={area} path={path} want={want} got={got}")
     if bad:
+        report_shared(area, kept, [])
         print(f"ERROR: perm-lib: {bad} path(s) differ from area '{area}' in perm-model.tsv", file=sys.stderr)
         sys.exit(1)
 

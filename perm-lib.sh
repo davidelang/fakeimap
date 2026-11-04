@@ -19,6 +19,9 @@
 # perm_apply only calls chown/chgrp/chmod (from PATH) on paths that differ, and every failure
 # is reported and returned. Nothing here hides an error. Symlinks are never followed;
 # their own owner is set with chown -h, their mode is never touched.
+# A regular file with other hard links that the area's owner does not own (Gradle links the
+# NDK's libc++_shared.so into app/build) is never changed: its other links are outside the tree.
+# apply/verify print one NOTE about them; apply/preflight fail only if they are unreadable.
 
 PERM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PERM_MODEL="$PERM_LIB_DIR/perm-model.tsv"
