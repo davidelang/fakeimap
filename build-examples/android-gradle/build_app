@@ -952,17 +952,59 @@ if [ "$BUILD_PLAY" = true ]; then
   fi
 
   # Passwords live only in this process's environment and gradle's; never on a command line or disk.
-  read -r -s -p "Upload keystore password ($RELEASE_KEYSTORE): " BA_STORE_PASSWORD
-  echo
-  read -r -s -p "Key password for alias '$RELEASE_KEY_ALIAS' (Enter = same as keystore password): " BA_KEY_PASSWORD
-  echo
-  if [ -z "$BA_STORE_PASSWORD" ]; then
-    echo "ERROR: empty keystore password." >&2
+  # Both are checked here the way the signer uses them (KeyStore load with the store password,
+  # getKey with the key password), so a wrong one is named now, before the bump and before any
+  # gradle work, instead of failing signPlayReleaseBundle at the end. keytool -list checks only
+  # the store password, and for PKCS12 keytool ignores -keypass, so the check uses jshell
+  # (same JDK as keytool). Three tries, then exit with nothing built or committed.
+  if ! command -v jshell >/dev/null; then
+    echo "ERROR: --play needs jshell (JDK) on PATH to check the keystore and key passwords." >&2
     exit 1
   fi
-  if [ -z "$BA_KEY_PASSWORD" ]; then
-    BA_KEY_PASSWORD="$BA_STORE_PASSWORD"
-  fi
+  _pw_try=0
+  while :; do
+    read -r -s -p "Upload keystore password ($RELEASE_KEYSTORE): " BA_STORE_PASSWORD
+    echo
+    read -r -s -p "Key password for alias '$RELEASE_KEY_ALIAS' (Enter = same as keystore password): " BA_KEY_PASSWORD
+    echo
+    if [ -z "$BA_KEY_PASSWORD" ]; then
+      BA_KEY_PASSWORD="$BA_STORE_PASSWORD"
+    fi
+    if [ -z "$BA_STORE_PASSWORD" ]; then
+      echo "ERROR: empty keystore password." >&2
+    else
+      _ks_out=$(BA_KS_FILE="$RELEASE_KEYSTORE" BA_KS_ALIAS="$RELEASE_KEY_ALIAS" \
+        BA_KS_STORE_PW="$BA_STORE_PASSWORD" BA_KS_KEY_PW="$BA_KEY_PASSWORD" jshell -q - <<'JSH' 2>&1
+String r;
+try {
+  var ks = java.security.KeyStore.getInstance(new java.io.File(System.getenv("BA_KS_FILE")), System.getenv("BA_KS_STORE_PW").toCharArray());
+  if (!ks.isKeyEntry(System.getenv("BA_KS_ALIAS"))) r = "alias";
+  else { ks.getKey(System.getenv("BA_KS_ALIAS"), System.getenv("BA_KS_KEY_PW").toCharArray()); r = "ok"; }
+} catch (java.security.UnrecoverableKeyException e) { r = "key";
+} catch (java.io.IOException e) {
+  r = (e.getCause() instanceof java.security.UnrecoverableKeyException || String.valueOf(e.getMessage()).contains("password")) ? "store" : "error " + e;
+} catch (Exception e) { r = "error " + e; }
+System.out.println("KSCHECK " + r);
+/exit
+JSH
+)
+      _ks_res=$(printf '%s\n' "$_ks_out" | sed -n 's/^KSCHECK //p' | tail -1)
+      case "$_ks_res" in
+        ok) break ;;
+        store) echo "ERROR: wrong keystore password for $RELEASE_KEYSTORE." >&2 ;;
+        key) echo "ERROR: wrong key password for alias '$RELEASE_KEY_ALIAS' (the keystore password was right; Enter at the key prompt reuses it)." >&2 ;;
+        alias) echo "ERROR: $RELEASE_KEYSTORE has no key entry '$RELEASE_KEY_ALIAS' (release_key_alias). Nothing built or committed." >&2; exit 1 ;;
+        *) echo "ERROR: could not check $RELEASE_KEYSTORE alias '$RELEASE_KEY_ALIAS':" >&2; printf '%s\n' "$_ks_out" >&2; exit 1 ;;
+      esac
+    fi
+    _pw_try=$((_pw_try + 1))
+    if [ "$_pw_try" -ge 3 ]; then
+      echo "ERROR: 3 failed password attempts. Nothing built or committed." >&2
+      exit 1
+    fi
+    echo "Try again ($_pw_try of 3 used)." >&2
+  done
+  unset _ks_out _ks_res _pw_try
 
   # Check the store password and alias now, and record the upload cert to compare with the AAB.
   if ! KS_LIST=$(BA_STORE_PASSWORD="$BA_STORE_PASSWORD" keytool -list -v -keystore "$RELEASE_KEYSTORE" -alias "$RELEASE_KEY_ALIAS" -storepass:env BA_STORE_PASSWORD 2>&1); then
