@@ -5,10 +5,14 @@ Called by ./deploy --play (which selects the bundle and checks it against HEAD).
 library plus the openssl binary (RS256 signing of the service-account JWT); nothing else.
 
   play-publish --aab FILE --version-code N --aapt2 PATH --key SA.json
-               [--notes-file FILE] [--dry-run]
+               [--notes-file FILE | --notes-base REV] [--dry-run]
 
 Every failure prints one ERROR line and exits 1. --dry-run inserts an edit, reads the tracks
 and bundles, computes and shows the notes, then deletes the edit (no upload, no commit).
+
+Notes base: the -g<hash> in the highest versionName on Play, which must be an ancestor of HEAD.
+When history was rewritten (squashed for a PR), --notes-base REV names the base instead
+(it too must be an ancestor of HEAD); --notes-file needs no base at all.
 """
 import argparse, base64, json, os, re, shlex, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request, zipfile
 
@@ -203,7 +207,9 @@ def main():
     ap.add_argument("--version-code", required=True, type=int, metavar="N", help="versionCode the build recorded")
     ap.add_argument("--aapt2", required=True, metavar="PATH", help="aapt2 binary, to read the bundle manifest")
     ap.add_argument("--key", required=True, metavar="SA.json", help="service-account key file")
-    ap.add_argument("--notes-file", metavar="FILE", help="release notes (default: computed from the commits)")
+    nb = ap.add_mutually_exclusive_group()
+    nb.add_argument("--notes-file", metavar="FILE", help="release notes (default: computed from the commits)")
+    nb.add_argument("--notes-base", metavar="REV", help="compute the notes from REV..HEAD instead of the commit Play's highest versionName names")
     ap.add_argument("--dry-run", action="store_true", help="read and show everything, then delete the edit (no upload)")
     ap.add_argument("--work-dir", required=True, metavar="DIR", help="scratch dir for the notes file and manifest copy (never /tmp)")
     a = ap.parse_args()
@@ -227,18 +233,35 @@ def main():
         for b in bundles:
             if int(b.get("versionCode", -1)) == vc:
                 die("Play already has a bundle with versionCode %d (uploaded before); run ./build_app --play" % vc)
-        if not rel:
-            die("Play lists no release on any track, so there is no base commit for the notes")
-        top = max(rel, key=lambda x: x[1])
-        m = HASH_RX.search(top[2])
-        if not m:
-            die("highest release (versionCode %d on %s) is named '%s'; no -g<hash> to base the notes on" % (top[1], top[0], top[2]))
-        base = m.group(1)
-        if subprocess.run(["git", "cat-file", "-e", base + "^{commit}"]).returncode:
-            die("base commit %s (from '%s') is not in this repository" % (base, top[2]))
-        if subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"]).returncode:
-            die("base commit %s (from '%s') is not an ancestor of HEAD" % (base, top[2]))
-        print("Play now: highest versionCode %d on %s ('%s'); notes from %s..HEAD" % (top[1], top[0], top[2], base))
+        top = max(rel, key=lambda x: x[1]) if rel else None
+        if top:
+            print("Play now: highest versionCode %d on %s ('%s')" % top)
+        else:
+            print("Play now: no release on any track")
+        base = None
+        if a.notes_file:
+            print("Release notes from --notes-file %s (no base commit needed)" % a.notes_file)
+        elif a.notes_base:
+            r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", a.notes_base + "^{commit}"], capture_output=True, text=True)
+            if r.returncode:
+                die("--notes-base %s is not a commit in this repository" % a.notes_base)
+            base = r.stdout.strip()
+            if subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"]).returncode:
+                die("--notes-base %s (%s) is not an ancestor of HEAD" % (a.notes_base, base[:9]))
+            print("Notes from --notes-base %s (%s)..HEAD" % (a.notes_base, base[:9]))
+        else:
+            fix = "; give ./deploy --play --notes-base REV (the commit to start the notes after) or --notes-file FILE"
+            if not top:
+                die("Play lists no release on any track, so there is no base commit for the notes" + fix)
+            m = HASH_RX.search(top[2])
+            if not m:
+                die("highest release (versionCode %d on %s) is named '%s'; no -g<hash> to base the notes on%s" % (top[1], top[0], top[2], fix))
+            base = m.group(1)
+            if subprocess.run(["git", "cat-file", "-e", base + "^{commit}"]).returncode:
+                die("base commit %s (from '%s') is not in this repository (history rewritten?)%s" % (base, top[2], fix))
+            if subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"]).returncode:
+                die("base commit %s (from '%s') is not an ancestor of HEAD (history rewritten?)%s" % (base, top[2], fix))
+            print("Notes from %s..HEAD (the commit in that versionName)" % base)
         for t in tracks:
             for r in t.get("releases", []):
                 print("  %-10s %-10s %s %s" % (t["track"], r.get("status", ""), ",".join(r.get("versionCodes", [])), r.get("name", "")))

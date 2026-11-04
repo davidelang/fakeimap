@@ -3,7 +3,7 @@
 # Authoritative copy: orchestration-example/build-examples/android-gradle/deploy
 #
 # Usage: ./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
-#        ./deploy -p|--play [-n|--dry-run] [-N|--notes-file FILE]
+#        ./deploy -p|--play [-n|--dry-run] [-N|--notes-file FILE | -B|--notes-base REV]
 #
 # Which APKs: the ones the last ./build_app --standard (default) or --test recorded in
 # app/build/outputs/build_app/<standard|test>.json (from Gradle's output-metadata.json; see
@@ -41,6 +41,11 @@
 #                  With --play: release notes from FILE instead of $EDITOR (vi when unset) on the git log
 #                  since the commit in the highest versionName on Play, minus subjects matching
 #                  play-notes-exclude(.local) (en-US, max 500 characters; over it, Enter re-edits).
+#                  No base commit is needed with FILE.
+#     -B, --notes-base REV
+#                  With --play: start the git-log notes after REV instead of the commit in Play's
+#                  highest versionName (for when history was squashed or rewritten). REV must be
+#                  an ancestor of HEAD. Not with --notes-file.
 #     -h, --help   Print this usage and exit.
 #
 #   Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
@@ -57,7 +62,7 @@
 
 set -euo pipefail
 
-USAGE_LINE="usage: ./deploy [-h] [-t] [-c] [-r] [-l] [DEVICE ...] [-- GRADLE-FLAG ...] | -p [-n] [-N FILE]"
+USAGE_LINE="usage: ./deploy [-h] [-t] [-c] [-r] [-l] [DEVICE ...] [-- GRADLE-FLAG ...] | -p [-n] [-N FILE | -B REV]"
 usage() {
   cat <<USAGE
 $USAGE_LINE
@@ -74,6 +79,7 @@ options:
   -p, --play             upload the recorded Play bundle to Internal testing and alpha
   -n, --dry-run          with --play: show everything, upload and commit nothing
   -N, --notes-file FILE  with --play: release notes from FILE instead of the editor
+  -B, --notes-base REV   with --play: notes from REV..HEAD (after a history rewrite)
 
 Details: the comment at the top of ./deploy.
 USAGE
@@ -93,7 +99,7 @@ _deploy_help_if_asked() {
   done
   # An unknown option is rejected here too, before any re-exec or group check:
   # getopt's one-line error, then the usage line, exit 2.
-  if ! parsed="$(getopt -n deploy -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${pre[@]+"${pre[@]}"})"; then
+  if ! parsed="$(getopt -n deploy -o htcrlpnN:B: -l help,test,clean,rebuild,launch,play,dry-run,notes-file:,notes-base: -- ${pre[@]+"${pre[@]}"})"; then
     echo "$USAGE_LINE" >&2
     exit 2
   fi
@@ -181,6 +187,7 @@ launch=0
 play=0
 dry_run=0
 notes_file=""
+notes_base=""
 device_args=()
 gradle_flags=()
 # Permuting getopt: deploy tablet --clean is valid. Split on the user's -- first so
@@ -198,12 +205,12 @@ for _dep_a in "$@"; do
   fi
 done
 # getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
-if ! _dep_err=$(getopt -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${_dep_pre[@]+"${_dep_pre[@]}"} 2>&1 >/dev/null); then
+if ! _dep_err=$(getopt -o htcrlpnN:B: -l help,test,clean,rebuild,launch,play,dry-run,notes-file:,notes-base: -- ${_dep_pre[@]+"${_dep_pre[@]}"} 2>&1 >/dev/null); then
   printf '%s\n' "$_dep_err" >&2
   echo "$USAGE_LINE" >&2
   exit 2
 fi
-parsed=$(getopt -o htcrlpnN: -l help,test,clean,rebuild,launch,play,dry-run,notes-file: -- ${_dep_pre[@]+"${_dep_pre[@]}"})
+parsed=$(getopt -o htcrlpnN:B: -l help,test,clean,rebuild,launch,play,dry-run,notes-file:,notes-base: -- ${_dep_pre[@]+"${_dep_pre[@]}"})
 eval set -- "$parsed"
 while true; do
   case "$1" in
@@ -215,6 +222,7 @@ while true; do
     -p|--play) play=1; shift ;;
     -n|--dry-run) dry_run=1; shift ;;
     -N|--notes-file) notes_file="$2"; shift 2 ;;
+    -B|--notes-base) notes_base="$2"; shift 2 ;;
     --) shift; break ;;
     *)
       echo "$USAGE_LINE" >&2
@@ -232,8 +240,12 @@ if [ "$rebuild" -ne 1 ] && [ "${#gradle_flags[@]}" -gt 0 ]; then
   exit 1
 fi
 
-if [ "$play" -ne 1 ] && { [ "$dry_run" -eq 1 ] || [ -n "$notes_file" ]; }; then
-  echo "ERROR: --dry-run and --notes-file need --play" >&2
+if [ "$play" -ne 1 ] && { [ "$dry_run" -eq 1 ] || [ -n "$notes_file" ] || [ -n "$notes_base" ]; }; then
+  echo "ERROR: --dry-run, --notes-file and --notes-base need --play" >&2
+  exit 1
+fi
+if [ -n "$notes_file" ] && [ -n "$notes_base" ]; then
+  echo "ERROR: give --notes-file or --notes-base, not both" >&2
   exit 1
 fi
 if [ "$play" -eq 1 ]; then
@@ -245,7 +257,7 @@ if [ "$play" -eq 1 ]; then
   [ "${#device_args[@]}" -gt 0 ] && _play_bad="$_play_bad devices(${device_args[*]})"
   [ "${#gradle_flags[@]}" -gt 0 ] && _play_bad="$_play_bad gradle-flags"
   if [ -n "$_play_bad" ]; then
-    echo "ERROR: --play takes only --dry-run and --notes-file; also given:$_play_bad" >&2
+    echo "ERROR: --play takes only --dry-run, --notes-file and --notes-base; also given:$_play_bad" >&2
     exit 1
   fi
   if [ -n "$notes_file" ] && [ ! -r "$notes_file" ]; then
@@ -302,6 +314,7 @@ if [ "$play" -eq 1 ]; then
   fi
   _pp=(--aab "$PLAY_AAB" --version-code "$PLAY_VC" --aapt2 "$AAPT2" --key "$PLAY_KEY" --work-dir "$PLAY_WORK")
   [ -n "$notes_file" ] && _pp+=(--notes-file "$notes_file")
+  [ -n "$notes_base" ] && _pp+=(--notes-base "$notes_base")
   [ "$dry_run" -eq 1 ] && _pp+=(--dry-run)
   exec "$_DEPLOY_HERE/play-publish" "${_pp[@]}"
 fi

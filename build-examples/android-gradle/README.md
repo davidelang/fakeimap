@@ -180,7 +180,7 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 
 ```
 ./deploy [-h|--help] [-t|--test] [-c|--clean] [-r|--rebuild] [-l|--launch] [device...] [-- gradle-flag...]
-./deploy -p|--play [-n|--dry-run] [-N|--notes-file FILE]
+./deploy -p|--play [-n|--dry-run] [-N|--notes-file FILE | -B|--notes-base REV]
 ```
 
 | Option | Effect |
@@ -192,7 +192,8 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 | `-l` / `--launch` | Start the app's launcher activity after install |
 | `-p` / `--play` | Upload the recorded Play bundle to Internal testing, then promote it to alpha (closed testing) and send it for review. See [deploy --play](#deploy---play) |
 | `-n` / `--dry-run` | With `--play`: open an edit, read the tracks, show the notes, delete the edit; nothing uploaded or committed |
-| `-N` / `--notes-file FILE` | With `--play`: release notes from FILE instead of `$EDITOR` (vi when unset) |
+| `-N` / `--notes-file FILE` | With `--play`: release notes from FILE instead of `$EDITOR` (vi when unset); no base commit needed |
+| `-B` / `--notes-base REV` | With `--play`: notes from `REV..HEAD` instead of the commit in Play's highest versionName (after a squash or history rewrite); REV must be an ancestor of HEAD |
 | `tablet`, `emulator` | emulator-5554 |
 | `phone` | `deploy_serial=` from project.config (error if unset) |
 | other words | adb serials |
@@ -235,13 +236,15 @@ Per-app config:
    the bundle's base manifest (SDK aapt2). Play is never asked for a package the bundle does not name.
 2. Refuses when Play already has that versionCode on any track or as an uploaded bundle.
 3. Release notes: the base commit is the `-g<hash>` in the release name of the highest versionCode
-   on any track (an error when it is missing or not an ancestor of HEAD). The subjects of
+   on any track (an error when it is missing or not an ancestor of HEAD, for example after the
+   history was squashed for a PR; then `--notes-base REV` names the base, and it too must be an
+   ancestor of HEAD). The subjects of
    `git log --no-merges base..HEAD`, minus those matching a pattern in `play-notes-exclude`
    (shared, ships here) or the project's optional `play-notes-exclude.local` (Python regexes,
    one per line, `#` comments), open as `- subject` lines in `$EDITOR`. With EDITOR unset it is
    vi with a status line showing the live character count. Trimmed; over 500 characters (Play's
    en-US limit) reports the count, waits for Enter and reopens the editor; empty is an error.
-   `--notes-file FILE` is used as is (no filtering); empty or over 500 there is an error.
+   `--notes-file FILE` is used as is (no filtering, no base commit); empty or over 500 there is an error.
 4. One edit: upload the bundle and release it to both `internal` and `alpha` (closed testing),
    status completed, same en-US notes.
 5. One commit with `changesNotSentForReview=false`, so Play records a single submission that
