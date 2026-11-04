@@ -6,6 +6,7 @@
 - Launch: `./run-grok-*` via `.grok/lib/grok-launch-common.sh` + `agent-landlock` (Grok and cursor). Planner writes `work-history/` (root `TODO.md` and `ENGINEERING_LOG.md` are symlinks).
 - Groups: source `./env` (refresh-shell setuid)
 - Clone a sibling host: `./clone-orchestration-project <new-name>` → `git_home/<name>/` (branch `orchestration`) + `master/` worktree
+- Before adding or changing user-visible wording, translations, or the user manual: read `docs/facts/translations.md`.
 
 ## Build and commit
 - **Build type:** none
