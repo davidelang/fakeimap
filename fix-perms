@@ -355,7 +355,7 @@ ensure_worktree_scripts_executable() {
     get-builds-tag.sh update-rules.sh ve-resolve-orch install-merge-drivers.sh merge-branch-into-master.sh
     generate_pr.sh cleanup_pr.sh
     filter-apply-config filter-clean-config setup-project
-    set-worktree-perms set-sandbox-perms
+    set-sandbox-perms
     run-grok run-grok-master run-grok-planner run-grok-coder run-grok-orchestrator
     run-antigravity run-gemini
     agent-landlock todo-append todo-close env

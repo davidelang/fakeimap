@@ -20,7 +20,6 @@ work-history/TODO.md merge=ve-special-ours
 
 # manage-configs (smudge/clean @@ tokens) — maintained by hand here (verify-smudge, deploy-orchestration, publish-smudge-fix read it via git check-attr)
 setup-project filter=manage-configs
-set-worktree-perms filter=manage-configs
 set-sandbox-perms filter=manage-configs
 project.config.example filter=manage-configs
 landlock.config filter=manage-configs

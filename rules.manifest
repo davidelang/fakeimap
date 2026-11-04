@@ -107,6 +107,7 @@ purge new_grok_agent_prompt
 purge sync_infrastructure.sh
 purge fix-android-sdk-perms
 purge sync-debug-keystores
+purge set-worktree-perms
 purge run-grok-imagine
 purge roles/imagine.md
 purge .grok/prompts/packs/imagine.pack
