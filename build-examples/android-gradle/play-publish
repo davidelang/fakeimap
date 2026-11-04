@@ -235,7 +235,7 @@ def main():
                 die("Play already has a bundle with versionCode %d (uploaded before); run ./build_app --play" % vc)
         top = max(rel, key=lambda x: x[1]) if rel else None
         if top:
-            print("Play now: highest versionCode %d on %s ('%s')" % top)
+            print("Play now: highest versionCode %d on %s ('%s')" % (top[1], top[0], top[2]))
         else:
             print("Play now: no release on any track")
         base = None
