@@ -260,3 +260,11 @@ Needs `python3` and `openssl` (standard library only; the JWT is signed with ope
 App-specific data features (for example VehicleExpenses' `--backup`/`--restore-data`) are not
 part of this script. VehicleExpenses plans to replace them with the adb export/import
 provider (`~/playstore/vehicleexpenses-datatransfer-plan.md`).
+
+## Manual screenshots
+
+`capture-manual-screenshots` and `capture-manual-screenshots.md` ship with this build type.
+Deploy copies both into an Android project root the same way it copies `build_app`. The manual
+is how an agent writes that app's `manual-capture.yaml`. An app's own yaml does not live in
+this directory: deploy would copy it into every Android app. David runs a capture and David
+publishes this directory. Agents write the config and may run `--check`.

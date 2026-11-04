@@ -1,0 +1,1765 @@
+#!/usr/bin/env python3
+"""Capture manual screenshots from a per-app config.
+
+The walk is data: manual-capture.yaml names string ids and the order of
+primitives. This file is the driver. A hook exists for a gesture this list
+cannot say. On a later audit, every hook is either a missing primitive, a
+walk that should have been steps, or a real one-app exception. David runs a
+capture. --check validates the config and does not touch a device.
+
+  ./capture-manual-screenshots --check
+  ./capture-manual-screenshots --serial SERIAL [--form phone|tablet] [--locales all|TAG] [--shots GROUP,FILE] [--replace]
+  ./capture-manual-screenshots --serial SERIAL --serial SERIAL [--locales all|TAG] [--shots GROUP,FILE] [--replace]
+
+One serial and no --form classifies the device by physical diagonal
+(phone_max_inches). Two serials assign the larger diagonal to tablet. A gap
+under gap_inches exits before any shot. Without --replace, a selected JPEG of
+at least 1000 bytes is kept, and a locale whose selected shots are all that
+size is not opened.
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import math
+import re
+import subprocess
+import sys
+import threading
+import time
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+ROOT = Path.cwd()
+MIN_JPEG = 1000
+ZOOM_TEXT = re.compile(r"^[124]x$")
+CARD_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+PH_SPLIT = re.compile(r"%(?:\d+\$)?[sd]")
+
+
+class StopRun(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Locale:
+    pref: str
+    values: str
+    segment: str
+    endonym_index: int
+
+
+def _die(message: str) -> None:
+    raise SystemExit(message)
+
+
+def _load_yaml(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        _die(f"{path} is not a mapping")
+    return data
+
+
+def _parse_strings(path: Path) -> dict[str, str]:
+    text = path.read_text(encoding="utf-8")
+    out: dict[str, str] = {}
+    for match in re.finditer(r'<string name="([^"]+)">(.*?)</string>', text, re.S):
+        value = (
+            match.group(2)
+            .replace("\\n", "\n")
+            .replace("\\'", "'")
+            .replace('\\"', '"')
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+        )
+        out[match.group(1)] = value
+    return out
+
+
+def _locales(cfg: dict, root: Path) -> list[Locale]:
+    rows = cfg.get("locales")
+    if not isinstance(rows, list) or not rows:
+        _die("locales must be a non-empty list")
+    index = cfg.get("endonym_row") or {}
+    found: list[Locale] = []
+    for row in rows:
+        pref = str(row["pref"])
+        found.append(
+            Locale(
+                pref=pref,
+                values=str(row["values"]),
+                segment=str(row.get("segment") or ""),
+                endonym_index=int(index.get(pref, 0)),
+            )
+        )
+    if found[0].pref != "en":
+        _die("the first locale must be en")
+    prefs = [item.pref for item in found]
+    if len(prefs) != len(set(prefs)):
+        _die("a locale pref is listed twice")
+    return found
+
+
+class App:
+    def __init__(self, root: Path, cfg: dict):
+        self.root = root
+        self.cfg = cfg
+        self.package = str(cfg["package"])
+        self.activity = str(cfg["activity"])
+        self.res = root / str(cfg.get("strings_res", "app/src/main/res"))
+        self.locales = _locales(cfg, root)
+        self.by_pref = {item.pref: item for item in self.locales}
+        self.groups = self._groups()
+        self.shots = [name for names in self.groups.values() for name in names]
+        if len(self.shots) != len(set(self.shots)):
+            _die("a shot filename is listed twice")
+        self._strings: dict[str, dict[str, str]] = {}
+        self.hooks = self._hooks()
+        self.ignore = set(cfg.get("ignore_text") or ["1x", "2x", "4x"])
+        self.prefixes = [str(item) for item in (cfg.get("never_tap_prefix") or [])]
+        self.gap = float((cfg.get("forms") or {}).get("gap_inches", 1.5))
+        self.phone_max = float((cfg.get("forms") or {}).get("phone_max_inches", 8))
+
+    def _groups(self) -> dict[str, list[str]]:
+        groups: dict[str, list[str]] = {}
+        for section in self.cfg.get("sections") or []:
+            name = section.get("group")
+            shots = section.get("shots") or []
+            if not name or not shots:
+                _die("every section needs group and shots")
+            groups.setdefault(str(name), [])
+            for shot in shots:
+                if shot in groups[str(name)]:
+                    continue
+                for other, names in groups.items():
+                    if shot in names and other != name:
+                        _die(f"{shot} is in groups {other} and {name}")
+                groups[str(name)].append(str(shot))
+        if not groups:
+            _die("sections is empty")
+        return groups
+
+    def _hooks(self) -> dict:
+        spec = self.cfg.get("hooks")
+        if not spec:
+            return {}
+        path = self.root / str(spec)
+        if not path.is_file():
+            _die(f"hooks file not found: {path}")
+        module_spec = importlib.util.spec_from_file_location("manual_capture_hooks", path)
+        if module_spec is None or module_spec.loader is None:
+            _die(f"cannot load hooks {path}")
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        hooks = getattr(module, "HOOKS", None)
+        if not isinstance(hooks, dict):
+            _die(f"{path} must define HOOKS")
+        return hooks
+
+    def strings(self, pref: str) -> dict[str, str]:
+        cached = self._strings.get(pref)
+        if cached is not None:
+            return cached
+        locale = self.by_pref[pref]
+        base = self.res / "values" / "strings.xml"
+        if not base.is_file():
+            _die(f"missing {base}")
+        out = _parse_strings(base)
+        if pref != "en":
+            overlay = self.res / locale.values / "strings.xml"
+            if overlay.is_file():
+                out.update(_parse_strings(overlay))
+            else:
+                print(f"  WARN: no {overlay}; {pref} falls back to English", flush=True)
+        self._strings[pref] = out
+        return out
+
+    def text(self, pref: str, key: str) -> str:
+        value = self.strings(pref).get(key) or ""
+        if not value:
+            _die(f"missing string {key}")
+        return value
+
+    def endonym(self, pref: str) -> str:
+        pattern = str(self.cfg.get("endonym_key", "lang_name_{pref}"))
+        key = pattern.format(pref=pref.lower().replace("-", "_"))
+        return self.text("en", key)
+
+    def output_dir(self, locale: Locale, form: str) -> Path:
+        output = self.cfg["output"]
+        pattern = output["en"] if locale.pref == "en" else output["other"]
+        relative = pattern.format(form=form, segment=locale.segment, pref=locale.pref)
+        return self.root / relative
+
+    def check(self) -> None:
+        english = self.strings("en")
+        missing: list[str] = []
+
+        def need(key: object) -> None:
+            if isinstance(key, str) and key not in english:
+                missing.append(key)
+
+        def need_all(values: object) -> None:
+            if isinstance(values, str):
+                need(values)
+            elif isinstance(values, list):
+                for item in values:
+                    need(item)
+
+        need_all(self.cfg.get("never_tap"))
+        drawer = self.cfg.get("drawer") or {}
+        need(drawer.get("open"))
+        need_all(drawer.get("labels"))
+        need_all(drawer.get("open_if_text"))
+        need_all(drawer.get("unblock_when_same"))
+        language = self.cfg.get("language") or {}
+        for key in ("menu", "settings", "field", "system", "ready"):
+            need(language.get(key))
+        need_all((self.cfg.get("launch") or {}).get("dismiss"))
+
+        def walk(steps: object) -> None:
+            if not isinstance(steps, list):
+                return
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                action, value = _one(step)
+                if action in {"drawer", "tap_desc", "tap_field"}:
+                    need(value)
+                elif action == "tap_text":
+                    spec = value if isinstance(value, dict) else {"id": value}
+                    need(spec.get("id"))
+                    need_all(spec.get("else"))
+                elif action == "tap_between":
+                    need_all((value or {}).get("desc") if isinstance(value, dict) else None)
+                elif action == "tap_beside":
+                    if isinstance(value, dict):
+                        need(value.get("save"))
+                        need(value.get("pick"))
+                        need_all(value.get("skip"))
+                elif action == "tap_matching" and isinstance(value, dict):
+                    need(value.get("skip_format")) if value.get("skip_format") else None
+                elif action == "shot" and isinstance(value, dict):
+                    need_all(value.get("unless"))
+                elif action == "wait_until" and isinstance(value, dict):
+                    need(value.get("dialog"))
+                    need(value.get("show_all"))
+                elif action == "wait_settle" and isinstance(value, dict):
+                    need(value.get("processing"))
+                    need(value.get("retry"))
+                    need(value.get("dialog"))
+                    need(value.get("show_all"))
+                    need_all(value.get("between"))
+                elif action == "back_while_dialog" and isinstance(value, dict):
+                    need(value.get("dialog"))
+                    need(value.get("show_all"))
+                elif action == "block" and isinstance(value, dict):
+                    walk(value.get("steps"))
+                elif action == "tap_any" and isinstance(value, dict):
+                    walk(value.get("backup"))
+                elif action == "hook" and str(value) not in self.hooks:
+                    _die(f"hook {value} is not in HOOKS")
+
+        named: list[str] = []
+
+        def shot_names(steps: object) -> None:
+            if not isinstance(steps, list):
+                return
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                action, value = _one(step)
+                if action == "shot":
+                    spec = value if isinstance(value, dict) else {"file": value}
+                    named.append(str(spec.get("file") or ""))
+                elif action == "block" and isinstance(value, dict):
+                    shot_names(value.get("steps"))
+                elif action == "tap_any" and isinstance(value, dict):
+                    shot_names(value.get("backup"))
+
+        output = self.cfg.get("output") or {}
+        if not output.get("en") or not output.get("other"):
+            _die("output needs en and other")
+        for section in self.cfg.get("sections") or []:
+            walk(section.get("steps"))
+            shot_names(section.get("steps"))
+        if missing:
+            _die("missing English strings: " + ", ".join(sorted(set(missing))))
+        unknown = sorted({name for name in named if name not in self.shots})
+        absent = sorted({name for name in self.shots if name not in named})
+        if unknown:
+            _die("shot steps not listed on a section: " + ", ".join(unknown))
+        if absent:
+            _die("section shots with no shot step: " + ", ".join(absent))
+        for locale in self.locales:
+            self.endonym(locale.pref)
+            if locale.pref != "en" and not locale.segment:
+                _die(f"{locale.pref} has no segment")
+            if locale.pref != "en":
+                self.strings(locale.pref)
+        print(f"ok {len(self.shots)} shots, {len(self.locales)} locales", flush=True)
+
+
+def _run(serial: str, *args: str, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(["adb", "-s", serial, *args], check=check, capture_output=True, text=True, timeout=timeout)
+
+
+def _sh(serial: str, command: str, check: bool = True) -> str:
+    result = _run(serial, "shell", command, check=check)
+    return result.stdout or ""
+
+
+def _bounds(node: ET.Element) -> tuple[int, int, int, int] | None:
+    raw = node.attrib.get("bounds") or ""
+    match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", raw)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+
+def _center(node: ET.Element) -> tuple[int, int] | None:
+    box = _bounds(node)
+    if not box:
+        return None
+    return (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+
+
+def _find(root: ET.Element, *, text: str | None = None, desc: str | None = None) -> list[ET.Element]:
+    found = []
+    for node in root.iter():
+        if text is not None and (node.attrib.get("text") or "") == text:
+            found.append(node)
+        if desc is not None and (node.attrib.get("content-desc") or "") == desc:
+            found.append(node)
+    return found
+
+
+def _screen_extent(root: ET.Element) -> tuple[int, int] | None:
+    max_x = max_y = 0
+    for node in root.iter():
+        box = _bounds(node)
+        if not box:
+            continue
+        max_x = max(max_x, box[2])
+        max_y = max(max_y, box[3])
+    if max_x <= 0 or max_y <= 0:
+        return None
+    return max_x, max_y
+
+
+def _parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
+    parents: dict[ET.Element, ET.Element] = {}
+    for parent in root.iter():
+        for child in list(parent):
+            parents[child] = parent
+    return parents
+
+
+def _dump(serial: str) -> ET.Element:
+    _sh(serial, "uiautomator dump /sdcard/ui.xml", check=False)
+    xml = _sh(serial, "cat /sdcard/ui.xml", check=False)
+    start = xml.find("<hierarchy")
+    end = xml.rfind("</hierarchy>")
+    if start < 0 or end < 0:
+        _die("uiautomator dump was empty")
+    return ET.fromstring(xml[start : end + len("</hierarchy>")])
+
+
+def _screen_size(serial: str) -> tuple[int, int] | None:
+    matches = re.findall(r"(\d+)x(\d+)", _sh(serial, "wm size", check=False))
+    if not matches:
+        return None
+    width, height = matches[-1]
+    return int(width), int(height)
+
+
+def _diagonal(serial: str) -> float | None:
+    size_text = _sh(serial, "wm size", check=False)
+    density_text = _sh(serial, "wm density", check=False)
+    size = re.search(r"Physical size:\s*(\d+)x(\d+)", size_text)
+    density = re.search(r"Physical density:\s*(\d+)", density_text)
+    if not size or not density:
+        return None
+    dpi = int(density.group(1))
+    if dpi <= 0:
+        return None
+    return math.hypot(int(size.group(1)), int(size.group(2))) / dpi
+
+
+def _resumed(serial: str) -> str | None:
+    activities = _sh(serial, "dumpsys activity activities", check=False)
+    top = re.findall(r"topResumedActivity(?:=|:)\s*ActivityRecord\{[^\n]* ([A-Za-z][\w.]*)/", activities)
+    if top:
+        return top[0]
+    window = _sh(serial, "dumpsys window", check=False)
+    focused = re.findall(r"mCurrentFocus=Window\{[^\n]* ([A-Za-z][\w.]*)/", window) or re.findall(
+        r"mFocusedApp=ActivityRecord\{[^\n]* ([A-Za-z][\w.]*)/", window
+    )
+    if focused:
+        return focused[0]
+    resumed = re.findall(r"(?:mResumedActivity|ResumedActivity)(?:=|:)\s*ActivityRecord\{[^\n]* ([A-Za-z][\w.]*)/", activities)
+    return resumed[-1] if resumed else None
+
+
+def _bottom_labels(root: ET.Element) -> tuple[str, ...]:
+    texts: list[tuple[int, int, str]] = []
+    max_y = 0
+    for node in root.iter():
+        box = _bounds(node)
+        if not box:
+            continue
+        max_y = max(max_y, box[3])
+        label = (node.attrib.get("text") or "").strip()
+        if label:
+            texts.append((box[3], box[0], label))
+    if max_y <= 0:
+        return ()
+    cutoff = int(max_y * 0.75)
+    band = [item for item in texts if item[0] >= cutoff]
+    if not band and texts:
+        texts.sort()
+        band = texts[-4:]
+    band.sort()
+    return tuple(label for _, _, label in band)
+
+
+def _row_clusters(nodes: list[ET.Element]) -> list[ET.Element]:
+    ranked = []
+    for node in nodes:
+        box = _bounds(node)
+        if not box:
+            continue
+        ranked.append((((box[1] + box[3]) // 2), (box[0] + box[2]) // 2, node))
+    ranked.sort()
+    rows: list[tuple[int, ET.Element]] = []
+    for cy, _cx, node in ranked:
+        if rows and abs(cy - rows[-1][0]) < 36:
+            continue
+        rows.append((cy, node))
+    return [node for _cy, node in rows]
+
+
+def _jpeg_kept(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size >= MIN_JPEG
+
+
+def _save_jpeg(png: bytes, dest: Path) -> None:
+    from PIL import Image
+    import io
+
+    image = Image.open(io.BytesIO(png)).convert("RGB")
+    if image.width > 1080:
+        height = max(1, round(image.height * 1080 / image.width))
+        image = image.resize((1080, height), Image.Resampling.LANCZOS)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    image.save(dest, "JPEG", quality=75, optimize=True)
+
+
+class Device:
+    def __init__(self, app: App, serial: str, locale: Locale):
+        self.app = app
+        self.serial = serial
+        self.locale = locale
+        self.notes: dict[str, str] = {}
+        self.flags: set[str] = set()
+        self.pref = locale.pref
+
+    def s(self, key: str) -> str:
+        return self.app.text(self.pref, key)
+
+    def blocked(self) -> set[str]:
+        return {self.s(key) for key in self.app.cfg.get("never_tap") or []}
+
+    def _refused(self, value: str, blocked: set[str]) -> bool:
+        if not value:
+            return False
+        if value in blocked:
+            return True
+        return any(value.startswith(prefix) for prefix in self.app.prefixes)
+
+    def tap_xy(self, x: int, y: int) -> None:
+        _sh(self.serial, f"input tap {x} {y}")
+
+    def dump(self) -> ET.Element:
+        return _dump(self.serial)
+
+    def note(self, shots: list[str], message: str) -> None:
+        for name in shots:
+            self.notes.setdefault(name, message)
+        print(f"  WARN: {message}", flush=True)
+
+    def click_node(self, nodes: list[ET.Element], blocked: set[str], label: str) -> bool:
+        for node in nodes:
+            text = node.attrib.get("text") or ""
+            desc = node.attrib.get("content-desc") or ""
+            if self._refused(text, blocked) or self._refused(desc, blocked):
+                print(f"  WARN: refused {label!r}", flush=True)
+                return False
+            center = _center(node)
+            if center:
+                self.tap_xy(*center)
+                return True
+        print(f"  WARN: not found: {label!r}", flush=True)
+        return False
+
+    def click_text(self, text: str, blocked: set[str] | None = None) -> bool:
+        blocked = self.blocked() if blocked is None else blocked
+        if self._refused(text, blocked):
+            print(f"  WARN: refused text {text!r}", flush=True)
+            return False
+        return self.click_node(_find(self.dump(), text=text), blocked, text)
+
+    def click_desc(self, desc: str, blocked: set[str] | None = None) -> bool:
+        blocked = self.blocked() if blocked is None else blocked
+        if self._refused(desc, blocked):
+            print(f"  WARN: refused desc {desc!r}", flush=True)
+            return False
+        return self.click_node(_find(self.dump(), desc=desc), blocked, desc)
+
+    def swipe(self, kind: str) -> bool:
+        size = _screen_size(self.serial)
+        if size is None:
+            return False
+        width, height = size
+        x = width // 2
+        if kind == "fling":
+            y1, y2, duration, pause = int(height * 0.82), int(height * 0.18), 70, 0.55
+        else:
+            y1, y2, duration, pause = int(height * 0.75), int(height * 0.30), 400, 0.6
+        _sh(self.serial, f"input swipe {x} {y1} {x} {y2} {duration}")
+        time.sleep(pause)
+        return True
+
+    def click_scrolled(self, text: str, kind: str, blocked: set[str]) -> bool:
+        if self._refused(text, blocked):
+            print(f"  WARN: refused text {text!r}", flush=True)
+            return False
+        if kind == "page":
+            if self.click_text(text, blocked):
+                return True
+            if not self.swipe("page"):
+                return False
+            return self.click_text(text, blocked)
+        previous: tuple[str, ...] | None = None
+        for _ in range(8):
+            root = self.dump()
+            nodes = _find(root, text=text)
+            if nodes:
+                return self.click_node(nodes, blocked, text)
+            labels = _bottom_labels(root)
+            if previous is not None and labels == previous:
+                print(f"  WARN: fling stopped; bottom labels unchanged ({text!r})", flush=True)
+                return False
+            previous = labels
+            if not self.swipe("fling"):
+                return False
+        print(f"  WARN: not found after flings: {text!r}", flush=True)
+        return False
+
+    def drawer_scrim(self, root: ET.Element, strings: dict[str, str]) -> ET.Element | None:
+        labels = {strings.get(key) or "" for key in (self.app.cfg.get("drawer") or {}).get("labels") or []}
+        labels.discard("")
+        boxes = []
+        seen: set[str] = set()
+        for node in root.iter():
+            text = (node.attrib.get("text") or "").strip()
+            if text not in labels:
+                continue
+            box = _bounds(node)
+            if not box:
+                continue
+            seen.add(text)
+            boxes.append(box)
+        if len(seen) < 2:
+            return None
+        extent = _screen_extent(root)
+        if extent is None:
+            return None
+        max_x, max_y = extent
+        left = min(box[0] for box in boxes)
+        right = max(box[2] for box in boxes)
+
+        def contains(box: tuple[int, int, int, int]) -> int:
+            count = 0
+            for label in boxes:
+                cx = (label[0] + label[2]) // 2
+                cy = (label[1] + label[3]) // 2
+                if box[0] <= cx <= box[2] and box[1] <= cy <= box[3]:
+                    count += 1
+            return count
+
+        candidates = []
+        for node in root.iter():
+            box = _bounds(node)
+            if not box:
+                continue
+            width = box[2] - box[0]
+            height = box[3] - box[1]
+            if height < int(max_y * 0.90) or width >= int(max_x * 0.92) or width < 16:
+                continue
+            if contains(box) >= 2:
+                continue
+            cx = (box[0] + box[2]) // 2
+            if cx < left:
+                gap = max(0, left - box[2])
+            elif cx > right:
+                gap = max(0, box[0] - right)
+            else:
+                continue
+            clickable = 0 if node.attrib.get("clickable") == "true" else 1
+            candidates.append((clickable, gap, node))
+        if not candidates:
+            return None
+        pool = [item for item in candidates if item[0] == 0] or candidates
+
+        def width_of(item: tuple[int, int, ET.Element]) -> int:
+            box = _bounds(item[2])
+            return (box[2] - box[0]) if box else 10**9
+
+        pool.sort(key=lambda item: (item[1], -width_of(item)))
+        return pool[0][2]
+
+    def open_drawer(self) -> bool:
+        menu = self.s((self.app.cfg.get("drawer") or {})["open"])
+        root = self.dump()
+        if self.drawer_scrim(root, self.app.strings(self.pref)) is not None:
+            return True
+        if not _find(root, desc=menu):
+            print("  WARN: open_drawer stopped: Menu absent and drawer closed", flush=True)
+            return False
+        for _ in range(3):
+            if not self.click_desc(menu):
+                break
+            time.sleep(0.4)
+            root = self.dump()
+            if self.drawer_scrim(root, self.app.strings(self.pref)) is not None:
+                return True
+            blob = " ".join((node.attrib.get("text") or "") for node in root.iter())
+            for key in (self.app.cfg.get("drawer") or {}).get("open_if_text") or []:
+                if self.s(key) in blob:
+                    return True
+        print("  WARN: open_drawer may have failed", flush=True)
+        return False
+
+    def close_drawer(self) -> bool:
+        node = self.drawer_scrim(self.dump(), self.app.strings(self.pref))
+        if node is None:
+            print("  WARN: drawer scrim not found", flush=True)
+            return False
+        center = _center(node)
+        if not center:
+            return False
+        self.tap_xy(*center)
+        return True
+
+    def drawer_item(self, key: str) -> bool:
+        self.open_drawer()
+        label = self.s(key)
+        blocked = self.blocked()
+        pair = (self.app.cfg.get("drawer") or {}).get("unblock_when_same") or []
+        if len(pair) == 2 and key == pair[0] and self.s(pair[0]) == self.s(pair[1]):
+            blocked.discard(label)
+        if self.click_text(label, blocked):
+            time.sleep(0.9)
+            return True
+        return False
+
+    def press_back(self) -> None:
+        if self.drawer_scrim(self.dump(), self.app.strings(self.pref)) is not None:
+            raise StopRun("refused Back while the drawer scrim is showing")
+        _sh(self.serial, "input keyevent 4")
+        time.sleep(0.5)
+        package = _resumed(self.serial)
+        if package != self.app.package:
+            raise StopRun(f"resumed activity {package!r} is not {self.app.package}")
+
+    def back_to_app(self) -> None:
+        for _ in range(5):
+            if _resumed(self.serial) == self.app.package:
+                return
+            if self.drawer_scrim(self.dump(), self.app.strings(self.pref)) is not None:
+                raise StopRun("refused Back while the drawer scrim is showing")
+            _sh(self.serial, "input keyevent 4")
+            time.sleep(0.45)
+        package = _resumed(self.serial)
+        if package != self.app.package:
+            raise StopRun(f"resumed activity {package!r} is not {self.app.package}")
+
+    def control_between(self, root: ET.Element, desc_a: str, desc_b: str, blocked: set[str]) -> ET.Element | None:
+        nodes_a = _find(root, desc=desc_a)
+        nodes_b = _find(root, desc=desc_b)
+        if not nodes_a or not nodes_b:
+            return None
+        a_box, b_box = _bounds(nodes_a[0]), _bounds(nodes_b[0])
+        a_center, b_center = _center(nodes_a[0]), _center(nodes_b[0])
+        if not a_box or not b_box or not a_center or not b_center:
+            return None
+        horizontal = abs(a_center[0] - b_center[0]) >= abs(a_center[1] - b_center[1])
+        if horizontal:
+            top = min(a_box[1], b_box[1]) - 40
+            bot = max(a_box[3], b_box[3]) + 40
+            limit = abs(a_center[0] - b_center[0]) + 80
+        else:
+            left = min(a_box[0], b_box[0]) - 40
+            right = max(a_box[2], b_box[2]) + 40
+            limit = abs(a_center[1] - b_center[1]) + 80
+        lo_x, hi_x = sorted((a_center[0], b_center[0]))
+        lo_y, hi_y = sorted((a_center[1], b_center[1]))
+        best = None
+        best_dist = 10**9
+        mid = ((a_center[0] + b_center[0]) / 2, (a_center[1] + b_center[1]) / 2)
+        for node in root.iter():
+            if node.attrib.get("clickable") != "true":
+                continue
+            desc = node.attrib.get("content-desc") or ""
+            text = node.attrib.get("text") or ""
+            if self._refused(desc, blocked) or self._refused(text, blocked):
+                continue
+            if desc in self.app.ignore or text in self.app.ignore:
+                continue
+            if desc in (desc_a, desc_b) or text in (desc_a, desc_b):
+                continue
+            center = _center(node)
+            box = _bounds(node)
+            if not center or not box:
+                continue
+            if horizontal:
+                if not (lo_x < center[0] < hi_x and top <= center[1] <= bot):
+                    continue
+                if (box[2] - box[0]) > limit:
+                    continue
+            else:
+                if not (lo_y < center[1] < hi_y and left <= center[0] <= right):
+                    continue
+                if (box[3] - box[1]) > limit:
+                    continue
+            dist = abs(center[0] - mid[0]) + abs(center[1] - mid[1])
+            if dist < best_dist:
+                best_dist = dist
+                best = node
+        return best
+
+    def tap_between(self, key_a: str, key_b: str) -> bool:
+        node = self.control_between(self.dump(), self.s(key_a), self.s(key_b), self.blocked())
+        if node is None:
+            print("  WARN: tap_between not found", flush=True)
+            return False
+        center = _center(node)
+        if not center:
+            return False
+        self.tap_xy(*center)
+        return True
+
+    def tap_beside(self, save_key: str, pick_key: str, skip_keys: list[str]) -> bool:
+        root = self.dump()
+        blocked = self.blocked()
+        save_desc = self.s(save_key)
+        pick_desc = self.s(pick_key)
+        shutter = self.control_between(root, save_desc, pick_desc, blocked)
+        picks = _find(root, desc=pick_desc)
+        saves = _find(root, desc=save_desc)
+        if not picks or not saves:
+            print("  WARN: tap_beside not found (no anchors)", flush=True)
+            return False
+        size = _screen_size(self.serial)
+        landscape = bool(size and size[0] > size[1])
+        skip = {save_desc, pick_desc, *(self.s(key) for key in skip_keys)}
+        best: tuple[int, int] | None = None
+        if landscape:
+            anchor = _center(shutter) if shutter is not None else None
+            if anchor is None:
+                print("  WARN: tap_beside not found (no shutter)", flush=True)
+                return False
+            ax, ay = anchor
+            best_dist = 10**9
+            for node in root.iter():
+                if node.attrib.get("clickable") != "true" or node is shutter:
+                    continue
+                desc = node.attrib.get("content-desc") or ""
+                text = node.attrib.get("text") or ""
+                if desc in skip or text in skip or desc in self.app.ignore or text in self.app.ignore:
+                    continue
+                if self._refused(desc, blocked) or self._refused(text, blocked):
+                    continue
+                center = _center(node)
+                if center is None:
+                    continue
+                x, y = center
+                if not (y < ay - 20 and abs(x - ax) < 160):
+                    continue
+                dist = abs(x - ax) + abs(y - ay)
+                if dist < best_dist:
+                    best_dist = dist
+                    best = center
+        else:
+            pick_box = _bounds(picks[0])
+            save_box = _bounds(saves[0])
+            pick_center = _center(picks[0])
+            if not pick_box or not save_box or not pick_center:
+                return False
+            top = min(pick_box[1], save_box[1]) - 40
+            bot = max(pick_box[3], save_box[3]) + 40
+            pick_w = pick_box[2] - pick_box[0]
+            best_x = 10**9
+            for node in root.iter():
+                if node.attrib.get("clickable") != "true":
+                    continue
+                desc = node.attrib.get("content-desc") or ""
+                text = node.attrib.get("text") or ""
+                if desc in skip or text in skip or desc in self.app.ignore or text in self.app.ignore:
+                    continue
+                if self._refused(desc, blocked) or self._refused(text, blocked):
+                    continue
+                center = _center(node)
+                box = _bounds(node)
+                if center is None or not box:
+                    continue
+                if box[0] <= pick_center[0] <= box[2] and box[1] <= pick_center[1] <= box[3]:
+                    continue
+                if not (top <= center[1] <= bot) or center[0] <= pick_box[2]:
+                    continue
+                if (box[2] - box[0]) > max(pick_w * 2, 400):
+                    continue
+                if center[0] < best_x:
+                    best_x = center[0]
+                    best = center
+        if best is None:
+            print("  WARN: tap_beside not found", flush=True)
+            return False
+        self.tap_xy(*best)
+        return True
+
+    def tap_field(self, key: str) -> bool:
+        label = self.s(key)
+        root = self.dump()
+        labels = _find(root, text=label)
+        if not labels:
+            print(f"  WARN: field label not found: {label!r}", flush=True)
+            return False
+        box = _bounds(labels[0])
+        if box is None:
+            return False
+        blocked = self.blocked()
+        for node in root.iter():
+            if node.attrib.get("clickable") != "true":
+                continue
+            desc = node.attrib.get("content-desc") or ""
+            text = node.attrib.get("text") or ""
+            if self._refused(desc, blocked) or self._refused(text, blocked):
+                continue
+            other = _bounds(node)
+            if not other:
+                continue
+            if other[0] <= box[2] and other[2] >= box[0] and other[1] <= box[3] and other[3] >= box[1]:
+                center = _center(node)
+                if center:
+                    self.tap_xy(*center)
+                    return True
+        center = _center(labels[0])
+        if center:
+            self.tap_xy(*center)
+            return True
+        return False
+
+    def _fills_line(self, text: str, template: str) -> bool:
+        parts = PH_SPLIT.split(template)
+        if len(parts) == 1:
+            return text.strip() == template.strip()
+        pattern = r"\d+".join(re.escape(part) for part in parts)
+        return re.fullmatch(pattern, text.strip()) is not None
+
+    def tap_matching(self, step: dict) -> bool:
+        blocked = self.blocked()
+        template = self.s(step["skip_format"]) if step.get("skip_format") else ""
+        contains = str(step.get("contains") or "")
+        root = self.dump()
+        parents = _parent_map(root)
+        extent = _screen_extent(root)
+        max_w = extent[0] if extent else 10**9
+        for node in root.iter():
+            text = (node.attrib.get("text") or "").strip()
+            desc = node.attrib.get("content-desc") or ""
+            if self._refused(text, blocked) or self._refused(desc, blocked):
+                continue
+            if contains and contains.lower() not in f"{text}\n{desc}".lower():
+                continue
+            if step.get("card"):
+                if template and self._fills_line(text, template):
+                    continue
+                if "\u00b7" not in text or not CARD_DATE.search(text):
+                    continue
+            if not text and not desc:
+                continue
+            if not contains and not step.get("card"):
+                continue
+            target = node
+            if target.attrib.get("clickable") != "true":
+                parent = parents.get(node)
+                while parent is not None and parent.attrib.get("clickable") != "true":
+                    parent = parents.get(parent)
+                if parent is not None:
+                    box = _bounds(parent)
+                    if box and (box[2] - box[0]) <= int(max_w * 0.92):
+                        target = parent
+            center = _center(target)
+            if not center:
+                continue
+            self.tap_xy(*center)
+            return True
+        print("  WARN: tap_matching not found", flush=True)
+        return False
+
+    def tap_any(self, texts: list[str], scroll: str | None) -> bool:
+        blocked = self.blocked()
+
+        def once() -> bool:
+            root = self.dump()
+            parents = _parent_map(root)
+            extent = _screen_extent(root)
+            max_w = extent[0] if extent else 10**9
+            for node in root.iter():
+                values = [(node.attrib.get("text") or "").strip(), (node.attrib.get("content-desc") or "").strip()]
+                if not any(value.strip().rstrip("/").lower() in {item.lower() for item in texts} for value in values if value):
+                    continue
+                if any(self._refused(value, blocked) for value in values):
+                    continue
+                target = node
+                if target.attrib.get("clickable") != "true":
+                    parent = parents.get(node)
+                    while parent is not None and parent.attrib.get("clickable") != "true":
+                        parent = parents.get(parent)
+                    if parent is not None:
+                        box = _bounds(parent)
+                        if box and (box[2] - box[0]) <= int(max_w * 0.92):
+                            target = parent
+                center = _center(target)
+                if center:
+                    self.tap_xy(*center)
+                    return True
+            return False
+
+        tries = 6 if scroll else 1
+        for index in range(tries):
+            if once():
+                return True
+            if index + 1 == tries or not scroll or not self.swipe(scroll):
+                return False
+        return False
+
+    def name_list_up(self, root: ET.Element, title_key: str, show_all_key: str) -> bool:
+        title = self.s(title_key)
+        show_all = self.s(show_all_key)
+        chrome = set(self.app.strings(self.pref).values())
+        parents = _parent_map(root)
+        title_boxes = [box for box in (_bounds(node) for node in _find(root, text=title)) if box]
+        if not title_boxes:
+            return False
+        for node in root.iter():
+            text = (node.attrib.get("text") or "").strip()
+            if not text or text == title or text == show_all or text in chrome or ZOOM_TEXT.fullmatch(text):
+                continue
+            clickable = node.attrib.get("clickable") == "true"
+            if not clickable:
+                parent = parents.get(node)
+                clickable = parent is not None and parent.attrib.get("clickable") == "true"
+            if not clickable:
+                continue
+            box = _bounds(node)
+            if not box:
+                continue
+            for title_box in title_boxes:
+                if box[1] + 8 < title_box[1]:
+                    continue
+                if box[2] < title_box[0] or box[0] > title_box[2]:
+                    continue
+                if box[1] - title_box[3] > 800:
+                    continue
+                return True
+        return False
+
+    def dialog_state(self, title_key: str, show_all_key: str) -> tuple[bool, bool]:
+        root = self.dump()
+        title = self.s(title_key)
+        toast = False
+        windows = list(root) or [root]
+        for window in windows:
+            if "Toast" in (window.attrib.get("class") or "") and _find(window, text=title):
+                toast = True
+        return self.name_list_up(root, title_key, show_all_key), toast
+
+    def screen_has(self, key: str) -> bool:
+        text = self.s(key)
+        for node in self.dump().iter():
+            for value in ((node.attrib.get("text") or ""), (node.attrib.get("content-desc") or "")):
+                if value == text or text in value:
+                    return True
+        return False
+
+    def capture(self, name: str, dest: Path, replace: bool) -> None:
+        if not replace and _jpeg_kept(dest):
+            print(f"  keep existing {dest.name}", flush=True)
+            return
+        result = subprocess.run(
+            ["adb", "-s", self.serial, "exec-out", "screencap", "-p"],
+            check=False,
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode != 0 or len(result.stdout) < MIN_JPEG:
+            print(f"  WARN: screencap failed for {name}", flush=True)
+            return
+        _save_jpeg(result.stdout, dest)
+        if not _jpeg_kept(dest):
+            print(f"  WARN: {name} is under {MIN_JPEG} bytes", flush=True)
+            return
+        print(f"  shot {dest}", flush=True)
+
+    def push_flat(self, remote: str) -> bool:
+        if _run(self.serial, "shell", "test", "-f", remote, check=False).returncode == 0:
+            return True
+        _run(self.serial, "shell", "mkdir", "-p", str(Path(remote).parent), check=False)
+        local = Path(f"/tmp/manual-capture-flat-{re.sub(r'[^A-Za-z0-9._-]+', '_', self.serial)[:40]}.jpg")
+        try:
+            from PIL import Image
+
+            Image.new("RGB", (320, 240), (190, 190, 190)).save(local, "JPEG", quality=85)
+        except Exception:
+            return False
+        if _run(self.serial, "push", str(local), remote, check=False).returncode != 0:
+            return False
+        _run(self.serial, "shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", "file://" + remote, check=False)
+        time.sleep(1.0)
+        return _run(self.serial, "shell", "test", "-f", remote, check=False).returncode == 0
+
+    def wait_settle(self, step: dict) -> bool:
+        retry = self.s(step["retry"])
+        cancel = self.s(step["processing"])
+        title = step["dialog"]
+        show_all = step["show_all"]
+        kind = step.get("kind", "fill")
+        anchors = step.get("between") or []
+        deadline = time.time() + float(step.get("timeout", 20))
+        settled_at: float | None = None
+        saw_toast = False
+        while time.time() < deadline:
+            dialog, toast = self.dialog_state(title, show_all)
+            if toast:
+                saw_toast = True
+            if dialog:
+                return True
+            root = self.dump()
+            has_retry = bool(_find(root, desc=retry) or _find(root, text=retry))
+            processing = bool(_find(root, desc=cancel) or _find(root, text=cancel))
+            has_live = False
+            if len(anchors) == 2:
+                has_live = self.control_between(root, self.s(anchors[0]), self.s(anchors[1]), self.blocked()) is not None
+            settled = (not processing) and (has_retry if kind == "fill" else has_live)
+            if settled:
+                if settled_at is None:
+                    settled_at = time.time()
+                elif time.time() - settled_at >= 2.5:
+                    return True
+            elif processing:
+                settled_at = None
+            time.sleep(0.4)
+        print(f"  WARN: wait_settle timeout (toast={saw_toast})", flush=True)
+        return True
+
+    def wait_dialog(self, step: dict) -> bool:
+        deadline = time.time() + float(step.get("timeout", 25))
+        while time.time() < deadline:
+            try:
+                dialog, _toast = self.dialog_state(step["dialog"], step["show_all"])
+            except ET.ParseError:
+                time.sleep(0.4)
+                continue
+            if dialog:
+                return True
+            time.sleep(0.4)
+        return False
+
+    def dismiss_dialog(self, title: str, show_all: str) -> None:
+        for _ in range(2):
+            dialog, _toast = self.dialog_state(title, show_all)
+            if not dialog:
+                return
+            self.press_back()
+
+
+def _ids(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+
+def _one(step: dict) -> tuple[str, object]:
+    extra = {"on_fail", "flag", "note", "note_shots"}
+    keys = [key for key in step if key not in extra]
+    if len(keys) != 1:
+        _die(f"a step needs one action, got {keys}")
+    return keys[0], step[keys[0]]
+
+
+def _run_steps(
+    device: Device,
+    steps: list,
+    shots: list[str],
+    selected: set[str],
+    replace: bool,
+    out_dir: Path,
+    default_on_fail: str = "note",
+) -> None:
+    for raw in steps:
+        if not isinstance(raw, dict):
+            _die(f"step is not a mapping: {raw!r}")
+        action, value = _one(raw)
+        on_fail = str(raw.get("on_fail") or default_on_fail)
+        note_shots = [str(item) for item in raw.get("note_shots") or []]
+        if not note_shots:
+            if action == "shot":
+                spec = value if isinstance(value, dict) else {"file": value}
+                note_shots = [str(spec.get("file"))]
+            else:
+                note_shots = list(shots)
+        try:
+            ok = _act(device, action, value, shots, selected, replace, out_dir, on_fail)
+        except StopRun:
+            raise
+        if ok:
+            flag = raw.get("flag")
+            if flag:
+                device.flags.add(str(flag))
+            continue
+        message = str(raw.get("note") or f"{action} failed")
+        device.note(note_shots, message)
+        if on_fail == "stop":
+            raise StopRun(message)
+        if on_fail == "leave":
+            try:
+                device.back_to_app()
+            except StopRun:
+                raise
+            return
+        if on_fail == "skip":
+            return
+
+
+def _act(
+    device: Device,
+    action: str,
+    value: object,
+    shots: list[str],
+    selected: set[str],
+    replace: bool,
+    out_dir: Path,
+    on_fail: str,
+) -> bool:
+    del on_fail
+    if action == "block":
+        if not isinstance(value, dict):
+            _die("block value must be a mapping")
+        # An explicit empty shots list runs whenever the enclosing section runs.
+        # Omit shots to inherit the enclosing list.
+        if "shots" in value:
+            block_shots = [str(item) for item in value.get("shots") or []]
+        else:
+            block_shots = list(shots)
+        if block_shots and not any(_needs(name, selected, replace, out_dir) for name in block_shots):
+            return True
+        _run_steps(
+            device,
+            value.get("steps") or [],
+            block_shots,
+            selected,
+            replace,
+            out_dir,
+            str(value.get("on_fail") or "note"),
+        )
+        return True
+    if action == "drawer":
+        return device.drawer_item(str(value))
+    if action == "open_drawer":
+        return device.open_drawer()
+    if action == "close_drawer":
+        return device.close_drawer()
+    if action == "tap_text":
+        spec = value if isinstance(value, dict) else {"id": value}
+        blocked = device.blocked()
+        ids = [str(spec["id"]), *([] if "else" not in spec else _ids(spec.get("else")))]
+        scroll = spec.get("scroll")
+        for key in ids:
+            text = device.s(key)
+            ok = device.click_scrolled(text, str(scroll), blocked) if scroll else device.click_text(text, blocked)
+            if ok:
+                return True
+        return False
+    if action == "tap_desc":
+        return device.click_desc(device.s(str(value)))
+    if action == "tap_field":
+        return device.tap_field(str(value))
+    if action == "tap_between":
+        if not isinstance(value, dict):
+            _die("tap_between needs desc")
+        pair = value.get("desc") or []
+        if len(pair) != 2:
+            _die("tap_between desc needs two ids")
+        return device.tap_between(str(pair[0]), str(pair[1]))
+    if action == "tap_beside":
+        if not isinstance(value, dict):
+            _die("tap_beside needs anchors")
+        return device.tap_beside(str(value["save"]), str(value["pick"]), [str(item) for item in value.get("skip") or []])
+    if action == "tap_matching":
+        if not isinstance(value, dict):
+            _die("tap_matching needs a mapping")
+        return device.tap_matching(value)
+    if action == "tap_any":
+        if not isinstance(value, dict):
+            _die("tap_any needs a mapping")
+        texts = [str(item) for item in value.get("text") or []]
+        ok = device.tap_any(texts, value.get("scroll"))
+        if ok:
+            return True
+        for follow in value.get("backup") or []:
+            if not _act(device, *_one(follow), shots, selected, replace, out_dir, "note"):
+                return False
+        return bool(value.get("backup"))
+    if action == "swipe":
+        kind = str(value or "page")
+        if kind not in {"page", "fling"}:
+            _die("swipe is page or fling")
+        return device.swipe(kind)
+    if action == "wait":
+        time.sleep(float(value))
+        return True
+    if action == "shot":
+        spec = value if isinstance(value, dict) else {"file": value}
+        name = str(spec["file"])
+        if name not in selected:
+            return True
+        dest = out_dir / name
+        if not replace and _jpeg_kept(dest):
+            print(f"  keep existing {name}", flush=True)
+            return True
+        for key in spec.get("unless") or []:
+            if device.screen_has(str(key)):
+                device.notes[name] = f"{key} is showing; not written"
+                print(f"  WARN: {name} not written; {key} is showing", flush=True)
+                return True
+        device.capture(name, dest, replace)
+        return _jpeg_kept(dest)
+    if action == "back":
+        for _ in range(int(value)):
+            device.press_back()
+        return True
+    if action == "back_if":
+        if str(value) in device.flags:
+            device.press_back()
+        return True
+    if action == "back_to_app":
+        device.back_to_app()
+        return True
+    if action == "back_while_dialog":
+        if not isinstance(value, dict):
+            _die("back_while_dialog needs dialog and show_all")
+        device.dismiss_dialog(str(value["dialog"]), str(value["show_all"]))
+        return True
+    if action == "wait_until":
+        if not isinstance(value, dict):
+            _die("wait_until needs a mapping")
+        return device.wait_dialog(value)
+    if action == "wait_settle":
+        if not isinstance(value, dict):
+            _die("wait_settle needs a mapping")
+        return device.wait_settle(value)
+    if action == "push_if_absent":
+        if not isinstance(value, dict):
+            _die("push_if_absent needs remote")
+        return device.push_flat(str(value["remote"]))
+    if action == "hook":
+        hook = device.app.hooks.get(str(value))
+        if hook is None:
+            _die(f"hook {value} is not in HOOKS")
+        # False fails the step. None and True succeed. StopRun still stops the walk.
+        return hook(device) is not False
+    _die(f"unknown action {action}")
+    return False
+
+
+def _needs(name: str, selected: set[str], replace: bool, out_dir: Path) -> bool:
+    if name not in selected:
+        return False
+    if replace:
+        return True
+    return not _jpeg_kept(out_dir / name)
+
+
+def _selected(app: App, spec: str | None) -> set[str]:
+    if not spec:
+        return set(app.shots)
+    chosen: set[str] = set()
+    for token in [part.strip() for part in spec.split(",") if part.strip()]:
+        if token in app.groups:
+            chosen.update(app.groups[token])
+        elif token in app.shots:
+            chosen.add(token)
+        else:
+            _die(f"unknown --shots token {token!r}")
+    return chosen
+
+
+def _launch(device: Device) -> None:
+    activity = device.app.activity
+    _sh(device.serial, f"am start -n {activity} -a android.intent.action.MAIN -c android.intent.category.LAUNCHER")
+    time.sleep(float((device.app.cfg.get("launch") or {}).get("sleep", 2.5)))
+    for key in (device.app.cfg.get("launch") or {}).get("dismiss") or []:
+        if device.click_text(device.s(str(key))):
+            time.sleep(0.8)
+            return
+
+
+def _navigate(device: Device, out_dir: Path, selected: set[str], replace: bool) -> None:
+    _launch(device)
+    for section in device.app.cfg["sections"]:
+        shots = [str(item) for item in section["shots"]]
+        if not any(_needs(name, selected, replace, out_dir) for name in shots):
+            continue
+        device.flags.clear()
+        try:
+            _run_steps(device, section.get("steps") or [], shots, selected, replace, out_dir)
+        except StopRun as exc:
+            print(f"  STOP: {exc}", flush=True)
+            device.notes["stopped"] = str(exc)
+            break
+    for name in device.app.shots:
+        if name in selected and not _jpeg_kept(out_dir / name):
+            device.notes.setdefault(name, "missing or too small")
+            print(f"  MISSING {name}", flush=True)
+
+
+def _set_language(app: App, serial: str, locale: Locale) -> None:
+    """Open the in-app language menu and tap this locale's endonym. No run-as."""
+    probe = Device(app, serial, app.locales[0])
+    ready_key = str((app.cfg.get("language") or {})["ready"])
+    if locale.pref == "en" and _find(probe.dump(), desc=probe.s(ready_key)):
+        print("  locale en already showing", flush=True)
+        return
+    if _resumed(serial) != app.package:
+        _sh(serial, f"am start -n {app.activity} -a android.intent.action.MAIN -c android.intent.category.LAUNCHER")
+        time.sleep(2.0)
+    language = app.cfg["language"]
+    device = Device(app, serial, app.locales[0])
+    # The drawer may already be in another language. Try every pack's menu and Settings labels.
+    root = device.dump()
+    opened = False
+    for candidate in app.locales:
+        menu = app.text(candidate.pref, str(language["menu"]))
+        if _find(root, desc=menu):
+            device.click_desc(menu, set())
+            opened = True
+            break
+    if not opened and device.drawer_scrim(root, app.strings("en")) is None:
+        _die("language picker: menu content description not found")
+    time.sleep(0.5)
+    root = device.dump()
+    settings_labels = []
+    blocked: set[str] = set()
+    visible = set()
+    for node in root.iter():
+        if node.attrib.get("text"):
+            visible.add(node.attrib.get("text"))
+        if node.attrib.get("content-desc"):
+            visible.add(node.attrib.get("content-desc"))
+    scores: list[tuple[int, Locale]] = []
+    keys = (str(language["menu"]), *((app.cfg.get("drawer") or {}).get("labels") or []))
+    for candidate in app.locales:
+        strings = app.strings(candidate.pref)
+        scores.append((sum(1 for key in keys if strings.get(key) in visible), candidate))
+    scores.sort(key=lambda item: -item[0])
+    best = scores[0][0]
+    candidates = [item for score, item in scores if score == best and score > 0]
+    if not candidates:
+        _die("language picker: could not tell the current language from the drawer")
+    for candidate in candidates:
+        blocked |= {app.text(candidate.pref, key) for key in app.cfg.get("never_tap") or []}
+        label = app.text(candidate.pref, str(language["settings"]))
+        if label not in settings_labels:
+            settings_labels.append(label)
+    found = False
+    for label in settings_labels:
+        if device.click_text(label, blocked) or device.click_scrolled(label, "fling", blocked):
+            found = True
+            break
+    if not found:
+        _die("language picker: Settings row not found")
+    time.sleep(0.9)
+    target = Device(app, serial, locale)
+    label_texts = {app.text(item.pref, str(language["field"])) for item in candidates}
+    system_texts = {app.text(item.pref, str(language["system"])) for item in candidates}
+    endonyms = {app.endonym(item.pref) for item in app.locales}
+    field = _find_language_field(target, label_texts, endonyms | system_texts)
+    boxes = _boxes_around(target.dump(), field)
+    already = bool(_find(target.dump(), desc=target.s(ready_key)))
+    tapped_at = _select_endonym(target, field, endonyms, system_texts, boxes, locale)
+    _wait_ready(target, endonyms, system_texts, tapped_at, already, ready_key)
+    print(f"  locale {locale.pref} via language menu", flush=True)
+
+
+def _fling(serial: str, *, down: bool) -> bool:
+    size = _screen_size(serial)
+    if size is None:
+        return False
+    width, height = size
+    x = width // 2
+    y_hi = int(height * 0.72)
+    y_lo = int(height * 0.50)
+    y1, y2 = (y_hi, y_lo) if down else (y_lo, y_hi)
+    _sh(serial, f"input swipe {x} {y1} {x} {y2} 70")
+    time.sleep(0.45)
+    return True
+
+
+def _find_language_field(device: Device, label_texts: set[str], value_texts: set[str]) -> ET.Element:
+    def search(down: bool) -> ET.Element | None:
+        previous: tuple[str, ...] | None = None
+        root = device.dump()
+        for _ in range(48):
+            node = _field_node(root, label_texts, value_texts)
+            if node is not None:
+                return node
+            labels = _bottom_labels(root)
+            if previous is not None and labels == previous:
+                return None
+            previous = labels
+            if not _fling(device.serial, down=down):
+                return None
+            root = device.dump()
+        return _field_node(root, label_texts, value_texts)
+
+    node = search(True) or search(False)
+    if node is None:
+        _die("language picker: language field not found")
+    return node
+
+
+def _field_node(root: ET.Element, label_texts: set[str], value_texts: set[str]) -> ET.Element | None:
+    labels = []
+    for text in label_texts:
+        for node in _find(root, text=text):
+            box = _bounds(node)
+            if box:
+                labels.append(box)
+    if not labels:
+        return None
+    best = None
+    best_dist = 10**9
+    for node in root.iter():
+        text = node.attrib.get("text") or ""
+        if text not in value_texts or text in label_texts:
+            continue
+        box = _bounds(node)
+        if not box:
+            continue
+        cy = (box[1] + box[3]) // 2
+        for label in labels:
+            if cy < label[1] - 80 or cy > label[3] + 700:
+                continue
+            dist = abs(cy - label[3])
+            if dist < best_dist:
+                best_dist = dist
+                best = node
+    return best
+
+
+def _inside(node: ET.Element, boxes: list[tuple[int, int, int, int]]) -> bool:
+    box = _bounds(node)
+    if not box or not boxes:
+        return False
+    cx = (box[0] + box[2]) // 2
+    cy = (box[1] + box[3]) // 2
+    return any(x1 <= cx <= x2 and y1 <= cy <= y2 for x1, y1, x2, y2 in boxes)
+
+
+def _boxes_around(root: ET.Element, field: ET.Element) -> list[tuple[int, int, int, int]]:
+    box = _bounds(field)
+    if not box:
+        return []
+    cx = (box[0] + box[2]) // 2
+    cy = (box[1] + box[3]) // 2
+    fw = box[2] - box[0]
+    fh = box[3] - box[1]
+    boxes = [box]
+    for node in root.iter():
+        other = _bounds(node)
+        if not other or other == box:
+            continue
+        if not (other[0] <= cx <= other[2] and other[1] <= cy <= other[3]):
+            continue
+        if (other[3] - other[1]) > max(fh * 3, 280) or (other[2] - other[0]) > max(fw * 8, 1600):
+            continue
+        boxes.append(other)
+    return boxes
+
+
+def _menu_open(root: ET.Element, endonyms: set[str], system_texts: set[str], boxes: list[tuple[int, int, int, int]]) -> bool:
+    for node in root.iter():
+        text = node.attrib.get("text") or ""
+        if text in endonyms or text in system_texts:
+            if not _inside(node, boxes):
+                return True
+    return False
+
+
+def _select_endonym(device: Device, field: ET.Element, endonyms: set[str], system_texts: set[str], boxes: list[tuple[int, int, int, int]], locale: Locale) -> float:
+    endonym = device.app.endonym(locale.pref)
+    if endonym in system_texts:
+        _die(f"language picker: refusing System default for {locale.pref}")
+    index = locale.endonym_index
+    for _attempt in range(4):
+        _tap_center(device.serial, field)
+        root = None
+        for _ in range(6):
+            root = device.dump()
+            if _menu_open(root, endonyms, system_texts, boxes):
+                break
+            time.sleep(0.3)
+        else:
+            continue
+        assert root is not None
+        previous: tuple[str, ...] | None = None
+        for _step in range(45):
+            if not _menu_open(root, endonyms, system_texts, boxes):
+                break
+            rows = _row_clusters([node for node in _find(root, text=endonym) if not _inside(node, boxes)])
+            if len(rows) > index:
+                _tap_center(device.serial, rows[index])
+                return time.time()
+            entries = [
+                node
+                for node in root.iter()
+                if (node.attrib.get("text") or "") in endonyms | system_texts and not _inside(node, boxes)
+            ]
+            signature = tuple((node.attrib.get("text") or "") for node in _row_clusters(entries))
+            if previous is not None and signature == previous:
+                break
+            previous = signature
+            rects = [box for box in (_bounds(node) for node in entries) if box]
+            if not rects:
+                break
+            x1 = min(box[0] for box in rects) + 12
+            y1 = min(box[1] for box in rects) + 12
+            x2 = max(box[2] for box in rects) - 12
+            y2 = max(box[3] for box in rects) - 12
+            if x2 - x1 < 24 or y2 - y1 < 36:
+                break
+            x = (x1 + x2) // 2
+            y_lo = y1 + max(8, int((y2 - y1) * 0.20))
+            y_hi = y1 + int((y2 - y1) * 0.80)
+            _sh(device.serial, f"input swipe {x} {y_hi} {x} {y_lo} 70")
+            time.sleep(0.45)
+            root = device.dump()
+    _die(f"language picker: {endonym!r} row {index} for {locale.pref} was not tapped")
+    return 0.0
+
+
+def _tap_center(serial: str, node: ET.Element) -> None:
+    center = _center(node)
+    if not center:
+        _die("language picker: node has no center")
+    _sh(serial, f"input tap {center[0]} {center[1]}")
+
+
+def _popup_open(root: ET.Element, endonyms: set[str], system_texts: set[str]) -> bool:
+    endonym_nodes = []
+    system_nodes = []
+    for node in root.iter():
+        text = node.attrib.get("text") or ""
+        if text in endonyms:
+            endonym_nodes.append(node)
+        elif text in system_texts:
+            system_nodes.append(node)
+    if len(_row_clusters(endonym_nodes)) >= 3 or len(_row_clusters(system_nodes)) >= 2:
+        return True
+    return bool(endonym_nodes and system_nodes)
+
+
+def _wait_ready(device: Device, endonyms: set[str], system_texts: set[str], tapped_at: float, already: bool, ready_key: str) -> None:
+    desc = device.s(ready_key)
+    deadline = time.time() + 30
+    stable = 0
+    while time.time() < deadline:
+        try:
+            root = device.dump()
+        except ET.ParseError:
+            stable = 0
+            time.sleep(0.4)
+            continue
+        menu_ok = bool(_find(root, desc=desc))
+        popup = _popup_open(root, endonyms, system_texts)
+        back = _resumed(device.serial) in (None, device.app.package)
+        ready = menu_ok and back and not popup
+        if already and time.time() - tapped_at < 3.0:
+            ready = False
+        stable = stable + 1 if ready else 0
+        if stable >= 2:
+            return
+        time.sleep(0.4)
+    _die(f"language picker: {desc!r} not showing for {device.pref}")
+
+
+def _write_notes(form: str, notes: dict[str, dict[str, str]]) -> None:
+    path = Path(f"/tmp/manual-capture-notes-{form}.txt")
+    lines = []
+    for pref, items in notes.items():
+        for name, message in items.items():
+            lines.append(f"{pref}\t{name}\t{message}")
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def _run_device(app: App, serial: str, form: str, locales: list[Locale], selected: set[str], replace: bool) -> bool:
+    stopped = False
+    changed = False
+    all_notes: dict[str, dict[str, str]] = {}
+    try:
+        for locale in locales:
+            out_dir = app.output_dir(locale, form)
+            if not replace and all(_jpeg_kept(out_dir / name) for name in selected):
+                print(f"=== {locale.pref} kept; {form} not opened", flush=True)
+                continue
+            changed = True
+            print(f"=== {locale.pref} → {out_dir}", flush=True)
+            try:
+                _set_language(app, serial, locale)
+            except SystemExit as exc:
+                print(f"  WARN: {exc}; continuing", flush=True)
+                all_notes[locale.pref] = {"language": str(exc)}
+                continue
+            device = Device(app, serial, locale)
+            try:
+                _navigate(device, out_dir, selected, replace)
+            except StopRun as exc:
+                device.notes["stopped"] = str(exc)
+            all_notes[locale.pref] = device.notes
+            if device.notes.get("stopped"):
+                stopped = True
+    except (SystemExit, Exception) as exc:
+        stopped = True
+        print(f"  STOP: {serial} {form}: {exc}", flush=True)
+        all_notes.setdefault("run", {})["stopped"] = str(exc)
+    finally:
+        if changed:
+            try:
+                _set_language(app, serial, app.locales[0])
+            except SystemExit as exc:
+                print(f"  WARN: restore en failed on {serial}: {exc}", flush=True)
+                stopped = True
+    _write_notes(form, all_notes)
+    return stopped
+
+
+def _assign(app: App, serials: list[str], form: str | None) -> list[tuple[str, str]] | None:
+    if len(serials) == 1:
+        serial = serials[0]
+        if form:
+            return [(serial, form)]
+        diagonal = _diagonal(serial)
+        if diagonal is None:
+            print(f"ERROR: physical size unavailable for {serial}", file=sys.stderr)
+            return None
+        chosen = "phone" if diagonal < app.phone_max else "tablet"
+        print(f"{chosen} {serial} {diagonal:.2f} in", flush=True)
+        return [(serial, chosen)]
+    measured = []
+    for serial in serials:
+        diagonal = _diagonal(serial)
+        if diagonal is None:
+            print(f"ERROR: physical size unavailable for {serial}", file=sys.stderr)
+            return None
+        measured.append((diagonal, serial))
+    measured.sort()
+    gap = measured[1][0] - measured[0][0]
+    if gap < app.gap:
+        print(
+            f"ERROR: physical diagonal gap {gap:.2f} in is under {app.gap:.1f}",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"phone {measured[0][1]} {measured[0][0]:.2f} in; tablet {measured[1][1]} {measured[1][0]:.2f} in",
+        flush=True,
+    )
+    return [(measured[0][1], "phone"), (measured[1][1], "tablet")]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="manual-capture.yaml")
+    parser.add_argument("--root", default=".")
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--form", choices=["phone", "tablet"])
+    parser.add_argument("--serial", action="append", dest="serials")
+    parser.add_argument("--locales", default=None)
+    parser.add_argument("--shots", default=None)
+    parser.add_argument("--replace", action="store_true")
+    args = parser.parse_args(argv)
+    root = Path(args.root).resolve()
+    app = App(root, _load_yaml(root / args.config))
+    if args.check:
+        app.check()
+        return 0
+    serials = list(args.serials or [])
+    if len(serials) not in (1, 2) or len(set(serials)) != len(serials):
+        print("ERROR: pass one or two distinct --serial values", file=sys.stderr)
+        return 1
+    if len(serials) == 2 and args.form:
+        print("ERROR: two --serial values do not take --form", file=sys.stderr)
+        return 1
+    selected = _selected(app, args.shots)
+    spec = args.locales if args.locales is not None else ("all" if len(serials) == 2 else "en")
+    if spec.strip() == "all":
+        locales = app.locales
+    else:
+        locales = []
+        for tag in [part.strip() for part in spec.split(",") if part.strip()]:
+            locale = app.by_pref.get(tag)
+            if locale is None:
+                _die(f"unknown pref tag {tag!r}")
+            locales.append(locale)
+    for locale in locales:
+        app.strings(locale.pref)
+    devices = subprocess.run(["adb", "devices"], capture_output=True, text=True).stdout
+    for serial in serials:
+        if serial not in devices:
+            print(f"ERROR: {serial} not in adb devices", file=sys.stderr)
+            return 1
+    assigned = _assign(app, serials, args.form)
+    if assigned is None:
+        return 1
+    if len(assigned) == 1:
+        serial, form = assigned[0]
+        return 1 if _run_device(app, serial, form, locales, selected, args.replace) else 0
+    stopped = {"flag": False}
+    lock = threading.Lock()
+
+    def worker(serial: str, form: str) -> None:
+        if _run_device(app, serial, form, locales, selected, args.replace):
+            with lock:
+                stopped["flag"] = True
+
+    threads = [threading.Thread(target=worker, args=pair, name=pair[1]) for pair in assigned]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return 1 if stopped["flag"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
