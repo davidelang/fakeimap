@@ -50,6 +50,7 @@ class Locale:
     values: str
     segment: str
     endonym_index: int
+    android: str = ""
 
 
 def _die(message: str) -> None:
@@ -94,6 +95,7 @@ def _locales(cfg: dict, root: Path) -> list[Locale]:
                 values=str(row["values"]),
                 segment=str(row.get("segment") or ""),
                 endonym_index=int(index.get(pref, 0)),
+                android=str(row.get("android") or ""),
             )
         )
     if found[0].pref != "en":
@@ -184,6 +186,12 @@ class App:
             _die(f"missing string {key}")
         return value
 
+    def language_via(self) -> str:
+        via = str((self.cfg.get("language") or {}).get("via") or "app")
+        if via not in {"app", "android"}:
+            _die("language.via must be app or android")
+        return via
+
     def endonym(self, pref: str) -> str:
         pattern = str(self.cfg.get("endonym_key", "lang_name_{pref}"))
         key = pattern.format(pref=pref.lower().replace("-", "_"))
@@ -216,9 +224,10 @@ class App:
         need_all(drawer.get("labels"))
         need_all(drawer.get("open_if_text"))
         need_all(drawer.get("unblock_when_same"))
-        language = self.cfg.get("language") or {}
-        for key in ("menu", "settings", "field", "system", "ready"):
-            need(language.get(key))
+        if self.language_via() == "app":
+            language = self.cfg.get("language") or {}
+            for key in ("menu", "settings", "field", "system", "ready"):
+                need(language.get(key))
         need_all((self.cfg.get("launch") or {}).get("dismiss"))
 
         def walk(steps: object) -> None:
@@ -296,7 +305,10 @@ class App:
         if absent:
             _die("section shots with no shot step: " + ", ".join(absent))
         for locale in self.locales:
-            self.endonym(locale.pref)
+            if self.language_via() == "app":
+                self.endonym(locale.pref)
+            else:
+                _android_tag(locale)
             if locale.pref != "en" and not locale.segment:
                 _die(f"{locale.pref} has no segment")
             if locale.pref != "en":
@@ -1344,8 +1356,61 @@ def _navigate(device: Device, out_dir: Path, selected: set[str], replace: bool) 
             print(f"  MISSING {name}", flush=True)
 
 
+_OBSOLETE_LANGUAGE = {"in": "id", "iw": "he", "ji": "yi"}
+
+
+def _android_tag(locale: Locale) -> str:
+    raw = (locale.android or locale.pref).strip().replace("_", "-")
+    parts = [part for part in raw.split("-") if part]
+    if not parts:
+        _die(f"{locale.pref} has no android locale tag")
+    if parts[0].lower() in _OBSOLETE_LANGUAGE:
+        parts[0] = _OBSOLETE_LANGUAGE[parts[0].lower()]
+    tag = "-".join(parts)
+    if any(ch.isspace() for ch in tag):
+        _die(f"{locale.pref} android locale tag {tag!r} has whitespace")
+    return tag
+
+
+def _adb(serial: str, *args: str) -> str:
+    result = subprocess.run(
+        ["adb", "-s", serial, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        _die(detail or f"adb failed: {' '.join(args)}")
+    return result.stdout or ""
+
+
+def _read_android_locales(app: App, serial: str) -> str:
+    out = _adb(serial, "shell", f"cmd locale get-app-locales {app.package}")
+    match = re.search(r"\[([^\]]*)\]", out)
+    if not match:
+        _die(f"android locale: cannot read current locales: {out.strip()}")
+    return match.group(1).strip()
+
+
+def _apply_android_locales(app: App, serial: str, tags: str) -> None:
+    quoted = "'" + tags.replace("'", "") + "'"
+    _adb(serial, "shell", f"cmd locale set-app-locales {app.package} --locales {quoted}")
+    _adb(serial, "shell", f"am force-stop {app.package}")
+
+
+def _set_android_language(app: App, serial: str, locale: Locale) -> None:
+    tag = _android_tag(locale)
+    _apply_android_locales(app, serial, tag)
+    print(f"  locale {locale.pref} via android ({tag})", flush=True)
+
+
 def _set_language(app: App, serial: str, locale: Locale) -> None:
-    """Open the in-app language menu and tap this locale's endonym. No run-as."""
+    """Select this locale. via android sets the package locale. via app opens the in-app menu."""
+    if app.language_via() == "android":
+        _set_android_language(app, serial, locale)
+        return
     probe = Device(app, serial, app.locales[0])
     ready_key = str((app.cfg.get("language") or {})["ready"])
     if locale.pref == "en" and _find(probe.dump(), desc=probe.s(ready_key)):
@@ -1627,7 +1692,10 @@ def _run_device(app: App, serial: str, form: str, locales: list[Locale], selecte
     stopped = False
     changed = False
     all_notes: dict[str, dict[str, str]] = {}
+    saved_android: str | None = None
     try:
+        if app.language_via() == "android":
+            saved_android = _read_android_locales(app, serial)
         for locale in locales:
             out_dir = app.output_dir(locale, form)
             if not replace and all(_jpeg_kept(out_dir / name) for name in selected):
@@ -1654,7 +1722,14 @@ def _run_device(app: App, serial: str, form: str, locales: list[Locale], selecte
         print(f"  STOP: {serial} {form}: {exc}", flush=True)
         all_notes.setdefault("run", {})["stopped"] = str(exc)
     finally:
-        if changed:
+        if changed and app.language_via() == "android" and saved_android is not None:
+            try:
+                _apply_android_locales(app, serial, saved_android)
+                print(f"  restored android locales [{saved_android}]", flush=True)
+            except SystemExit as exc:
+                print(f"  WARN: restore android locales failed on {serial}: {exc}", flush=True)
+                stopped = True
+        elif changed:
             try:
                 _set_language(app, serial, app.locales[0])
             except SystemExit as exc:

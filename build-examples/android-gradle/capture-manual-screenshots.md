@@ -61,7 +61,7 @@ Notes go to `/tmp/manual-capture-notes-<form>.txt`.
 
 JPEGs are max width 1080, quality 75, metadata stripped. Do not commit a full-resolution capture.
 
-Needs `python3`, PyYAML, and Pillow. No third-party translator. No `run-as`. No force-stop.
+Needs `python3`, PyYAML, and Pillow. No third-party translator. No `run-as`. The walk does not force-stop the app. `language.via: android` force-stops the package only after it changes that app's Android locale.
 
 ## Config
 
@@ -83,6 +83,7 @@ drawer:
   open_if_text: [nav_settings]
   unblock_when_same: []
 language:
+  via: app
   menu: nav_menu
   settings: nav_settings
   field: settings_language
@@ -116,7 +117,11 @@ The first row is `en`. `pref` is the in-app language tag. `values` is the resour
 
 `endonym_key` is a format string. `{pref}` becomes the English string id of the picker row (`lang_name_en`, `lang_name_pt_br`). The bytes come from English, and they are the same in every pack. `endonym_row` is the zero-based row when the same endonym appears twice. `en-001` is the second English row, so its index is 1. Any other pref defaults to 0.
 
-The picker opens Settings from the drawer, taps the endonym, and refuses the System default row. It restores English at the end of a run that changed the language. One locale that fails the picker is recorded and the loop continues.
+`language.via` is `app` or `android`. Omitted means `app`.
+
+`app` opens Settings from the drawer, taps the endonym, and refuses the System default row. It restores English at the end of a run that changed the language. One locale that fails the picker is recorded and the loop continues. `menu`, `settings`, `field`, `system`, and `ready` are required, and so is `endonym_key`.
+
+`android` is for an app that follows the device and has no language selector of its own. The driver runs `cmd locale set-app-locales` for `package`, then force-stops that app so the next launch uses the new locale. It does not open a drawer and does not change the rest of the device. The tag is the row's `android` value when set, otherwise `pref`. A row may set `android: pt-BR` when `pref` is not the Android tag. `in`, `iw`, and `ji` are sent as `id`, `he`, and `yi`. The previous app locale list is read first and restored at the end, including an empty list. `menu`, `settings`, `field`, `system`, `ready`, and `endonym_key` are not required. The walk itself still does not force-stop the app.
 
 ## Sections
 
