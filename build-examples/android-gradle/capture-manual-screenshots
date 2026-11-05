@@ -1034,15 +1034,19 @@ class Device:
         if _run(self.serial, "shell", "test", "-f", remote, check=False).returncode == 0:
             return True
         _run(self.serial, "shell", "mkdir", "-p", str(Path(remote).parent), check=False)
-        local = Path(f"/tmp/manual-capture-flat-{re.sub(r'[^A-Za-z0-9._-]+', '_', self.serial)[:40]}.jpg")
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", self.serial)[:40]
+        local = _scratch_dir(self.app.root) / f".manual-capture-flat-{safe}.jpg"
         try:
-            from PIL import Image
+            try:
+                from PIL import Image
 
-            Image.new("RGB", (320, 240), (190, 190, 190)).save(local, "JPEG", quality=85)
-        except Exception:
-            return False
-        if _run(self.serial, "push", str(local), remote, check=False).returncode != 0:
-            return False
+                Image.new("RGB", (320, 240), (190, 190, 190)).save(local, "JPEG", quality=85)
+            except Exception:
+                return False
+            if _run(self.serial, "push", str(local), remote, check=False).returncode != 0:
+                return False
+        finally:
+            local.unlink(missing_ok=True)
         _run(self.serial, "shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", "file://" + remote, check=False)
         time.sleep(1.0)
         return _run(self.serial, "shell", "test", "-f", remote, check=False).returncode == 0
@@ -1679,13 +1683,32 @@ def _wait_ready(device: Device, endonyms: set[str], system_texts: set[str], tapp
     _die(f"language picker: {desc!r} not showing for {device.pref}")
 
 
-def _write_notes(form: str, notes: dict[str, dict[str, str]]) -> None:
-    path = Path(f"/tmp/manual-capture-notes-{form}.txt")
+def _scratch_dir(root: Path) -> Path:
+    """Disk scratch for this checkout. Never /tmp: that filesystem is RAM."""
+    rel = ""
+    cfg = root / "project.config"
+    if cfg.is_file():
+        for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line.startswith("sandbox_dir="):
+                rel = line.split("=", 1)[1].strip()
+            elif line.startswith("sandbox_path=") and not rel:
+                rel = line.split("=", 1)[1].strip()
+    if not rel or "@@" in rel:
+        rel = "sandbox"
+    path = Path(rel) if rel.startswith("/") else root / rel
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _write_notes(root: Path, form: str, notes: dict[str, dict[str, str]]) -> None:
+    path = _scratch_dir(root) / f"manual-capture-notes-{form}.txt"
     lines = []
     for pref, items in notes.items():
         for name, message in items.items():
             lines.append(f"{pref}\t{name}\t{message}")
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    print(f"notes {path}", flush=True)
 
 
 def _run_device(app: App, serial: str, form: str, locales: list[Locale], selected: set[str], replace: bool) -> bool:
@@ -1735,7 +1758,7 @@ def _run_device(app: App, serial: str, form: str, locales: list[Locale], selecte
             except SystemExit as exc:
                 print(f"  WARN: restore en failed on {serial}: {exc}", flush=True)
                 stopped = True
-    _write_notes(form, all_notes)
+    _write_notes(app.root, form, all_notes)
     return stopped
 
 

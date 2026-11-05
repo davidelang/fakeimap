@@ -57,7 +57,7 @@ One serial and no `--form`: a physical diagonal under `phone_max_inches` (defaul
 
 Without `--replace`, a selected JPEG of at least 1000 bytes is kept, and a locale whose selected shots are all that size is not opened and its language is not changed. `--replace` overwrites the selection.
 
-Notes go to `/tmp/manual-capture-notes-<form>.txt`.
+Notes go to `<sandbox>/manual-capture-notes-<form>.txt`. The sandbox is `sandbox_dir` from `project.config`, otherwise `sandbox/` under the app root. The driver does not write `/tmp`. A flat JPEG it pushes is created in that same directory and removed after the push.
 
 JPEGs are max width 1080, quality 75, metadata stripped. Do not commit a full-resolution capture.
 
