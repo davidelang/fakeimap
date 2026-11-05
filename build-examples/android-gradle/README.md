@@ -193,7 +193,7 @@ must not run it. Like build_app, it is Android-only and kept local per project.
 | `-p` / `--play` | Upload the recorded Play bundle to Internal testing, then promote it to alpha (closed testing) and send it for review. See [deploy --play](#deploy---play) |
 | `-n` / `--dry-run` | With `--play`: open an edit, read the tracks, show the notes, delete the edit; nothing uploaded or committed |
 | `-N` / `--notes-file FILE` | With `--play`: release notes from FILE instead of `$EDITOR` (vi when unset); no base commit needed |
-| `-B` / `--notes-base REV` | With `--play`: notes from `REV..HEAD` instead of the commit in Play's highest versionName (after a squash or history rewrite); REV must be an ancestor of HEAD |
+| `-B` / `--notes-base REV` | With `--play`: notes from `REV..HEAD` instead of the commit named by Play's highest release; REV must be an ancestor of HEAD |
 | `tablet`, `emulator` | emulator-5554 |
 | `phone` | `deploy_serial=` from project.config (error if unset) |
 | other words | adb serials |
@@ -238,18 +238,21 @@ Per-app config:
    from HEAD, or changed since the build. applicationId, versionCode and versionName come from
    the bundle's base manifest (SDK aapt2). Play is never asked for a package the bundle does not name.
 2. Refuses when Play already has that versionCode on any track or as an uploaded bundle.
-3. Release notes: the base commit is the `-g<hash>` in the release name of the highest versionCode
-   on any track (an error when it is missing or not an ancestor of HEAD, for example after the
-   history was squashed for a PR; then `--notes-base REV` names the base, and it too must be an
-   ancestor of HEAD). The subjects of
-   `git log --no-merges base..HEAD`, minus those matching a pattern in `play-notes-exclude`
-   (shared, ships here) or the project's optional `play-notes-exclude.local` (Python regexes,
-   one per line, `#` comments), open as `- subject` lines in `$EDITOR`. With EDITOR unset it is
-   vi with a status line showing the live character count. Trimmed; over 500 characters (Play's
-   en-US limit) reports the count, waits for Enter and reopens the editor; empty is an error.
-   `--notes-file FILE` is used as is (no filtering, no base commit); empty or over 500 there is an error.
+3. Release notes: each new Play release is named
+   `<versionCode> (<versionName> @<build-commit>)` — the readable bundle versionName plus the
+   stamped build commit from `play.json` (not a blind HEAD read). Notes start after the commit
+   named by the highest versionCode on any track, resolved in order: the `@<commit>` provenance
+   this script writes; else a legacy `-g<hash>` from git describe in older names; else, when the
+   name is exactly `N (<tag>)` with no provenance (for example `24 (v0.9.3)` from an exact
+   `--release-tag` upload), the local tag `<tag>` if `refs/tags/<tag>` exists and peels to one
+   commit. Branches are never guessed. Missing, ambiguous, unknown, or non-ancestor bases are
+   errors; then `--notes-base REV` (ancestor of HEAD) or `--notes-file FILE` (no base needed).
+   Subjects of `git log --no-merges base..HEAD`, minus `play-notes-exclude` (shared) and optional
+   project `play-notes-exclude.local`, open as `- subject` lines in `$EDITOR` (vi with a live
+   character count when unset). Trimmed; over 500 characters (Play en-US) waits for Enter and
+   reopens; empty is an error. `--notes-file` is used as is (no filtering, no base).
 4. One edit: upload the bundle and release it to both `internal` and `alpha` (closed testing),
-   status completed, same en-US notes.
+   status completed, same en-US notes and the provenance release name above.
 5. One commit with `changesNotSentForReview=false`, so Play records a single submission that
    goes to review; a fresh read then checks that each track lists the versionCode.
 

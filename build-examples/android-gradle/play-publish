@@ -10,9 +10,13 @@ library plus the openssl binary (RS256 signing of the service-account JWT); noth
 Every failure prints one ERROR line and exits 1. --dry-run inserts an edit, reads the tracks
 and bundles, computes and shows the notes, then deletes the edit (no upload, no commit).
 
-Notes base: the -g<hash> in the highest versionName on Play, which must be an ancestor of HEAD.
-When history was rewritten (squashed for a PR), --notes-base REV names the base instead
-(it too must be an ancestor of HEAD); --notes-file needs no base at all.
+Notes base (highest Play release name, must be an ancestor of HEAD): prefer the
+@<commit> build provenance this script writes into every new release name; else a legacy
+-g<hash> from git describe; else, when the name is exactly N (<tag>) with no provenance, the
+local annotated/lightweight tag <tag> if it exists and peels to one commit. Never guesses a
+branch or HEAD. --notes-base REV overrides (must be an ancestor); --notes-file needs no base.
+Release names look like "25 (v0.9.3 @a36abf76ad08)": readable versionName plus the stamped
+build commit (not a blind HEAD read at upload time). Bundle versionName is unchanged.
 """
 import argparse, base64, json, os, re, shlex, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request, zipfile
 
@@ -20,7 +24,63 @@ API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/
 UPLOAD = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/"
 SCOPE = "https://www.googleapis.com/auth/androidpublisher"
 NOTES_LIMIT = 500
-HASH_RX = re.compile(r"-g([0-9a-f]{7,40})(?![0-9A-Za-z])")  # also matches inside "15 (v0.9.2-38-gb2c2ca61)", the name track_release writes
+HASH_RX = re.compile(r"-g([0-9a-f]{7,40})(?![0-9A-Za-z])")  # legacy describe inside "15 (v0.9.2-38-gb2c2ca61)"
+PROV_RX = re.compile(r"@([0-9a-f]{7,40})(?![0-9A-Za-z])")  # stamped build commit: "25 (v0.9.3 @a36abf76ad08)"
+NAME_RX = re.compile(r"^\d+ \((.+)\)$")  # Play release name written by format_release_name / older uploads
+COMMIT_RX = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def format_release_name(vc, vname, commit):
+    """Play release name: readable versionName plus explicit stamped build commit."""
+    if not COMMIT_RX.fullmatch(commit):
+        die("build commit %r is not a hex git object name" % (commit,))
+    vname = (vname or "").strip()
+    if (not vname) or ("(" in vname) or (")" in vname) or ("\n" in vname):
+        die("versionName %r is empty or not safe to put in a Play release name" % (vname,))
+    return "%d (%s @%s)" % (vc, vname, commit[:12])
+
+
+def git_commit(rev):
+    """Full commit sha for rev, or None if missing."""
+    p = subprocess.run(["git", "rev-parse", "--verify", "--quiet", rev + "^{commit}"],
+                       capture_output=True, text=True)
+    return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else None
+
+
+def require_ancestor(base, label):
+    if subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"]).returncode:
+        die("%s (%s) is not an ancestor of HEAD" % (label, base[:12]))
+
+
+def resolve_exact_tag(label):
+    """If refs/tags/<label> exists, return its peeled commit; else None. Tags only, never branches."""
+    if not label or label.startswith("-") or ".." in label or " " in label or "\n" in label:
+        return None
+    # Exact tag ref only (refuse branches / bare rev-parse ambiguity).
+    p = subprocess.run(["git", "show-ref", "--tags", "--verify", "--quiet", "refs/tags/" + label])
+    if p.returncode:
+        return None
+    return git_commit("refs/tags/" + label)
+
+
+def notes_base_from_release_name(name):
+    """Return (kind, token) for a Play release name, or (None, reason) if unusable.
+    kind is 'provenance', 'describe-hash', or 'tag'."""
+    name = (name or "").strip()
+    m = PROV_RX.search(name)
+    if m:
+        return "provenance", m.group(1)
+    m = HASH_RX.search(name)
+    if m:
+        return "describe-hash", m.group(1)
+    m = NAME_RX.match(name)
+    if not m:
+        return None, "name %r is not 'versionCode (label)'" % (name,)
+    label = m.group(1).strip()
+    if PROV_RX.search(label) or "@" in label:
+        return None, "name %r has a malformed @provenance" % (name,)
+    # Bare exact-tag legacy names such as "24 (v0.9.3)".
+    return "tag", label
 
 def die(msg):
     print("ERROR: " + msg, file=sys.stderr)
@@ -205,11 +265,14 @@ def main():
         epilog="Details: the docstring at the top of play-publish.")
     ap.add_argument("--aab", required=True, metavar="FILE", help="the bundle to upload")
     ap.add_argument("--version-code", required=True, type=int, metavar="N", help="versionCode the build recorded")
+    ap.add_argument("--build-commit", required=True, metavar="SHA",
+                    help="full commit recorded in play.json for this bundle (stamped build; used in the Play release name)")
     ap.add_argument("--aapt2", required=True, metavar="PATH", help="aapt2 binary, to read the bundle manifest")
     ap.add_argument("--key", required=True, metavar="SA.json", help="service-account key file")
     nb = ap.add_mutually_exclusive_group()
     nb.add_argument("--notes-file", metavar="FILE", help="release notes (default: computed from the commits)")
-    nb.add_argument("--notes-base", metavar="REV", help="compute the notes from REV..HEAD instead of the commit Play's highest versionName names")
+    nb.add_argument("--notes-base", metavar="REV",
+                    help="compute the notes from REV..HEAD instead of the commit named by Play's highest release")
     ap.add_argument("--dry-run", action="store_true", help="read and show everything, then delete the edit (no upload)")
     ap.add_argument("--work-dir", required=True, metavar="DIR", help="scratch dir for the notes file and manifest copy (never /tmp)")
     a = ap.parse_args()
@@ -220,7 +283,20 @@ def main():
     pkg, vc, vname = badging(a.aab, a.aapt2)
     if vc != a.version_code:
         die("%s has versionCode %d but build_app recorded %d" % (a.aab, vc, a.version_code))
+    build_commit = git_commit(a.build_commit)
+    if not build_commit:
+        die("--build-commit %s is not a commit in this repository" % a.build_commit)
+    if not COMMIT_RX.fullmatch(a.build_commit) and build_commit != a.build_commit:
+        # Allow a unique abbreviation only when it peels to one commit; store the full object name.
+        pass
+    head = git_commit("HEAD")
+    if not head:
+        die("HEAD is not a commit")
+    if build_commit != head:
+        die("--build-commit %s is not HEAD %s (play.json stamp out of date?)" % (build_commit[:12], head[:12]))
+    release_name = format_release_name(vc, vname, build_commit)
     print("Bundle: %s  versionCode %d  versionName %s" % (pkg, vc, vname))
+    print("Release name will be: %s (stamped build %s)" % (release_name, build_commit[:12]))
     TOKEN, who = token(a.key)
     print("Service account: %s" % who)
     edit = http("POST", API + pkg + "/edits", body=b"{}")["id"]
@@ -239,29 +315,35 @@ def main():
         else:
             print("Play now: no release on any track")
         base = None
+        fix = "; give ./deploy --play --notes-base REV (the commit to start the notes after) or --notes-file FILE"
         if a.notes_file:
             print("Release notes from --notes-file %s (no base commit needed)" % a.notes_file)
         elif a.notes_base:
-            r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", a.notes_base + "^{commit}"], capture_output=True, text=True)
-            if r.returncode:
+            base = git_commit(a.notes_base)
+            if not base:
                 die("--notes-base %s is not a commit in this repository" % a.notes_base)
-            base = r.stdout.strip()
-            if subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"]).returncode:
-                die("--notes-base %s (%s) is not an ancestor of HEAD" % (a.notes_base, base[:9]))
-            print("Notes from --notes-base %s (%s)..HEAD" % (a.notes_base, base[:9]))
+            require_ancestor(base, "--notes-base %s" % a.notes_base)
+            print("Notes from --notes-base %s (%s)..HEAD" % (a.notes_base, base[:12]))
         else:
-            fix = "; give ./deploy --play --notes-base REV (the commit to start the notes after) or --notes-file FILE"
             if not top:
                 die("Play lists no release on any track, so there is no base commit for the notes" + fix)
-            m = HASH_RX.search(top[2])
-            if not m:
-                die("highest release (versionCode %d on %s) is named '%s'; no -g<hash> to base the notes on%s" % (top[1], top[0], top[2], fix))
-            base = m.group(1)
-            if subprocess.run(["git", "cat-file", "-e", base + "^{commit}"]).returncode:
-                die("base commit %s (from '%s') is not in this repository (history rewritten?)%s" % (base, top[2], fix))
-            if subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"]).returncode:
-                die("base commit %s (from '%s') is not an ancestor of HEAD (history rewritten?)%s" % (base, top[2], fix))
-            print("Notes from %s..HEAD (the commit in that versionName)" % base)
+            kind, token = notes_base_from_release_name(top[2])
+            if kind is None:
+                die("highest release (versionCode %d on %s) is named '%s'; %s%s" % (top[1], top[0], top[2], token, fix))
+            if kind == "tag":
+                base = resolve_exact_tag(token)
+                if not base:
+                    die("highest release (versionCode %d on %s) is named '%s'; no @commit/-g<hash>, and no local tag '%s'%s"
+                        % (top[1], top[0], top[2], token, fix))
+                require_ancestor(base, "tag %s from '%s'" % (token, top[2]))
+                print("Notes from %s..HEAD (exact local tag %s from that release name)" % (base[:12], token))
+            else:
+                base = git_commit(token)
+                if not base:
+                    die("base commit %s (from '%s') is not in this repository (history rewritten?)%s" % (token, top[2], fix))
+                require_ancestor(base, "%s %s from '%s'" % (kind, token, top[2]))
+                how = "stamped @commit" if kind == "provenance" else "legacy -g<hash> in versionName"
+                print("Notes from %s..HEAD (%s in that release name)" % (base[:12], how))
         for t in tracks:
             for r in t.get("releases", []):
                 print("  %-10s %-10s %s %s" % (t["track"], r.get("status", ""), ",".join(r.get("versionCodes", [])), r.get("name", "")))
@@ -281,8 +363,8 @@ def main():
             die("upload returned versionCode %s, expected %d" % (up.get("versionCode"), vc))
         # One edit, one commit for both tracks: Play logs it as one submission (two commits
         # left an empty "Canceled" submission for the internal-only commit).
-        track_release(pkg, edit, "internal", vc, "%d (%s)" % (vc, vname), notes)
-        track_release(pkg, edit, "alpha", vc, "%d (%s)" % (vc, vname), notes)
+        track_release(pkg, edit, "internal", vc, release_name, notes)
+        track_release(pkg, edit, "alpha", vc, release_name, notes)
         http("POST", API + pkg + "/edits/" + edit + ":commit?changesNotSentForReview=false")
         edit = None
         print("committed: internal and alpha <- versionCode %d (one commit, sent for review)" % vc)
@@ -295,7 +377,7 @@ def main():
     verify(pkg, "internal", vc)
     verify(pkg, "alpha", vc)
     print("==================================================================")
-    print("Play release done: %s versionCode %d (%s)" % (pkg, vc, vname))
+    print("Play release done: %s versionCode %d (%s)" % (pkg, vc, release_name))
     print("  internal: completed   alpha (closed testing): completed, submitted for review")
     print("==================================================================")
     return 0

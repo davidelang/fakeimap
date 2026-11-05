@@ -39,13 +39,13 @@
 #                  delete the edit. Nothing is uploaded or committed.
 #     -N, --notes-file FILE
 #                  With --play: release notes from FILE instead of $EDITOR (vi when unset) on the git log
-#                  since the commit in the highest versionName on Play, minus subjects matching
+#                  since the commit named by the highest Play release, minus subjects matching
 #                  play-notes-exclude(.local) (en-US, max 500 characters; over it, Enter re-edits).
 #                  No base commit is needed with FILE.
 #     -B, --notes-base REV
-#                  With --play: start the git-log notes after REV instead of the commit in Play's
-#                  highest versionName (for when history was squashed or rewritten). REV must be
-#                  an ancestor of HEAD. Not with --notes-file.
+#                  With --play: start the git-log notes after REV instead of the commit named by
+#                  Play's highest release (stamped @commit, legacy -g<hash>, or exact local tag).
+#                  REV must be an ancestor of HEAD. Not with --notes-file.
 #     -h, --help   Print this usage and exit.
 #
 #   Devices: tablet, emulator -> emulator-5554; phone -> deploy_serial= in project.config;
@@ -79,7 +79,7 @@ options:
   -p, --play             upload the recorded Play bundle to Internal testing and alpha
   -n, --dry-run          with --play: show everything, upload and commit nothing
   -N, --notes-file FILE  with --play: release notes from FILE instead of the editor
-  -B, --notes-base REV   with --play: notes from REV..HEAD (after a history rewrite)
+  -B, --notes-base REV   with --play: notes from REV..HEAD (override Play release provenance)
 
 Details: the comment at the top of ./deploy.
 USAGE
@@ -290,9 +290,9 @@ if [ "$play" -eq 1 ]; then
     echo "ERROR: play_service_account_json=$PLAY_KEY is missing or not readable by $(id -un)" >&2
     exit 1
   fi
-  read -r _kw PLAY_AAB PLAY_VC _rest <<< "$("$_DEPLOY_HERE/android-build-info" select play)"
-  if [ "$_kw" != "bundle" ] || [ -z "$PLAY_VC" ] || [ -n "$_rest" ]; then
-    echo "ERROR: android-build-info select play printed '$_kw $PLAY_AAB $PLAY_VC $_rest'" >&2
+  read -r _kw PLAY_AAB PLAY_VC PLAY_COMMIT _rest <<< "$("$_DEPLOY_HERE/android-build-info" select play)"
+  if [ "$_kw" != "bundle" ] || [ -z "$PLAY_VC" ] || [ -z "$PLAY_COMMIT" ] || [ -n "$_rest" ]; then
+    echo "ERROR: android-build-info select play printed '$_kw $PLAY_AAB $PLAY_VC $PLAY_COMMIT $_rest'" >&2
     exit 1
   fi
   if [ ! -f "$_DEPLOY_HERE/orch/ve-resolve-orch" ]; then
@@ -312,7 +312,7 @@ if [ "$play" -eq 1 ]; then
     echo "ERROR: $PLAY_WORK is missing or not writable by $(id -un) (build_app --play creates it)" >&2
     exit 1
   fi
-  _pp=(--aab "$PLAY_AAB" --version-code "$PLAY_VC" --aapt2 "$AAPT2" --key "$PLAY_KEY" --work-dir "$PLAY_WORK")
+  _pp=(--aab "$PLAY_AAB" --version-code "$PLAY_VC" --build-commit "$PLAY_COMMIT" --aapt2 "$AAPT2" --key "$PLAY_KEY" --work-dir "$PLAY_WORK")
   [ -n "$notes_file" ] && _pp+=(--notes-file "$notes_file")
   [ -n "$notes_base" ] && _pp+=(--notes-base "$notes_base")
   [ "$dry_run" -eq 1 ] && _pp+=(--dry-run)

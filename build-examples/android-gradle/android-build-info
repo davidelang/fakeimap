@@ -22,7 +22,7 @@ applicationId, versionName). Nothing comes from project.config, no app id is har
   stamp-play AAB VERSIONCODE after build_app --play: record the signed bundle (commit, path,
                              sha256, versionCode) in app/build/outputs/build_app/play.json
   select play                for deploy --play: check that stamp against HEAD and the file, then
-                             print 'bundle <aab> <versionCode>'
+                             print 'bundle <aab> <versionCode> <commit>'
 Exit 1 with an ERROR line on any problem.
 """
 import hashlib, json, os, re, shutil, subprocess, sys
@@ -280,7 +280,7 @@ def select_play():
         die("%s (recorded by the play build) is missing; run ./build_app --play" % s["aab"])
     if sha256(s["aab"]) != s["sha256"]:
         die("%s changed since the play build recorded it; run ./build_app --play" % s["aab"])
-    print("bundle %s %d" % (s["aab"], s["version_code"]))
+    print("bundle %s %d %s" % (s["aab"], s["version_code"], s["commit"]))
 
 def main(argv):
     if len(argv) == 3 and argv[0] == "stamp-play":
