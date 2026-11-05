@@ -5,10 +5,10 @@
 # be stored safely). Source refresh-shell.c IS tracked.
 #
 # Usage:
-#   ./install-refresh-shell.sh                 # install into cwd
-#   ./install-refresh-shell.sh /path/to/wt     # install into that worktree
-#   ./install-refresh-shell.sh -a|--all        # orch root + all worktrees
-#   ./install-refresh-shell.sh -h|--help
+#   ./orch/install-refresh-shell.sh                 # install into cwd
+#   ./orch/install-refresh-shell.sh /path/to/wt     # install into that worktree
+#   ./orch/install-refresh-shell.sh -a|--all        # orch root + all worktrees
+#   ./orch/install-refresh-shell.sh -h|--help
 #
 # Requires sudo for chown root + chmod 4755. Idempotent.
 # NEVER leaves setuid bit on a non-root-owned binary (kills terminals via env).
@@ -31,19 +31,23 @@ install_one() {
   local src_c bin
   [ -d "$dest" ] || return 1
 
+  mkdir -p "$dest/orch" || return 1
   src_c=""
-  if [ -f "$dest/refresh-shell.c" ]; then
-    src_c="$dest/refresh-shell.c"
-  elif [ -f "$ORCH/refresh-shell.c" ]; then
-    src_c="$ORCH/refresh-shell.c"
-    cp -f "$src_c" "$dest/refresh-shell.c" 2>/dev/null || true
-    src_c="$dest/refresh-shell.c"
+  if [ -f "$dest/orch/refresh-shell.c" ]; then
+    src_c="$dest/orch/refresh-shell.c"
+  elif [ -f "$ORCH/orch/refresh-shell.c" ]; then
+    src_c="$ORCH/orch/refresh-shell.c"
+    if ! cp -f "$src_c" "$dest/orch/refresh-shell.c"; then
+      echo "install-refresh-shell: cannot copy refresh-shell.c into $dest/orch" >&2
+      return 1
+    fi
+    src_c="$dest/orch/refresh-shell.c"
   else
     echo "install-refresh-shell: no refresh-shell.c in $dest or $ORCH" >&2
     return 1
   fi
 
-  bin="$dest/refresh-shell"
+  bin="$dest/orch/refresh-shell"
   if [ ! -f "$bin" ] || [ "$src_c" -nt "$bin" ]; then
     echo "  Building $bin ..."
     if ! gcc -O2 -Wall -o "$bin" "$src_c"; then
@@ -84,21 +88,21 @@ ALL=0
 while true; do
   case "$1" in
     -h|--help)
-      echo "Usage: ./install-refresh-shell.sh [-a|--all] [-h|--help] [DIR]"
+      echo "Usage: ./orch/install-refresh-shell.sh [-a|--all] [-h|--help] [DIR]"
       echo "  no DIR: install into the current directory"
       echo "  -a, --all: orchestration root and every worktree"
       exit 0 ;;
     -a|--all) ALL=1; shift ;;
     --) shift; break ;;
-    *) echo "usage: ./install-refresh-shell.sh [--all] [DIR]" >&2; exit 2 ;;
+    *) echo "usage: ./orch/install-refresh-shell.sh [--all] [DIR]" >&2; exit 2 ;;
   esac
 done
 if [ "$ALL" -eq 1 ] && [ $# -gt 0 ]; then
-  echo "usage: ./install-refresh-shell.sh [--all] [DIR]" >&2
+  echo "usage: ./orch/install-refresh-shell.sh [--all] [DIR]" >&2
   exit 2
 fi
 if [ "$ALL" -eq 0 ] && [ $# -gt 1 ]; then
-  echo "usage: ./install-refresh-shell.sh [--all] [DIR]" >&2
+  echo "usage: ./orch/install-refresh-shell.sh [--all] [DIR]" >&2
   exit 2
 fi
 MODE="${1:-.}"
@@ -130,7 +134,7 @@ fi
 DEST=$(cd "$DEST" && pwd)
 echo "install-refresh-shell: $DEST"
 install_one "$DEST"
-if is_good "$DEST/refresh-shell"; then
+if is_good "$DEST/orch/refresh-shell"; then
   exit 0
 fi
 exit 1

@@ -35,13 +35,15 @@ S="$T/shims"; mkdir -p "$S"
 for c in usermod gpasswd chattr; do printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$T" >"$S/$c"; chmod +x "$S/$c"; done
 mk() {  # mk SHARED_GROUP : fresh repo in $R
   R="$T/repo"; rm -rf "$R"; mkdir -p "$R/sandbox"
-  cp "$canon/fix-perms" "$canon/ve-resolve-orch" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/append-to-engineering-log" "$R/"
+  mkdir -p "$R/orch"
+  cp "$canon/fix-perms" "$R/"
+  cp "$canon/orch/ve-resolve-orch" "$canon/orch/perm-lib.sh" "$canon/orch/perm-engine.py" "$canon/orch/append-to-engineering-log" "$R/orch/"
   # Only the EUID gate goes (3 lines); refuse to run if fix-perms' gate changed shape.
   grep -c '^if \[ "\$EUID" -ne 0 \]; then$' "$canon/fix-perms" | grep -qx 1 || { echo "FAIL fix-perms EUID gate not found; update mk()"; exit 1; }
   sed -i '/^if \[ "\$EUID" -ne 0 \]; then$/,/^fi$/d' "$R/fix-perms"
   [[ "$(( $(wc -l <"$canon/fix-perms") - $(wc -l <"$R/fix-perms") ))" == 4 ]] || { echo "FAIL removing the EUID gate did not remove exactly 4 lines"; exit 1; }
-  awk -F'\t' -v OFS='\t' '!/^#/ && $1!="area" { if ($2=="root") $2="primary_user"; if ($3=="root") $3="code_group" } 1' "$canon/perm-model.tsv" >"$R/perm-model.tsv"
-  [[ "$(diff "$canon/perm-model.tsv" "$R/perm-model.tsv" | grep -c '^>')" == 3 ]] || { echo "FAIL perm-model.tsv: expected exactly 3 root rows to rewrite: $(diff "$canon/perm-model.tsv" "$R/perm-model.tsv")"; exit 1; }
+  awk -F'\t' -v OFS='\t' '!/^#/ && $1!="area" { if ($2=="root") $2="primary_user"; if ($3=="root") $3="code_group" } 1' "$canon/orch/perm-model.tsv" >"$R/orch/perm-model.tsv"
+  [[ "$(diff "$canon/orch/perm-model.tsv" "$R/orch/perm-model.tsv" | grep -c '^>')" == 3 ]] || { echo "FAIL perm-model.tsv: expected exactly 3 root rows to rewrite: $(diff "$canon/orch/perm-model.tsv" "$R/orch/perm-model.tsv")"; exit 1; }
   printf '## 2026-01-01 init\n' >"$R/ENGINEERING_LOG.md"
   cat >"$R/project.config" <<C
 primary_user=$ME
@@ -63,14 +65,14 @@ mk "$MYG"
 (cd "$R" && "$canon/fix-perms" "$R") >"$T/r0" 2>&1; rc=$?
 [[ $rc -eq 1 ]] && grep -q 'must run as root' "$T/r0" && ok "refuses to run as non-root" || bad "non-root: rc=$rc $(cat "$T/r0")"
 
-before="$(git -C "$R" rev-parse HEAD:append-to-engineering-log)"
+before="$(git -C "$R" rev-parse HEAD:orch/append-to-engineering-log)"
 asroot ./fix-perms "$R" >"$T/r1" 2>&1; rc=$?
 [[ $rc -eq 0 ]] && ok "worktree run (rc 0)" || bad "worktree run rc=$rc: $(cat "$T/r1")"
-[[ "$(git -C "$R" hash-object append-to-engineering-log)" == "$before" ]] && ok "wrapper content untouched" || bad "wrapper rewritten"
+[[ "$(git -C "$R" hash-object orch/append-to-engineering-log)" == "$before" ]] && ok "wrapper content untouched" || bad "wrapper rewritten"
 [[ -z "$(git -C "$R" status --porcelain -uno)" ]] && ok "no tracked file changed" || bad "tracked changes: $(git -C "$R" status --porcelain)"
 grep -q "chattr +a $R/ENGINEERING_LOG.md" "$T/calls" && ok "log set append-only again" || bad "no chattr +a: $(cat "$T/calls")"
 [[ "$(grep -c "chattr +a $R/ENGINEERING_LOG.md" "$T/calls")" == 1 ]] && ok "log sealed exactly once (no second +a from the EXIT trap)" || bad "chattr +a count: $(cat "$T/calls")"
-[[ "$(stat -c %a "$R/append-to-engineering-log")" == 2755 ]] && ok "wrapper mode 2755" || bad "wrapper mode $(stat -c %a "$R/append-to-engineering-log")"
+[[ "$(stat -c %a "$R/orch/append-to-engineering-log")" == 2755 ]] && ok "wrapper mode 2755" || bad "wrapper mode $(stat -c %a "$R/orch/append-to-engineering-log")"
 
 mkdir -p "$R/app/build/x"; : >"$R/app/build/x/f"; chmod 600 "$R/app/build/x/f"; : >"$R/wtf"; chmod 600 "$R/wtf"
 asroot ./fix-perms "$R" >"$T/r1a" 2>&1; rc=$?
@@ -81,10 +83,10 @@ rm -rf "$R/app" "$R/wtf"
 asroot ./fix-perms >"$T/r1b" 2>&1; rc=$?
 [[ $rc -eq 0 ]] && [[ -d "$R/.gradle-shared" ]] && ok "orchestration-root run (all worktrees + sandbox + common .git) rc 0" || bad "root run rc=$rc: $(cat "$T/r1b")"
 
-printf '#!/bin/bash\necho old\n' >"$R/append-to-engineering-log"
+printf '#!/bin/bash\necho old\n' >"$R/orch/append-to-engineering-log"
 asroot ./fix-perms "$R" >/dev/null 2>&1
-grep -q 'echo old' "$R/append-to-engineering-log" && ok "never overwrites the wrapper" || bad "overwrote the wrapper"
-git -C "$R" checkout -q -- append-to-engineering-log
+grep -q 'echo old' "$R/orch/append-to-engineering-log" && ok "never overwrites the wrapper" || bad "overwrote the wrapper"
+git -C "$R" checkout -q -- orch/append-to-engineering-log
 
 rm "$R/ENGINEERING_LOG.md"; : >"$T/calls"
 asroot ./fix-perms "$R" >"$T/r2" 2>&1; rc=$?
@@ -93,10 +95,10 @@ asroot ./fix-perms "$R" >"$T/r2" 2>&1; rc=$?
 grep -q chattr "$T/calls" && bad "changes made before the missing-log error" || ok "missing log stops before any change"
 git -C "$R" checkout -q -- ENGINEERING_LOG.md
 
-rm "$R/append-to-engineering-log"
+rm "$R/orch/append-to-engineering-log"
 asroot ./fix-perms "$R" >"$T/r3" 2>&1; rc=$?
-[[ $rc -ne 0 && ! -e "$R/append-to-engineering-log" ]] && grep -q 'append-to-engineering-log is missing' "$T/r3" && ok "missing wrapper fails loudly, not recreated" || bad "missing wrapper: rc=$rc $(cat "$T/r3")"
-git -C "$R" checkout -q -- append-to-engineering-log
+[[ $rc -ne 0 && ! -e "$R/orch/append-to-engineering-log" ]] && grep -q 'append-to-engineering-log is missing' "$T/r3" && ok "missing wrapper fails loudly, not recreated" || bad "missing wrapper: rc=$rc $(cat "$T/r3")"
+git -C "$R" checkout -q -- orch/append-to-engineering-log
 
 asroot ./fix-perms --skip-sudoers "$R" >"$T/r4" 2>&1; rc=$?
 [[ $rc -eq 2 ]] && grep -q "unrecognized option '--skip-sudoers'" "$T/r4" && ok "unknown option is an error" || bad "unknown option: rc=$rc $(cat "$T/r4")"

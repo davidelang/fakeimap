@@ -2,7 +2,7 @@
 # One-segment execute identity check. Optional plan path: Host:/Worktree: vs this tree.
 set -euo pipefail
 
-USAGE_LINE="usage: ./exec-preflight [-h] [PLAN]"
+USAGE_LINE="usage: ./orch/exec-preflight [-h] [PLAN]"
 usage() {
   cat <<EOF
 $USAGE_LINE
@@ -12,7 +12,7 @@ One-segment execute identity check; with PLAN, also check its Host:/Worktree: ag
 options:
   -h, --help  show this help message and exit
 
-Details: the comment at the top of ./exec-preflight.
+Details: the comment at the top of ./orch/exec-preflight.
 EOF
 }
 case "${1:-}" in

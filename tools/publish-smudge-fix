@@ -14,8 +14,8 @@
       is in rules.manifest, so it lands in that same one commit with the channel rule and skills
       that run it. A tree whose pin or rules diverged is skipped whole by deploy (a BLOCKER here),
       never published half.
-  3 per host: ./install-merge-drivers.sh (filter required=true) + .git/hooks/post-checkout
-  4 per tree: ./verify-smudge --fix (re-smudge), then ./verify-smudge (must be OK)
+  3 per host: ./orch/install-merge-drivers.sh (filter required=true) + .git/hooks/post-checkout
+  4 per tree: ./orch/verify-smudge --fix (re-smudge), then ./orch/verify-smudge (must be OK)
   5 per tree: filtered files must show no diff (else fail; nothing is committed blind)
 Never pushes. Trees under grok-worktrees/ and third_party/*/src are excluded (deploy rule).
 """
@@ -268,7 +268,7 @@ def main():
     run([os.path.join(CANON, "deploy-orchestration"), "--apply", *repos], CANON)
     print("3/5 host filter config + post-checkout hook")
     for h in hosts:
-        run(["./install-merge-drivers.sh"], h["host"])
+        run(["./orch/install-merge-drivers.sh"], h["host"])
         src = os.path.join(h["host"], "hooks", "post-checkout")
         if not os.path.isfile(src):
             die("%s not tracked after deploy" % src)
@@ -278,8 +278,8 @@ def main():
     print("4/5 re-smudge + verify per tree")
     for h in hosts:
         for t in h["trees"]:
-            run(["./verify-smudge", "--fix"], t["wt"])
-            run(["./verify-smudge"], t["wt"])
+            run(["./orch/verify-smudge", "--fix"], t["wt"])
+            run(["./orch/verify-smudge"], t["wt"])
     print("5/5 filtered files clean")
     for h in hosts:
         for t in h["trees"]:

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # fix-multiuser-git-hosts.sh
 #
+# This host only, under tools/reference/. Not in rules.manifest, so deploy does
+# not publish it. Kept for reference; almost never run.
+#
 # Repair multi-user git DAC so ai-planner (and all ai-shared members) can use
 # git log / status / commit on host repos under GIT_HOME.
 #
@@ -52,11 +55,6 @@ for a in "$@"; do
   esac
 done
 
-if [[ "$(id -un)" != "dlang" && "$(id -un)" != "root" && "${ALLOW_NON_DLANG:-0}" != "1" ]]; then
-  echo "ERROR: run as dlang (or root with GIT_HOME set). whoami=$(id -un)" >&2
-  exit 1
-fi
-
 DRY=0
 AUDIT_ONLY=0
 parsed="$(getopt -n fix-multiuser-git-hosts.sh -o hna -l help,dry-run,audit-only -- "$@")" || { echo "$USAGE_LINE" >&2; exit 2; }
@@ -74,6 +72,11 @@ if [[ $# -gt 0 ]]; then
   echo "$USAGE_LINE" >&2
   echo "fix-multiuser-git-hosts.sh: error: unrecognized argument: $1" >&2
   exit 2
+fi
+
+if [[ "$(id -un)" != "dlang" && "$(id -un)" != "root" && "${ALLOW_NON_DLANG:-0}" != "1" ]]; then
+  echo "ERROR: run as dlang (or root with GIT_HOME set). whoami=$(id -un)" >&2
+  exit 1
 fi
 
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then

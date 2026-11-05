@@ -14,7 +14,7 @@ group-refresh shell, setup/update/fix tooling — **no product application**.
 ```bash
 cp project.config.example project.config
 # set git_home=/absolute/path/to/git  (required)
-source ./env                 # umask 002 + group refresh via ./refresh-shell
+source ./orch/env                 # umask 002 + group refresh via ./orch/refresh-shell
 ./setup_agent.sh my-feature  # creates agent-N worktree
 ./run-grok-planner
 ```

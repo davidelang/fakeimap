@@ -8,8 +8,8 @@
 set -euo pipefail
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: ./append-to-engineering-log MESSAGE"
-  echo "       ./append-to-engineering-log @file"
+  echo "Usage: ./orch/append-to-engineering-log MESSAGE"
+  echo "       ./orch/append-to-engineering-log @file"
   exit 0
 fi
 

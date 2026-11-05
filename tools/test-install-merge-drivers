@@ -10,16 +10,16 @@ pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
 mkrepo() {
-  local r="$T/$1"; mkdir -p "$r/git-merge-drivers"
+  local r="$T/$1"; mkdir -p "$r/git-merge-drivers" "$r/orch"
   git init -q "$r" || return 1
-  cp "$canon/install-merge-drivers.sh" "$canon/merge-branch-into-master.sh" "$r/"
+  cp "$canon/orch/install-merge-drivers.sh" "$canon/orch/merge-branch-into-master.sh" "$r/orch/"
   cp "$canon"/git-merge-drivers/ve-englog "$canon"/git-merge-drivers/ve-special-ours "$canon"/git-merge-drivers/ve-special-refuse "$r/git-merge-drivers/"
   echo "$r"
 }
 cfg() { git -C "$1" config --local --get "$2"; }
 
 r=$(mkrepo plain) || exit 1
-(cd "$r" && bash ./install-merge-drivers.sh) >"$T/plain.out" 2>&1; rc=$?
+(cd "$r" && bash ./orch/install-merge-drivers.sh) >"$T/plain.out" 2>&1; rc=$?
 [[ $rc -eq 0 ]] && ok "plain: exit 0" || bad "plain: rc=$rc $(cat "$T/plain.out")"
 [[ "$(cfg "$r" filter.manage-configs.required)" == true ]] && ok "plain: manage-configs required" || bad "plain: manage-configs.required"
 [[ "$(cfg "$r" merge.ve-englog.driver)" == "./git-merge-drivers/ve-englog %O %A %B %L %P" ]] && ok "plain: ve-englog driver" || bad "plain: ve-englog driver"
@@ -29,27 +29,27 @@ r=$(mkrepo plain) || exit 1
 r=$(mkrepo withlocal) || exit 1
 printf 'git config imd.localtest yes\n' >"$r/install-merge-drivers.local"
 mkdir -p "$r/sub"
-(cd "$r/sub" && bash ../install-merge-drivers.sh) >"$T/local.out" 2>&1; rc=$?
+(cd "$r/sub" && bash ../orch/install-merge-drivers.sh) >"$T/local.out" 2>&1; rc=$?
 [[ $rc -eq 0 && "$(cfg "$r" imd.localtest)" == yes ]] && ok "local: .local run (from subdir), key set" || bad "local: rc=$rc $(cat "$T/local.out")"
 
 r=$(mkrepo badlocal) || exit 1
 printf 'exit 1\n' >"$r/install-merge-drivers.local"
-(cd "$r" && bash ./install-merge-drivers.sh) >"$T/bad.out" 2>&1; rc=$?
+(cd "$r" && bash ./orch/install-merge-drivers.sh) >"$T/bad.out" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q "install-merge-drivers.local failed" "$T/bad.out" && ok "bad local: non-zero exit with message" || bad "bad local: rc=$rc $(cat "$T/bad.out")"
 
 r=$(mkrepo missing) || exit 1
 rm "$r/git-merge-drivers/ve-special-refuse"
-(cd "$r" && bash ./install-merge-drivers.sh) >"$T/miss.out" 2>&1; rc=$?
+(cd "$r" && bash ./orch/install-merge-drivers.sh) >"$T/miss.out" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q ve-special-refuse "$T/miss.out" && ok "missing driver: fails, names file" || bad "missing driver: rc=$rc $(cat "$T/miss.out")"
 
-mkdir -p "$T/nogit"; cp "$canon/install-merge-drivers.sh" "$T/nogit/"
-(cd "$T/nogit" && bash ./install-merge-drivers.sh) >"$T/nogit.out" 2>&1; rc=$?
+mkdir -p "$T/nogit/orch"; cp "$canon/orch/install-merge-drivers.sh" "$T/nogit/orch/"
+(cd "$T/nogit" && bash ./orch/install-merge-drivers.sh) >"$T/nogit.out" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q "not inside a git worktree" "$T/nogit.out" && ok "outside git: clear error" || bad "outside git: rc=$rc $(cat "$T/nogit.out")"
 
 r="$T/plain"
-(cd "$r" && bash ./install-merge-drivers.sh -h) >"$T/h.out" 2>&1; rc=$?
-[[ $rc -eq 0 ]] && head -1 "$T/h.out" | grep -q '^usage: ./install-merge-drivers.sh' && ok "-h: usage, exit 0" || bad "-h: rc=$rc"
-(cd "$r" && bash ./install-merge-drivers.sh --bogus) >"$T/u.out" 2>&1; rc=$?
+(cd "$r" && bash ./orch/install-merge-drivers.sh -h) >"$T/h.out" 2>&1; rc=$?
+[[ $rc -eq 0 ]] && head -1 "$T/h.out" | grep -q '^usage: ./orch/install-merge-drivers.sh' && ok "-h: usage, exit 0" || bad "-h: rc=$rc"
+(cd "$r" && bash ./orch/install-merge-drivers.sh --bogus) >"$T/u.out" 2>&1; rc=$?
 [[ $rc -eq 2 ]] && grep -q 'unrecognized option: --bogus' "$T/u.out" && ok "unknown option: exit 2" || bad "unknown option: rc=$rc"
 
 echo "passed $pass, failed $fail"

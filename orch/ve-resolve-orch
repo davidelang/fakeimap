@@ -6,7 +6,7 @@
 #   ve_resolve_orch WORKTREE              # sets ORCH_ROOT (WORKTREE or $VE_RESOLVE_ORCH_WT is required)
 #
 # Exec:
-#   ./ve-resolve-orch WORKTREE-DIR        # prints absolute path; exit 1 if missing
+#   ./orch/ve-resolve-orch WORKTREE-DIR        # prints absolute path; exit 1 if missing
 #
 # Order: $ORCH_ROOT if it is a directory; else orch_root= from that tree's
 # project.config (absolute, existing directory, not @@TOKEN@@). Never walk to
@@ -285,8 +285,8 @@ ve_ensure_tracked_exec_other_x() {
     echo "ERROR: ve_ensure_tracked_exec_other_x: not a directory: '$wt'" >&2
     return 1
   fi
-  for p in agent-landlock todo-append todo-close ve-env \
-           landlock-smoke-matrix landlock-write-probe; do
+  for p in orch/agent-landlock orch/todo-append orch/todo-close orch/env \
+           orch/landlock-smoke-matrix orch/landlock-write-probe; do
     if [ -f "$wt/$p" ]; then
       ve_add_other_x "$wt/$p" || return 1
     fi
@@ -308,7 +308,7 @@ ve_ensure_tracked_exec_other_x() {
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
   if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-    echo "Usage: ./ve-resolve-orch [WORKTREE]"
+    echo "Usage: ./orch/ve-resolve-orch [WORKTREE]"
     echo "Print orch_root. With no argument, VE_RESOLVE_ORCH_WT must be set."
     exit 0
   fi

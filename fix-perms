@@ -77,14 +77,14 @@ SUDO_USER_VAL=${SUDO_USER:-}
 
 # Orchestration root is project.config orch_root (via ve-resolve-orch next to this script;
 # no other location is tried). Do NOT treat "update-rules.sh exists" as orch.
-for _f in ve-resolve-orch perm-lib.sh perm-engine.py perm-model.tsv; do
+for _f in orch/ve-resolve-orch orch/perm-lib.sh orch/perm-engine.py orch/perm-model.tsv; do
   if [ ! -f "$SCRIPT_DIR/$_f" ]; then
     echo "ERROR: $SCRIPT_DIR/$_f missing (it ships with fix-perms; run ./update-rules.sh from the orchestration root)." >&2
     exit 1
   fi
 done
 # shellcheck source=/dev/null
-. "$SCRIPT_DIR/ve-resolve-orch"
+. "$SCRIPT_DIR/orch/ve-resolve-orch"
 ve_resolve_orch "$SCRIPT_DIR" || exit 1
 AT_ORCHESTRATION=false
 if [ "$(cd "$SCRIPT_DIR" && pwd)" = "$ORCH_ROOT" ]; then
@@ -160,7 +160,7 @@ _sandbox_under() {
 }
 
 # shellcheck source=/dev/null
-. "$SCRIPT_DIR/perm-lib.sh"
+. "$SCRIPT_DIR/orch/perm-lib.sh"
 perm_init "$_CFG"
 
 # Logs whose chattr +a is lifted right now; restored on any exit.
@@ -352,14 +352,14 @@ ensure_worktree_scripts_executable() {
   # setgid + rwx for owner/group so primary and ai-code can run; other r-x for stale sessions
   local scripts=(
     build_app deploy
-    get-builds-tag.sh update-rules.sh ve-resolve-orch install-merge-drivers.sh merge-branch-into-master.sh
-    generate_pr.sh cleanup_pr.sh
+    update-rules.sh generate_pr.sh
     filter-apply-config filter-clean-config setup-project
     set-sandbox-perms
     run-grok run-grok-master run-grok-planner run-grok-coder run-grok-orchestrator
     run-antigravity run-gemini
-    agent-landlock todo-append todo-close env
-    landlock-smoke-matrix landlock-write-probe
+    orch/get-builds-tag.sh orch/ve-resolve-orch orch/install-merge-drivers.sh orch/merge-branch-into-master.sh
+    orch/agent-landlock orch/todo-append orch/todo-close orch/env
+    orch/landlock-smoke-matrix orch/landlock-write-probe
   )
   # Root-only tools (rules.manifest class root): only the orchestration root has them.
   if [ "$(cd "$wt" && pwd -P)" = "$(cd "$ORCH_ROOT" && pwd -P)" ]; then
@@ -391,7 +391,7 @@ ensure_worktree_scripts_executable() {
 # The tracked wrapper and log must exist before anything is changed; fix-perms never writes them.
 require_log_files() {
   local wt="$1" f
-  for f in append-to-engineering-log ENGINEERING_LOG.md; do
+  for f in orch/append-to-engineering-log ENGINEERING_LOG.md; do
     if [ ! -f "$wt/$f" ]; then
       echo "ERROR: $wt/$f is missing (tracked file; restore it: git -C $wt checkout -- $f). fix-perms never writes it." >&2
       exit 1
@@ -464,18 +464,21 @@ fix_worktree() {
     perm_apply setuid-run-as-primary "$wt/run-as-primary" --top-only
   fi
 
-  # ve-refresh-shell: setuid root per worktree (binary not in git; .c is tracked).
-  if [ -x "$SCRIPT_DIR/install-ve-refresh-shell.sh" ]; then
-    if $VERBOSE; then echo "  install-ve-refresh-shell for $wt"; fi
-    "$SCRIPT_DIR/install-ve-refresh-shell.sh" "$wt"
+  # refresh-shell: setuid root per worktree (binary not in git; orch/refresh-shell.c is tracked).
+  if [ -x "$wt/orch/install-refresh-shell.sh" ]; then
+    if $VERBOSE; then echo "  install-refresh-shell for $wt"; fi
+    "$wt/orch/install-refresh-shell.sh" "$wt"
+  elif [ -x "$SCRIPT_DIR/orch/install-refresh-shell.sh" ]; then
+    if $VERBOSE; then echo "  install-refresh-shell for $wt"; fi
+    "$SCRIPT_DIR/orch/install-refresh-shell.sh" "$wt"
   else
-    if [ -f "$wt/ve-refresh-shell.c" ]; then
-      if $VERBOSE; then echo "  Compiling ve-refresh-shell in $wt ..."; fi
-      (cd "$wt" && gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c)
+    if [ -f "$wt/orch/refresh-shell.c" ]; then
+      if $VERBOSE; then echo "  Compiling refresh-shell in $wt ..."; fi
+      (cd "$wt/orch" && gcc -O2 -Wall -o refresh-shell refresh-shell.c)
     fi
-    if [ -f "$wt/ve-refresh-shell" ]; then
-      perm_apply setuid-refresh-shell "$wt/ve-refresh-shell" --top-only
-    fi
+  fi
+  if [ -f "$wt/orch/refresh-shell" ]; then
+    perm_apply setuid-refresh-shell "$wt/orch/refresh-shell" --top-only
   fi
 
   # Critical agent/human scripts: must be executable by primary + ai-code after any
@@ -529,7 +532,7 @@ fix_log_wrapper() {
   local wt="$1"
   require_log_files "$wt"
 
-  WRAPPER="$wt/append-to-engineering-log"
+  WRAPPER="$wt/orch/append-to-engineering-log"
   strip_acl "$WRAPPER"
   perm_apply englog-wrapper "$WRAPPER" --top-only
   if $VERBOSE; then
@@ -582,10 +585,10 @@ fi
 if $VERBOSE; then
   echo
   echo "Recovery complete. Suggested verification:"
-  echo "  ls -l ENGINEERING_LOG.md append-to-engineering-log run-as-primary"
-  echo "  getfacl -s ENGINEERING_LOG.md append-to-engineering-log"
+  echo "  ls -l ENGINEERING_LOG.md orch/append-to-engineering-log run-as-primary"
+  echo "  getfacl -s ENGINEERING_LOG.md orch/append-to-engineering-log"
   echo "  lsattr ENGINEERING_LOG.md"
-  echo "  ./append-to-engineering-log '## test entry'"
+  echo "  ./orch/append-to-engineering-log '## test entry'"
   echo
   echo "Re-run from orchestration root after major breakage."
 fi

@@ -16,15 +16,17 @@ bad() { fail=$((fail+1)); echo "FAIL $*"; }
 me=$(id -un)
 JDK=/usr/lib/jvm/java-17-openjdk-amd64
 
-grep -n -F "$SW" "$canon/build-examples/android-gradle/build_app" "$canon/perm-lib.sh" >"$T/sw" \
+grep -n -F "$SW" "$canon/build-examples/android-gradle/build_app" "$canon/orch/perm-lib.sh" >"$T/sw" \
   && bad "error swallowing: $(cat "$T/sw")" || ok "no swallow idiom in build_app or perm-lib.sh"
 grep -n 'o-rwx\|umask 007' "$canon/build-examples/android-gradle/build_app" >"$T/sw" \
   && bad "build_app still forces group-only modes: $(cat "$T/sw")" || ok "build_app forces no o-rwx / umask 007"
 
 mk() {  # fresh worktree repo in $W
   W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app/src/main"
-  cp "$canon/build-examples/android-gradle/build_app" "$canon/build-examples/android-gradle/android-build-info" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
-  cat >"$W/ve-resolve-orch" <<'S'
+  mkdir -p "$W/orch"
+  cp "$canon/build-examples/android-gradle/build_app" "$canon/build-examples/android-gradle/android-build-info" "$W/"
+  cp "$canon/orch/perm-lib.sh" "$canon/orch/perm-engine.py" "$canon/orch/perm-model.tsv" "$W/orch/"
+  cat >"$W/orch/ve-resolve-orch" <<'S'
 ve_resolve_orch() { ORCH_ROOT="$1"; }
 ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }
 ve_aapt2_from_sdk() { echo /bin/true; }
@@ -145,7 +147,7 @@ awk '/perm_preflight build-intermediates/{p=NR} /^if \[ "\$#" -ge 1 \]; then/{c=
   && ok "build_app runs perm_preflight before the commit phase" || bad "preflight not before commit phase"
 
 # perm-lib unit checks
-. "$canon/perm-lib.sh"; perm_init "$W/project.config"
+. "$canon/orch/perm-lib.sh"; perm_init "$W/project.config"
 mkdir -p "$T/pf/d"; chmod 0755 "$T/pf/d"
 perm_preflight build-intermediates "$T/pf/d" --top-only >"$T/o" 2>&1 && [ ! -s "$T/o" ] && ok "preflight: own path with the wrong mode is fixable (no output)" || bad "pf own: $(cat "$T/o")"
 perm_preflight build-intermediates /etc --top-only >"$T/o" 2>&1; rc=$?
@@ -169,7 +171,7 @@ setfacl -b "$T/acl"; setfacl -m u:ai-planner:r-x "$T/acl"; chmod o-x "$T/acl"
 perm_readable_nogroups nobody "$T/acl/d/f" >"$T/o" 2>&1; rc=$?
 [[ $rc -ne 0 ]] && grep -q "blocker=$T/acl class=other" "$T/o" && ok "ACL dir without o+x still blocks 'other'" || bad "acl no-ox: rc=$rc $(cat "$T/o")"
 perm_readable_nogroups $me "$T/acl/d/f" >"$T/o" 2>&1 && ok "owner reads through an ACL dir" || bad "acl owner: $(cat "$T/o")"
-grep -q $'^build-intermediates\tcoder_user\t' "$canon/perm-model.tsv" && ok "model: build-intermediates owned by coder_user" || bad "model owner"
+grep -q $'^build-intermediates\tcoder_user\t' "$canon/orch/perm-model.tsv" && ok "model: build-intermediates owned by coder_user" || bad "model owner"
 mkdir -p "$T/u/a/b"; : >"$T/u/a/b/f"; chmod 700 "$T/u/a"
 perm_readable_nogroups nobody "$T/u/a/b/f" >"$T/o" 2>&1 && bad "readable check passed through a 700 dir" || ok "readable check: 700 dir blocks 'other'"
 perm_verify deliverables "$T/u/a/b/f" --top-only >"$T/o" 2>&1; rc=$?

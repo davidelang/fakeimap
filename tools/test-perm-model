@@ -25,11 +25,11 @@ def ok(m):
 def bad(m):
     global failed; failed += 1; print("FAIL " + m)
 
-spec = importlib.util.spec_from_file_location("perm_engine", os.path.join(canon, "perm-engine.py"))
+spec = importlib.util.spec_from_file_location("perm_engine", os.path.join(canon, "orch/perm-engine.py"))
 eng = importlib.util.module_from_spec(spec); spec.loader.exec_module(eng)
-model = eng.load_model(os.path.join(canon, "perm-model.tsv"))
+model = eng.load_model(os.path.join(canon, "orch/perm-model.tsv"))
 ok("perm-model.tsv parses (%d areas)" % len(model))
-areas = [l.split("\t")[0] for l in open(os.path.join(canon, "perm-model.tsv")) if l.strip() and not l.startswith("#")]
+areas = [l.split("\t")[0] for l in open(os.path.join(canon, "orch/perm-model.tsv")) if l.strip() and not l.startswith("#")]
 dups = sorted({a for a in areas if areas.count(a) > 1})
 (bad("duplicate areas: %s" % dups) if dups else ok("areas unique"))
 badspec = []
@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory(prefix="test-perm-model-", dir=scratch_dir("tes
 src = open(os.path.join(canon, "deploy-orchestration")).read()
 (bad("deploy-orchestration still hard-codes modes") if re.search(r"os\.chmod\([^,()]+,\s*0o[0-7]+\s*\)", src) else ok("deploy-orchestration has no hard-coded chmod modes"))
 man = open(os.path.join(canon, "rules.manifest")).read().split("\n")
-need = [f for f in ("perm-lib.sh", "perm-engine.py", "perm-model.tsv") if "shared " + f not in man]
+need = [f for f in ("perm-lib.sh", "perm-engine.py", "perm-model.tsv") if "shared orch/" + f not in man]
 (bad("not shared in rules.manifest: %s" % need) if need else ok("perm-lib.sh, perm-engine.py, perm-model.tsv are shared rules"))
 print("passed %d failed %d" % (passed, failed))
 sys.exit(1 if failed else 0)

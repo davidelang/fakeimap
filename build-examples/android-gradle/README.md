@@ -217,7 +217,7 @@ match). Any device failure leaves the deployed tag (`deployed`, or `<branch>/dep
 unchanged and makes deploy exit with an error. With `--test`, the instrumentation (androidTest) APKs are installed on every device after the app (`adb install -r -t`), each verified by its own package id (one APK per test package); a missing, unreadable or not-installed one fails that device and the tag stays.
 
 Multi-user mode: run as root, it re-executes as `primary_user`. It refuses `planning_user` and `coder_user`
-and needs the ai-shared and ai-code groups (`source ./env`).
+and needs the ai-shared and ai-code groups (`source ./orch/env`).
 
 Per-app config:
 - project-facts.md: the build declaration above.

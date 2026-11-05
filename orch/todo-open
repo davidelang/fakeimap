@@ -6,7 +6,7 @@
 # Exit: 0 printed >=1 item, 1 nothing matched, 2 usage error or TODO.md missing.
 set -euo pipefail
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: ./todo-open [FILTER]"
+  echo "Usage: ./orch/todo-open [FILTER]"
   echo "FILTER is a fixed string matched against the whole item text."
   exit 0
 fi

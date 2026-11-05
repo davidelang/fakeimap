@@ -55,7 +55,7 @@ for sd in sandbox dev-ai-interaction; do
   P="$T/new-$sd"
   git clone -q --no-hardlinks -- "$canon" "$P" || { bad "$sd: clone failed"; continue; }
   sed "s/^sandbox_dir=.*/sandbox_dir=$sd/; s#^orch_root=.*#orch_root=$P#" "$canon/project.config" > "$P/project.config"
-  (cd "$P" && ./install-merge-drivers.sh >/dev/null && ./verify-smudge --fix >/dev/null) || { bad "$sd: filter install/smudge failed in new clone"; continue; }
+  (cd "$P" && ./orch/install-merge-drivers.sh >/dev/null && ./orch/verify-smudge --fix >/dev/null) || { bad "$sd: filter install/smudge failed in new clone"; continue; }
   grep -qx "$sd" "$P/.gitignore" && ok "$sd: new clone .gitignore has '$sd'" || bad "$sd: new clone .gitignore lacks '$sd'"
   cp "$P/.gitignore" "$T/before"
   SANDBOX_REL="$sd" bash -c "$body" bash "$P/.gitignore" "$sd" "/master/" "/agent-*/"

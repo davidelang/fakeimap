@@ -13,7 +13,8 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 mkrepo() {
   r="$T/$1"; git init -q -b main "$r"; cd "$r"
   git config user.email t@t; git config user.name t
-  cp "$here/reset-to-builds.sh" "$here/get-builds-tag.sh" .
+  mkdir -p orch
+  cp "$here/orch/reset-to-builds.sh" "$here/orch/get-builds-tag.sh" orch/
   printf 'log1\n' > ENGINEERING_LOG.md; printf 'todo1\n' > TODO.md; printf 'facts1\n' > project-facts.md
   printf 'a1\n' > a.txt; printf 'b1\n' > b.txt; mkdir d; printf 'c\n' > d/c.txt; printf 'ign/\n' > .gitignore
   git add -A; git commit -qm base; git tag main/builds
@@ -26,7 +27,7 @@ printf 'log2 FAILED attempt\n' >> ENGINEERING_LOG.md; chmod a-w ENGINEERING_LOG.
 printf 'todo2\n' >> TODO.md; printf 'facts2\n' >> project-facts.md
 sum=$(sha256sum ENGINEERING_LOG.md); ino=$(stat -c '%i %Y' ENGINEERING_LOG.md)
 rm b.txt d/c.txt; printf 'x\n' > a.txt; git add a.txt; printf 'u\n' > untracked.txt; mkdir -p ign u2; echo i > ign/i; echo z > u2/z
-out=$(./reset-to-builds.sh 2>&1) || { bad "builds run: $out"; }
+out=$(./orch/reset-to-builds.sh 2>&1) || { bad "builds run: $out"; }
 check "HEAD at builds"           '[ "$(git rev-parse HEAD)" = "$(git rev-parse main/builds^{commit})" ]'
 check "log byte-identical"       '[ "$(sha256sum ENGINEERING_LOG.md)" = "$sum" ]'
 check "log not rewritten"        '[ "$(stat -c "%i %Y" ENGINEERING_LOG.md)" = "$ino" ]'
@@ -45,7 +46,7 @@ st=$(git status --porcelain | LC_ALL=C sort | tr "\n" ,); [ "$st" = " M ENGINEER
 mkrepo r2
 printf 'log2\n' >> ENGINEERING_LOG.md; git add ENGINEERING_LOG.md; chmod a-w ENGINEERING_LOG.md
 sum=$(sha256sum ENGINEERING_LOG.md); printf 'x\n' > a.txt; rm n.txt; printf 'u\n' > u.txt
-out=$(./reset-to-builds.sh --head 2>&1) || bad "head run: $out"
+out=$(./orch/reset-to-builds.sh --head 2>&1) || bad "head run: $out"
 check "head: HEAD unchanged"     '[ "$(git log -1 --format=%s)" = after ]'
 check "head: log identical"      '[ "$(sha256sum ENGINEERING_LOG.md)" = "$sum" ]'
 check "head: a.txt = HEAD"       '[ "$(cat a.txt)" = a2 ] && [ -f n.txt ] && [ ! -e u.txt ]'
@@ -54,14 +55,14 @@ check "head: log unstaged only"  '[ "$(git status --porcelain)" = " M ENGINEERIN
 # 3: help does not reset; a bad arg is rejected; a missing tag fails loudly with no change
 cd "$T/r2"
 st=$(git status --porcelain | LC_ALL=C sort)
-out=$(./reset-to-builds.sh -h); rc=$?
+out=$(./orch/reset-to-builds.sh -h); rc=$?
 st2=$(git status --porcelain | LC_ALL=C sort)
 [[ $rc -eq 0 && "$out" == *--head* && "$st2" == "$st" ]] && ok "-h exits 0 and does not reset" || bad "-h rc=$rc"
-out=$(./reset-to-builds.sh --help); rc=$?
+out=$(./orch/reset-to-builds.sh --help); rc=$?
 [[ $rc -eq 0 && "$out" == *--head* ]] && ok "--help exits 0" || bad "--help rc=$rc"
-if ./reset-to-builds.sh --x >/dev/null 2>&1; then bad "bad arg accepted"; else ok "bad arg rejected"; fi
+if ./orch/reset-to-builds.sh --x >/dev/null 2>&1; then bad "bad arg accepted"; else ok "bad arg rejected"; fi
 git tag -d main/builds >/dev/null; printf 'y\n' > a.txt
-if out=$(./reset-to-builds.sh 2>&1); then bad "missing tag should fail"; else ok "missing tag fails: ${out%%$'\n'*}"; fi
+if out=$(./orch/reset-to-builds.sh 2>&1); then bad "missing tag should fail"; else ok "missing tag fails: ${out%%$'\n'*}"; fi
 check "missing tag: no change"   '[ "$(cat a.txt)" = y ]'
 
 echo "$pass passed, $fail failed"; [ "$fail" -eq 0 ]

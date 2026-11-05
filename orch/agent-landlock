@@ -328,7 +328,7 @@ def _load_profile_paths(landlock_cfg: Path, worktree: Path) -> List[str]:
 def _resolve_grant_token(tok: str, worktree: Path, src: Path) -> str:
     tok = tok.strip()
     if not tok or "@@" in tok:
-        _die(f"{src}: grant {tok!r} is empty or an unsmudged @@TOKEN@@ (run ./verify-smudge)")
+        _die(f"{src}: grant {tok!r} is empty or an unsmudged @@TOKEN@@ (run ./orch/verify-smudge)")
     if tok.startswith("env:HOME/"):
         return _expand_path("$HOME/" + tok[len("env:HOME/") :])
     if tok.startswith("env:"):

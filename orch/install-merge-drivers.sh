@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-USAGE_LINE="usage: ./install-merge-drivers.sh [-h]"
+USAGE_LINE="usage: ./orch/install-merge-drivers.sh [-h]"
 usage() {
   cat <<EOF
 $USAGE_LINE
@@ -19,7 +19,7 @@ Configure repo-local merge drivers and the manage-configs filter.
 options:
   -h, --help  show this help message and exit
 
-Details: the comment at the top of ./install-merge-drivers.sh.
+Details: the comment at the top of ./orch/install-merge-drivers.sh.
 EOF
 }
 case "${1:-}" in
@@ -54,7 +54,7 @@ git config merge.ve-special-refuse.driver "./git-merge-drivers/ve-special-refuse
 chmod +x "$ROOT/git-merge-drivers/ve-englog" \
          "$ROOT/git-merge-drivers/ve-special-ours" \
          "$ROOT/git-merge-drivers/ve-special-refuse" \
-         "$ROOT/install-merge-drivers.sh" "$ROOT/merge-branch-into-master.sh"
+         "$ROOT/orch/install-merge-drivers.sh" "$ROOT/orch/merge-branch-into-master.sh"
 
 COMMON_DIR=$(git rev-parse --git-common-dir)
 echo "install-merge-drivers: configured for $COMMON_DIR"

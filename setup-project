@@ -212,8 +212,8 @@ fi
 echo ""
 echo "=== Step 3: Activate filters (run in tree root) ==="
 cat <<'FILTERS'
-./install-merge-drivers.sh   # merge drivers + manage-configs filter (required=true)
-./verify-smudge --fix        # re-smudge filtered files; fails loudly if any stay unsmudged
+./orch/install-merge-drivers.sh   # merge drivers + manage-configs filter (required=true)
+./orch/verify-smudge --fix        # re-smudge filtered files; fails loudly if any stay unsmudged
 FILTERS
 
 # 4. .gitattributes (prepared in staged)

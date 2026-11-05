@@ -2,7 +2,7 @@
 # ve-englog — Git merge driver for ENGINEERING_LOG.md
 #
 # Args (git): %O ancestor  %A ours (result path)  %B theirs  %L marker  %P path
-# Policy: append branch-only tail onto master via ./append-to-engineering-log.
+# Policy: append branch-only tail onto master via ./orch/append-to-engineering-log.
 # Result is usually a THIRD version (ours + branch tail), not pure ours or theirs.
 # Never chattr -a; worktree log stays append-only (+a).
 

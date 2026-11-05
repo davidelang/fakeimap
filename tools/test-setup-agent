@@ -26,10 +26,10 @@ chmod 755 "$S/sudo"
 
 mk() {
   R="$T/proj"; if [ -d "$R" ]; then chmod -R u+rwx "$R"; rm -rf "$R"; fi
-  mkdir -p "$R/hooks" "$R/sandbox"; chmod 2775 "$R"
-  cp "$canon/setup_agent.sh" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$canon/ve-resolve-orch" \
-     "$canon/filter-apply-config" "$canon/filter-clean-config" "$canon/verify-smudge" \
-     "$canon/append-to-engineering-log" "$R/"
+  mkdir -p "$R/hooks" "$R/sandbox" "$R/orch"; chmod 2775 "$R"
+  cp "$canon/setup_agent.sh" "$canon/filter-apply-config" "$canon/filter-clean-config" "$R/"
+  cp "$canon/orch/perm-lib.sh" "$canon/orch/perm-engine.py" "$canon/orch/perm-model.tsv" "$canon/orch/ve-resolve-orch" \
+     "$canon/orch/verify-smudge" "$canon/orch/append-to-engineering-log" "$R/orch/"
   printf '#!/bin/sh\nexit 0\n' >"$R/hooks/post-checkout"; chmod 755 "$R/hooks/post-checkout"
   printf '#!/bin/sh\necho stand-in fix-perms\n' >"$R/fix-perms"; chmod 755 "$R/fix-perms"
   printf '## log\n' >"$R/ENGINEERING_LOG.md"

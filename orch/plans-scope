@@ -3,7 +3,7 @@
 # with its Status, Repo check, ignore-list hit, and the commits on HEAD since the plan's
 # timestamp that touch any existing path the plan names. The agent then judges intent only.
 set -euo pipefail
-USAGE_LINE="usage: ./plans-scope [-h]"
+USAGE_LINE="usage: ./orch/plans-scope [-h]"
 usage() {
   cat <<EOF
 $USAGE_LINE
@@ -13,7 +13,7 @@ Read-only /validate-plans state for every plan in the sandbox.
 options:
   -h, --help  show this help message and exit
 
-Details: the comment at the top of ./plans-scope.
+Details: the comment at the top of ./orch/plans-scope.
 EOF
 }
 case "${1:-}" in

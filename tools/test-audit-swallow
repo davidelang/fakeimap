@@ -43,6 +43,11 @@ printf 'echo moved\n' >"$R/t"; awk 'NR==2{l=$0;next}{print} END{print l}' "$R/s.
 "$A" --staged --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 0 ] && ok "a moved swallow is not new" || bad "rc=$rc $(cat "$T/e")"
 G -C "$R" reset -q --hard
 
+# renaming the file is not a new swallow
+G -C "$R" mv s.sh sub/s.sh
+"$A" --staged --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 0 ] && ok "renaming a file does not make its swallows new" || bad "rename rc=$rc $(cat "$T/e")"
+G -C "$R" reset -q --hard
+
 # a new file with one swallow; a marked one
 printf 'cp a b %s\n' "$SW" >"$R/n.sh"; G -C "$R" add n.sh
 "$A" --staged --repo "$R" 2>"$T/e"; rc=$?; [ $rc -eq 1 ] && grep -q 'file=n.sh before=0 after=1' "$T/e" && ok "new file with a swallow rejected" || bad "rc=$rc $(cat "$T/e")"

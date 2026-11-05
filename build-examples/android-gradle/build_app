@@ -216,7 +216,7 @@ else
 PRIMARY_USER=$(cfg primary_user)
 if [ -z "$PRIMARY_USER" ]; then
   echo "ERROR: primary_user unset in project.config" >&2
-  echo "  Stamp project.config from project.config.example (or source ./env after setup)." >&2
+  echo "  Stamp project.config from project.config.example (or source ./orch/env after setup)." >&2
   exit 1
 fi
 
@@ -253,12 +253,12 @@ _BA_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ "$SINGLE_USER" = true ]; then
   BUILD_UMASK=$(umask)
 else
-if [ ! -f "$_BA_DIR/perm-lib.sh" ]; then
-  echo "ERROR: missing $_BA_DIR/perm-lib.sh (ships with the orchestration rules)." >&2
+if [ ! -f "$_BA_DIR/orch/perm-lib.sh" ]; then
+  echo "ERROR: missing $_BA_DIR/orch/perm-lib.sh (ships with the orchestration rules)." >&2
   exit 1
 fi
 # shellcheck source=/dev/null
-. "$_BA_DIR/perm-lib.sh"
+. "$_BA_DIR/orch/perm-lib.sh"
 perm_init "$_BA_DIR/project.config" || exit 1
 WORKTREE_UMASK=$(perm_umask worktree) || exit 1
 BUILD_UMASK=$(perm_umask build-intermediates) || exit 1
@@ -592,7 +592,7 @@ for grp in ai-shared ai-code; do
 done
 if [ -n "$MISSING" ]; then
   echo "ERROR: this shell is missing project group(s):$MISSING" >&2
-  echo "  Fix:  source ./env   (refreshes this shell's groups)" >&2
+  echo "  Fix:  source ./orch/env   (refreshes this shell's groups)" >&2
   exit 1
 fi
 fi
@@ -1045,12 +1045,12 @@ fi
 
 # Homes under this worktree. orch_root is read/seed only (keystore copy).
 _BA_HERE="$(cd "$(dirname "$0")" && pwd)"
-if [ ! -f "$_BA_HERE/ve-resolve-orch" ]; then
-  echo "ERROR: missing $_BA_HERE/ve-resolve-orch (run ./update-rules.sh from orchestration root)." >&2
+if [ ! -f "$_BA_HERE/orch/ve-resolve-orch" ]; then
+  echo "ERROR: missing $_BA_HERE/orch/ve-resolve-orch (run ./update-rules.sh from orchestration root)." >&2
   exit 1
 fi
 # shellcheck source=/dev/null
-. "$_BA_HERE/ve-resolve-orch"
+. "$_BA_HERE/orch/ve-resolve-orch"
 if [ "$SINGLE_USER" = true ]; then
   ORCH_ROOT="$_BA_HERE"
   mkdir -p "$_BA_HERE/.gradle-home" || exit 1

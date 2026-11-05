@@ -28,7 +28,7 @@ git_home=@@GIT_HOME@@
 
 # Absolute orchestration root (managing tree). Worktrees do not guess via
 # ../.gradle-shared. update-rules.sh / setup_agent.sh write the real path into
-# gitignored project.config. Runtime: ./ve-resolve-orch or source it.
+# gitignored project.config. Runtime: ./orch/ve-resolve-orch or source it.
 orch_root=@@ORCH_ROOT@@
 
 # Special sandbox paths (for setup-project to create)

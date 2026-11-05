@@ -11,9 +11,6 @@ local docs/ENVIRONMENT_SETUP.md
 local docs/reference/ORCHESTRATION_MERGE_INFRA_SYNC.md
 local docs/reference/MERGE_POSTMORTEM_IMPROVE_PUMP_CLASSIFICATION.md
 local new_grok_agent_prompt
-local env
-local refresh-shell.c
-local install-refresh-shell.sh
 local generate_pr.sh
 local setup-project
 local fix-android-sdk-perms
@@ -25,4 +22,3 @@ local deploy
 local build_app
 local sync_infrastructure.sh
 local run-as-primary.c
-local ve-resolve-orch

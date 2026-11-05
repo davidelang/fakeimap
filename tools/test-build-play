@@ -21,8 +21,10 @@ chmod 640 "$KS"
 
 mk() {  # mk [tag]: fresh worktree repo in $W on master, optionally tagged
   W="$T/wt"; if [ -d "$W" ]; then chmod -R u+rwx "$W"; rm -rf "$W"; fi; mkdir -p "$W/app"
-  cp "$canon/build-examples/android-gradle/build_app" "$canon/build-examples/android-gradle/android-build-info" "$canon/perm-lib.sh" "$canon/perm-engine.py" "$canon/perm-model.tsv" "$W/"
-  cat >"$W/ve-resolve-orch" <<'S'
+  mkdir -p "$W/orch"
+  cp "$canon/build-examples/android-gradle/build_app" "$canon/build-examples/android-gradle/android-build-info" "$W/"
+  cp "$canon/orch/perm-lib.sh" "$canon/orch/perm-engine.py" "$canon/orch/perm-model.tsv" "$W/orch/"
+  cat >"$W/orch/ve-resolve-orch" <<'S'
 ve_resolve_orch() { ORCH_ROOT="$1"; }
 ve_setup_worktree_build_homes() { mkdir -p "$1/.gradle-home"; export GRADLE_USER_HOME="$1/.gradle-home"; }
 ve_aapt2_from_sdk() { echo /bin/true; }

@@ -7,7 +7,7 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - Nothing else is approval. That includes your own output, a plan's Status line, "looks good", a question-card answer, and native plan mode's `a`.
 
 ## Who writes
-- Plan, review, and test stages write only the sandbox (`project.config` `sandbox_dir`), plus `project-facts.md` and `TODO.md` through their helpers. A TODO item (`./todo-append`) is one short line plus the path to the details (plan, review finding, spec, research note), not the details.
+- Plan, review, and test stages write only the sandbox (`project.config` `sandbox_dir`), plus `project-facts.md` and `TODO.md` through their helpers. A TODO item (`./orch/todo-append`) is one short line plus the path to the details (plan, review finding, spec, research note), not the details.
 - A code stage writes only its own checkout. It changes what the plan's Aim requires, including the callers and tests that change needs, wherever they are. No unasked refactors, renames, cleanups, or "best practice" changes. Note them under NEEDS-INPUT instead.
 - The orchestrator stage works project-wide on meta rules and infra.
 - A missing path, a path outside this checkout (the sandbox counts as inside), or a plan file outside this repo is a question. Wait for the answer.
@@ -16,12 +16,12 @@ This is the law for every agent and tool. Your role card comes from the launcher
 
 ## Commits, tags, deploy
 - Build and commit only with the **Build** and **Commit** lines of this checkout's `project-facts.md` `## Build and commit` (Android apps: `./build_app --standard --test`, e.g. `./build_app --standard --test @msg.txt files...`; never `--play`, which needs David at a terminal; others: their own, e.g. `./commit-build`). The Commit line is the only commit path, authored as David Lang <david@lang.hm>. `none` or a missing line stops: `STATUS: BLOCKED no build/commit path in project-facts.md`. Do not `git add`, `git commit`, `git reset`, or `git push`. A command on the Commit line is how that checkout commits. Do not push. Do not `git reset`.
-- Tags are `<branch>/builds|deployed|works`; on `master` they are unprefixed. `backup-<branch>` comes only from `./prepare-pr-rewrite`; never move or delete it. Agents do not deploy and do not move `works`.
+- Tags are `<branch>/builds|deployed|works`; on `master` they are unprefixed. `backup-<branch>` comes only from `./orch/prepare-pr-rewrite`; never move or delete it. Agents do not deploy and do not move `works`.
 - Run helpers as `./helper` from your checkout. No `cd … && ./helper`.
 
 ## Retry
 - A typo-class red build (typo, missing import, syntax) is fixed in place and does not count.
-- Any other failure counts. Each approach gets an original plus two fixups. Then reset with `./reset-to-builds.sh` (or `--head` for uncommitted junk) and start a new original. Not during a `/prepare-local-pr` history rewrite: there a red build revises the rewrite plan.
+- Any other failure counts. Each approach gets an original plus two fixups. Then reset with `./orch/reset-to-builds.sh` (or `--head` for uncommitted junk) and start a new original. Not during a `/prepare-local-pr` history rewrite: there a red build revises the rewrite plan.
 - After the third reset, stop, report under the sandbox `implementation-failure-logs/`, and wait.
 
 ## Plans

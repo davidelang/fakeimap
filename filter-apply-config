@@ -4,7 +4,7 @@
 # Fails (non-zero) when project.config is missing or a token in the file has no value;
 # git then refuses the checkout (filter.manage-configs.required=true).
 #   bash ./filter-apply-config              smudge stdin to stdout
-#   bash ./filter-apply-config -t|--tokens  print the known tokens (used by ./verify-smudge)
+#   bash ./filter-apply-config -t|--tokens  print the known tokens (used by ./orch/verify-smudge)
 #   bash ./filter-apply-config -h|--help
 # Files that must keep a literal @@TOKEN@@ are not filter=manage-configs in .gitattributes.
 

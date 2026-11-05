@@ -42,7 +42,7 @@ files. Restore only the three paths from `$FEAT` (below).
 - Clean tracked tree (`git status --porcelain -uno` empty) or the user has
   said what to do with dirt. Do not `stash --staged` as a workaround.
 - `pwd` once. No `cd … && ./helper`.
-- Reset only via `./reset-to-builds.sh` (`AGENTS.md` "Retry") if you must abort.
+- Reset only via `./orch/reset-to-builds.sh` (`AGENTS.md` "Retry") if you must abort.
 
 ## Steps
 

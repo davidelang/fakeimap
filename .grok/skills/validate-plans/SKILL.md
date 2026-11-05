@@ -33,7 +33,7 @@ Ignore basenames listed in `$SANDBOX/validate-plans-ignore/`. One basename per l
 
 ## State first
 
-Run `./plans-scope` once: every plan with Status, IGNORED / REPO-MISMATCH flags, and the commits since the plan that touch its named files. Judge intent from that; do not gather it by hand.
+Run `./orch/plans-scope` once: every plan with Status, IGNORED / REPO-MISMATCH flags, and the commits since the plan that touch its named files. Judge intent from that; do not gather it by hand.
 
 ## No cap
 

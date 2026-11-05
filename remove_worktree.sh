@@ -39,7 +39,7 @@ fi
 
 if [ ! -r .git/config ]; then
     echo "Error: cannot read .git/config ($(stat -c '%A %U:%G' .git/config 2>/dev/null || echo missing))." >&2
-    echo "  Run: source ./env" >&2
+    echo "  Run: source ./orch/env" >&2
     echo "  Then re-run this command." >&2
     exit 1
 fi

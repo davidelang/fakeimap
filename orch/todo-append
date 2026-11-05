@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-USAGE_LINE="usage: ./todo-append [-h] '- [ ] ITEM (DETAILS)'|@FILE"
+USAGE_LINE="usage: ./orch/todo-append [-h] '- [ ] ITEM (DETAILS)'|@FILE"
 usage() {
   cat <<EOF
 $USAGE_LINE
@@ -19,7 +19,7 @@ Append one item to TODO.md (the text, or the contents of FILE).
 options:
   -h, --help  show this help message and exit
 
-Details: the comment at the top of ./todo-append.
+Details: the comment at the top of ./orch/todo-append.
 EOF
 }
 case "${1:-}" in

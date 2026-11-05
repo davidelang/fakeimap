@@ -8,7 +8,7 @@ pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
 git init -q "$T/r"
-cp "$canon/englog-recent" "$T/r/"
+cp "$canon/orch/englog-recent" "$T/r/"
 S="$T/r/englog-recent"
 cat >"$T/r/ENGINEERING_LOG.md" <<'F'
 # Engineering log

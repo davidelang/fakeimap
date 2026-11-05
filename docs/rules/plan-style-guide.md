@@ -25,7 +25,7 @@ Reference for planners. Full rules: `AGENT_MANDATES.md`.
 
 Stay in `plans/` until David runs `/validate-plans` (including CODE LANDED). Do not archive at land.
 
-Track progress with what already exists: `./plans-scope` (plans, Status, commits since), `plans/` versus `historical-plans/`, `./todo-open [filter]` (open TODO items), `./englog-recent` (log headers; `--show '<header>'` for one entry), and `git log`. Never read `ENGINEERING_LOG.md` or `TODO.md` whole. Do not create separate status or tracking files.
+Track progress with what already exists: `./orch/plans-scope` (plans, Status, commits since), `plans/` versus `historical-plans/`, `./orch/todo-open [filter]` (open TODO items), `./orch/englog-recent` (log headers; `--show '<header>'` for one entry), and `git log`. Never read `ENGINEERING_LOG.md` or `TODO.md` whole. Do not create separate status or tracking files.
 
 Required header on **new** plans:
 
@@ -69,7 +69,7 @@ Callers, routes, `NavHost` arguments, and tests of a changed name are part of th
 
 ## Engineering log
 
-`ENGINEERING_LOG.md` only grows. The commit file list includes it. The edit is one new line at the end, added with `./append-to-engineering-log`. Do not replace, delete, or rewrite an existing line, and do not reset the file. A plan does not require a log line and also forbid a commit, or require a clean tree that the log line would dirty. A pin bump does not add a log line.
+`ENGINEERING_LOG.md` only grows. The commit file list includes it. The edit is one new line at the end, added with `./orch/append-to-engineering-log`. Do not replace, delete, or rewrite an existing line, and do not reset the file. A plan does not require a log line and also forbid a commit, or require a clean tree that the log line would dirty. A pin bump does not add a log line.
 
 ## Do not
 

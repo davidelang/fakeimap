@@ -19,7 +19,7 @@ Explicitly permitted and encouraged for understanding the system and device beha
 - Any git history / investigation commands: git log (including -S, --oneline, ranges, -p, --all, etc.), git show, git diff, git blame, git rev-list, git describe, git ls-files, etc.
 - Device / log fetching: adb logcat (with any flags: -d, -b, -v, --pid, etc.), adb pull for reports or artifacts, adb shell commands for inspection.
 - Filesystem inspection: cat, head, tail, find, ls, file, stat on logs, reports, build outputs, sandbox contents (@@SANDBOX_PATH@@/), etc.
-- Build / tag helpers: ./get-builds-tag.sh, ./build_app (for status only during planning research; agents never pass `--play`), jq on outputs, etc.
+- Build / tag helpers: ./orch/get-builds-tag.sh, ./build_app (for status only during planning research; agents never pass `--play`), jq on outputs, etc.
 - All standard safe read-oriented commands.
 
 The ONLY hard restrictions during planning:

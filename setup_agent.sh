@@ -6,12 +6,12 @@
 # --force: overwrite dest tracked seed files that differ from orch.
 #
 # On success: exec a new interactive shell in the new worktree with project
-# environment (umask 002 + full groups via ve-refresh-shell, same as env).
+# environment (umask 002 + full groups via orch/refresh-shell, same as source ./orch/env).
 # That replaces this terminal only (other GUI apps stay open).
 #
 # Always run from the orchestration root.
 # Ensures the new worktree is fully permissioned (setgid dirs, log/wrapper,
-# run-as-primary, ve-refresh-shell, etc.) so agents can start immediately.
+# run-as-primary, orch/refresh-shell, etc.) so agents can start immediately.
 
 SETUP_FORCE=0
 BRANCH_NAME=""
@@ -97,25 +97,25 @@ _setup_req code_group "$CODE_GROUP"
 _setup_req shared_group "$SHARED_GROUP"
 
 # Owners, groups, modes and umasks: perm-model.tsv via perm-lib.sh (orchestration root).
-for _f in perm-lib.sh perm-engine.py perm-model.tsv ve-resolve-orch; do
+for _f in orch/perm-lib.sh orch/perm-engine.py orch/perm-model.tsv orch/ve-resolve-orch; do
   [ -f "$_f" ] || _setup_die "missing $(pwd)/$_f (run ./deploy-orchestration / update-rules.sh)"
 done
 # shellcheck source=/dev/null
-. ./perm-lib.sh
+. ./orch/perm-lib.sh
 perm_init "$(pwd)/project.config" || exit 1
 # shellcheck source=/dev/null
-. ./ve-resolve-orch
+. ./orch/ve-resolve-orch
 # The worktree area's umask (002): new dirs 2775 under the setgid root, files 664.
 umask "$(perm_umask worktree)" || exit 1
 
 # .git is mode 2770 and owned by the primary user, so this shell can enter it.
 # Role accounts rewrite files such as .git/config as mode 660, group
 # $SHARED_GROUP. A long-lived desktop shell does not have that supplementary
-# group until `source ./env`.
+# group until `source ./orch/env`.
 if ! id -nG | grep -Fqw -- "$SHARED_GROUP"; then
   echo "Error: this shell is missing group $SHARED_GROUP." >&2
   echo "  .git/config is $(stat -c '%A %U:%G' .git/config 2>/dev/null || echo missing)." >&2
-  echo "  Run: source ./env" >&2
+  echo "  Run: source ./orch/env" >&2
   echo "  Then: ./setup_agent.sh $BRANCH_NAME" >&2
   exit 1
 fi
@@ -294,9 +294,11 @@ seed_smudge_inputs() {
   if [ -f "$orch_root/project.config" ]; then
     cp "$orch_root/project.config" ./project.config
   fi
-  for f in filter-apply-config filter-clean-config ve-resolve-orch; do
+  for f in filter-apply-config filter-clean-config; do
     copy_orch_seed_file "$orch_root/$f" "./$f"
   done
+  mkdir -p ./orch
+  copy_orch_seed_file "$orch_root/orch/ve-resolve-orch" "./orch/ve-resolve-orch"
   # ve-resolve-orch was sourced from the orchestration root at the start.
   ve_upsert_project_config_key ./project.config orch_root "$orch_root"
 }
@@ -369,7 +371,7 @@ refresh_smudged_index() {
 
 # Filter config + every filtered file smudged (orchestration's checker; cwd = this worktree).
 verify_smudge() {
-  "$ORCH_ROOT/verify-smudge"
+  "$ORCH_ROOT/orch/verify-smudge"
 }
 
 # A failed populate removes the new worktree (from the orchestration root). If that removal
@@ -476,9 +478,12 @@ AGENT_ABS=$(pwd)
 PARENT_ROOT=".."
 
 # Copy latest authoritative copies of key permission/infra files from orchestration root
-# (ensures even if the branch tip was slightly behind, the tree is current)
-for f in append-to-engineering-log run-as-primary.c env ve-refresh-shell.c; do
-  copy_orch_seed_file "$PARENT_ROOT/$f" "$AGENT_ABS/$f"
+# (ensures even if the branch tip was slightly behind, the tree is current).
+# run-as-primary.c stays at the worktree root. The shell helpers live in orch/.
+copy_orch_seed_file "$PARENT_ROOT/run-as-primary.c" "$AGENT_ABS/run-as-primary.c"
+mkdir -p "$AGENT_ABS/orch" || _setup_die "cannot create $AGENT_ABS/orch"
+for f in append-to-engineering-log env refresh-shell.c; do
+  copy_orch_seed_file "$PARENT_ROOT/orch/$f" "$AGENT_ABS/orch/$f"
 done
 # Launchers often live only on orchestration until update-rules; seed common ones
 for f in run-grok-coder run-grok-orchestrator run-grok-master run-grok-planner; do
@@ -494,20 +499,35 @@ if [ -f "$AGENT_ABS/run-as-primary.c" ]; then
   perm_apply setuid-run-as-primary "$AGENT_ABS/run-as-primary" --top-only || exit 1
 fi
 
-# Create log file with minimal header if missing (fixer will harden it)
+# TODO.md and ENGINEERING_LOG.md already live in work-history/ (root names are
+# symlinks). A new tree with neither gets an initial log and the symlink.
+# A regular root file is an older branch; leave it. Do not create a changelog.
 mkdir -p "$AGENT_ABS/work-history" || _setup_die "cannot create $AGENT_ABS/work-history"
-if [ ! -e "$AGENT_ABS/work-history/ENGINEERING_LOG.md" ]; then
-  if [ -f "$AGENT_ABS/ENGINEERING_LOG.md" ] && [ ! -L "$AGENT_ABS/ENGINEERING_LOG.md" ]; then
-    : # still at the worktree root; move-work-history.sh relocates it
-  else
-    echo "## $(date +%Y-%m-%d) - Initial log for $AGENT_ID" > "$AGENT_ABS/work-history/ENGINEERING_LOG.md" \
-      || _setup_die "cannot create $AGENT_ABS/work-history/ENGINEERING_LOG.md"
-    ln -sfn work-history/ENGINEERING_LOG.md "$AGENT_ABS/ENGINEERING_LOG.md" \
-      || _setup_die "cannot link $AGENT_ABS/ENGINEERING_LOG.md"
-  fi
-elif [ ! -e "$AGENT_ABS/ENGINEERING_LOG.md" ]; then
+if [ ! -e "$AGENT_ABS/work-history/ENGINEERING_LOG.md" ] && [ ! -e "$AGENT_ABS/ENGINEERING_LOG.md" ]; then
+  echo "## $(date +%Y-%m-%d) - Initial log for $AGENT_ID" > "$AGENT_ABS/work-history/ENGINEERING_LOG.md" \
+    || _setup_die "cannot create $AGENT_ABS/work-history/ENGINEERING_LOG.md"
   ln -sfn work-history/ENGINEERING_LOG.md "$AGENT_ABS/ENGINEERING_LOG.md" \
     || _setup_die "cannot link $AGENT_ABS/ENGINEERING_LOG.md"
+elif [ -e "$AGENT_ABS/work-history/ENGINEERING_LOG.md" ] && [ ! -e "$AGENT_ABS/ENGINEERING_LOG.md" ]; then
+  ln -sfn work-history/ENGINEERING_LOG.md "$AGENT_ABS/ENGINEERING_LOG.md" \
+    || _setup_die "cannot link $AGENT_ABS/ENGINEERING_LOG.md"
+fi
+if [ -e "$AGENT_ABS/work-history/TODO.md" ] && [ ! -e "$AGENT_ABS/TODO.md" ]; then
+  ln -sfn work-history/TODO.md "$AGENT_ABS/TODO.md" \
+    || _setup_die "cannot link $AGENT_ABS/TODO.md"
+fi
+# Changelog joins work-history only where a regular root file already exists.
+if [ -f "$AGENT_ABS/CHANGELOG.md" ] && [ ! -L "$AGENT_ABS/CHANGELOG.md" ]; then
+  if [ -e "$AGENT_ABS/work-history/CHANGELOG.md" ]; then
+    _setup_die "CHANGELOG.md exists both at the worktree root and in work-history/"
+  fi
+  mv "$AGENT_ABS/CHANGELOG.md" "$AGENT_ABS/work-history/CHANGELOG.md" \
+    || _setup_die "cannot move $AGENT_ABS/CHANGELOG.md into work-history/"
+  ln -sfn work-history/CHANGELOG.md "$AGENT_ABS/CHANGELOG.md" \
+    || _setup_die "cannot link $AGENT_ABS/CHANGELOG.md"
+elif [ -e "$AGENT_ABS/work-history/CHANGELOG.md" ] && [ ! -e "$AGENT_ABS/CHANGELOG.md" ]; then
+  ln -sfn work-history/CHANGELOG.md "$AGENT_ABS/CHANGELOG.md" \
+    || _setup_die "cannot link $AGENT_ABS/CHANGELOG.md"
 fi
 
 cd "$ORCH_ROOT" || _setup_die "cannot cd to $ORCH_ROOT"
@@ -527,21 +547,22 @@ if [ -f "$AGENT_ABS/run-as-primary" ]; then
   perm_verify setuid-run-as-primary "$AGENT_ABS/run-as-primary" --top-only || _setup_die "run-as-primary is not as perm-model.tsv says after fix-perms"
 fi
 
-# ve-refresh-shell: build + setuid-root in orch AND this agent worktree (not in git).
-# One sudo password may be requested. Never leave setuid on non-root owner.
+# refresh-shell: build + setuid-root in the orchestration root and this worktree (not in git).
+# One sudo password may be requested. Never leave setuid on a non-root owner.
 # Setuid root needs root, so the installer always runs under sudo; a failure stops setup.
-if [ -x "$ORCH_ROOT/install-ve-refresh-shell.sh" ]; then
-  echo "Installing ve-refresh-shell (setuid root) in orch + worktree..."
+if [ -x "$ORCH_ROOT/orch/install-refresh-shell.sh" ]; then
+  echo "Installing refresh-shell (setuid root) in orch + worktree..."
   for _dest in "$ORCH_ROOT" "$AGENT_ABS"; do
-    sudo "$ORCH_ROOT/install-ve-refresh-shell.sh" "$_dest" || _setup_die "install-ve-refresh-shell.sh $_dest failed"
+    sudo "$ORCH_ROOT/orch/install-refresh-shell.sh" "$_dest" || _setup_die "orch/install-refresh-shell.sh $_dest failed"
   done
 else
   # Projects without the installer: build here, then root owns it (setuid-refresh-shell area).
   for _dest in "$ORCH_ROOT" "$AGENT_ABS"; do
-    [ -f "$_dest/ve-refresh-shell.c" ] || continue
-    (cd "$_dest" && gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c) || _setup_die "gcc failed for $_dest/ve-refresh-shell.c"
-    sudo chown root:root "$_dest/ve-refresh-shell" || _setup_die "cannot chown root:root $_dest/ve-refresh-shell"
-    sudo chmod 4755 "$_dest/ve-refresh-shell" || _setup_die "cannot chmod 4755 $_dest/ve-refresh-shell"
+    [ -f "$_dest/orch/refresh-shell.c" ] || continue
+    mkdir -p "$_dest/orch"
+    (cd "$_dest/orch" && gcc -O2 -Wall -o refresh-shell refresh-shell.c) || _setup_die "gcc failed for $_dest/orch/refresh-shell.c"
+    sudo chown root:root "$_dest/orch/refresh-shell" || _setup_die "cannot chown root:root $_dest/orch/refresh-shell"
+    sudo chmod 4755 "$_dest/orch/refresh-shell" || _setup_die "cannot chmod 4755 $_dest/orch/refresh-shell"
   done
 fi
 
@@ -549,10 +570,10 @@ fi
 ensure_common_hooks_executable
 
 # Merge drivers are repo-global (.git config); ensure installed for all worktrees
-if [ -x "$ORCH_ROOT/install-merge-drivers.sh" ]; then
-  (cd "$ORCH_ROOT" && ./install-merge-drivers.sh >/dev/null) || _setup_die "install-merge-drivers.sh failed"
+if [ -x "$ORCH_ROOT/orch/install-merge-drivers.sh" ]; then
+  (cd "$ORCH_ROOT" && ./orch/install-merge-drivers.sh >/dev/null) || _setup_die "install-merge-drivers.sh failed"
 fi
-for _f in "$AGENT_ABS"/git-merge-drivers/* "$AGENT_ABS/install-merge-drivers.sh" "$AGENT_ABS/merge-branch-into-master.sh"; do
+for _f in "$AGENT_ABS"/git-merge-drivers/* "$AGENT_ABS/orch/install-merge-drivers.sh" "$AGENT_ABS/orch/merge-branch-into-master.sh"; do
   if [ -f "$_f" ]; then
     ve_add_other_x "$_f" || exit 1
   fi
@@ -602,10 +623,12 @@ PYEND_ARTIFACTS
     # Newly copied tracked scripts may be untracked if not on branch tip yet (only paths
     # that exist are named, so git add has nothing to complain about)
     _seed=()
-    for _p in env deploy build_app setup_agent.sh fix-perms update-rules.sh \
-              append-to-engineering-log get-builds-tag.sh install-*.sh \
+    for _p in orch/env deploy build_app setup_agent.sh fix-perms update-rules.sh \
+              orch/append-to-engineering-log orch/get-builds-tag.sh \
+              orch/install-merge-drivers.sh orch/install-refresh-shell.sh \
               git-merge-drivers hooks AGENT_MANDATES.md AGENTS.md GROK.md \
-              standard-plan-compliance-block.md project-facts.md; do
+              standard-plan-compliance-block.md project-facts.md \
+              work-history/CHANGELOG.md; do
       if [ -e "$_p" ]; then _seed+=("$_p"); fi
     done
     if [ "${#_seed[@]}" -gt 0 ]; then
@@ -619,7 +642,7 @@ PYEND_ARTIFACTS
 
 # --- Enter new worktree shell (env semantics) ---
 # Replace this process with an interactive shell in AGENT_ABS, umask 002, full
-# project groups when ve-refresh-shell is installed setuid (same as source ./env).
+# project groups when orch/refresh-shell is installed setuid (same as source ./orch/env).
 unset VE_SETUP_AGENT
 trap - EXIT
 
@@ -633,7 +656,7 @@ umask "$(perm_umask worktree)"
 
 # Prefer setuid-root helper only (setuid+non-root owner is unsafe — see env)
 REFRESH=""
-for _vrs in "$ORCH_ROOT/ve-refresh-shell" "$AGENT_ABS/ve-refresh-shell"; do
+for _vrs in "$ORCH_ROOT/orch/refresh-shell" "$AGENT_ABS/orch/refresh-shell"; do
   if [ -x "$_vrs" ] && [ -u "$_vrs" ] && [ "$(stat -c '%U' "$_vrs" 2>/dev/null)" = "root" ]; then
     REFRESH="$_vrs"
     break
@@ -645,9 +668,9 @@ if [ -n "$REFRESH" ]; then
 fi
 
 # No setuid helper yet: plain interactive shell in the worktree (umask 002; groups may be stale)
-echo "NOTE: ve-refresh-shell not setuid yet — shell may lack project groups."
-echo "  One-time: gcc -O2 -Wall -o ve-refresh-shell ve-refresh-shell.c && sudo chown root:root ve-refresh-shell && sudo chmod 4755 ve-refresh-shell"
-echo "  Then: source ./env"
+echo "NOTE: refresh-shell not setuid yet — shell may lack project groups."
+echo "  One-time: sudo ./orch/install-refresh-shell.sh --all"
+echo "  Then: source ./orch/env"
 cd "$AGENT_ABS" || {
   echo "ERROR: cannot cd to $AGENT_ABS"
   return 1 2>/dev/null || exit 1

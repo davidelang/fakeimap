@@ -8,7 +8,7 @@
 
 # Explicitly disable filters on the filter implementation scripts (prevents checkout-time "No such file" errors)
 
-# Special-file merge drivers (install via ./install-merge-drivers.sh / update-rules)
+# Special-file merge drivers (install via ./orch/install-merge-drivers.sh / update-rules)
 # ve-englog: append branch tail via append-to-engineering-log (third-version result)
 # ve-special-ours: always keep master/ours; Master still reviews vs branch delta (todo-close/append, facts prune)
 ENGINEERING_LOG.md merge=ve-englog

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # landlock-smoke-matrix — non-interactive allow/deny matrix via agent-landlock.
-# Usage: ./landlock-smoke-matrix [WORKTREE]
+# Usage: ./orch/landlock-smoke-matrix [WORKTREE]
 # Env: AGENT_LANDLOCK_STRICT=1 recommended for smoke (fail if ABI missing).
 set -euo pipefail
 
-USAGE_LINE="usage: ./landlock-smoke-matrix [-h] [WORKTREE]"
+USAGE_LINE="usage: ./orch/landlock-smoke-matrix [-h] [WORKTREE]"
 usage() {
   cat <<EOF
 $USAGE_LINE
@@ -14,7 +14,7 @@ Non-interactive allow/deny matrix via agent-landlock for WORKTREE (default: this
 options:
   -h, --help  show this help message and exit
 
-Details: the comment at the top of ./landlock-smoke-matrix.
+Details: the comment at the top of ./orch/landlock-smoke-matrix.
 EOF
 }
 case "${1:-}" in

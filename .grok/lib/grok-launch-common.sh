@@ -205,12 +205,12 @@ SANDBOX_DIR="$(cd "$SANDBOX_DIR" && pwd)"
 
 
 ANDROID_SHARED=""
-if [[ ! -f "$SCRIPT_DIR/ve-resolve-orch" ]]; then
-  echo "ERROR: missing $SCRIPT_DIR/ve-resolve-orch (run ./update-rules.sh from orchestration root)." >&2
+if [[ ! -f "$SCRIPT_DIR/orch/ve-resolve-orch" ]]; then
+  echo "ERROR: missing $SCRIPT_DIR/orch/ve-resolve-orch (run ./update-rules.sh from orchestration root)." >&2
   exit 1
 fi
 # shellcheck source=/dev/null
-. "$SCRIPT_DIR/ve-resolve-orch"
+. "$SCRIPT_DIR/orch/ve-resolve-orch"
 ve_resolve_orch "$SCRIPT_DIR" || exit 1
 ve_setup_worktree_build_homes "$SCRIPT_DIR" || exit 1
 ANDROID_SHARED="$ANDROID_USER_HOME"
@@ -322,7 +322,7 @@ role_cfg() {
 LANDLOCK_ARGS=()
 build_landlock_args() {
   local run_user="$1"
-  local landlock_helper="${SCRIPT_DIR}/agent-landlock"
+  local landlock_helper="${SCRIPT_DIR}/orch/agent-landlock"
   LANDLOCK_ARGS=()
   if [[ ! -f "$landlock_helper" ]]; then
     echo "ERROR: $landlock_helper missing; refusing to launch without session Landlock" >&2

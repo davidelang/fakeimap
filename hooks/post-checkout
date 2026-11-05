@@ -18,9 +18,9 @@
 # Common .git DAC repair is explicit only:
 #   ./fix-multiuser-git-hosts.sh   (or ./fix-ve-git-shared.sh)
 #
-# Every checkout ends with ./verify-smudge: all filter=manage-configs files must be
+# Every checkout ends with ./orch/verify-smudge: all filter=manage-configs files must be
 # smudged, else the hook (and so the git command) fails. setup_agent sets
-# VE_SETUP_AGENT=1 while it populates a worktree and runs ./verify-smudge itself.
+# VE_SETUP_AGENT=1 while it populates a worktree and runs ./orch/verify-smudge itself.
 
 set -euo pipefail
 

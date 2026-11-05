@@ -10,7 +10,7 @@
 # permission prompts.
 #
 # Usage:
-#   TAG=$(./get-builds-tag.sh)
+#   TAG=$(./orch/get-builds-tag.sh)
 #   echo "Using tag: $TAG"
 #   git rev-parse "$TAG"   # (helper already verified it exists)
 #
@@ -25,7 +25,7 @@
 
 set -euo pipefail
 
-USAGE_LINE="usage: ./get-builds-tag.sh [-h]"
+USAGE_LINE="usage: ./orch/get-builds-tag.sh [-h]"
 usage() {
   cat <<EOF
 $USAGE_LINE
@@ -35,7 +35,7 @@ Print this branch's builds tag (feature-foo/builds, or builds on master).
 options:
   -h, --help  show this help message and exit
 
-Details: the comment at the top of ./get-builds-tag.sh.
+Details: the comment at the top of ./orch/get-builds-tag.sh.
 EOF
 }
 case "${1:-}" in

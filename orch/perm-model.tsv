@@ -33,7 +33,7 @@ merge-drivers	primary_user	code_group	-	775	-	primary	files under <worktree>/git
 gradlew	primary_user	code_group	-	2750	-	primary	<worktree>/gradlew (not executable by the planner)
 gradle-properties	primary_user	code_group	-	664	-	primary	<worktree>/gradle.properties
 setuid-run-as-primary	primary_user	code_group	-	4755	-	fix-perms	<worktree>/run-as-primary (built from run-as-primary.c)
-setuid-refresh-shell	root	root	-	4755	-	fix-perms	<worktree>/ve-refresh-shell (built from ve-refresh-shell.c)
+setuid-refresh-shell	root	root	-	4755	-	fix-perms	<worktree>/orch/refresh-shell (built from orch/refresh-shell.c)
 build-intermediates	coder_user	code_group	g+rwxs	ug+rwX	002	build_app (gradle)	<worktree>/app/build and <worktree>/.gradle, owned by the builder (coder_user) so build_app can fix its own outputs; the worktree pass never enters them; 'other' bits are never forced
 deliverables	-	code_group	-	644	002	build_app	APKs, AAB and output-metadata.json that build_app names (project.config)
 deliverable-dirs	-	-	u+rwx,g+rwxs,o+rx	-	002	build_app	each directory from the worktree down to a deliverable, so it is reachable without group membership

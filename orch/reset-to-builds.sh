@@ -16,14 +16,14 @@ parsed="$(getopt -o hH -l help,head -- "$@")" || exit 2
 eval set -- "$parsed"
 while true; do
   case "$1" in
-    -h|--help) echo "usage: ./reset-to-builds.sh [-H|--head]"; exit 0 ;;
+    -h|--help) echo "usage: ./orch/reset-to-builds.sh [-H|--head]"; exit 0 ;;
     -H|--head) MODE=head; shift ;;
     --) shift; break ;;
-    *) echo "usage: ./reset-to-builds.sh [--head]" >&2; exit 2 ;;
+    *) echo "usage: ./orch/reset-to-builds.sh [--head]" >&2; exit 2 ;;
   esac
 done
 if [ $# -gt 0 ]; then
-  echo "usage: ./reset-to-builds.sh [--head]" >&2
+  echo "usage: ./orch/reset-to-builds.sh [--head]" >&2
   exit 2
 fi
 
@@ -33,7 +33,7 @@ cd "$root"
 if [ "$MODE" = head ]; then
   target=$(git rev-parse --verify HEAD^{commit})
 else
-  tag=$(./get-builds-tag.sh)
+  tag=$(./orch/get-builds-tag.sh)
   target=$(git rev-parse --verify "$tag^{commit}")
 fi
 

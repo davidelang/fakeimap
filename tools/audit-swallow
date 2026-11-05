@@ -179,11 +179,55 @@ def compare(repo, pairs):
     return 0
 
 
+def _status_moves(repo, cached, ref=None):
+    """new path -> old path for renames, plus deleted paths, from one diff."""
+    args = ["diff", "-M", "--name-status", "-z"]
+    if cached:
+        args.insert(1, "--cached")
+    if ref:
+        args.append(ref)
+    raw = git(repo, *args, binary=True)
+    renames, deleted = {}, []
+    parts = raw.split(b"\0")
+    i = 0
+    while i < len(parts):
+        if not parts[i]:
+            i += 1
+            continue
+        status = parts[i].decode(errors="replace")
+        i += 1
+        if status[:1] in ("R", "C"):
+            old, new = parts[i].decode(), parts[i + 1].decode()
+            i += 2
+            renames[new] = old
+        else:
+            path = parts[i].decode()
+            i += 1
+            if status[:1] == "D":
+                deleted.append(path)
+    return renames, deleted
+
+
+def _old_spec(path, renames, deleted):
+    """HEAD path to compare, when this path is a rename or the only deleted file of the same name."""
+    if path in renames:
+        return renames[path]
+    base = os.path.basename(path)
+    same = [d for d in deleted if os.path.basename(d) == base and d not in renames.values()]
+    if len(same) == 1:
+        return same[0]
+    return path
+
+
 def staged(repo):
     names = [n for n in git(repo, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR").split("\0") if n]
     has_head = subprocess.run(["git", "-C", repo, "rev-parse", "-q", "--verify", "HEAD"],
                               capture_output=True).returncode == 0
-    pairs = [(n, blob(repo, f"HEAD:{n}") if has_head else None, blob(repo, f":{n}")) for n in names]
+    renames, deleted = _status_moves(repo, True) if has_head else ({}, [])
+    pairs = []
+    for n in names:
+        old = blob(repo, "HEAD:" + _old_spec(n, renames, deleted)) if has_head else None
+        pairs.append((n, old, blob(repo, ":" + n)))
     return compare(repo, pairs)
 
 
@@ -191,13 +235,16 @@ def against(repo, ref):
     git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
     names = [n for n in git(repo, "diff", "--name-only", "-z", "--diff-filter=ACMR", ref).split("\0") if n]
     untracked = [n for n in git(repo, "ls-files", "-z", "--others", "--exclude-standard").split("\0") if n]
+    renames, deleted = _status_moves(repo, False, ref)
+    deleted += [n for n in git(repo, "ls-files", "-z", "--deleted").split("\0") if n]
+    deleted = list(dict.fromkeys(deleted))
     pairs = []
     for n in names + untracked:
         p = os.path.join(repo, n)
         if os.path.islink(p) or not os.path.isfile(p):
             continue
         with open(p, "rb") as fh:
-            pairs.append((n, blob(repo, f"{ref}:{n}"), fh.read()))
+            pairs.append((n, blob(repo, ref + ":" + _old_spec(n, renames, deleted)), fh.read()))
     return compare(repo, pairs)
 
 

@@ -7,7 +7,7 @@ export GIT_CEILING_DIRECTORIES="$(dirname "$T")"; trap 'rm -rf "$T"' EXIT
 pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
-cp "$canon/todo-open" "$T/"
+cp "$canon/orch/todo-open" "$T/"
 S="$T/todo-open"
 cat >"$T/TODO.md" <<'F'
 # TODO

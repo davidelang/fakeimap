@@ -12,15 +12,15 @@ pass=0 fail=0
 ok()  { pass=$((pass+1)); echo "ok   $*"; }
 bad() { fail=$((fail+1)); echo "FAIL $*"; }
 tools=(
-  deploy-landlock-fix.sh fix-multiuser-git-hosts.sh
+  tools/reference/fix-multiuser-git-hosts.sh
   third_party/libpin-bwrap third_party/libpin-sandbox third_party/libpin-landlock third_party/fetch-deps
   build-examples/android-gradle/deploy build-examples/android-gradle/build_app build-examples/android-gradle/play-publish
-  agent-landlock tools/publish-smudge-fix tools/audit-swallow clone-orchestration-project prepare-pr-rewrite
-  landlock-write-probe fix-perms move-work-history.sh publish-env-fix.sh publish-release-tag.sh
-  publish-revert-grok-launch.sh publish-work-history.sh perm-engine.py env
-  todo-append get-builds-tag.sh install-merge-drivers.sh plans-scope setup-project
-  tools/upgrade-probe tools/upgrade-scan tools/update-channel-pin exec-preflight landlock-smoke-matrix
-  merge-branch-into-master.sh
+  orch/agent-landlock tools/publish-smudge-fix tools/audit-swallow clone-orchestration-project orch/prepare-pr-rewrite
+  orch/landlock-write-probe fix-perms
+  orch/perm-engine.py orch/env
+  orch/todo-append orch/get-builds-tag.sh orch/install-merge-drivers.sh orch/plans-scope setup-project
+  tools/upgrade-probe tools/upgrade-scan tools/update-channel-pin orch/exec-preflight orch/landlock-smoke-matrix
+  orch/merge-branch-into-master.sh
 )
 cd "$canon" || exit 1
 for t in "${tools[@]}"; do

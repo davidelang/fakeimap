@@ -173,7 +173,7 @@ for grp in ai-shared ai-code; do
 done
 if [ -n "$MISSING" ]; then
   echo "ERROR: this shell is missing project group(s):$MISSING" >&2
-  echo "  Fix:  source ./env   (refreshes this shell's groups)" >&2
+  echo "  Fix:  source ./orch/env   (refreshes this shell's groups)" >&2
   exit 1
 fi
 fi
@@ -295,12 +295,12 @@ if [ "$play" -eq 1 ]; then
     echo "ERROR: android-build-info select play printed '$_kw $PLAY_AAB $PLAY_VC $_rest'" >&2
     exit 1
   fi
-  if [ ! -f "$_DEPLOY_HERE/ve-resolve-orch" ]; then
-    echo "ERROR: $_DEPLOY_HERE/ve-resolve-orch missing (needed to locate the SDK aapt2)" >&2
+  if [ ! -f "$_DEPLOY_HERE/orch/ve-resolve-orch" ]; then
+    echo "ERROR: $_DEPLOY_HERE/orch/ve-resolve-orch missing (needed to locate the SDK aapt2)" >&2
     exit 1
   fi
   # shellcheck source=/dev/null
-  . "$_DEPLOY_HERE/ve-resolve-orch"
+  . "$_DEPLOY_HERE/orch/ve-resolve-orch"
   if ! AAPT2=$(ve_aapt2_from_sdk "$_DEPLOY_HERE"); then
     echo "ERROR: cannot locate the SDK aapt2 (sdk.dir in local.properties, or ANDROID_HOME) to read the bundle" >&2
     exit 1
@@ -345,12 +345,12 @@ while read -r _role _apk _rest; do
     *) echo "ERROR: android-build-info select printed '$_role $_apk $_rest'" >&2; exit 1 ;;
   esac
 done <<< "$selected"
-if [ ! -f "$_DEPLOY_HERE/ve-resolve-orch" ]; then
-  echo "ERROR: $_DEPLOY_HERE/ve-resolve-orch missing (needed to locate the SDK aapt2)" >&2
+if [ ! -f "$_DEPLOY_HERE/orch/ve-resolve-orch" ]; then
+  echo "ERROR: $_DEPLOY_HERE/orch/ve-resolve-orch missing (needed to locate the SDK aapt2)" >&2
   exit 1
 fi
 # shellcheck source=/dev/null
-. "$_DEPLOY_HERE/ve-resolve-orch"
+. "$_DEPLOY_HERE/orch/ve-resolve-orch"
 if ! AAPT2=$(ve_aapt2_from_sdk "$_DEPLOY_HERE"); then
   echo "ERROR: cannot locate the SDK aapt2 (sdk.dir in local.properties, or ANDROID_HOME) to read the APKs" >&2
   exit 1

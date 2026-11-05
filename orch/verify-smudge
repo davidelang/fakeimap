@@ -1,6 +1,6 @@
 #!/bin/bash
 # verify-smudge: check that this worktree's filter=manage-configs files are smudged.
-# Run from the worktree root: ./verify-smudge [--fix]
+# Run from the worktree root: ./orch/verify-smudge [--fix]
 #   Checks git config filter.manage-configs.{clean,smudge,required=true}, project.config,
 #   and that no filtered file still holds a known @@TOKEN@@ (list: ./filter-apply-config --tokens).
 #   --fix  re-smudges each such file through git (rm + git checkout -- f) when it has no
@@ -13,13 +13,13 @@ parsed="$(getopt -o hf -l help,fix -- "$@")" || exit 2
 eval set -- "$parsed"
 while true; do
   case "$1" in
-    -h|--help) echo "usage: ./verify-smudge [-f|--fix]"; exit 0 ;;
+    -h|--help) echo "usage: ./orch/verify-smudge [-f|--fix]"; exit 0 ;;
     -f|--fix) fix=1; shift ;;
     --) shift; break ;;
-    *) echo "usage: ./verify-smudge [--fix]" >&2; exit 2 ;;
+    *) echo "usage: ./orch/verify-smudge [--fix]" >&2; exit 2 ;;
   esac
 done
-[ $# -eq 0 ] || { echo "usage: ./verify-smudge [--fix]" >&2; exit 2; }
+[ $# -eq 0 ] || { echo "usage: ./orch/verify-smudge [--fix]" >&2; exit 2; }
 
 root=$(git rev-parse --show-toplevel)
 [ "$root" = "$(pwd -P)" ] || { echo "verify-smudge: ERROR: run from the worktree root ($root)" >&2; exit 1; }
@@ -29,9 +29,9 @@ fail() { echo "verify-smudge: ERROR: $*" >&2; err=1; }
 
 want_clean='bash ./filter-clean-config %f'
 want_smudge='bash ./filter-apply-config'
-[ "$(git config --get filter.manage-configs.clean || true)" = "$want_clean" ] || fail "git config filter.manage-configs.clean is not '$want_clean' (run ./install-merge-drivers.sh)"
-[ "$(git config --get filter.manage-configs.smudge || true)" = "$want_smudge" ] || fail "git config filter.manage-configs.smudge is not '$want_smudge' (run ./install-merge-drivers.sh)"
-[ "$(git config --get filter.manage-configs.required || true)" = true ] || fail "git config filter.manage-configs.required is not true (run ./install-merge-drivers.sh)"
+[ "$(git config --get filter.manage-configs.clean || true)" = "$want_clean" ] || fail "git config filter.manage-configs.clean is not '$want_clean' (run ./orch/install-merge-drivers.sh)"
+[ "$(git config --get filter.manage-configs.smudge || true)" = "$want_smudge" ] || fail "git config filter.manage-configs.smudge is not '$want_smudge' (run ./orch/install-merge-drivers.sh)"
+[ "$(git config --get filter.manage-configs.required || true)" = true ] || fail "git config filter.manage-configs.required is not true (run ./orch/install-merge-drivers.sh)"
 [ -f project.config ] || fail "$root/project.config missing"
 [ -f filter-apply-config ] || fail "$root/filter-apply-config missing"
 [ "$err" -eq 0 ] || exit 1

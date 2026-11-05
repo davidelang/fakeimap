@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """prepare-pr-rewrite: the /prepare-local-pr history-rewrite helper (docs/rules/prepare-local-pr.md).
 
-  ./prepare-pr-rewrite [TARGET]               start: tag the tip backup-<branch>, reset to merge-base(TARGET, HEAD)
-  ./prepare-pr-rewrite --redo [TARGET]        redo: backup-<branch> exists and stays; reset to merge-base(TARGET, HEAD) again
-  ./prepare-pr-rewrite --plan-input [TARGET]  read-only: write $SANDBOX/PRs/rewrite-input-<branch>.md
-  ./prepare-pr-rewrite --check [TARGET]       final check
+  ./orch/prepare-pr-rewrite [TARGET]               start: tag the tip backup-<branch>, reset to merge-base(TARGET, HEAD)
+  ./orch/prepare-pr-rewrite --redo [TARGET]        redo: backup-<branch> exists and stays; reset to merge-base(TARGET, HEAD) again
+  ./orch/prepare-pr-rewrite --plan-input [TARGET]  read-only: write $SANDBOX/PRs/rewrite-input-<branch>.md
+  ./orch/prepare-pr-rewrite --check [TARGET]       final check
 TARGET defaults to master. The reference is backup-<branch> (or HEAD before the first start).
 
 Kinds of paths:
@@ -27,7 +27,7 @@ Untracked files are left alone; one that is tracked at the base is an error.
 Preflight (before the tag or any change): every path the reset writes must be replaceable by this
 user (writable parent dir, no a/i attribute); offenders are listed with the fix and nothing changes.
 Resume: start/redo record the pre-reset tip in $GIT_DIR/prepare-pr-rewrite.state until they finish.
-After an interrupted run, ./prepare-pr-rewrite --redo finishes it: uncommitted changes in paths the
+After an interrupted run, ./orch/prepare-pr-rewrite --redo finishes it: uncommitted changes in paths the
 reset sets (log, infra, the reset product paths) and untracked infra paths are allowed; the log is
 never written, the tag never touched.
 """
@@ -120,9 +120,9 @@ class Ctx:
             die("no such TARGET: " + target)
         self.has_tag = ok("rev-parse", "-q", "--verify", "refs/tags/%s" % self.tag)
         if need_tag is True and not self.has_tag:
-            die("no tag %s (run ./prepare-pr-rewrite first)" % self.tag)
+            die("no tag %s (run ./orch/prepare-pr-rewrite first)" % self.tag)
         if need_tag is False and self.has_tag:
-            die("%s exists: to rewrite again use ./prepare-pr-rewrite --redo %s (the tag stays)" % (self.tag, target))
+            die("%s exists: to rewrite again use ./orch/prepare-pr-rewrite --redo %s (the tag stays)" % (self.tag, target))
         self.head = git("rev-parse", "HEAD").strip()
         self.ref = git("rev-parse", self.tag + "^{commit}").strip() if self.has_tag else self.head
         self.state = os.path.abspath(git("rev-parse", "--git-path", "prepare-pr-rewrite.state").strip())
@@ -175,9 +175,9 @@ class Ctx:
         return v[-1]
 
 def append_log(entry):
-    p = subprocess.run(["./append-to-engineering-log", entry])
+    p = subprocess.run(["./orch/append-to-engineering-log", entry])
     if p.returncode:
-        die("./append-to-engineering-log failed")
+        die("./orch/append-to-engineering-log failed")
 
 def log_prefix_ok(c, data_by_path):
     for lp in c.logs:
@@ -281,7 +281,7 @@ def reset(c, redo):
     if c.state_bad:
         die(c.state_bad)
     if c.resume and not redo:
-        die("an interrupted run left %s: finish it with ./prepare-pr-rewrite --redo %s" % (c.state, c.target))
+        die("an interrupted run left %s: finish it with ./orch/prepare-pr-rewrite --redo %s" % (c.state, c.target))
     dirty = [l for l in git("status", "--porcelain", "--untracked-files=no", "--no-renames").splitlines() if l]
     product = set(git("diff", "--name-only", "-z", "--no-renames", c.base, c.tip).split("\0")) - {""} - set(c.logs) - set(c.infra)
     # redo: the log and infra are set by the reset; an interrupted run may also leave its product paths.
@@ -355,7 +355,7 @@ def reset(c, redo):
         print("  %s %s" % (c.kind[p], p))
     for p in c.infra_conflict:
         print("RESOLVE %s: branch and %s both changed it; conflict markers are in the file. Keep %s's version plus the branch's own change (git diff %s %s -- %s), then include it in the first commit." % (p, c.target, c.target, c.fork[:9], c.tag, p))
-    print("Then per step: ./append-to-engineering-log one entry, and name %s in that commit. Final: ./prepare-pr-rewrite --check %s" % (" ".join(c.logs), c.target))
+    print("Then per step: ./orch/append-to-engineering-log one entry, and name %s in that commit. Final: ./orch/prepare-pr-rewrite --check %s" % (" ".join(c.logs), c.target))
 
 def check(c):
     bad = []
@@ -452,10 +452,10 @@ def plan_input(c):
 def main():
     # argparse's own error: the usage line, then one "prepare-pr-rewrite: error: ..." line, exit 2.
     ap = argparse.ArgumentParser(
-        prog="./prepare-pr-rewrite",
+        prog="./orch/prepare-pr-rewrite",
         description="The /prepare-local-pr history-rewrite helper. With no option: tag the tip "
                     "backup-<branch> and reset to merge-base(TARGET, HEAD).",
-        epilog="Details: the docstring at the top of ./prepare-pr-rewrite.")
+        epilog="Details: the docstring at the top of ./orch/prepare-pr-rewrite.")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("-r", "--redo", action="store_true",
                    help="backup-<branch> exists and stays; reset to merge-base(TARGET, HEAD) again")

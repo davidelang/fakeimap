@@ -1,6 +1,6 @@
 #!/bin/bash
 # merge-branch-into-master.sh — Master-facing merge with special-file protocol.
-# Usage: ./merge-branch-into-master.sh <branch-name>
+# Usage: ./orch/merge-branch-into-master.sh <branch-name>
 #
 # Special files:
 #   ENGINEERING_LOG.md — chattr +a: never worktree-replace; ve-englog appends tail.
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-USAGE_LINE="usage: ./merge-branch-into-master.sh [-h] BRANCH"
+USAGE_LINE="usage: ./orch/merge-branch-into-master.sh [-h] BRANCH"
 usage() {
   cat <<EOF
 $USAGE_LINE
@@ -30,7 +30,7 @@ Merge BRANCH into master, index-first, and leave the merge uncommitted.
 options:
   -h, --help  show this help message and exit
 
-Details: the comment at the top of ./merge-branch-into-master.sh.
+Details: the comment at the top of ./orch/merge-branch-into-master.sh.
 EOF
 }
 case "${1:-}" in
@@ -57,8 +57,8 @@ if ! git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ -x ./install-merge-drivers.sh ]; then
-  ./install-merge-drivers.sh >/dev/null
+if [ -x ./orch/install-merge-drivers.sh ]; then
+  ./orch/install-merge-drivers.sh >/dev/null
 else
   echo "WARNING: install-merge-drivers.sh missing; merge drivers may not run" >&2
 fi

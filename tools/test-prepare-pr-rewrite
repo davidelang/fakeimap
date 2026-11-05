@@ -4,7 +4,7 @@
 # copy of the helper (e.g. an older revision) against the same cases.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-prp="${PRP:-$here/prepare-pr-rewrite}"
+prp="${PRP:-$here/orch/prepare-pr-rewrite}"
 T="$("$(dirname "$0")/scratch-dir" prepare-pr-rewrite-test)" || exit 1
 export GIT_CEILING_DIRECTORIES="$(dirname "$T")"
 trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
@@ -17,9 +17,10 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 mkrepo() {
   r="$T/$1"; git init -q -b master "$r"; cd "$r"
   git config user.email t@t; git config user.name t
-  cp "$prp" prepare-pr-rewrite; chmod +x prepare-pr-rewrite
-  printf '#!/bin/bash\nset -euo pipefail\nprintf "%%s\\n\\n" "$1" >> ENGINEERING_LOG.md\n' > append-to-engineering-log
-  chmod +x append-to-engineering-log
+  mkdir -p orch
+  cp "$prp" orch/prepare-pr-rewrite; chmod +x orch/prepare-pr-rewrite
+  printf '#!/bin/bash\nset -euo pipefail\nprintf "%%s\\n\\n" "$1" >> ENGINEERING_LOG.md\n' > orch/append-to-engineering-log
+  chmod +x orch/append-to-engineering-log
   printf 'shared prepare-pr-rewrite\n' > rules.manifest
   mkdir -p "$T/sb-$1/PRs"; printf 'sandbox_dir=%s\n' "$T/sb-$1" > project.config
   printf 'ENGINEERING_LOG.md merge=ve-englog\n' > .gitattributes
@@ -37,7 +38,7 @@ movelog() {
   ln -s work-history/ENGINEERING_LOG.md ENGINEERING_LOG.md
   printf 'ENGINEERING_LOG.md merge=ve-englog\nwork-history/ENGINEERING_LOG.md merge=ve-englog\n' > .gitattributes
 }
-run() { out=$(./prepare-pr-rewrite "$@" 2>&1); rc=$?; }
+run() { out=$(./orch/prepare-pr-rewrite "$@" 2>&1); rc=$?; }
 
 # 1: start with the symlinked log (moved on master)
 mkrepo r1 1

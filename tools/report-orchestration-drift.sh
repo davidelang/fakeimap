@@ -48,12 +48,12 @@ CANON_FILES=(
   "remove_worktree.sh|remove_worktree.sh"
   "update-rules.sh|update-rules.sh"
   "fix-perms|fix-perms"
-  "env|ve-env|env"
-  "refresh-shell.c|ve-refresh-shell.c|refresh-shell.c"
-  "install-refresh-shell.sh|install-ve-refresh-shell.sh|install-refresh-shell.sh"
-  "agent-landlock|agent-landlock"
-  "landlock-smoke-matrix|landlock-smoke-matrix"
-  "landlock-write-probe|landlock-write-probe"
+  "env|orch/env|ve-env|env"
+  "refresh-shell.c|orch/refresh-shell.c|ve-refresh-shell.c|refresh-shell.c"
+  "install-refresh-shell.sh|orch/install-refresh-shell.sh|install-ve-refresh-shell.sh|install-refresh-shell.sh"
+  "agent-landlock|orch/agent-landlock|agent-landlock"
+  "landlock-smoke-matrix|orch/landlock-smoke-matrix|landlock-smoke-matrix"
+  "landlock-write-probe|orch/landlock-write-probe|landlock-write-probe"
   "landlock.config|landlock.config"
   "landlock.config.example|landlock.config.example"
   "grok-launch-common|.grok/lib/grok-launch-common.sh"
@@ -64,11 +64,11 @@ CANON_FILES=(
   "run-grok-master|run-grok-master"
   "filter-apply-config|filter-apply-config"
   "filter-clean-config|filter-clean-config"
-  "append-to-engineering-log|append-to-engineering-log"
-  "todo-append|todo-append"
-  "todo-close|todo-close"
-  "get-builds-tag.sh|get-builds-tag.sh"
-  "install-merge-drivers.sh|install-merge-drivers.sh"
+  "append-to-engineering-log|orch/append-to-engineering-log|append-to-engineering-log"
+  "todo-append|orch/todo-append|todo-append"
+  "todo-close|orch/todo-close|todo-close"
+  "get-builds-tag.sh|orch/get-builds-tag.sh|get-builds-tag.sh"
+  "install-merge-drivers.sh|orch/install-merge-drivers.sh|install-merge-drivers.sh"
   "generate_pr.sh|generate_pr.sh"
   "hooks/post-checkout|hooks/post-checkout"
   "project.config.example|project.config.example"
@@ -163,7 +163,7 @@ for host in "${hosts[@]}"; do
   fi
 
   # refresh-shell setuid
-  for cand in refresh-shell ve-refresh-shell; do
+  for cand in orch/refresh-shell refresh-shell ve-refresh-shell; do
     if [[ -e "$host/$cand" ]]; then
       own=$(stat -c '%U:%G %a' "$host/$cand")
       if [[ -u "$host/$cand" && "$(stat -c '%U' "$host/$cand")" == "root" ]]; then

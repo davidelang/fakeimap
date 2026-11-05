@@ -7,5 +7,5 @@
 
 set -euo pipefail
 P="${5:-special-file}"
-echo "ve-special-refuse: DEPRECATED — re-run ./install-merge-drivers.sh and use ve-special-ours in .gitattributes (${P})" >&2
+echo "ve-special-refuse: DEPRECATED — re-run ./orch/install-merge-drivers.sh and use ve-special-ours in .gitattributes (${P})" >&2
 exec "$(dirname "$0")/ve-special-ours" "$@"

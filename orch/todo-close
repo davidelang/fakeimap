@@ -4,7 +4,7 @@
 # Exactly one open item must match; otherwise nothing changes and it exits 1 listing the matches.
 set -euo pipefail
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  echo "Usage: ./todo-close 'exact text of one open - [ ] item'"
+  echo "Usage: ./orch/todo-close 'exact text of one open - [ ] item'"
   exit 0
 fi
 umask 007
@@ -24,7 +24,7 @@ n=$(awk 'NF{c++} END{print c+0}' <<< "$matches")
 if [ "$n" -ne 1 ]; then
   if [ "$n" -eq 0 ]; then
     echo "ERROR: no open '- [ ]' item contains: $PAT" >&2
-    echo "Run ./todo-open to list open items. [future] items have no checkbox and cannot be closed here." >&2
+    echo "Run ./orch/todo-open to list open items. [future] items have no checkbox and cannot be closed here." >&2
   else
     echo "ERROR: $n open items contain: $PAT — quote more of one:" >&2
     for l in $matches; do awk -v l="$l" 'NR == l { print "L" NR ": " $0 }' "$TODOFILE" >&2; done
