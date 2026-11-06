@@ -38,7 +38,7 @@ Do not nag humans about stale DRAFT after they ordered execute — hygiene-fix o
 ## Scope of one plan
 
 - One plan per file set or behavior area. Put all pending related work (several roadmap items, a cleanup series, follow-ups in the same files) into that one plan, as ordered phases.
-- Split only when the file sets do not overlap, when one item's result changes another item's design, or when the combined change is too big to finish and build green in one go.
+- Split only when the file sets do not overlap, or when one item's result changes another item's design. A plan is too large when a coder cannot implement it and keeps retrying under the Retry rules in `AGENTS.md`; that is when it is split into smaller steps. The size of the change, the number of files touched, and the length of the plan are not reasons to split.
 - Do not write a successor plan whose files overlap a plan that has not landed. Write it after that plan lands, from the current tree.
 
 ## Structure

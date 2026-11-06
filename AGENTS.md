@@ -26,7 +26,7 @@ This is the law for every agent and tool. Your role card comes from the launcher
 
 ## Plans
 - Sandbox `plans/<kebab>-YYYYMMDD-HHMM-plan.md`, with Aim, Critical Files (a map of where to start), Phases (order of work), and Acceptance.
-- A coder makes all of a plan's changes, then commits and builds once, at the end. A plan that cannot be finished and built green in one go is too big; report that so it can be split.
+- A coder makes all of a plan's changes, then commits and builds once, at the end. A plan is too large when that coder cannot implement it and keeps retrying under the Retry rules; report it so it can be split into smaller steps. The size of the change, the number of files touched, and the length of the plan are not reasons to split.
 - Cite `standard-plan-compliance-block.md` by path. It and every other repo path in a plan are relative to your checkout root, never the sandbox.
 
 ## Facts
