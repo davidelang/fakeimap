@@ -73,7 +73,9 @@ line each:
 3. **Integrity check:** the tree must be clean. Every selected build comes from that one
    commit, including the Play build. Committing and building Play in one run is allowed.
 4. **Play preflight, before any gradle work:**
-   - `app/versionCode.txt` must exist, be tracked and hold one integer.
+   - `app/versionCode.txt` must exist, be tracked and hold one integer. A merge
+     keeps the larger integer of the branches (`merge=ve-versioncode`). That
+     number is what `deploy --play` ships.
    - **Testing-version check:** a y/N question, default No. It is asked only on a branch
      with a `<branch>-start` tag, whose versionName is always `<branch>-start-<n>-g<hash>`.
      Answering No stops before anything is committed.

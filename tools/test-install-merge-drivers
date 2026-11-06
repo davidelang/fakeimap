@@ -13,7 +13,7 @@ mkrepo() {
   local r="$T/$1"; mkdir -p "$r/git-merge-drivers" "$r/orch"
   git init -q "$r" || return 1
   cp "$canon/orch/install-merge-drivers.sh" "$canon/orch/merge-branch-into-master.sh" "$r/orch/"
-  cp "$canon"/git-merge-drivers/ve-englog "$canon"/git-merge-drivers/ve-special-ours "$canon"/git-merge-drivers/ve-special-refuse "$r/git-merge-drivers/"
+  cp "$canon"/git-merge-drivers/ve-englog "$canon"/git-merge-drivers/ve-special-ours "$canon"/git-merge-drivers/ve-special-refuse "$canon"/git-merge-drivers/ve-versioncode "$r/git-merge-drivers/"
   echo "$r"
 }
 cfg() { git -C "$1" config --local --get "$2"; }
@@ -23,6 +23,12 @@ r=$(mkrepo plain) || exit 1
 [[ $rc -eq 0 ]] && ok "plain: exit 0" || bad "plain: rc=$rc $(cat "$T/plain.out")"
 [[ "$(cfg "$r" filter.manage-configs.required)" == true ]] && ok "plain: manage-configs required" || bad "plain: manage-configs.required"
 [[ "$(cfg "$r" merge.ve-englog.driver)" == "./git-merge-drivers/ve-englog %O %A %B %L %P" ]] && ok "plain: ve-englog driver" || bad "plain: ve-englog driver"
+[[ "$(cfg "$r" merge.ve-versioncode.driver)" == "./git-merge-drivers/ve-versioncode %O %A %B %L %P" ]] && ok "plain: ve-versioncode driver" || bad "plain: ve-versioncode driver"
+rel=$(git -C "$r" rev-parse --git-path info/attributes)
+case "$rel" in /*) attr="$rel" ;; *) attr="$r/$rel" ;; esac
+grep -qxF 'app/versionCode.txt merge=ve-versioncode' "$attr" && ok "plain: info/attributes binds versionCode" || bad "plain: info/attributes missing ($attr)"
+(cd "$r" && bash ./orch/install-merge-drivers.sh) >/dev/null 2>&1
+[[ "$(grep -cxF 'app/versionCode.txt merge=ve-versioncode' "$attr")" == 1 ]] && ok "plain: second install does not duplicate the attribute" || bad "plain: attribute duplicated"
 [[ "$(cfg "$r" merge.autostash)" == false ]] && ok "plain: merge.autostash=false" || bad "plain: autostash"
 [[ -x "$r/git-merge-drivers/ve-special-ours" ]] && ok "plain: drivers executable" || bad "plain: drivers not executable"
 

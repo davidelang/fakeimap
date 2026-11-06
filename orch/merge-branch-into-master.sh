@@ -8,6 +8,9 @@
 #     name is a symlink. Index updates use the blob path, never mode 100644
 #     on the symlink.
 #   TODO.md / project-facts.md — merge=ve-special-ours; restore_special enforces master.
+#   app/versionCode.txt — Play versionCode (deploy --play). Larger integer of the
+#     two branches. The fast-forward path and a one-sided edit do not run the
+#     merge driver, so versioncode_take_max enforces it after every successful path.
 #
 # Leaves merge UNCOMMITTED. Master finishes special files, then ./build_app --standard --test.
 #
@@ -196,6 +199,80 @@ write_merge_head() {
   printf '%s\n' "$(git rev-parse "$BRANCH")" > "$(git rev-parse --git-path MERGE_HEAD)"
 }
 
+# app/versionCode.txt is the integer deploy --play ships. Keep the larger of the
+# two branch tips. One-sided edits and the fast-forward path never call the
+# merge driver, so this runs after every successful merge path. No such file on
+# either tip: nothing to do (this host has no Play version).
+versioncode_take_max() {
+  local branch="$1"
+  local have_o=0 have_t=0
+  if git cat-file -e "${pre_head}:app/versionCode.txt" >/dev/null 2>&1; then
+    have_o=1
+  fi
+  if git cat-file -e "${branch}:app/versionCode.txt" >/dev/null 2>&1; then
+    have_t=1
+  fi
+  if [ "$have_o" -eq 0 ] && [ "$have_t" -eq 0 ]; then
+    return 0
+  fi
+  if [ "$have_o" -eq 1 ] && [ "$have_t" -eq 0 ]; then
+    git checkout "$pre_head" -- app/versionCode.txt || return 1
+    echo "  app/versionCode.txt: only master has it; kept"
+    return 0
+  fi
+  if [ "$have_o" -eq 0 ] && [ "$have_t" -eq 1 ]; then
+    git checkout "$branch" -- app/versionCode.txt || return 1
+    echo "  app/versionCode.txt: only $branch has it; kept"
+    return 0
+  fi
+  if [ ! -x ./git-merge-drivers/ve-versioncode ]; then
+    echo "ERROR: ve-versioncode missing; cannot choose the Play versionCode" >&2
+    return 1
+  fi
+  # Temps sit next to the file (app/ when that directory exists). Never /tmp.
+  local tdir=.
+  [ -d app ] && tdir=app
+  local ancestor ours theirs
+  ancestor=$(mktemp "$tdir/.versioncode-ancestor.XXXXXX") || {
+    echo "ERROR: cannot create a temp file in $tdir" >&2
+    return 1
+  }
+  ours=$(mktemp "$tdir/.versioncode-ours.XXXXXX") || {
+    rm -f "$ancestor"
+    echo "ERROR: cannot create a temp file in $tdir" >&2
+    return 1
+  }
+  theirs=$(mktemp "$tdir/.versioncode-theirs.XXXXXX") || {
+    rm -f "$ancestor" "$ours"
+    echo "ERROR: cannot create a temp file in $tdir" >&2
+    return 1
+  }
+  if ! git show "${pre_head}:app/versionCode.txt" > "$ours"; then
+    rm -f "$ancestor" "$ours" "$theirs"
+    return 1
+  fi
+  if ! git show "${branch}:app/versionCode.txt" > "$theirs"; then
+    rm -f "$ancestor" "$ours" "$theirs"
+    return 1
+  fi
+  : > "$ancestor"
+  local drc=0
+  ./git-merge-drivers/ve-versioncode "$ancestor" "$ours" "$theirs" "" app/versionCode.txt || drc=$?
+  if [ "$drc" -ne 0 ]; then
+    rm -f "$ancestor" "$ours" "$theirs"
+    echo "ERROR: ve-versioncode failed (exit $drc)" >&2
+    return "$drc"
+  fi
+  mkdir -p app || { rm -f "$ancestor" "$ours" "$theirs"; return 1; }
+  if ! cp "$ours" app/versionCode.txt; then
+    rm -f "$ancestor" "$ours" "$theirs"
+    return 1
+  fi
+  rm -f "$ancestor" "$ours" "$theirs"
+  git add -- app/versionCode.txt || return 1
+  echo "  app/versionCode.txt: staged $(tr -d '[:space:]' < app/versionCode.txt) (larger of the two branches)"
+}
+
 # After staging: ensure branch non-special deltas are present (not eng-log-only success).
 assert_staged_feature_files() {
   local branch="$1"
@@ -348,6 +425,9 @@ else
 fi
 
 if [ "$merge_rc" -eq 0 ]; then
+  versioncode_take_max "$BRANCH" || merge_rc=$?
+fi
+if [ "$merge_rc" -eq 0 ]; then
   assert_staged_feature_files "$BRANCH"
   merge_rc=$?
 fi
@@ -367,6 +447,10 @@ ENGINEERING_LOG.md
 TODO.md / project-facts.md
   merge=ve-special-ours keeps master in git index; restore_special enforces master on disk.
   Still required: todo-close / todo-append vs branch+PR; project-facts prune/add vs branch delta.
+
+app/versionCode.txt (when either branch has it)
+  The staged file is the larger integer of the two branches. deploy --play ships that number.
+  A non-integer fails the merge.
 
 POST-MERGE CHECK (do this before ./build_app):
   git diff --cached --name-only

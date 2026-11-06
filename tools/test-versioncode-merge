@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# app/versionCode.txt merge: the larger integer of the two branches. That number
+# is what deploy --play ships. Covers the driver, a git merge that binds the
+# driver only through info/attributes, and merge-branch-into-master (a
+# fast-forward that lowers the code, a diverge, and a non-integer).
+set -uo pipefail
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
+canon="$(git -c safe.directory='*' rev-parse --show-toplevel)"
+T="$("$(dirname "$0")/scratch-dir" versioncode-merge-test)" || exit 1
+export GIT_CEILING_DIRECTORIES="$(dirname "$T")"
+trap 'rm -rf "$T"' EXIT
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+drv="$canon/git-merge-drivers/ve-versioncode"
+chmod +x "$drv"
+
+run_drv() {
+  printf '%s\n' "$1" >"$T/ours"
+  printf '%s\n' "$2" >"$T/theirs"
+  : >"$T/anc"
+  "$drv" "$T/anc" "$T/ours" "$T/theirs" "" app/versionCode.txt >"$T/drv.out" 2>&1
+}
+
+run_drv 3 9; rc=$?
+[[ $rc -eq 0 && "$(tr -d '[:space:]' <"$T/ours")" == 9 ]] && ok "driver: theirs larger (3, 9) -> 9" || bad "driver theirs rc=$rc $(cat "$T/ours" "$T/drv.out")"
+run_drv 9 3; rc=$?
+[[ $rc -eq 0 && "$(tr -d '[:space:]' <"$T/ours")" == 9 ]] && ok "driver: ours larger (9, 3) -> 9" || bad "driver ours rc=$rc $(cat "$T/ours")"
+# cat in $(...) strips the trailing newline, so append a marker before comparing.
+shown() { cat "$1"; printf x; }
+run_drv 9 9; rc=$?
+[[ $rc -eq 0 && "$(shown "$T/ours")" == 9$'\n'x ]] && ok "driver: equal stays 9 with a newline" || bad "driver equal [$(shown "$T/ours")]"
+run_drv 007 8; rc=$?
+[[ $rc -eq 0 && "$(shown "$T/ours")" == 8$'\n'x ]] && ok "driver: 007 vs 8 -> 8" || bad "driver zeros $(shown "$T/ours")"
+run_drv 099 100; rc=$?
+[[ $rc -eq 0 && "$(shown "$T/ours")" == 100$'\n'x ]] && ok "driver: 099 vs 100 -> 100" || bad "driver width $(shown "$T/ours")"
+run_drv abc 4; rc=$?
+[[ $rc -ne 0 ]] && grep -q "not an integer" "$T/drv.out" && ok "driver: non-integer fails" || bad "driver bad rc=$rc $(cat "$T/drv.out")"
+
+seed() {
+  local r="$1"
+  rm -rf "$r"
+  mkdir -p "$r/app" "$r/orch" "$r/git-merge-drivers"
+  git init -q -b master "$r"
+  git -C "$r" config user.name t
+  git -C "$r" config user.email t@t
+  cp "$canon/orch/install-merge-drivers.sh" "$canon/orch/merge-branch-into-master.sh" "$r/orch/"
+  cp "$canon"/git-merge-drivers/ve-englog "$canon"/git-merge-drivers/ve-special-ours \
+     "$canon"/git-merge-drivers/ve-special-refuse "$canon"/git-merge-drivers/ve-versioncode \
+     "$r/git-merge-drivers/"
+  printf '%s\n' "$r"
+}
+
+# git merge, no committed .gitattributes: info/attributes from install is the binding.
+r=$(seed "$T/gitmerge")
+printf '5\n' >"$r/app/versionCode.txt"
+echo base >"$r/readme"
+git -C "$r" add app/versionCode.txt readme
+git -C "$r" commit -qm base
+git -C "$r" branch feature
+printf '12\n' >"$r/app/versionCode.txt"
+git -C "$r" commit -qam 'master 12'
+git -C "$r" checkout -q feature
+printf '7\n' >"$r/app/versionCode.txt"
+echo feature >"$r/other"
+git -C "$r" add app/versionCode.txt other
+git -C "$r" commit -qm 'feature 7'
+git -C "$r" checkout -q master
+(cd "$r" && bash ./orch/install-merge-drivers.sh) >"$T/inst.out" 2>&1
+[[ ! -f "$r/.gitattributes" ]] && ok "git merge fixture has no .gitattributes" || bad "fixture wrote .gitattributes"
+git -C "$r" merge --no-edit feature >"$T/gitmerge.out" 2>&1; rc=$?
+got=$(tr -d '[:space:]' <"$r/app/versionCode.txt")
+[[ $rc -eq 0 && "$got" == 12 && -f "$r/other" ]] && ok "git merge via info/attributes: max(12, 7) = 12" || bad "git merge rc=$rc vc=$got $(tail -20 "$T/gitmerge.out")"
+
+# Fast-forward that lowers the code. The driver is not called; the script must raise it.
+r=$(seed "$T/ff")
+printf '10\n' >"$r/app/versionCode.txt"
+echo m >"$r/readme"
+git -C "$r" add app/versionCode.txt readme
+git -C "$r" commit -qm base
+git -C "$r" checkout -q -b feature
+printf '4\n' >"$r/app/versionCode.txt"
+echo b >"$r/readme"
+git -C "$r" commit -qam 'lower'
+git -C "$r" checkout -q master
+(cd "$r" && bash ./orch/merge-branch-into-master.sh feature) >"$T/ff.out" 2>&1; rc=$?
+staged=$(git -C "$r" show :app/versionCode.txt | tr -d '[:space:]')
+work=$(tr -d '[:space:]' <"$r/app/versionCode.txt")
+[[ $rc -eq 0 && "$staged" == 10 && "$work" == 10 ]] && grep -q 'larger of the two branches' "$T/ff.out" && ok "ff: lowered 4 is staged back to 10" || bad "ff rc=$rc staged=$staged work=$work $(tail -25 "$T/ff.out")"
+
+# Both sides moved. Master is already the higher Play code.
+r=$(seed "$T/div")
+printf '5\n' >"$r/app/versionCode.txt"
+echo base >"$r/readme"
+git -C "$r" add app/versionCode.txt readme
+git -C "$r" commit -qm base
+git -C "$r" checkout -q -b feature
+printf '7\n' >"$r/app/versionCode.txt"
+echo feature >"$r/other"
+git -C "$r" add app/versionCode.txt other
+git -C "$r" commit -qm 'feature 7'
+git -C "$r" checkout -q master
+printf '12\n' >"$r/app/versionCode.txt"
+git -C "$r" commit -qam 'master 12'
+(cd "$r" && bash ./orch/merge-branch-into-master.sh feature) >"$T/div.out" 2>&1; rc=$?
+staged=$(git -C "$r" show :app/versionCode.txt | tr -d '[:space:]')
+[[ $rc -eq 0 && "$staged" == 12 && -f "$r/other" ]] && ok "diverge: staged max is 12" || bad "diverge rc=$rc staged=$staged $(tail -25 "$T/div.out")"
+
+# Non-integer fails the merge instead of picking a side.
+r=$(seed "$T/bad")
+printf '5\n' >"$r/app/versionCode.txt"
+echo base >"$r/readme"
+git -C "$r" add app/versionCode.txt readme
+git -C "$r" commit -qm base
+git -C "$r" checkout -q -b feature
+printf 'abc\n' >"$r/app/versionCode.txt"
+echo feature >"$r/other"
+git -C "$r" add app/versionCode.txt other
+git -C "$r" commit -qm 'feature abc'
+git -C "$r" checkout -q master
+printf '6\n' >"$r/app/versionCode.txt"
+git -C "$r" commit -qam 'master 6'
+(cd "$r" && bash ./orch/merge-branch-into-master.sh feature) >"$T/bad.out" 2>&1; rc=$?
+[[ $rc -ne 0 ]] && grep -q 'not an integer' "$T/bad.out" && ok "non-integer: merge fails and names it" || bad "non-integer rc=$rc $(tail -25 "$T/bad.out")"
+
+echo "passed $pass, failed $fail"
+[[ $fail -eq 0 ]]

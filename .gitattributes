@@ -11,9 +11,11 @@
 # Special-file merge drivers (install via ./orch/install-merge-drivers.sh / update-rules)
 # ve-englog: append branch tail via append-to-engineering-log (third-version result)
 # ve-special-ours: always keep master/ours; Master still reviews vs branch delta (todo-close/append, facts prune)
+# ve-versioncode: Play versionCode (deploy --play); larger integer of the merged branches
 ENGINEERING_LOG.md merge=ve-englog
 TODO.md merge=ve-special-ours
 project-facts.md merge=ve-special-ours
+app/versionCode.txt merge=ve-versioncode
 # After the move the blobs live here; the root paths are symlinks.
 work-history/ENGINEERING_LOG.md merge=ve-englog
 work-history/TODO.md merge=ve-special-ours
