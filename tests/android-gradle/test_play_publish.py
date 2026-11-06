@@ -215,6 +215,76 @@ def test_mocked_dry_run_notes_base(pp):
         os.chdir(old)
 
 
+def test_main_does_not_shadow_token_helper(pp):
+    """t213u regression: a later `token = ...` in main() made token(a.key) UnboundLocalError."""
+    names = pp.main.__code__.co_varnames
+    check("main() does not bind local name 'token' (would shadow helper)",
+          "token" not in names, detail="co_varnames=%r" % (names,))
+    check("main() uses base_tok for notes-base label",
+          "base_tok" in names)
+    check("module-level token() is callable", callable(pp.token))
+
+    # Runtime proof: after the release-name prints, calling the helper must not raise
+    # UnboundLocalError. Stub everything before auth; stop inside token() with a sentinel.
+    repo = git_repo("token-shadow")
+    head = sha(repo)
+    work = SCRATCH / "token-shadow-work"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir()
+    aab = work / "app.aab"
+    aab.write_bytes(b"not-a-real-aab")
+    key = work / "sa.json"
+    key.write_text('{"client_email":"bot@example.com","private_key":"x","token_uri":"https://example/token"}')
+
+    class StopAuth(Exception):
+        pass
+
+    old_cwd = os.getcwd()
+    os.chdir(repo)
+    argv = [
+        "play-publish",
+        "--aab", str(aab),
+        "--version-code", "36",
+        "--build-commit", head,
+        "--aapt2", "/bin/true",
+        "--key", str(key),
+        "--work-dir", str(work),
+        "--dry-run",
+    ]
+    old_argv = sys.argv
+    real_token = pp.token
+
+    def fake_badging(aab_path, aapt2):
+        return "com.example.app", 36, "v0.9.10-8-g1bd75c80b"
+
+    def fake_token(key_path):
+        # Reaching here means the name resolved to the helper, not an unbound local.
+        raise StopAuth("auth reached with key=%s" % key_path)
+
+    try:
+        sys.argv = argv
+        pp.badging = fake_badging
+        pp.token = fake_token
+        try:
+            pp.main()
+            check("main() reached token() helper before Play auth", False, detail="main returned without StopAuth")
+        except StopAuth as e:
+            check("main() reached token() helper before Play auth", True, detail=str(e))
+        except UnboundLocalError as e:
+            check("main() reached token() helper before Play auth", False, detail="UnboundLocalError: %s" % e)
+        except SystemExit as e:
+            check("main() reached token() helper before Play auth", False, detail="SystemExit %s" % e.code)
+    finally:
+        sys.argv = old_argv
+        pp.token = real_token
+        # badging may not have been on module before; restore if we overwrote
+        if hasattr(pp, "badging") and pp.badging is fake_badging:
+            # reload original from source would be heavy; re-exec loader for cleanliness next test
+            pass
+        os.chdir(old_cwd)
+
+
 def test_select_play_print_commit():
     """android-build-info select play prints the stamped commit (unit-level via source)."""
     text = (ROOT / "build-examples/android-gradle/android-build-info").read_text()
@@ -231,6 +301,9 @@ def main():
     test_format_and_parse(pp)
     test_git_resolution(pp)
     test_mocked_dry_run_notes_base(pp)
+    test_main_does_not_shadow_token_helper(pp)
+    # reload after main() stub test mutates module attrs
+    pp = load_pp()
     test_select_play_print_commit()
     print("----")
     print("%d passed, %d failed" % (PASS, FAIL))

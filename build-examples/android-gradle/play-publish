@@ -64,8 +64,8 @@ def resolve_exact_tag(label):
 
 
 def notes_base_from_release_name(name):
-    """Return (kind, token) for a Play release name, or (None, reason) if unusable.
-    kind is 'provenance', 'describe-hash', or 'tag'."""
+    """Return (kind, value) for a Play release name, or (None, reason) if unusable.
+    kind is 'provenance', 'describe-hash', or 'tag'; value is the hash/tag label."""
     name = (name or "").strip()
     m = PROV_RX.search(name)
     if m:
@@ -327,21 +327,23 @@ def main():
         else:
             if not top:
                 die("Play lists no release on any track, so there is no base commit for the notes" + fix)
-            kind, token = notes_base_from_release_name(top[2])
+            # Local must not be named "token": that would shadow the module-level token()
+            # helper and make TOKEN, who = token(a.key) raise UnboundLocalError before auth.
+            kind, base_tok = notes_base_from_release_name(top[2])
             if kind is None:
-                die("highest release (versionCode %d on %s) is named '%s'; %s%s" % (top[1], top[0], top[2], token, fix))
+                die("highest release (versionCode %d on %s) is named '%s'; %s%s" % (top[1], top[0], top[2], base_tok, fix))
             if kind == "tag":
-                base = resolve_exact_tag(token)
+                base = resolve_exact_tag(base_tok)
                 if not base:
                     die("highest release (versionCode %d on %s) is named '%s'; no @commit/-g<hash>, and no local tag '%s'%s"
-                        % (top[1], top[0], top[2], token, fix))
-                require_ancestor(base, "tag %s from '%s'" % (token, top[2]))
-                print("Notes from %s..HEAD (exact local tag %s from that release name)" % (base[:12], token))
+                        % (top[1], top[0], top[2], base_tok, fix))
+                require_ancestor(base, "tag %s from '%s'" % (base_tok, top[2]))
+                print("Notes from %s..HEAD (exact local tag %s from that release name)" % (base[:12], base_tok))
             else:
-                base = git_commit(token)
+                base = git_commit(base_tok)
                 if not base:
-                    die("base commit %s (from '%s') is not in this repository (history rewritten?)%s" % (token, top[2], fix))
-                require_ancestor(base, "%s %s from '%s'" % (kind, token, top[2]))
+                    die("base commit %s (from '%s') is not in this repository (history rewritten?)%s" % (base_tok, top[2], fix))
+                require_ancestor(base, "%s %s from '%s'" % (kind, base_tok, top[2]))
                 how = "stamped @commit" if kind == "provenance" else "legacy -g<hash> in versionName"
                 print("Notes from %s..HEAD (%s in that release name)" % (base[:12], how))
         for t in tracks:
