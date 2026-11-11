@@ -119,7 +119,7 @@ The first row is `en`. `pref` is the in-app language tag. `values` is the resour
 
 `language.via` is `app` or `android`. Omitted means `app`.
 
-`app` opens Settings from the drawer, taps the endonym, and refuses the System default row. It restores English at the end of a run that changed the language. One locale that fails the picker is recorded and the loop continues. `menu`, `settings`, `field`, `system`, and `ready` are required, and so is `endonym_key`.
+`app` opens Settings from the drawer, taps the endonym, and refuses the System default row. The menu is paged with overlap in both directions, and a miss closes the menu. It restores English at the end of a run that changed the language. One locale that fails the picker is recorded and the loop continues. `menu`, `settings`, `field`, `system`, and `ready` are required, and so is `endonym_key`.
 
 `android` is for an app that follows the device and has no language selector of its own. The driver runs `cmd locale set-app-locales` for `package`, then force-stops that app so the next launch uses the new locale. It does not open a drawer and does not change the rest of the device. The tag is the row's `android` value when set, otherwise `pref`. A row may set `android: pt-BR` when `pref` is not the Android tag. `in`, `iw`, and `ji` are sent as `id`, `he`, and `yi`. The previous app locale list is read first and restored at the end, including an empty list. `menu`, `settings`, `field`, `system`, `ready`, and `endonym_key` are not required. The walk itself still does not force-stop the app.
 

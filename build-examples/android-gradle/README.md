@@ -268,8 +268,10 @@ provider (`~/playstore/vehicleexpenses-datatransfer-plan.md`).
 
 ## Manual screenshots
 
-`capture-manual-screenshots` and `capture-manual-screenshots.md` ship with this build type.
-Deploy copies both into an Android project root the same way it copies `build_app`. The manual
+`capture-manual-screenshots` and `capture-manual-screenshots.md` ship with this build type
+only. A repo whose build type is `none`, `command`, or anything other than `android-gradle`
+does not receive them. Deploy copies both into an Android project root the same way it copies
+`build_app`. The manual
 is how an agent writes that app's `manual-capture.yaml`. An app's own yaml does not live in
 this directory: deploy would copy it into every Android app. David runs a capture and David
 publishes this directory. Agents write the config and may run `--check`.

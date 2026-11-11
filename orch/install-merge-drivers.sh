@@ -51,6 +51,14 @@ git config filter.manage-configs.clean "bash ./filter-clean-config %f"
 git config filter.manage-configs.smudge "bash ./filter-apply-config"
 git config filter.manage-configs.required true
 
+# json-pretty: checked-in *.json is indent 2. Clean only.
+git config filter.json-pretty.clean "python3 ./orch/json-pretty-filter clean"
+git config filter.json-pretty.required true
+# Clean only. Drop a smudge left by an older install; a missing key is not an error.
+if git config --get filter.json-pretty.smudge >/dev/null; then
+  git config --unset filter.json-pretty.smudge
+fi
+
 # Legacy alias: refuse now delegates to ve-special-ours
 git config merge.ve-special-refuse.name "VE special-file keep-ours (deprecated alias)"
 git config merge.ve-special-refuse.driver "./git-merge-drivers/ve-special-refuse %O %A %B %L %P"
@@ -68,18 +76,32 @@ git config --get merge.ve-englog.driver
 git config --get merge.ve-special-ours.driver
 git config --get merge.ve-versioncode.driver
 echo "  filter.manage-configs.required=$(git config --get filter.manage-configs.required)"
+echo "  filter.json-pretty.clean=$(git config --get filter.json-pretty.clean)"
 
-# Path binding for this worktree. .gitattributes in the tree wins when it has
-# the same line. info/attributes covers a checkout whose .gitattributes has not
-# picked up the line yet (that file is per-project and deploy does not copy it).
-# install runs at merge time, so the worktree being merged into is covered.
+# info/attributes and info/exclude cover a checkout whose committed .gitattributes
+# or .gitignore has not picked up the line yet. Those two files are per-project
+# and deploy does not copy them. info/attributes overrides the tree for the same
+# attribute. A project JSON filter that must win appends a later, more specific
+# line from install-merge-drivers.local (that file runs after these lines).
+bind_line() {
+  local file="$1" line="$2"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  if ! grep -qxF "$line" "$file"; then
+    printf '%s\n' "$line" >> "$file"
+  fi
+}
 attr_file=$(git rev-parse --git-path info/attributes)
-mkdir -p "$(dirname "$attr_file")"
-touch "$attr_file"
-if ! grep -qxF 'app/versionCode.txt merge=ve-versioncode' "$attr_file"; then
-  printf '%s\n' 'app/versionCode.txt merge=ve-versioncode' >> "$attr_file"
-fi
-echo "  info/attributes: app/versionCode.txt merge=ve-versioncode"
+exc_file=$(git rev-parse --git-path info/exclude)
+bind_line "$attr_file" 'app/versionCode.txt merge=ve-versioncode'
+bind_line "$attr_file" '*.json filter=json-pretty'
+bind_line "$attr_file" 'docs/i18n/** filter=lfs diff=lfs merge=lfs -text'
+bind_line "$attr_file" 'docs/i18n/**/user-manual.md !filter !diff !merge text'
+bind_line "$attr_file" 'app/src/main/i18n/** filter=lfs diff=lfs merge=lfs -text'
+bind_line "$exc_file" 'app/src/main/res/values/strings.xml'
+bind_line "$exc_file" 'app/src/main/res/values-*/strings.xml'
+echo "  info/attributes: versionCode, json-pretty, i18n LFS"
+echo "  info/exclude: generated strings.xml"
 
 LOCAL="$ROOT/install-merge-drivers.local"
 if [ -e "$LOCAL" ]; then

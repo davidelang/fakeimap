@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""Clean filter: store JSON with indent 2. No smudge.
+
+Git runs `clean` on stdin. Key order is kept. Invalid JSON fails the git command
+when filter.json-pretty.required is true.
+"""
+import json
+import sys
+
+sys.dont_write_bytecode = True
+
+
+def clean_text(text):
+    doc = json.loads(text)
+    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] != "clean":
+        sys.stderr.write("Usage: json-pretty-filter clean < file.json\n")
+        return 2
+    try:
+        text = sys.stdin.buffer.read().decode("utf-8")
+        out = clean_text(text)
+    except Exception as exc:
+        sys.stderr.write("json-pretty-filter: %s\n" % exc)
+        return 1
+    sys.stdout.buffer.write(out.encode("utf-8"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

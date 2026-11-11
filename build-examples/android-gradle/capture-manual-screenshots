@@ -1586,6 +1586,73 @@ def _menu_open(root: ET.Element, endonyms: set[str], system_texts: set[str], box
     return False
 
 
+def _menu_entry_nodes(root: ET.Element, endonyms: set[str], system_texts: set[str], boxes: list[tuple[int, int, int, int]]) -> list[ET.Element]:
+    return [
+        node
+        for node in root.iter()
+        if (node.attrib.get("text") or "") in endonyms | system_texts and not _inside(node, boxes)
+    ]
+
+
+def _drag_language_menu(serial: str, entries: list[ET.Element], *, toward_end: bool) -> bool:
+    """400ms drag inside the menu that leaves a previously visible row on screen."""
+    rows = _row_clusters(entries)
+    rects = [box for box in (_bounds(node) for node in rows) if box]
+    if len(rects) < 2:
+        return False
+    centers = [(box[1] + box[3]) // 2 for box in rects]
+    if toward_end:
+        y_from = centers[-1]
+        y_to = centers[1] if len(centers) >= 3 else centers[0]
+    else:
+        y_from = centers[0]
+        y_to = centers[-2] if len(centers) >= 3 else centers[-1]
+    if abs(y_from - y_to) < 8:
+        return False
+    x1 = min(box[0] for box in rects) + 12
+    x2 = max(box[2] for box in rects) - 12
+    if x2 - x1 < 24:
+        return False
+    x = (x1 + x2) // 2
+    _sh(serial, f"input swipe {x} {y_from} {x} {y_to} 400")
+    time.sleep(0.6)
+    return True
+
+
+def _page_language_menu(
+    device: Device,
+    root: ET.Element,
+    endonym: str,
+    index: int,
+    endonyms: set[str],
+    system_texts: set[str],
+    boxes: list[tuple[int, int, int, int]],
+    *,
+    toward_end: bool,
+) -> tuple[float | None, ET.Element, bool]:
+    """Tap the row, or page until the names stop. The bool is False when the menu closed."""
+    previous: tuple[str, ...] | None = None
+    limit = len(endonyms) + 2
+    for step in range(limit + 1):
+        if not _menu_open(root, endonyms, system_texts, boxes):
+            return None, root, False
+        rows = _row_clusters([node for node in _find(root, text=endonym) if not _inside(node, boxes)])
+        if len(rows) > index:
+            _tap_center(device.serial, rows[index])
+            return time.time(), root, True
+        if step == limit:
+            return None, root, True
+        entries = _menu_entry_nodes(root, endonyms, system_texts, boxes)
+        signature = tuple((node.attrib.get("text") or "") for node in _row_clusters(entries))
+        if previous is not None and signature == previous:
+            return None, root, True
+        previous = signature
+        if not entries or not _drag_language_menu(device.serial, entries, toward_end=toward_end):
+            return None, root, True
+        root = device.dump()
+    return None, root, True
+
+
 def _select_endonym(device: Device, field: ET.Element, endonyms: set[str], system_texts: set[str], boxes: list[tuple[int, int, int, int]], locale: Locale) -> float:
     endonym = device.app.endonym(locale.pref)
     if endonym in system_texts:
@@ -1602,40 +1669,52 @@ def _select_endonym(device: Device, field: ET.Element, endonyms: set[str], syste
         else:
             continue
         assert root is not None
-        previous: tuple[str, ...] | None = None
-        for _step in range(45):
-            if not _menu_open(root, endonyms, system_texts, boxes):
-                break
-            rows = _row_clusters([node for node in _find(root, text=endonym) if not _inside(node, boxes)])
-            if len(rows) > index:
-                _tap_center(device.serial, rows[index])
-                return time.time()
-            entries = [
-                node
-                for node in root.iter()
-                if (node.attrib.get("text") or "") in endonyms | system_texts and not _inside(node, boxes)
-            ]
-            signature = tuple((node.attrib.get("text") or "") for node in _row_clusters(entries))
-            if previous is not None and signature == previous:
-                break
-            previous = signature
-            rects = [box for box in (_bounds(node) for node in entries) if box]
-            if not rects:
-                break
-            x1 = min(box[0] for box in rects) + 12
-            y1 = min(box[1] for box in rects) + 12
-            x2 = max(box[2] for box in rects) - 12
-            y2 = max(box[3] for box in rects) - 12
-            if x2 - x1 < 24 or y2 - y1 < 36:
-                break
-            x = (x1 + x2) // 2
-            y_lo = y1 + max(8, int((y2 - y1) * 0.20))
-            y_hi = y1 + int((y2 - y1) * 0.80)
-            _sh(device.serial, f"input swipe {x} {y_hi} {x} {y_lo} 70")
-            time.sleep(0.45)
-            root = device.dump()
+        tapped, root, stopped_short = _page_language_menu(
+            device, root, endonym, index, endonyms, system_texts, boxes, toward_end=True
+        )
+        if tapped is not None:
+            return tapped
+        if stopped_short and _menu_open(root, endonyms, system_texts, boxes):
+            tapped, _root, _stopped_short = _page_language_menu(
+                device, root, endonym, index, endonyms, system_texts, boxes, toward_end=False
+            )
+            if tapped is not None:
+                return tapped
     _die(f"language picker: {endonym!r} row {index} for {locale.pref} was not tapped")
     return 0.0
+
+
+def _back_open_language_menu(app: App, serial: str) -> bool:
+    """One Back when `_menu_open`. Never `press_back` (that raises StopRun and stops the device).
+
+    Returns True when that Back leaves the package. The caller records the note and continues.
+    """
+    if app.language_via() != "app":
+        return False
+    language = app.cfg.get("language") or {}
+    if "field" not in language or "system" not in language:
+        return False
+    try:
+        root = _dump(serial)
+        label_texts = {app.text(item.pref, str(language["field"])) for item in app.locales}
+        system_texts = {app.text(item.pref, str(language["system"])) for item in app.locales}
+        endonyms = {app.endonym(item.pref) for item in app.locales}
+    except SystemExit:
+        return False
+    field = _field_node(root, label_texts, endonyms | system_texts)
+    boxes = _boxes_around(root, field) if field is not None else []
+    # No field in the dump: empty boxes would treat the Settings value as an open menu.
+    if field is None and not _popup_open(root, endonyms, system_texts):
+        return False
+    if not _menu_open(root, endonyms, system_texts, boxes):
+        return False
+    _sh(serial, "input keyevent 4")
+    time.sleep(0.5)
+    package = _resumed(serial)
+    if package is not None and package != app.package:
+        print(f"  WARN: language menu Back resumed {package!r}", flush=True)
+        return True
+    return False
 
 
 def _tap_center(serial: str, node: ET.Element) -> None:
@@ -1730,7 +1809,10 @@ def _run_device(app: App, serial: str, form: str, locales: list[Locale], selecte
                 _set_language(app, serial, locale)
             except SystemExit as exc:
                 print(f"  WARN: {exc}; continuing", flush=True)
-                all_notes[locale.pref] = {"language": str(exc)}
+                note = str(exc)
+                if _back_open_language_menu(app, serial):
+                    note = f"{note}; Back left the package"
+                all_notes[locale.pref] = {"language": note}
                 continue
             device = Device(app, serial, locale)
             try:

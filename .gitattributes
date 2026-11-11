@@ -65,3 +65,11 @@ AGENT_CONTEXT.md filter=manage-configs
 .grok/agents/plan.md filter=manage-configs
 .grok/agents/explore.md filter=manage-configs
 .gitignore filter=manage-configs
+
+# Checked-in JSON is pretty (indent 2). Clean only; no smudge. install-merge-drivers.sh sets the filter.
+*.json filter=json-pretty
+
+# Translation sources are LFS. The manuals stay normal text. Generated strings.xml is gitignored.
+docs/i18n/** filter=lfs diff=lfs merge=lfs -text
+docs/i18n/**/user-manual.md !filter !diff !merge text
+app/src/main/i18n/** filter=lfs diff=lfs merge=lfs -text

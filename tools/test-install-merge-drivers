@@ -22,13 +22,26 @@ r=$(mkrepo plain) || exit 1
 (cd "$r" && bash ./orch/install-merge-drivers.sh) >"$T/plain.out" 2>&1; rc=$?
 [[ $rc -eq 0 ]] && ok "plain: exit 0" || bad "plain: rc=$rc $(cat "$T/plain.out")"
 [[ "$(cfg "$r" filter.manage-configs.required)" == true ]] && ok "plain: manage-configs required" || bad "plain: manage-configs.required"
+[[ "$(cfg "$r" filter.json-pretty.clean)" == "python3 ./orch/json-pretty-filter clean" ]] && ok "plain: json-pretty clean" || bad "plain: json-pretty clean"
+[[ "$(cfg "$r" filter.json-pretty.required)" == true ]] && ok "plain: json-pretty required" || bad "plain: json-pretty required"
+[[ -z "$(cfg "$r" filter.json-pretty.smudge)" ]] && ok "plain: json-pretty has no smudge" || bad "plain: json-pretty smudge is set"
 [[ "$(cfg "$r" merge.ve-englog.driver)" == "./git-merge-drivers/ve-englog %O %A %B %L %P" ]] && ok "plain: ve-englog driver" || bad "plain: ve-englog driver"
 [[ "$(cfg "$r" merge.ve-versioncode.driver)" == "./git-merge-drivers/ve-versioncode %O %A %B %L %P" ]] && ok "plain: ve-versioncode driver" || bad "plain: ve-versioncode driver"
 rel=$(git -C "$r" rev-parse --git-path info/attributes)
 case "$rel" in /*) attr="$rel" ;; *) attr="$r/$rel" ;; esac
 grep -qxF 'app/versionCode.txt merge=ve-versioncode' "$attr" && ok "plain: info/attributes binds versionCode" || bad "plain: info/attributes missing ($attr)"
+grep -qxF '*.json filter=json-pretty' "$attr" && ok "plain: info/attributes json-pretty" || bad "plain: info/attributes json"
+grep -qxF 'docs/i18n/** filter=lfs diff=lfs merge=lfs -text' "$attr" && ok "plain: info/attributes i18n lfs" || bad "plain: info/attributes lfs"
+grep -qxF 'docs/i18n/**/user-manual.md !filter !diff !merge text' "$attr" && ok "plain: info/attributes manuals are text" || bad "plain: info/attributes manuals"
+grep -qxF 'app/src/main/i18n/** filter=lfs diff=lfs merge=lfs -text' "$attr" && ok "plain: info/attributes app i18n lfs" || bad "plain: info/attributes app i18n"
+relx=$(git -C "$r" rev-parse --git-path info/exclude)
+case "$relx" in /*) exc="$relx" ;; *) exc="$r/$relx" ;; esac
+grep -qxF 'app/src/main/res/values/strings.xml' "$exc" && grep -qxF 'app/src/main/res/values-*/strings.xml' "$exc" && ok "plain: info/exclude generated strings" || bad "plain: info/exclude ($exc)"
+git -C "$r" config filter.json-pretty.smudge cat
 (cd "$r" && bash ./orch/install-merge-drivers.sh) >/dev/null 2>&1
+[[ -z "$(cfg "$r" filter.json-pretty.smudge)" ]] && ok "plain: existing smudge is removed" || bad "plain: smudge survived"
 [[ "$(grep -cxF 'app/versionCode.txt merge=ve-versioncode' "$attr")" == 1 ]] && ok "plain: second install does not duplicate the attribute" || bad "plain: attribute duplicated"
+[[ "$(grep -cxF '*.json filter=json-pretty' "$attr")" == 1 ]] && ok "plain: second install does not duplicate json-pretty" || bad "plain: json-pretty duplicated"
 [[ "$(cfg "$r" merge.autostash)" == false ]] && ok "plain: merge.autostash=false" || bad "plain: autostash"
 [[ -x "$r/git-merge-drivers/ve-special-ours" ]] && ok "plain: drivers executable" || bad "plain: drivers not executable"
 

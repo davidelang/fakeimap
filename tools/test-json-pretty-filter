@@ -1,0 +1,35 @@
+#!/bin/sh
+# json-pretty-filter clean: indent 2, keep key order, fail on invalid JSON.
+set -u
+canon="$(git -c safe.directory='*' rev-parse --show-toplevel)"
+f="$canon/orch/json-pretty-filter"
+pass=0
+fail=0
+ok() { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+# Command substitution drops the trailing newline the filter writes. Compare files.
+tmp=$(mktemp)
+want=$(mktemp)
+trap 'rm -f "$tmp" "$want"' EXIT
+if ! printf '%s' '{"b":1,"a":{"c":[true,false]}}' | python3 "$f" clean > "$tmp"; then
+  bad "clean exited $?"
+fi
+cat > "$want" <<'EOF'
+{
+  "b": 1,
+  "a": {
+    "c": [
+      true,
+      false
+    ]
+  }
+}
+EOF
+cmp -s "$tmp" "$want" && ok "pretty, key order kept" || bad "pretty mismatch: $(cat "$tmp")"
+if python3 "$f" clean >/dev/null 2>&1 <<'EOF'
+not json
+EOF
+then bad "invalid JSON exited 0"; else ok "invalid JSON exits non-zero"; fi
+if python3 "$f" >/dev/null 2>&1; then bad "usage exited 0"; else ok "usage exits non-zero"; fi
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

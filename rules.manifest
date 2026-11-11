@@ -64,6 +64,7 @@ shared orch/plans-scope
 shared orch/todo-open
 shared orch/englog-recent
 shared orch/install-merge-drivers.sh
+shared orch/json-pretty-filter
 shared orch/merge-branch-into-master.sh
 shared orch/env
 shared orch/refresh-shell.c
