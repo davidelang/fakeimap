@@ -6,14 +6,16 @@
     "ENABLE",
     "SASL-IR",
     "LITERAL+",
-    "UTF8=ACCEPT"
+    "UTF8=ACCEPT",
+    "AUTH=PLAIN"
   ],
   "pre_login_capabilities": [
     "IMAP4rev1",
     "ENABLE",
     "SASL-IR",
     "LITERAL+",
-    "UTF8=ACCEPT"
+    "UTF8=ACCEPT",
+    "AUTH=PLAIN"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -39,9 +41,11 @@
     "MOVE",
     "CONDSTORE",
     "QRESYNC",
-    "PREVIEW"
+    "PREVIEW",
+    "STARTTLS"
   ],
   "logout_bye": true,
+  "move_copyuid_untagged": true,
   "select_flags": "\\Answered \\Flagged \\Deleted \\Seen \\Draft",
   "permanent_flags": "\\Deleted \\Seen \\Answered \\Flagged \\Draft \\*",
   "select_order": [
@@ -53,16 +57,16 @@
     "UIDNEXT"
   ],
   "flag_order": [
-    "\\Recent",
+    "\\Deleted",
+    "\\Seen",
     "\\Answered",
     "\\Flagged",
-    "\\Draft",
-    "\\Deleted",
-    "\\Seen"
+    "\\Draft"
   ],
   "fetch_peek_body": true,
   "fetch_seen_flags": true,
   "fetch_item_order": [
+    "BODY[]",
     "FLAGS",
     "UID",
     "INTERNALDATE",
@@ -73,7 +77,6 @@
     "RFC822",
     "RFC822.HEADER",
     "RFC822.TEXT",
-    "BODY[]",
     "BODY.PEEK[]"
   ]
 }

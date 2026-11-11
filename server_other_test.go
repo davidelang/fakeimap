@@ -96,7 +96,6 @@ func TestOtherServerPersonalities(t *testing.T) {
 	liveStalGreet := stalGreet + " AUTH=PLAIN"
 	liveStalPost := stalPost + " STARTTLS"
 	for _, name := range []string{
-		"personalities/stalwart-01625.json",
 		"personalities/stalwart-dev.json",
 		"personalities/stalwart-0155.json",
 	} {
@@ -125,30 +124,35 @@ func TestOtherServerPersonalities(t *testing.T) {
 			order:    stalOrder,
 		})
 	}
-	cases = append(cases, struct {
-		file     string
-		greeting string
-		greet    string
-		pre      string
-		post     string
-		delim    string
-		ns       string
-		flags    string
-		perm     string
-		order    []string
-		other    string
-	}{
-		file:     "personalities/stalwart.json",
-		greeting: "* OK [CAPABILITY " + liveStalGreet + "] Stalwart IMAP4rev2 at your service.",
-		greet:    liveStalGreet,
-		pre:      liveStalGreet,
-		post:     liveStalPost,
-		delim:    "/",
-		ns:       `* NAMESPACE (("" "/")) NIL NIL`,
-		flags:    dovFlags,
-		perm:     stalPerm,
-		order:    stalOrder,
-	})
+	for _, name := range []string{
+		"personalities/stalwart.json",
+		"personalities/stalwart-01625.json",
+	} {
+		cases = append(cases, struct {
+			file     string
+			greeting string
+			greet    string
+			pre      string
+			post     string
+			delim    string
+			ns       string
+			flags    string
+			perm     string
+			order    []string
+			other    string
+		}{
+			file:     name,
+			greeting: "* OK [CAPABILITY " + liveStalGreet + "] Stalwart IMAP4rev2 at your service.",
+			greet:    liveStalGreet,
+			pre:      liveStalGreet,
+			post:     liveStalPost,
+			delim:    "/",
+			ns:       `* NAMESPACE (("" "/")) NIL NIL`,
+			flags:    dovFlags,
+			perm:     stalPerm,
+			order:    stalOrder,
+		})
+	}
 	cases = append(cases, struct {
 		file     string
 		greeting string
@@ -177,7 +181,7 @@ func TestOtherServerPersonalities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"stalwart-01625.json", "stalwart-0155.json"} {
+	for _, name := range []string{"stalwart-0155.json"} {
 		b, err := os.ReadFile("personalities/" + name)
 		if err != nil {
 			t.Fatal(err)
