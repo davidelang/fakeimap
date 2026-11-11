@@ -21,6 +21,7 @@ type Bound struct {
 	Control           string `json:"control,omitempty"`
 	Smtp              string `json:"smtp,omitempty"`
 	Jmap              string `json:"jmap,omitempty"`
+	Sieve             string `json:"sieve,omitempty"`
 }
 
 // Server is the loopback IMAP listener.
@@ -35,6 +36,7 @@ type Server struct {
 	ctrlLn      net.Listener
 	smtpLn      net.Listener
 	jmapLn      net.Listener
+	sieveLn     net.Listener
 	stdout      io.Writer
 	logf        *os.File
 	logMu       sync.Mutex
@@ -58,6 +60,8 @@ type Server struct {
 	subMu       sync.Mutex
 	subN        uint64
 	subs        map[string][]jmapSub
+	sieveMu     sync.Mutex
+	sieveAccts  map[string]*sieveAcct
 }
 
 func newServer(path string, stdout io.Writer) (*Server, error) {
@@ -78,12 +82,13 @@ func newServerFrom(cfg Config, stdout io.Writer) (*Server, error) {
 		return nil, err
 	}
 	srv := &Server{
-		cfg:    cfg,
-		pers:   pers,
-		store:  st,
-		stdout: stdout,
-		ready:  make(chan struct{}),
-		quit:   make(chan struct{}),
+		cfg:        cfg,
+		pers:       pers,
+		store:      st,
+		stdout:     stdout,
+		ready:      make(chan struct{}),
+		quit:       make(chan struct{}),
+		sieveAccts: map[string]*sieveAcct{},
 	}
 	if cfg.CertFile != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
@@ -210,6 +215,13 @@ func (s *Server) Serve() error {
 			s.acceptJMAP()
 		}()
 	}
+	if s.sieveLn != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.acceptSieve()
+		}()
+	}
 	wg.Wait()
 	return nil
 }
@@ -251,6 +263,14 @@ func (s *Server) listen() error {
 		}
 		s.jmapLn = ln
 		s.bound.Jmap = ln.Addr().String()
+	}
+	if s.cfg.SieveListen != "" {
+		ln, err := net.Listen("tcp", s.cfg.SieveListen)
+		if err != nil {
+			return err
+		}
+		s.sieveLn = ln
+		s.bound.Sieve = ln.Addr().String()
 	}
 	return nil
 }
@@ -337,6 +357,9 @@ func (s *Server) Close() {
 		}
 		if s.jmapLn != nil {
 			_ = s.jmapLn.Close()
+		}
+		if s.sieveLn != nil {
+			_ = s.sieveLn.Close()
 		}
 		s.mu.Lock()
 		for _, c := range s.imap {

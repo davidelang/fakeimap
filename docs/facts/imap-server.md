@@ -4,7 +4,7 @@ Binary: `fakeimap`, at the checkout root. `make` runs `go test ./...` and then `
 
 Run: `fakeimap <config.json>`. The one argument is the config path. Paths inside the config are relative to the process working directory, not to the config file.
 
-Before accept, the process writes one JSON object to stdout and flushes it. The object has `listen` when a cleartext listener is bound, `implicit_tls_listen` when an implicit-TLS listener is bound, `control` when the control socket is bound, `smtp` when the submission listener is bound, and `jmap` when the JMAP listener is bound. A configured port of `0` is the bound ephemeral port.
+Before accept, the process writes one JSON object to stdout and flushes it. The object has `listen` when a cleartext listener is bound, `implicit_tls_listen` when an implicit-TLS listener is bound, `control` when the control socket is bound, `smtp` when the submission listener is bound, `jmap` when the JMAP listener is bound, and `sieve` when the ManageSieve listener is bound. A configured port of `0` is the bound ephemeral port.
 
 ## Config keys
 
@@ -19,8 +19,9 @@ Before accept, the process writes one JSON object to stdout and flushes it. The 
 - `control` — filesystem path of the mode-0600 Unix control socket. Empty or omitted: no socket.
 - `smtp_listen` — `host:port` cleartext SMTP submission listener. Empty or omitted: no SMTP listener. Port `0`: ephemeral. The port speaks cleartext. `STARTTLS` is not offered. `AUTH PLAIN` and `AUTH LOGIN` use the same dataset passwords as IMAP. `MAIL FROM` and `RCPT TO` before a successful `AUTH` are rejected. `RCPT TO` a dataset account, as a bare name or `name@domain`, delivers `DATA` to that account's `INBOX`. Any other recipient is accepted and the message is not stored. There is no queue, relay, or DSN.
 - `jmap_listen` — `host:port` cleartext HTTP JMAP listener. Empty or omitted: no JMAP listener. Port `0`: ephemeral. The port speaks cleartext. It does not satisfy the requirement for an IMAP listener.
+- `sieve_listen` — `host:port` ManageSieve listener. Empty or omitted: no ManageSieve listener. Port `0`: ephemeral. It does not satisfy the requirement for an IMAP listener. Scripts are stored in memory, per dataset account, and are not executed. `CHECKSCRIPT` does not parse Sieve.
 
-At least one listener is required. Implicit TLS requires `cert_file` and `key_file`. `STARTTLS` is offered on a cleartext connection only when a certificate is loaded and TLS has not started. `smtp_listen` and `jmap_listen` do not satisfy that requirement.
+At least one listener is required. Implicit TLS requires `cert_file` and `key_file`. `STARTTLS` is offered on a cleartext connection only when a certificate is loaded and TLS has not started. `smtp_listen`, `jmap_listen`, and `sieve_listen` do not satisfy that requirement.
 
 ## JMAP
 
@@ -41,6 +42,14 @@ One JMAP account per dataset user. The account id is the username. Mailbox ids a
 `EmailSubmission/query` with `filter.emailIds` returns the ids of submissions created for those emails, in creation order, and no others. A filter without `emailIds` returns every submission for the account.
 
 Any other method, including `Identity/set` and `EmailSubmission/get`, returns `unknownMethod`. `using` must list `urn:ietf:params:jmap:submission` or those three methods return `unknownMethod`.
+
+## ManageSieve
+
+`sieve_listen` speaks RFC 5804. The greeting is capability lines and then `OK`. It includes `IMPLEMENTATION`, `VERSION` `1.0`, `SASL` `PLAIN` and `CRAM-MD5`, and `SIEVE` including `fileinto` and `include`. `STARTTLS` is listed only when a certificate is loaded. `STARTTLS` returns `OK`, and the next greeting has no `STARTTLS`. `AUTHENTICATE "PLAIN"` with an initial response then works on that connection.
+
+`AUTHENTICATE "PLAIN"` with an initial response, and `AUTHENTICATE "CRAM-MD5"`, accept a dataset account and return `NO` for a wrong password. Before that, `LISTSCRIPTS`, `GETSCRIPT`, `PUTSCRIPT`, `CHECKSCRIPT`, and `SETACTIVE` are `NO`.
+
+`CHECKSCRIPT` of any non-empty literal returns an empty `OK` and stores nothing. That empty `OK` means no warnings. `PUTSCRIPT` stores the literal under that account and name. `GETSCRIPT` returns those bytes. An unknown name is `NO`. `LISTSCRIPTS` returns each stored name as a quoted string. The active name has `ACTIVE`. `SETACTIVE` of a stored name sets it. `SETACTIVE ""` clears it. `SETACTIVE` of an unknown name is `NO` and leaves the active name unchanged. `reset` and `set-dataset` drop every stored script.
 
 ## Log lines
 
@@ -102,7 +111,7 @@ An overlaid message is stored from its file. A generated mailbox keeps a header 
 
 One JSON object per line in, one JSON object per line out: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 
-Ops: `status`, `reset`, `set-personality`, `set-dataset`, `disconnect`, `inject`, `list-mail`, `fetch-mail`, `accounts`, `freeze-clock`, `thaw-clock`, `arm-fault`, `clear-faults`, `list-smtp`, `wait-smtp`. `status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, and `jmap`; `smtp` and `jmap` are the bound `host:port`, or `""` when that listener is not up.
+Ops: `status`, `reset`, `set-personality`, `set-dataset`, `disconnect`, `inject`, `list-mail`, `fetch-mail`, `accounts`, `freeze-clock`, `thaw-clock`, `arm-fault`, `clear-faults`, `list-smtp`, `wait-smtp`. `status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `jmap`, and `sieve`; `smtp`, `jmap`, and `sieve` are the bound `host:port`, or `""` when that listener is not up.
 
 Request fields: `path`, `conn`, `mailbox`, `user`, `username`, `password`, `raw`, `uid`, `time`, `id`, `command`, `times`, `do`, `delay_ms`, `bytes`, `text`, `count`, `offset`, `tag`, `order`, `timeout_ms`.
 

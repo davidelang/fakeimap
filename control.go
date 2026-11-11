@@ -238,6 +238,7 @@ func (s *Server) ctrlStatus() map[string]any {
 		"control":             s.bound.Control,
 		"smtp":                s.bound.Smtp,
 		"jmap":                s.bound.Jmap,
+		"sieve":               s.bound.Sieve,
 		"personality":         s.cfg.Personality,
 		"dataset":             s.cfg.Dataset,
 		"connections":         len(s.imap),
@@ -280,6 +281,7 @@ func (s *Server) reloadDataset(dir string) error {
 	s.faults = nil
 	s.pausing = false
 	s.mu.Unlock()
+	s.clearSieve()
 	return nil
 }
 

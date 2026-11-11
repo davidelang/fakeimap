@@ -186,3 +186,13 @@
 ## 2026-11-11 - JMAP EmailSubmission
 
 - Implementing urn:ietf:params:jmap:submission, Identity/get, EmailSubmission/set, and EmailSubmission/query. Delivery uses the SMTP DATA accept path (jmap-submission-20261111-0700-plan.md).
+
+## 2026-11-11 - managesieve execution start
+
+- Approved plan: sandbox/plans/managesieve-20261111-0721-plan.md
+- Work: sieve_listen, in-memory ManageSieve script store, CHECKSCRIPT accepts text and does not parse or store, scripts are not executed
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - managesieve landed
+
+- sieve_listen binds a ManageSieve listener. Scripts stay in memory per account and are not executed. CHECKSCRIPT accepts a non-empty literal, returns an empty OK, and stores nothing.

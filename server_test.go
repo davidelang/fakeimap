@@ -833,6 +833,13 @@ func start(t *testing.T, cfg Config) (*Server, Bound) {
 				t.Errorf("jmap %s still open", bound.Jmap)
 			}
 		}
+		if bound.Sieve != "" {
+			c, err := net.DialTimeout("tcp", bound.Sieve, 200*time.Millisecond)
+			if err == nil {
+				c.Close()
+				t.Errorf("sieve %s still open", bound.Sieve)
+			}
+		}
 	})
 	return srv, bound
 }

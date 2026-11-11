@@ -20,6 +20,7 @@ type Config struct {
 	Control           string `json:"control"`
 	SmtpListen        string `json:"smtp_listen"`
 	JmapListen        string `json:"jmap_listen"`
+	SieveListen       string `json:"sieve_listen"`
 }
 
 func loadConfig(path string) (Config, error) {
