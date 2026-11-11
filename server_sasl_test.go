@@ -76,6 +76,11 @@ func TestSaslPersonality(t *testing.T) {
 		if !sasl.lists(cap) {
 			t.Fatalf("sasl missing %s", cap)
 		}
+	}
+	if !cyrus.lists("AUTH=LOGIN") {
+		t.Fatal("cyrus missing AUTH=LOGIN")
+	}
+	for _, cap := range want[1:] {
 		if cyrus.lists(cap) {
 			t.Fatalf("cyrus lists %s", cap)
 		}
@@ -90,11 +95,11 @@ func TestUnlistedMechanisms(t *testing.T) {
 	cl := dial(t, bound.Listen)
 	for _, c := range append(capsOf(cl.greeting), capsOf(cl.cmd("CAPABILITY").mustOK(t).untagged[0])...) {
 		u := strings.ToUpper(c)
-		if u == "AUTH=LOGIN" || u == "AUTH=CRAM-MD5" || u == "AUTH=EXTERNAL" || strings.Contains(u, "SCRAM") || strings.Contains(u, "DIGEST-MD5") {
+		if u == "AUTH=CRAM-MD5" || u == "AUTH=EXTERNAL" || strings.Contains(u, "SCRAM") || strings.Contains(u, "DIGEST-MD5") {
 			t.Fatalf("advertised %s", c)
 		}
 	}
-	for _, mech := range []string{"LOGIN", "CRAM-MD5", "SCRAM-SHA-1", "SCRAM-SHA-256", "SCRAM-SHA-1-PLUS", "SCRAM-SHA-256-PLUS", "EXTERNAL", "DIGEST-MD5"} {
+	for _, mech := range []string{"CRAM-MD5", "SCRAM-SHA-1", "SCRAM-SHA-256", "SCRAM-SHA-1-PLUS", "SCRAM-SHA-256-PLUS", "EXTERNAL", "DIGEST-MD5"} {
 		rp := cl.cmd("AUTHENTICATE " + mech)
 		if rp.status != "NO" {
 			t.Fatalf("%s status %s", mech, rp.status)

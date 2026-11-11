@@ -107,3 +107,14 @@
 
 - Personalities that list LIST-EXTENDED, CHILDREN, SPECIAL-USE, LIST-STATUS, and CREATE-SPECIAL-USE answer extended LIST and CREATE USE. A two-argument LIST is unchanged. Without those capabilities the new syntax is tagged BAD.
 - The third probe kind diff against the already-running liveimap-cyrus-3137 was empty. That container was not recreated and was not stopped. The five capabilities are on personalities/cyrus-3137.json and are gone from the gaps file. ESEARCH and COMPRESS=DEFLATE stay unimplemented.
+
+## 2026-11-11 - AUTH=LOGIN on Cyrus personality
+
+- Approved plan: sandbox/plans/cyrus-auth-login-20261111-0351-plan.md
+- Work: put AUTH=LOGIN only on the Cyrus capability lists the already-running liveimap-cyrus-3137 probe names, and drop it from the gaps file. Do not recreate or stop that container.
+- The lab password stays in the gitignored operator file and out of this log.
+
+## 2026-11-11 - AUTH=LOGIN on Cyrus personality landed
+
+- AUTH=LOGIN is on the greeting and pre-login lists in personalities/cyrus-3137.json, not on the post-login list. It is gone from the gaps file. personalities/sasl.json still advertises it.
+- The original probe diff against the already-running liveimap-cyrus-3137 was empty. That container was not recreated and was not stopped.
