@@ -153,7 +153,7 @@ func TestSearchTextBodyCC(t *testing.T) {
 
 	for _, bad := range []string{
 		"SEARCH FUZZY TEXT seed",
-		"SEARCH NEW",
+		"SEARCH OLD",
 		"SEARCH HEADER FROM x",
 		"SEARCH TEXT",
 	} {
@@ -215,7 +215,7 @@ func TestSearchBool(t *testing.T) {
 	for _, bad := range []string{
 		"SEARCH FUZZY TEXT x",
 		"SEARCH FUZZY",
-		"SEARCH NEW",
+		"SEARCH OLD",
 		"SEARCH HEADER FROM x",
 		"SEARCH 1",
 		"SEARCH OR",

@@ -62,6 +62,27 @@ func (m *Message) has(flag string) bool {
 	return ok
 }
 
+// hasFold matches a system flag or a keyword. Keyword spelling is case-insensitive.
+// \Recent is the session bit, not a stored flag.
+func (m *Message) hasFold(flag string) bool {
+	c, ok := canonFlag(flag)
+	if !ok {
+		return false
+	}
+	if m.has(c) {
+		return true
+	}
+	if strings.HasPrefix(c, `\`) {
+		return false
+	}
+	for k := range m.flags {
+		if strings.EqualFold(k, c) {
+			return true
+		}
+	}
+	return false
+}
+
 var systemFlagOrder = []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`, `\Recent`}
 
 func canonFlag(f string) (string, bool) {
@@ -1378,8 +1399,20 @@ func parseSearchKey(toks []Token) (searchKey, []Token, error) {
 			return searchKey{}, nil, err
 		}
 		return searchKey{op: "NOT", kids: []searchKey{a}}, rest, nil
-	case "ALL", "SEEN", "UNSEEN", "FLAGGED", "UNFLAGGED", "DELETED", "UNDELETED":
+	case "ALL", "SEEN", "UNSEEN", "FLAGGED", "UNFLAGGED", "DELETED", "UNDELETED", "ANSWERED", "UNANSWERED", "NEW":
 		return searchKey{op: op}, toks[1:], nil
+	case "KEYWORD", "UNKEYWORD":
+		if len(toks) < 2 {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		arg, ok := astring(toks[1])
+		if !ok {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		if _, ok := canonFlag(arg); !ok {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: op, arg: arg}, toks[2:], nil
 	case "FROM", "TO", "SUBJECT", "TEXT", "BODY", "CC":
 		if len(toks) < 2 {
 			return searchKey{}, nil, fmt.Errorf("bad search")
@@ -1452,6 +1485,16 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 		return m.has(`\Deleted`)
 	case "UNDELETED":
 		return !m.has(`\Deleted`)
+	case "ANSWERED":
+		return m.has(`\Answered`)
+	case "UNANSWERED":
+		return !m.has(`\Answered`)
+	case "NEW":
+		return m.has(`\Recent`) && !m.has(`\Seen`)
+	case "KEYWORD":
+		return m.hasFold(k.arg)
+	case "UNKEYWORD":
+		return !m.hasFold(k.arg)
 	case "FROM":
 		return strings.Contains(strings.ToLower(m.from), strings.ToLower(k.arg))
 	case "TO":

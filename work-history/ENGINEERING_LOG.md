@@ -255,3 +255,14 @@
 
 - SEARCH and UID SEARCH accept OR, NOT, and a parenthesized key list. OR matches either key. NOT matches when its key does not. A parenthesized list matches only when every key inside it matches. The three nest. A top-level sequence stays AND.
 - FUZZY and any other unknown key stay BAD. A missing key after OR or NOT, or an unclosed parenthesis, is BAD. Loopback covers CHARSET UTF-8 and ESEARCH RETURN (ALL). No personality file changed.
+
+## 2026-11-11 - SEARCH flag keys
+
+- Approved plan: sandbox/plans/search-flags-20261111-0932-plan.md
+- Work: SEARCH and UID SEARCH accept ANSWERED, UNANSWERED, NEW, KEYWORD, and UNKEYWORD. FUZZY, OLD, RECENT, and DRAFT stay BAD.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - SEARCH flag keys landed
+
+- SEARCH and UID SEARCH accept ANSWERED, UNANSWERED, NEW, KEYWORD, and UNKEYWORD. ANSWERED is \Answered. NEW is \Recent and not \Seen. KEYWORD matches one system flag or keyword, including $Forwarded, case-insensitively. UNKEYWORD is the complement. KEYWORD \Recent uses the session \Recent bit.
+- FUZZY, OLD, RECENT, DRAFT, and any other unknown key stay BAD. KEYWORD or UNKEYWORD without a flag is BAD. Loopback covers NOT, OR, and ESEARCH RETURN (ALL). No personality file changed.
