@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -96,7 +95,6 @@ func TestOtherServerPersonalities(t *testing.T) {
 	liveStalGreet := stalGreet + " AUTH=PLAIN"
 	liveStalPost := stalPost + " STARTTLS"
 	for _, name := range []string{
-		"personalities/stalwart-dev.json",
 		"personalities/stalwart-0155.json",
 	} {
 		cases = append(cases, struct {
@@ -127,6 +125,7 @@ func TestOtherServerPersonalities(t *testing.T) {
 	for _, name := range []string{
 		"personalities/stalwart.json",
 		"personalities/stalwart-01625.json",
+		"personalities/stalwart-dev.json",
 	} {
 		cases = append(cases, struct {
 			file     string
@@ -177,19 +176,6 @@ func TestOtherServerPersonalities(t *testing.T) {
 		order:    zimOrder,
 		other:    "/home/",
 	})
-	stalBytes, err := os.ReadFile("personalities/stalwart-dev.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"stalwart-0155.json"} {
-		b, err := os.ReadFile("personalities/" + name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(b) != string(stalBytes) {
-			t.Fatalf("%s differs from stalwart-dev.json", name)
-		}
-	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
 			p, err := loadPersonality(c.file)
