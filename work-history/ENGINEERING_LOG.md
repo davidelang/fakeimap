@@ -390,3 +390,25 @@
 - personalities/dovecot-12.json lists AUTH=PLAIN then AUTH=LOGIN after ENABLE on the greeting and at the end of the pre-login list, and uses flag order Answered Flagged Deleted Seen Draft Recent. Post-login tokens and order, NAMESPACE, and SELECT flags and order already matched. LOGIN-REFERRALS, ID, MULTIAPPEND, and I18NLEVEL=1 stay off. STARTTLS stays out of the file.
 - The normalized diff still has shapes the file cannot express: BODYSTRUCTURE tokens are lowercase. MOVE is tagged BAD because that capability is unlisted, so the remote script stops there. Reply code was not changed.
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 and then started. liveimap-dovecot-12 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Dovecot 2.2 execution start
+
+- Approved plan: sandbox/plans/probe-dovecot-22-20261111-1553-plan.md
+- Work: run the base cyrusprobe script against liveimap-dovecot-22 and update personalities/dovecot-22.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Dovecot 2.2 landed
+
+- Approved plan: sandbox/plans/probe-dovecot-22-20261111-1553-plan.md
+- personalities/dovecot-22.json lists AUTH=PLAIN after IDLE on the greeting and pre-login lists, uses flag order Answered Flagged Deleted Seen Draft Recent, and sends MOVE COPYUID untagged. Post-login tokens and order, NAMESPACE, and SELECT flags and order already matched. ID and LOGIN-REFERRALS stay off. STARTTLS stays out of the file.
+- The normalized diff still has shapes the file cannot express: LOGIN sends an untagged CAPABILITY and a tagged OK with no capability code; BODYSTRUCTURE tokens are lowercase; MOVE still sends RECENT after EXPUNGE. Reply code was not changed.
+- Remaining diff:
+  remote: * CAPABILITY BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT IDLE IMAP4rev1 LIST-EXTENDED LIST-STATUS LITERAL+ MOVE NAMESPACE QRESYNC SASL-IR SORT SORT=DISPLAY SPECIAL-USE THREAD=ORDEREDSUBJECT THREAD=REFERENCES THREAD=REFS UIDPLUS UNSELECT
+  local:  T OK [CAPABILITY BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT IDLE IMAP4rev1 LIST-EXTENDED LIST-STATUS LITERAL+ MOVE NAMESPACE QRESYNC SASL-IR SORT SORT=DISPLAY SPECIAL-USE THREAD=ORDEREDSUBJECT THREAD=REFERENCES THREAD=REFS UIDPLUS UNSELECT]
+  remote: T OK
+  remote: BODYSTRUCTURE ("text" "plain" ("charset" "us-ascii") NIL NIL "7bit" ...)
+  local:  BODYSTRUCTURE ("TEXT" "PLAIN" ("CHARSET" "us-ascii") NIL NIL "7BIT" ...)
+  remote: * RECENT
+  local:  (no RECENT after MOVE EXPUNGE)
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 and then started. liveimap-dovecot-22 was stopped. The lab password stayed in the gitignored operator file.
