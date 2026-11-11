@@ -36,7 +36,7 @@ func TestOtherServerPersonalities(t *testing.T) {
 		{
 			file:     "personalities/dovecot-10.json",
 			greeting: "* OK Dovecot ready.",
-			pre:      "IMAP4rev1 SASL-IR SORT THREAD=REFERENCES UNSELECT LITERAL+ IDLE CHILDREN NAMESPACE",
+			pre:      "IMAP4rev1 SASL-IR SORT THREAD=REFERENCES UNSELECT LITERAL+ IDLE CHILDREN NAMESPACE AUTH=PLAIN AUTH=LOGIN",
 			post:     "IMAP4rev1 SASL-IR SORT THREAD=REFERENCES UNSELECT LITERAL+ IDLE CHILDREN NAMESPACE",
 			delim:    ".",
 			ns:       `* NAMESPACE (("" ".")) NIL NIL`,

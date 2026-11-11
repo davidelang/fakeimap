@@ -362,3 +362,17 @@
 - personalities/dovecot-dev.json lists AUTH=PLAIN after LITERAL+ on the greeting and pre-login lists, uses flag order Answered Flagged Deleted Seen Draft Recent, and sends MOVE COPYUID untagged. ID and LOGIN-REFERRALS stay off. Post-login tokens and order, NAMESPACE, and SELECT flags and order already matched.
 - The normalized diff still has shapes the file cannot express: LOGIN sends an untagged CAPABILITY and a tagged OK with no capability code; APPEND sends an unsolicited FLAGS line that adds attachment keywords; FETCH and the later SELECT include those keywords; BODYSTRUCTURE tokens are lowercase; MOVE still sends RECENT after EXPUNGE; LIST of the two probe mailboxes is MB2 then MB1. Reply code was not changed.
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 and then started. liveimap-dovecot-dev was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Dovecot 1.0 execution start
+
+- Approved plan: sandbox/plans/probe-dovecot-10-20261111-1533-plan.md
+- Work: run the base cyrusprobe script against liveimap-dovecot-10 and update personalities/dovecot-10.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Dovecot 1.0 landed
+
+- Approved plan: sandbox/plans/probe-dovecot-10-20261111-1533-plan.md
+- personalities/dovecot-10.json lists AUTH=PLAIN then AUTH=LOGIN at the end of the pre-login list, and uses flag order Answered Flagged Deleted Seen Draft Recent. Greeting, post-login tokens and order, NAMESPACE, and SELECT flags and order already matched. MULTIAPPEND and LOGIN-REFERRALS stay off.
+- The normalized diff still has shapes the file cannot express: LOGIN is a tagged OK with no capability code; APPEND and COPY are tagged OK with no UIDPLUS code; BODYSTRUCTURE tokens are lowercase and omit the final NIL; MOVE is tagged BAD, so the remote script stops there. Reply code was not changed.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 and then started. liveimap-dovecot-10 was stopped. The lab password stayed in the gitignored operator file.
