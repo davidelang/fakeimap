@@ -32,7 +32,8 @@
     "NAMESPACE",
     "SASL-IR",
     "UIDPLUS",
-    "UNSELECT"
+    "UNSELECT",
+    "BINARY"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -58,7 +59,8 @@
     "SORT=DISPLAY",
     "THREAD=REFERENCES",
     "THREAD=ORDEREDSUBJECT",
-    "THREAD=REFS"
+    "THREAD=REFS",
+    "BINARY"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

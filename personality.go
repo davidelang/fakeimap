@@ -82,6 +82,7 @@ var implementedCaps = map[string]struct{}{
 	"THREAD=ORDEREDSUBJECT":   {},
 	"THREAD=REFS":             {},
 	"COMPRESS=DEFLATE":        {},
+	"BINARY":                  {},
 	"SASL-IR":                 {},
 	"AUTH=PLAIN":              {},
 	"AUTH=LOGIN":              {},

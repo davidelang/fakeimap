@@ -3,7 +3,6 @@
     "ACL",
     "ANNOTATE-EXPERIMENT-1",
     "APPENDLIMIT=2147483647",
-    "BINARY",
     "CATENATE",
     "DIGEST=SHA1",
     "ID",

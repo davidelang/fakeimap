@@ -222,3 +222,14 @@
 
 - DISPLAYFROM and DISPLAYTO sort by the address phrase, case-insensitively, and use the address when the phrase is empty. FROM and TO stay address order. Without SORT=DISPLAY those keys are BAD. personalities/sort.json advertises SORT=DISPLAY.
 - The already-running liveimap-cyrus-3137 display kind diff was empty, so SORT=DISPLAY is on personalities/cyrus-3137.json and gone from the gaps file. SORT=UID and SORT=MODSEQ stay unimplemented. The container was not recreated and was not stopped. cyrusprobe -display does not replace the earlier scripts.
+
+## 2026-11-11 - BINARY.PEEK
+
+- Approved plan: sandbox/plans/binary-peek-20261111-0842-plan.md
+- Work: FETCH and UID FETCH of BINARY.PEEK and BINARY decode base64 and quoted-printable. personalities/binary.json advertises BINARY. cyrusprobe -binary is a further script and does not replace the earlier scripts. BINARY.SIZE, binary APPEND, and URLAUTH=BINARY stay unimplemented.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - BINARY.PEEK landed
+
+- FETCH and UID FETCH of BINARY.PEEK and BINARY return the part with base64 and quoted-printable removed. The reply name is BINARY, and a partial origin is the start offset. BINARY.PEEK does not set \Seen. BINARY does.
+- personalities/binary.json advertises BINARY. The already-running liveimap-cyrus-3137 kind diff was empty, so BINARY is on cyrus-3137.json and sasl.json where that server sends it, and gone from the gaps file. BINARY.SIZE, binary APPEND, and URLAUTH=BINARY stay unimplemented. The container was not recreated and was not stopped. cyrusprobe -binary does not replace the earlier scripts.

@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
 	"net/textproto"
 	"sort"
@@ -541,6 +543,140 @@ func applyPartial(b []byte, partial string) ([]byte, bool) {
 		end = len(b)
 	}
 	return b[start:end], true
+}
+
+const (
+	binaryReady = iota
+	binaryMissing
+	binaryBadPart
+	binaryBadCTE
+)
+
+// binarySpec parses a BINARY or BINARY.PEEK fetch item. The section is one
+// numeric part. partial is empty or <offset.length>.
+func binarySpec(item string) (section, partial string, ok bool) {
+	rest := item
+	switch {
+	case strings.HasPrefix(item, "BINARY.PEEK["):
+		rest = item[len("BINARY.PEEK"):]
+	case strings.HasPrefix(item, "BINARY["):
+		rest = item[len("BINARY"):]
+	default:
+		return "", "", false
+	}
+	rb := strings.IndexByte(rest, ']')
+	if rb < 2 || rest[0] != '[' {
+		return "", "", false
+	}
+	section = rest[1:rb]
+	partial = rest[rb+1:]
+	if !numericBinarySection(section) {
+		return "", "", false
+	}
+	if partial != "" && !binaryPartialOK(partial) {
+		return "", "", false
+	}
+	return section, partial, true
+}
+
+func numericBinarySection(section string) bool {
+	if section == "" {
+		return false
+	}
+	for _, p := range strings.Split(section, ".") {
+		if len(p) == 0 || p[0] < '1' || p[0] > '9' {
+			return false
+		}
+		for i := 1; i < len(p); i++ {
+			if p[i] < '0' || p[i] > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func binaryPartialOK(partial string) bool {
+	_, _, ok := splitBinaryPartial(partial)
+	return ok
+}
+
+func splitBinaryPartial(partial string) (start, count int, ok bool) {
+	if len(partial) < 5 || partial[0] != '<' || partial[len(partial)-1] != '>' {
+		return 0, 0, false
+	}
+	a, b, found := strings.Cut(partial[1:len(partial)-1], ".")
+	if !found || !digitsOnly(a) || !digitsOnly(b) {
+		return 0, 0, false
+	}
+	var err1, err2 error
+	start, err1 = strconv.Atoi(a)
+	count, err2 = strconv.Atoi(b)
+	if err1 != nil || err2 != nil || count <= 0 {
+		return 0, 0, false
+	}
+	return start, count, true
+}
+
+func digitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// decodeBinaryPart returns the part body with its transfer encoding removed.
+// 7bit, 8bit, binary, and a missing encoding stay as stored.
+func decodeBinaryPart(raw []byte, section string) ([]byte, int) {
+	nums, tail, err := splitSpec(section)
+	if err != nil || len(nums) == 0 || tail != "" {
+		return nil, binaryBadPart
+	}
+	part := lookupPart(parseRoot(raw), nums)
+	if part == nil {
+		return nil, binaryMissing
+	}
+	if part.multipart {
+		return nil, binaryBadPart
+	}
+	b, err := decodeTransfer(part)
+	if err != nil {
+		return nil, binaryBadCTE
+	}
+	return b, binaryReady
+}
+
+func decodeTransfer(n *node) ([]byte, error) {
+	body := n.body
+	if body == nil {
+		body = []byte{}
+	}
+	switch strings.ToLower(strings.TrimSpace(n.enc)) {
+	case "", "7bit", "8bit", "binary":
+		return body, nil
+	case "base64":
+		raw := bytes.Map(func(r rune) rune {
+			switch r {
+			case ' ', '\t', '\r', '\n':
+				return -1
+			}
+			return r
+		}, body)
+		b, err := base64.StdEncoding.DecodeString(string(raw))
+		if err != nil {
+			b, err = base64.RawStdEncoding.DecodeString(string(raw))
+		}
+		return b, err
+	case "quoted-printable":
+		return io.ReadAll(quotedprintable.NewReader(bytes.NewReader(body)))
+	default:
+		return nil, fmt.Errorf("unknown cte")
+	}
 }
 
 // renderGenerated builds RFC822 bytes from the index fields. The bytes are

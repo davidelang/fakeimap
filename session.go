@@ -1166,6 +1166,9 @@ func (s *session) cmdFetch(cmd command) error {
 		if err.Error() == "not selected" {
 			return s.no(cmd.tag, "FETCH not selected")
 		}
+		if errors.Is(err, errUnknownCTE) {
+			return s.no(cmd.tag, "[UNKNOWN-CTE] FETCH failed")
+		}
 		return s.bad(cmd.tag, "FETCH bad item")
 	}
 	for _, sn := range snaps {
@@ -1255,7 +1258,33 @@ func (s *session) fetchItemText(item string, sn fetchSnap) string {
 	if strings.HasPrefix(item, "BODY[") || strings.HasPrefix(item, "BODY.PEEK[") {
 		return bodySection(item, sn.raw, s.pers.FetchPeekBody)
 	}
+	if isBinaryFetch(item) {
+		return binarySectionText(item, sn.raw)
+	}
 	return item + " NIL"
+}
+
+func binarySectionText(item string, raw []byte) string {
+	section, partial, ok := binarySpec(item)
+	if !ok {
+		return "BINARY NIL"
+	}
+	name := "BINARY[" + section + "]"
+	b, st := decodeBinaryPart(raw, section)
+	if st != binaryReady {
+		return name + " NIL"
+	}
+	if partial != "" {
+		start, _, _ := splitBinaryPartial(partial)
+		// Origin is <offset>. The client rejects <offset.length>.
+		name += "<" + strconv.Itoa(start) + ">"
+		var pok bool
+		b, pok = applyPartial(b, partial)
+		if !pok {
+			return name + " NIL"
+		}
+	}
+	return name + " " + literal(b)
 }
 
 func bodySection(item string, raw []byte, peekAsBody bool) string {

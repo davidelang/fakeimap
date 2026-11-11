@@ -461,6 +461,54 @@ func TestThreadProbeEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestBinaryProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/binary.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runBinaryScript(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runBinaryScript(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := normalizeKinds(a.lines, a.mb1, a.mb2)
+	diff := scriptDiff(kinds, normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("shape diff:\n%s\n--- a ---\n%s", diff, strings.Join(kinds, "\n"))
+	}
+	var fetches []string
+	for _, line := range a.lines {
+		if strings.Contains(line, " FETCH (") {
+			fetches = append(fetches, fetchKind(line))
+			if strings.Contains(line, "BINARY.PEEK") || strings.Contains(line, "<0.5>") {
+				t.Fatalf("token %s", fetchKind(line))
+			}
+		}
+	}
+	if len(fetches) != 2 || fetches[0] != "* FETCH BINARY[1]" || fetches[1] != "* FETCH BINARY[1]<0>" {
+		t.Fatalf("fetch kinds %v", fetches)
+	}
+}
+
 func splitAddr(addr string) (string, int, error) {
 	host, portS, err := net.SplitHostPort(addr)
 	if err != nil {

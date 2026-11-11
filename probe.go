@@ -76,6 +76,19 @@ Content-Transfer-Encoding: 7bit
 probe-body
 `, "\n"), "\n", "\r\n"))
 
+// binaryProbeMessage is one base64 part. BINARY.PEEK[1] decodes to HelloBinary.
+var binaryProbeMessage = []byte(strings.ReplaceAll(strings.TrimLeft(`
+From: a@example.test
+To: b@example.test
+Subject: bin
+Date: Mon, 01 Jan 2024 00:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: base64
+
+SGVsbG9CaW5hcnk=
+`, "\n"), "\n", "\r\n"))
+
 type probeScript struct {
 	lines []string
 	mb1   string
@@ -2297,6 +2310,145 @@ func compareUtf8(cfg opConfig) (string, error) {
 		return "", perr
 	}
 	local, lerr := runUtf8Script(host, port, "none", cfg.Username, cfg.Password)
+	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
+	if err != nil && diff == "" {
+		return "", err
+	}
+	if lerr != nil && diff == "" {
+		return "", lerr
+	}
+	return diff, nil
+}
+
+// runBinaryScript is a further probe. It fetches one base64 part with
+// BINARY.PEEK and one partial of that part. The earlier scripts are unchanged.
+func runBinaryScript(host string, port int, tlsMode, user, pass string) (probeScript, error) {
+	mb, _, err := freshMailboxPair()
+	if err != nil {
+		return probeScript{}, err
+	}
+	out := probeScript{mb1: mb, mb2: mb}
+	talk, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return out, err
+	}
+	defer talk.close()
+	greet, err := talk.readLogical()
+	if err != nil {
+		return out, err
+	}
+	out.lines = append(out.lines, greet)
+	if tlsMode == "starttls" {
+		lines, err := talk.command("y0", "STARTTLS")
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return out, err
+		}
+		if len(lines) == 0 || taggedNo(lines[len(lines)-1], "y0") {
+			return out, fmt.Errorf("STARTTLS failed")
+		}
+		tlsConn := tls.Client(talk.conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.Handshake(); err != nil {
+			return out, err
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+		talk.conn = tlsConn
+		talk.r = bufio.NewReader(tlsConn)
+		talk.w = bufio.NewWriter(tlsConn)
+	}
+	fail := func(err error) (probeScript, error) {
+		_ = deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb)
+		return out, err
+	}
+	step := func(tag, cmd string, allowNo bool) error {
+		lines, err := talk.command(tag, cmd)
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return err
+		}
+		if len(lines) == 0 || (taggedNo(lines[len(lines)-1], tag) && !allowNo) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	for _, st := range []struct{ tag, cmd string }{
+		{"y1", "CAPABILITY"},
+		{"y2", "LOGIN " + quoteIMAP(user) + " " + quoteIMAP(pass)},
+		{"y3", "CAPABILITY"},
+		{"y4", "CREATE " + quoteIMAP(mb)},
+		{"y5", "SELECT " + quoteIMAP(mb)},
+	} {
+		if err := step(st.tag, st.cmd, false); err != nil {
+			return fail(err)
+		}
+	}
+	tag := "y6"
+	head := fmt.Sprintf("%s APPEND %s \"01-Jan-2024 00:00:00 +0000\" {%d+}\r\n", tag, quoteIMAP(mb), len(binaryProbeMessage))
+	if _, err := io.WriteString(talk.w, head); err != nil {
+		return fail(err)
+	}
+	if _, err := talk.w.Write(binaryProbeMessage); err != nil {
+		return fail(err)
+	}
+	if _, err := io.WriteString(talk.w, "\r\n"); err != nil {
+		return fail(err)
+	}
+	if err := talk.w.Flush(); err != nil {
+		return fail(err)
+	}
+	for {
+		line, err := talk.readLogical()
+		if err != nil {
+			return fail(err)
+		}
+		out.lines = append(out.lines, line)
+		if strings.HasPrefix(line, tag+" ") {
+			if taggedNo(line, tag) {
+				return fail(fmt.Errorf("%s failed", tag))
+			}
+			break
+		}
+	}
+	for _, st := range []struct {
+		tag, cmd string
+		allowNo  bool
+	}{
+		{"y7", "FETCH 1 (BINARY.PEEK[1])", false},
+		{"y8", "FETCH 1 (BINARY.PEEK[1]<0.5>)", false},
+		{"y9", "LOGOUT", true},
+	} {
+		if err := step(st.tag, st.cmd, st.allowNo); err != nil {
+			return fail(err)
+		}
+	}
+	if err := deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func compareBinary(cfg opConfig) (string, error) {
+	remote, err := runBinaryScript(cfg.Host, cfg.Port, cfg.TLS, cfg.Username, cfg.Password)
+	if err != nil && len(remote.lines) == 0 {
+		return "", err
+	}
+	addr, stop, serr := startProbeServer(cfg.Username, cfg.Password, cfg.Personality)
+	if serr != nil {
+		if err != nil {
+			return "", err
+		}
+		return "", serr
+	}
+	defer stop()
+	host, portS, perr := net.SplitHostPort(addr)
+	if perr != nil {
+		return "", perr
+	}
+	port, perr := strconv.Atoi(portS)
+	if perr != nil {
+		return "", perr
+	}
+	local, lerr := runBinaryScript(host, port, "none", cfg.Username, cfg.Password)
 	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
 	if err != nil && diff == "" {
 		return "", err

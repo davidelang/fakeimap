@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/mail"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 )
+
+var errUnknownCTE = errors.New("unknown-cte")
 
 // Message is one mailbox entry. A generated message keeps the header index
 // only: raw stays nil, and bytes() rebuilds RFC822 from the seed and genUID.
@@ -1012,22 +1015,35 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, ch
 	if s.box == nil {
 		return nil, nil, fmt.Errorf("not selected")
 	}
-	expanded, err := expandFetch(items, uidMode)
+	expanded, err := expandFetch(items, uidMode, s.advertiseCap("BINARY"))
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := binarySpecsOK(expanded); err != nil {
 		return nil, nil, err
 	}
 	if changedSince != nil && !itemListed(expanded, "MODSEQ") {
 		expanded = append(expanded, "MODSEQ")
 	}
-	var snaps []fetchSnap
+	var hits []fetchHit
 	mb := s.box
-	// FLAGS in this response already include \Seen, so this session
-	// does not also report the queued flags event.
-	swallow := itemListed(expanded, "FLAGS") || s.pers.FetchSeenFlags
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
 		if changedSince != nil && m.modseq <= *changedSince {
 			return
 		}
+		hits = append(hits, fetchHit{seq: seq, m: m})
+	})
+	for _, h := range hits {
+		if err := binaryMessageOK(expanded, h.m.bytes()); err != nil {
+			return nil, nil, err
+		}
+	}
+	var snaps []fetchSnap
+	// FLAGS in this response already include \Seen, so this session
+	// does not also report the queued flags event.
+	swallow := itemListed(expanded, "FLAGS") || s.pers.FetchSeenFlags
+	for _, h := range hits {
+		seq, m := h.seq, h.m
 		if s.fault != nil && s.fault.do == "mutate" {
 			m.addFlag(`\Flagged`)
 		}
@@ -1050,8 +1066,53 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, ch
 			internal: m.internal, size: m.size, raw: raw,
 			seenEvent: seenEvent,
 		})
-	})
+	}
 	return snaps, expanded, nil
+}
+
+type fetchHit struct {
+	seq uint32
+	m   *Message
+}
+
+func isBinaryFetch(u string) bool {
+	return strings.HasPrefix(u, "BINARY.PEEK[") || strings.HasPrefix(u, "BINARY[")
+}
+
+func binarySpecsOK(items []string) error {
+	for _, it := range items {
+		if !isBinaryFetch(it) {
+			continue
+		}
+		if _, _, ok := binarySpec(it); !ok {
+			return fmt.Errorf("bad fetch item")
+		}
+	}
+	return nil
+}
+
+func binaryMessageOK(items []string, raw []byte) error {
+	cte := false
+	for _, it := range items {
+		if !isBinaryFetch(it) {
+			continue
+		}
+		section, _, ok := binarySpec(it)
+		if !ok {
+			return fmt.Errorf("bad fetch item")
+		}
+		_, st := decodeBinaryPart(raw, section)
+		switch st {
+		case binaryBadPart:
+			return fmt.Errorf("bad fetch item")
+		case binaryBadCTE:
+			cte = true
+		}
+	}
+	if cte {
+		return errUnknownCTE
+	}
+	return nil
 }
 
 func itemListed(items []string, name string) bool {
@@ -1063,7 +1124,7 @@ func itemListed(items []string, name string) bool {
 	return false
 }
 
-func expandFetch(items []string, uidMode bool) ([]string, error) {
+func expandFetch(items []string, uidMode bool, binary bool) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
 	var add func(string) error
@@ -1077,7 +1138,7 @@ func expandFetch(items []string, uidMode bool) ([]string, error) {
 		case "FULL":
 			return addAll([]string{"FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY"}, add)
 		}
-		if !knownFetch(u) {
+		if !knownFetch(u, binary) {
 			return fmt.Errorf("bad fetch item")
 		}
 		key := u
@@ -1113,7 +1174,7 @@ func addAll(items []string, add func(string) error) error {
 	return nil
 }
 
-func knownFetch(u string) bool {
+func knownFetch(u string, binary bool) bool {
 	switch u {
 	case "FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY", "BODYSTRUCTURE",
 		"RFC822", "RFC822.HEADER", "RFC822.TEXT", "MODSEQ":
@@ -1122,6 +1183,9 @@ func knownFetch(u string) bool {
 	if strings.HasPrefix(u, "BODY[") || strings.HasPrefix(u, "BODY.PEEK[") {
 		return strings.Contains(u, "]")
 	}
+	if isBinaryFetch(u) {
+		return binary && strings.Contains(u, "]")
+	}
 	return false
 }
 
@@ -1129,9 +1193,9 @@ func fetchSetsSeen(items []string) bool {
 	for _, it := range items {
 		u := strings.ToUpper(it)
 		switch {
-		case strings.HasPrefix(u, "BODY.PEEK"):
+		case strings.HasPrefix(u, "BODY.PEEK"), strings.HasPrefix(u, "BINARY.PEEK"):
 			continue
-		case strings.HasPrefix(u, "BODY["):
+		case strings.HasPrefix(u, "BODY["), strings.HasPrefix(u, "BINARY["):
 			return true
 		case u == "RFC822" || u == "RFC822.TEXT":
 			return true

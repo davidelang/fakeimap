@@ -39,7 +39,7 @@ func TestPersonalityData(t *testing.T) {
 	if p.Delimiter != "/" || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
 		t.Fatalf("personality fields: %+v", p)
 	}
-	want := []string{"IMAP4rev1", "AUTH=PLAIN", "AUTH=LOGIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT", "CONDSTORE", "QRESYNC", "LIST-EXTENDED", "CHILDREN", "SPECIAL-USE", "LIST-STATUS", "CREATE-SPECIAL-USE", "ESEARCH", "PARTIAL", "COMPRESS=DEFLATE", "SORT", "ESORT", "SORT=DISPLAY", "THREAD=REFERENCES", "THREAD=ORDEREDSUBJECT", "THREAD=REFS"}
+	want := []string{"IMAP4rev1", "AUTH=PLAIN", "AUTH=LOGIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT", "CONDSTORE", "QRESYNC", "LIST-EXTENDED", "CHILDREN", "SPECIAL-USE", "LIST-STATUS", "CREATE-SPECIAL-USE", "ESEARCH", "PARTIAL", "COMPRESS=DEFLATE", "SORT", "ESORT", "SORT=DISPLAY", "THREAD=REFERENCES", "THREAD=ORDEREDSUBJECT", "THREAD=REFS", "BINARY"}
 	if strings.Join(p.PreLogin, " ") != strings.Join(want, " ") {
 		t.Fatalf("pre-login %#v", p.PreLogin)
 	}

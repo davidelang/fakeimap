@@ -19,8 +19,9 @@ func main() {
 	displayProbe := false
 	utf8Probe := false
 	threadProbe := false
+	binaryProbe := false
 	args := os.Args[1:]
-	usage := "usage: cyrusprobe [-gaps gaps.json] [-condstore] [-list] [-esearch] [-compress] [-sort] [-display] [-utf8] [-thread] operator.json"
+	usage := "usage: cyrusprobe [-gaps gaps.json] [-condstore] [-list] [-esearch] [-compress] [-sort] [-display] [-utf8] [-thread] [-binary] operator.json"
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "-gaps":
@@ -54,6 +55,9 @@ func main() {
 		case "-thread":
 			threadProbe = true
 			args = args[1:]
+		case "-binary":
+			binaryProbe = true
+			args = args[1:]
 		default:
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
@@ -84,6 +88,9 @@ func main() {
 	if threadProbe {
 		modes++
 	}
+	if binaryProbe {
+		modes++
+	}
 	if modes > 1 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -96,6 +103,19 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if binaryProbe {
+		diff, err := compareBinary(cfg)
+		if diff != "" {
+			fmt.Fprint(os.Stdout, diff)
+			os.Exit(1)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "diff empty")
+		return
 	}
 	if threadProbe {
 		diff, err := compareThread(cfg)
