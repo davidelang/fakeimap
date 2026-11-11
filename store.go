@@ -729,9 +729,9 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([
 	}
 	var snaps []fetchSnap
 	mb := s.box
-	// FLAGS and UID already in this response cover the \Seen update.
-	// Swallow the event here, the same way STORE does after it sends them.
-	swallow := itemListed(expanded, "FLAGS") && itemListed(expanded, "UID")
+	// FLAGS in this response already include \Seen, so this session
+	// does not also report the queued flags event.
+	swallow := itemListed(expanded, "FLAGS")
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
 		var seenEvent uint64
 		if fetchSetsSeen(expanded) && !s.readonly && !m.has(`\Seen`) {

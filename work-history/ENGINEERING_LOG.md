@@ -42,3 +42,8 @@
 
 - Approved plan: sandbox/plans/imap-session-core-20261110-2318-plan.md
 - Work: Go IMAP session core with a Cyrus 3.13-shaped personality, in-memory store, loopback tests, and a makefile build
+
+## 2026-11-11 - one FLAGS when FETCH sets \Seen
+
+- Approved plan: sandbox/plans/fetch-seen-flags-20261111-0037-plan.md
+- A FETCH that already returns FLAGS, including ALL, FAST, and FULL, does not send a second FLAGS line when it sets \Seen

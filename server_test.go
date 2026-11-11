@@ -418,13 +418,33 @@ func TestMailboxFetchAndStore(t *testing.T) {
 	cl.cmd("SELECT INBOX").ok(t)
 	peek := cl.cmd("FETCH 2 (FLAGS BODY.PEEK[TEXT])")
 	peek.ok(t)
-	if strings.Contains(fetchLine(t, peek), `\Seen`) {
-		t.Fatalf("peek set seen: %s", fetchLine(t, peek))
+	nPeek, peekFlags := flagsUpdates(peek)
+	if nPeek != 1 || strings.Contains(peekFlags, `\Seen`) {
+		t.Fatalf("peek set seen: n=%d line=%q all=%v", nPeek, peekFlags, peek.untagged)
 	}
 	seen := cl.cmd("FETCH 2 (FLAGS BODY[TEXT])")
 	seen.ok(t)
-	if !strings.Contains(fetchLine(t, seen), `\Seen`) {
-		t.Fatalf("body did not set seen: %s", fetchLine(t, seen))
+	nSeen, seenLine := flagsUpdates(seen)
+	if nSeen != 1 || !strings.Contains(seenLine, `\Seen`) || !strings.Contains(seenLine, "BODY[TEXT]") {
+		t.Fatalf("body flags: n=%d line=%q all=%v", nSeen, seenLine, seen.untagged)
+	}
+	for _, item := range []string{"ALL BODY[TEXT]", "FAST RFC822.TEXT", "FULL BODY[TEXT]"} {
+		cl.cmd(`STORE 2 -FLAGS (\Seen)`).ok(t)
+		r := cl.cmd("FETCH 2 (" + item + ")")
+		r.ok(t)
+		n, line := flagsUpdates(r)
+		if n != 1 || !strings.Contains(line, `\Seen`) {
+			t.Fatalf("%s flags: n=%d line=%q all=%v", item, n, line, r.untagged)
+		}
+	}
+	for _, item := range []string{"BODY[TEXT]", "RFC822.TEXT"} {
+		cl.cmd(`STORE 2 -FLAGS (\Seen)`).ok(t)
+		r := cl.cmd("FETCH 2 (" + item + ")")
+		r.ok(t)
+		n, line := flagsUpdates(r)
+		if n != 1 || !strings.Contains(line, `\Seen`) || strings.Contains(line, "UID ") {
+			t.Fatalf("%s flags: n=%d line=%q all=%v", item, n, line, r.untagged)
+		}
 	}
 	peekKeys := fetchKeys(t, fetchLine(t, peek))
 	if len(peekKeys) < 2 || peekKeys[0] != "FLAGS" {
@@ -469,14 +489,9 @@ func TestExamineFetchDoesNotSetSeen(t *testing.T) {
 	}
 	got := rw.cmd("FETCH 2 (RFC822.TEXT)")
 	got.ok(t)
-	reported := false
-	for _, u := range got.untagged {
-		if strings.Contains(u, "FETCH (FLAGS ") && strings.Contains(u, `\Seen`) {
-			reported = true
-		}
-	}
-	if !reported {
-		t.Fatalf("read-write fetch omitted flags: %v", got.untagged)
+	nGot, gotLine := flagsUpdates(got)
+	if nGot != 1 || !strings.Contains(gotLine, `\Seen`) {
+		t.Fatalf("read-write fetch flags: n=%d line=%q all=%v", nGot, gotLine, got.untagged)
 	}
 }
 

@@ -646,8 +646,9 @@ func (s *session) cmdFetch(cmd command) error {
 			return err
 		}
 	}
-	// The main line already has FLAGS and UID. The queued event was swallowed.
-	if !(itemListed(items, "FLAGS") && itemListed(items, "UID")) {
+	// FLAGS was not requested. One extra response carries \Seen,
+	// and UID only when this is a UID command.
+	if !itemListed(items, "FLAGS") {
 		var last uint64
 		for _, sn := range snaps {
 			if sn.seenEvent == 0 {
