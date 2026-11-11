@@ -36,11 +36,22 @@ else
 fi
 grep -q 'orch/verify-smudge' "$canon/hooks/post-checkout" && ok "post-checkout calls orch/verify-smudge" || bad "post-checkout still calls root verify-smudge"
 grep -q 'open_tree_for_planner' "$canon/clone-orchestration-project" && ok "clone opens the tree for the planner" || bad "clone does not open the tree for the planner"
+if grep -vE '^[[:space:]]*#' "$canon/clone-orchestration-project" | grep -E '(^|[[:space:]])sudo( |$)' | grep -v '/usr/bin/sudo.ws' | grep -q .; then
+  bad "clone still runs sudo-rs"
+else
+  ok "clone uses sudo.ws, not sudo-rs"
+fi
 if grep -Eq '\$DEST/(ve-resolve-orch|install-refresh-shell\.sh|agent-landlock)|\$DEST/master/agent-landlock' "$canon/clone-orchestration-project"; then
   bad "still calls a helper from the repo root"
 else
   ok "no root-level helper paths"
 fi
+
+D=$(mktemp -d)
+mkdir -p "$D/a/b"
+got=$(canon_dir "$D/a/b/../b")
+[ "$got" = "$(cd "$D/a/b" && pwd)" ] && ok "canon_dir collapses .." || bad "canon_dir left .. in $got"
+rm -rf "$D"
 
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT

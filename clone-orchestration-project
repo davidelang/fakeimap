@@ -53,6 +53,9 @@
 
 set -euo pipefail
 
+# read waits until the user answers. A shell TMOUT would close it.
+unset TMOUT
+
 umask 007
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -182,22 +185,81 @@ require_users() {
   done
 }
 
+# /usr/bin/sudo is sudo-rs. Its password prompt closes after a few minutes
+# and prints "sudo-rs: timed out". /usr/bin/sudo.ws is the original sudo.
+# This script never opens that prompt. It reads the password from the
+# terminal with no timer (Ctrl-C stops, Ctrl-D stops the read) and passes
+# the line to sudo.ws -S. A wrong password asks again.
+SUDO_WS=/usr/bin/sudo.ws
+
+sudo_exec() {
+  local user="" pass err
+  unset TMOUT
+  if [ "${1:-}" = "-u" ]; then
+    user="$2"
+    shift 2
+  fi
+  if [ "${1:-}" = "--" ]; then
+    shift
+  fi
+  if [ "$EUID" -eq 0 ] && [ -z "$user" ]; then
+    "$@"
+    return
+  fi
+  [ -x "$SUDO_WS" ] || { echo "ERROR: $SUDO_WS missing" >&2; return 1; }
+  while true; do
+    if "$SUDO_WS" -n true >/dev/null 2>&1; then
+      break
+    fi
+    printf '[sudo] password for %s: ' "$(id -un)" >/dev/tty
+    if ! IFS= read -r -s pass </dev/tty; then
+      printf '\n' >/dev/tty
+      return 1
+    fi
+    printf '\n' >/dev/tty
+    if err=$(printf '%s\n' "$pass" | "$SUDO_WS" -S -p '' -v 2>&1); then
+      if "$SUDO_WS" -n true >/dev/null 2>&1; then
+        unset pass
+        break
+      fi
+      # Password accepted, but the credential is not cached. Run this
+      # command with -S. It does not read the caller's stdin.
+      if [ -n "$user" ]; then
+        printf '%s\n' "$pass" | "$SUDO_WS" -S -p '' -u "$user" -- "$@"
+      else
+        printf '%s\n' "$pass" | "$SUDO_WS" -S -p '' -- "$@"
+      fi
+      err=$?
+      unset pass
+      return "$err"
+    fi
+    unset pass
+    printf '%s\n' "$err" >/dev/tty
+    case "$err" in
+      *"not in the sudoers"*|*"not allowed"*|*"not permitted"*)
+        return 1
+        ;;
+    esac
+  done
+  if [ -n "$user" ]; then
+    "$SUDO_WS" -n -u "$user" -- "$@"
+  else
+    "$SUDO_WS" -n -- "$@"
+  fi
+}
+
 # Git clone/commit/worktree: always primary_user, never root.
 as_primary() {
   if [ "$(id -un)" = "$PRIMARY_USER" ]; then
     "$@"
   else
-    sudo -u "$PRIMARY_USER" -- "$@"
+    sudo_exec -u "$PRIMARY_USER" -- "$@"
   fi
 }
 
 # chown/chmod/setuid/fix-perms only.
 as_root() {
-  if [ "$EUID" -eq 0 ]; then
-    "$@"
-  else
-    sudo -- "$@"
-  fi
+  sudo_exec -- "$@"
 }
 
 git_primary() {
@@ -221,7 +283,7 @@ write_as_primary() {
   if [ "$(id -un)" = "$PRIMARY_USER" ]; then
     cat > "$file"
   else
-    sudo -u "$PRIMARY_USER" -- tee "$file" >/dev/null
+    sudo_exec -u "$PRIMARY_USER" -- tee "$file" >/dev/null
   fi
 }
 
@@ -272,13 +334,15 @@ verify_dest_orch_root() {
   if [ "$DRY" -eq 1 ]; then
     return 0
   fi
-  local got
+  local got want
+  # ve-resolve-orch prints $(cd && pwd). ../fakeimap and the real path must match.
+  want=$(canon_dir "$DEST") || die "cannot resolve $DEST"
   got=$(as_primary bash "$DEST/orch/ve-resolve-orch" "$DEST") || die "orch/ve-resolve-orch failed for $DEST"
   got="${got//$'\r'/}"
-  [ "$got" = "$DEST" ] || die "orch/ve-resolve-orch $DEST printed '$got' (want $DEST)"
+  [ "$got" = "$want" ] || die "orch/ve-resolve-orch $DEST printed '$got' (want $want)"
   got=$(as_primary bash "$DEST/orch/ve-resolve-orch" "$DEST/master") || die "orch/ve-resolve-orch failed for $DEST/master"
   got="${got//$'\r'/}"
-  [ "$got" = "$DEST" ] || die "orch/ve-resolve-orch $DEST/master printed '$got' (want $DEST)"
+  [ "$got" = "$want" ] || die "orch/ve-resolve-orch $DEST/master printed '$got' (want $want)"
 }
 
 do_fix_perms() {
@@ -414,7 +478,19 @@ reassert_planner_exec() {
   fi
 }
 
-# Absolute dest path without cd (dest may be 770 primary:primary; we cannot enter it).
+# Collapse . and .. the same way ve-resolve-orch does (cd && pwd).
+# A 770 directory is still enterable by its owner. If this user cannot search
+# it, collapse the path lexically so ../name still matches the real directory.
+canon_dir() {
+  local p="$1" out
+  [ -d "$p" ] || return 1
+  if out=$(cd "$p" && pwd); then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$p"
+}
+
 abs_existing_dir() {
   local p="$1"
   case "$p" in
@@ -422,8 +498,7 @@ abs_existing_dir() {
     *) p="$CWD/$p" ;;
   esac
   p="${p%/}"
-  [ -d "$p" ] || return 1
-  printf '%s\n' "$p"
+  canon_dir "$p"
 }
 
 dest_looks_like_clone() {
@@ -443,7 +518,7 @@ repair_validate_dest() {
     if [ "$(id -un)" = "$PRIMARY_USER" ]; then
       die "cannot enter $DEST as $PRIMARY_USER"
     fi
-    echo "ERROR: $DEST is not enterable by $(id -un). Trying sudo -u $PRIMARY_USER ..." >&2
+    echo "ERROR: $DEST is not enterable by $(id -un). Trying as $PRIMARY_USER ..." >&2
     if as_primary bash -c '
       d="$1"
       [ -f "$d/run-grok-orchestrator" ] || exit 1
@@ -453,7 +528,7 @@ repair_validate_dest() {
     ' bash "$DEST"; then
       return 0
     fi
-    die "sudo -u $PRIMARY_USER failed. Run as $PRIMARY_USER: ./clone-orchestration-project --repair $DEST"
+    die "could not enter $DEST as $PRIMARY_USER. Run as $PRIMARY_USER: ./clone-orchestration-project --repair $DEST"
   fi
   die "--repair DIR does not look like a clone with master/ worktree: $DEST"
 }
@@ -465,7 +540,7 @@ run_install_merge_drivers() {
   if [ "$(id -un)" = "$PRIMARY_USER" ]; then
     (cd "$DEST" && ./orch/install-merge-drivers.sh)
   else
-    sudo -u "$PRIMARY_USER" -- bash -c 'cd "$1" && ./orch/install-merge-drivers.sh' bash "$DEST"
+    sudo_exec -u "$PRIMARY_USER" -- bash -c 'cd "$1" && ./orch/install-merge-drivers.sh' bash "$DEST"
   fi
 }
 
@@ -485,14 +560,15 @@ add_safe_directory() {
     if [ "$(id -un)" = "$u" ]; then
       step "$u" "git config --global --add safe.directory $path"
     else
-      step root "sudo -u $u git config --global --add safe.directory $path"
+      step root "$SUDO_WS -u $u git config --global --add safe.directory $path"
     fi
     return 0
   fi
   if [ "$(id -un)" = "$u" ]; then
     git config --global --add safe.directory "$path" 2>/dev/null || true
   else
-    sudo -u "$u" git config --global --add safe.directory "$path" 2>/dev/null || true
+    sudo_exec -u "$u" -- git config --global --add safe.directory "$path" \
+      || echo "warning: safe.directory $path was not added for $u" >&2
   fi
 }
 

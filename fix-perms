@@ -227,7 +227,8 @@ git_config_as_primary() {
   if [ "$(id -un)" = "$PRIMARY_USER" ]; then
     git -C "$repo_path" "$@"
   else
-    sudo -u "$PRIMARY_USER" git -C "$repo_path" "$@"
+    # sudo-rs's password prompt times out. This process is already root.
+    /usr/bin/sudo.ws -n -u "$PRIMARY_USER" git -C "$repo_path" "$@"
   fi
 }
 
