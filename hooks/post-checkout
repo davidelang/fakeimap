@@ -124,8 +124,8 @@ fi
 # File checkout ($CHECKOUT_TYPE=0): intentional no-op for modes.
 
 # All filtered files smudged, git filter config present (fails loudly otherwise).
-if [ ! -x "$GIT_ROOT/verify-smudge" ]; then
-  echo "post-checkout: ERROR: $GIT_ROOT/verify-smudge missing; publish rules (deploy-orchestration)" >&2
+if [ ! -x "$GIT_ROOT/orch/verify-smudge" ]; then
+  echo "post-checkout: ERROR: $GIT_ROOT/orch/verify-smudge missing; publish rules (deploy-orchestration)" >&2
   exit 1
 fi
-"$GIT_ROOT/verify-smudge"
+"$GIT_ROOT/orch/verify-smudge"

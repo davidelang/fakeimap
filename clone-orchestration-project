@@ -316,7 +316,7 @@ do_landlock_exec_dac() {
     if [ "$DRY" -eq 1 ]; then
       continue
     fi
-    [ -f "$f" ] || continue
+    [ -f "$f" ] || die "landlock helper missing: $f"
     if ! as_root chown "$PRIMARY_USER:$CODE_GROUP" "$f"; then
       die "chown landlock failed: $f"
     fi
@@ -324,6 +324,94 @@ do_landlock_exec_dac() {
       die "chmod 775 landlock failed: $f"
     fi
   done
+}
+
+# umask 007 (set above) makes git checkout write directories and 100755 files as 770
+# owned by primary:primary. ai-planner is not in that group and not in ai-code, so it
+# cannot search orch/ or execute orch/agent-landlock. sudo applies other-search,
+# other-read, and other-execute, then the sandbox and work-history areas from
+# perm-model.tsv. fix-perms runs after this and may tighten ownership; reassert
+# runs again so a later o+r-only pass cannot leave the helper at 774.
+open_tree_for_planner() {
+  step root "sudo: open $DEST for $PLANNING_USER (umask 007 leaves 770)"
+  if [ "$DRY" -eq 1 ]; then
+    return 0
+  fi
+  [ -d "$DEST/master" ] || die "master worktree missing: $DEST/master"
+  [ -f "$DEST/master/orch/agent-landlock" ] || die "orch/agent-landlock missing in $DEST/master"
+  if ! as_root bash -c '
+    set -euo pipefail
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="*"
+    dest="$1"
+    sandbox="$2"
+    script_dir="$3"
+    planning="$4"
+    # shellcheck source=/dev/null
+    . "$script_dir/orch/perm-lib.sh"
+    perm_init "$script_dir/project.config"
+    # shellcheck source=/dev/null
+    . "$script_dir/orch/ve-resolve-orch"
+    command -v runuser >/dev/null || { echo "ERROR: runuser is missing" >&2; exit 1; }
+    for wt in "$dest" "$dest/master"; do
+      if [ -e "$wt/ENGINEERING_LOG.md" ]; then
+        chattr -a "$(readlink -f -- "$wt/ENGINEERING_LOG.md")"
+      fi
+    done
+    find "$dest" \( -name .git -o -name sandbox -o -name .android-shared -o -name .gradle-home -o -name .gradle \) -prune -o -type d -exec chmod o+rx {} +
+    find "$dest" \( -name .git -o -name sandbox -o -name .android-shared -o -name .gradle-home -o -name .gradle \) -prune -o -type f -exec chmod o+r {} +
+    if [ -d "$sandbox" ] && [ ! -L "$sandbox" ]; then
+      perm_apply sandbox "$sandbox"
+    fi
+    for wt in "$dest" "$dest/master"; do
+      if [ -d "$wt/work-history" ]; then
+        perm_apply work-history "$wt/work-history"
+      fi
+      for f in TODO.md project-facts.md; do
+        if [ -e "$wt/$f" ] || [ -L "$wt/$f" ]; then
+          perm_apply planner-files "$(readlink -f -- "$wt/$f")" --top-only
+        fi
+      done
+      ve_ensure_tracked_exec_other_x "$wt"
+    done
+    helper="$dest/master/orch/agent-landlock"
+    if ! runuser -u "$planning" -- test -x "$helper"; then
+      echo "ERROR: $planning cannot execute $helper" >&2
+      stat -c "mode=%a owner=%U:%G" "$helper" >&2
+      name="$dest"
+      while [ -n "$name" ]; do
+        stat -c "dir mode=%a owner=%U:%G %n" "$name" >&2
+        [ "$name" = / ] && break
+        name=$(dirname "$name")
+      done
+      exit 1
+    fi
+  ' bash "$DEST" "$DEST/$SANDBOX_REL" "$SCRIPT_DIR" "$PLANNING_USER"; then
+    die "planner access setup failed for $DEST/master"
+  fi
+}
+
+reassert_planner_exec() {
+  step root "sudo: reassert other-execute on tracked helpers for $PLANNING_USER"
+  if [ "$DRY" -eq 1 ]; then
+    return 0
+  fi
+  if ! as_root bash -c '
+    set -euo pipefail
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="*"
+    dest="$1"
+    script_dir="$2"
+    planning="$3"
+    # shellcheck source=/dev/null
+    . "$script_dir/orch/ve-resolve-orch"
+    command -v runuser >/dev/null || { echo "ERROR: runuser is missing" >&2; exit 1; }
+    for wt in "$dest" "$dest/master"; do
+      ve_ensure_tracked_exec_other_x "$wt"
+    done
+    helper="$dest/master/orch/agent-landlock"
+    runuser -u "$planning" -- test -x "$helper"
+  ' bash "$DEST" "$SCRIPT_DIR" "$PLANNING_USER"; then
+    die "$PLANNING_USER cannot execute $DEST/master/orch/agent-landlock after fix-perms"
+  fi
 }
 
 # Absolute dest path without cd (dest may be 770 primary:primary; we cannot enter it).
@@ -821,18 +909,26 @@ EOF
     done
   fi
 
-  step primary "install hooks/post-checkout -> $DEST/.git/hooks/post-checkout (775)"
-  if [ "$DRY" -eq 0 ]; then
-    [ -f "$DEST/hooks/post-checkout" ] || die "hooks/post-checkout not tracked in $DEST (publish rules to the source first)"
-    as_primary cp "$DEST/hooks/post-checkout" "$DEST/.git/hooks/post-checkout"
-    as_primary chmod 775 "$DEST/.git/hooks/post-checkout"
-  fi
+  install_post_checkout_hook
 
   # Hook installed: from now on every checkout runs ./orch/verify-smudge.
+  # Checkout uses this script's umask (007), so it can put 770 back on a file.
+  # Open the tree for the planner after the last checkout.
   smudge_and_verify "$DEST"
   smudge_and_verify "$DEST/master"
+  open_tree_for_planner
   require_clean "$DEST"
   require_clean "$DEST/master"
+}
+
+install_post_checkout_hook() {
+  step primary "install $SOURCE/hooks/post-checkout -> $DEST/.git/hooks/post-checkout (775)"
+  if [ "$DRY" -eq 1 ]; then
+    return 0
+  fi
+  [ -f "$SOURCE/hooks/post-checkout" ] || die "hooks/post-checkout missing in $SOURCE"
+  as_primary cp "$SOURCE/hooks/post-checkout" "$DEST/.git/hooks/post-checkout"
+  as_primary chmod 775 "$DEST/.git/hooks/post-checkout"
 }
 
 do_perms() {
@@ -846,6 +942,8 @@ do_perms() {
     as_root "$DEST/orch/install-refresh-shell.sh" "$DEST"
     as_root "$DEST/orch/install-refresh-shell.sh" "$DEST/master"
   fi
+
+  reassert_planner_exec
 
   local u
   for u in "$PRIMARY_USER" "$PLANNING_USER" "$CODER_USER" "$ORCHESTRATOR_USER"; do
@@ -927,9 +1025,12 @@ if [ -n "$REPAIR_ARG" ]; then
   seed_debug_keystore
   seed_sandbox_repo
   verify_dest_orch_root
+  install_post_checkout_hook
+  open_tree_for_planner
   do_fix_perms
   do_dest_root_dac
   do_landlock_exec_dac
+  reassert_planner_exec
   echo
   if [ "$DRY" -eq 1 ]; then
     echo "Dry-run complete. No files written."
