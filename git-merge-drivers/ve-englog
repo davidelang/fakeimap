@@ -4,7 +4,7 @@
 # Args (git): %O ancestor  %A ours (result path)  %B theirs  %L marker  %P path
 # Policy: append branch-only tail onto master via ./orch/append-to-engineering-log.
 # Result is usually a THIRD version (ours + branch tail), not pure ours or theirs.
-# Never chattr -a; worktree log stays append-only (+a).
+# The worktree log is a normal file. Do not mark it append-only.
 
 set -euo pipefail
 

@@ -22,9 +22,9 @@
 # Owners, groups and modes come from perm-model.tsv (perm-lib.sh). Every pass covers exactly
 # one area and never enters another one: a worktree pass prunes every other path from
 # 'git worktree list', sandbox_dir, the shared build homes and .git, so a run from the project
-# root no longer re-groups the sandbox or the linked worktrees through the root's tree. Each
-# ENGINEERING_LOG.md loses chattr +a only for its own worktree's pass; an EXIT trap sets +a
-# again on every log still lifted, whatever failed.
+# root no longer re-groups the sandbox or the linked worktrees through the root's tree.
+# ENGINEERING_LOG.md is a normal file. A leftover append-only flag is cleared so git pull
+# and chmod work. The flag is not set.
 
 set -eEuo pipefail
 
@@ -163,32 +163,17 @@ _sandbox_under() {
 . "$SCRIPT_DIR/orch/perm-lib.sh"
 perm_init "$_CFG"
 
-# Logs whose chattr +a is lifted right now; restored on any exit.
-LIFTED=()
-restore_lifted_logs() {
-  local f rc=0
-  for f in "${LIFTED[@]}"; do
-    if ! chattr +a "$f"; then
-      echo "ERROR: could not set chattr +a again on $f; run: sudo chattr +a '$f'" >&2
-      rc=1
-    fi
-  done
-  LIFTED=()
-  return $rc
-}
-trap 'restore_lifted_logs' EXIT
 # chattr does not follow a symlink. The root log name links into work-history/.
-lift_log() {
-  local real
+# Clear a leftover append-only flag. Do not set one: git pull and checkout must
+# be able to replace the file.
+clear_append_only() {
+  local real flags
   real=$(readlink -f -- "$1")
-  chattr -a "$real"
-  LIFTED+=("$real")
-}
-seal_log() {
-  local f="$1" keep=() g
-  chattr +a "$f"
-  for g in "${LIFTED[@]}"; do [ "$g" = "$f" ] || keep+=("$g"); done
-  LIFTED=("${keep[@]}")
+  flags=$(lsattr -d -- "$real")
+  flags=${flags%% *}
+  case "$flags" in
+    *a*) chattr -a -- "$real" ;;
+  esac
 }
 
 # Absolute paths a pass over worktree $1 must never enter: every other worktree of its
@@ -409,9 +394,8 @@ fix_worktree() {
   boundary_prunes "$wt"
   if $VERBOSE && [ "${#PRUNES[@]}" -gt 0 ]; then echo "    never entered: ${PRUNES[*]}"; fi
 
-  # The log is append-only (chattr +a), which also refuses chown/chmod: lift it for this
-  # worktree's pass only; fix_log_wrapper seals it again, the EXIT trap if anything fails.
-  lift_log "$wt/ENGINEERING_LOG.md"
+  # A leftover append-only flag refuses chown/chmod and blocks git pull.
+  clear_append_only "$wt/ENGINEERING_LOG.md"
 
   # Worktree files (owner = the sudo invoker, as before), never .git (the common store or the
   # gitdir pointer) and never another area.
@@ -541,15 +525,11 @@ fix_log_wrapper() {
   fi
 
   LOG=$(readlink -f -- "$wt/ENGINEERING_LOG.md")
-  case " ${LIFTED[*]} " in
-    *" $LOG "*) ;;
-    *) lift_log "$LOG" ;;
-  esac
+  clear_append_only "$LOG"
   strip_acl "$LOG"
   perm_apply englog "$LOG" --top-only
-  seal_log "$LOG"
   if $VERBOSE; then
-    echo "    log: root:$SHARED_GROUP 660 + chattr +a (pure Unix, no ACLs)"
+    echo "    log: root:$SHARED_GROUP 660 (no append-only flag)"
   fi
 }
 

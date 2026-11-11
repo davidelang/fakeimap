@@ -24,7 +24,7 @@ common-git	-	shared_group	2770	660	007	git as any agent	git --git-common-dir
 worktree-admin	-	shared_group	2770	660	007	git as any agent	<common .git>/worktrees/<name>
 git-hooks	-	shared_group	-	775	-	primary	active hooks (not *.sample) in a hooks dir
 git-pointer	-	shared_group	-	660	-	git	a linked worktree's .git file
-englog	root	shared_group	-	660	-	append-to-engineering-log	ENGINEERING_LOG.md (chattr +a outside fix-perms)
+englog	root	shared_group	-	660	-	append-to-engineering-log	ENGINEERING_LOG.md (normal file; no chattr +a)
 englog-wrapper	root	shared_group	-	2755	-	-	append-to-engineering-log
 shared-build-homes	primary_user	shared_group	2770	ug+rw,o-rwx	007	gradle	<orch_root>/.gradle-shared and <orch_root>/.android-shared
 worktree-build-homes	-	-	2770	-	007	gradle	the dirs <worktree>/.gradle-home and <worktree>/.android-shared themselves (contents are gradle's)

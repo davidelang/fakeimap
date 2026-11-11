@@ -86,9 +86,9 @@ files. Restore only the three paths from `$FEAT` (below).
 
    If the tree is clean vs `$FEAT` for those paths, this is a no-op.
 
-6. If checkout of `ENGINEERING_LOG.md` fails because of `chattr +a`: **stop
-   and report**. Do not `chattr -a`. The feature file already on disk may
-   already be correct; do not replace it with master's.
+6. If checkout of `ENGINEERING_LOG.md` fails because a leftover append-only
+   flag is set, clear it (`sudo chattr -a` on the real file, not the symlink)
+   and run the checkout again. Do not mark the log append-only.
 
 7. Do not commit specials "to match master". A commit is needed only if
    step 5 dirtied the tree; message: keep branch specials after rebase.
@@ -103,7 +103,7 @@ files. Restore only the three paths from `$FEAT` (below).
   rewrite every file’s conflict policy).
 - `git checkout --ours` on the three specials during rebase (that is
   **master**). Other files: do not auto-pick a side; ask the human.
-- `chattr -a` on the eng-log.
+- `chattr +a` on the eng-log.
 - Relative resets (`HEAD~`, `HEAD^`) to undo a rebase. Abort with
   `git rebase --abort` while in progress, or §6 if already finished and the
   user approves a allowed reset.

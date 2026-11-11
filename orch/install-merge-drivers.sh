@@ -33,7 +33,8 @@ if ! ROOT=$(git rev-parse --show-toplevel); then
 fi
 cd "$ROOT"
 
-# autostash reset --hard cannot unlink chattr +a ENGINEERING_LOG.md
+# Leave autostash off so a merge does not stash and reset ENGINEERING_LOG.md
+# outside its merge driver.
 git config merge.autostash false
 
 git config merge.ve-englog.name "VE eng-log append via wrapper (third-version result)"

@@ -22,7 +22,7 @@ disable-model-invocation: true
 0. Stacked wrappers: `build_app`, `deploy` and similar wrappers (e.g. `ve-resolve-orch`) on master carry several independent layered fixes. Merge them hunk by hunk; never wholesale-restore one from a single SHA or take one side whole.
 1. Run `python3 $SANDBOX/audit_merge.py <branch>` if it exists.
 2. Run `./orch/install-merge-drivers.sh`, then `./orch/merge-branch-into-master.sh <branch>` from the master worktree.
-3. `ENGINEERING_LOG.md`: the ve-englog driver appends the branch tail via `./orch/append-to-engineering-log`. Never take the branch file. No `chattr -a`.
+3. `ENGINEERING_LOG.md`: the ve-englog driver appends the branch tail via `./orch/append-to-engineering-log`. Never take the branch file. The log is a normal file; do not mark it append-only.
 4. `TODO.md` and `project-facts.md`: master's version stays (ve-special-ours). Then apply the branch delta with `./orch/todo-close` / `./orch/todo-append` and by editing facts by hand.
    **Before changing any Testing section (project-wide or `## Worktree:`) of `project-facts.md`, ask David and wait.**
 5. Post-merge gate: `git diff --cached --name-only` must list the feature paths, not just `ENGINEERING_LOG.md`. Otherwise the merge FAILED; do not build.

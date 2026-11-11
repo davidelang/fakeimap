@@ -3,7 +3,7 @@
 # Usage: ./orch/merge-branch-into-master.sh <branch-name>
 #
 # Special files:
-#   ENGINEERING_LOG.md — chattr +a: never worktree-replace; ve-englog appends tail.
+#   ENGINEERING_LOG.md — normal file (no chattr +a); ve-englog appends the branch tail.
 #     After the move the blob is work-history/ENGINEERING_LOG.md and the root
 #     name is a symlink. Index updates use the blob path, never mode 100644
 #     on the symlink.
@@ -17,7 +17,7 @@
 # Paths (in order):
 #   1) Fast-forward: merge-base(HEAD,branch)==HEAD → index-first from branch tip (no git merge)
 #   2) git merge --no-ff --no-commit (skip-worktree eng-log; no englog index=worktree poison)
-#   3) Fallback: merge-tree + read-tree (index-first +a-safe)
+#   3) Fallback: merge-tree + read-tree (index-first)
 #
 # Failures always return non-zero. Do not trust a quiet exit without checking staged paths.
 
@@ -322,8 +322,7 @@ finish_specials_and_englog() {
   checkout_merged_worktree_skip_special
   write_merge_head
   englog_merge_via_driver "$branch" || true
-  # Stage eng-log only via hash (worktree may be +a; git add can fail).
-  # The path is the blob, not the root symlink.
+  # Stage eng-log via its blob hash. The path is the blob, not the root symlink.
   if [ -f "$ENG_REL" ]; then
     local h
     h=$(git hash-object "$ENG_REL")
@@ -332,7 +331,7 @@ finish_specials_and_englog() {
   fi
 }
 
-# Fast-forward: branch is strictly ahead of HEAD. No git merge (avoids +a eng-log worktree replace).
+# Fast-forward: branch is strictly ahead of HEAD. No git merge.
 merge_ff_index() {
   local branch="$1"
   local tree
@@ -370,7 +369,7 @@ merge_index_first() {
   fi
   echo "  merge-tree OK → ${tree:0:8}"
   if ! git read-tree --reset "$tree"; then
-    echo "ERROR: read-tree failed (often +a ENGINEERING_LOG.md / dirty index)" >&2
+    echo "ERROR: read-tree failed (dirty index, or a leftover append-only ENGINEERING_LOG.md)" >&2
     return 1
   fi
   finish_specials_and_englog "$branch"
@@ -416,7 +415,7 @@ else
   merge_git_ort "$BRANCH"
   merge_rc=$?
   if [ "$merge_rc" -ne 0 ]; then
-    echo "  git merge failed (rc=$merge_rc); falling back to index-first +a-safe path" >&2
+    echo "  git merge failed (rc=$merge_rc); falling back to index-first path" >&2
     git merge --abort 2>/dev/null || true
     git update-index --no-skip-worktree -- "$ENG_REL" 2>/dev/null || true
     merge_index_first "$BRANCH"
@@ -442,7 +441,7 @@ Merge exit code: $merge_rc
 ========================================================================
 
 ENGINEERING_LOG.md
-  ve-englog append-only (never chattr -a / unlink). Third version = master + branch tail.
+  ve-englog appends the branch tail onto master. The file is a normal file.
 
 TODO.md / project-facts.md
   merge=ve-special-ours keeps master in git index; restore_special enforces master on disk.

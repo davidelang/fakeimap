@@ -416,11 +416,6 @@ open_tree_for_planner() {
     # shellcheck source=/dev/null
     . "$script_dir/orch/ve-resolve-orch"
     command -v runuser >/dev/null || { echo "ERROR: runuser is missing" >&2; exit 1; }
-    for wt in "$dest" "$dest/master"; do
-      if [ -e "$wt/ENGINEERING_LOG.md" ]; then
-        chattr -a "$(readlink -f -- "$wt/ENGINEERING_LOG.md")"
-      fi
-    done
     find "$dest" \( -name .git -o -name sandbox -o -name .android-shared -o -name .gradle-home -o -name .gradle \) -prune -o -type d -exec chmod o+rx {} +
     find "$dest" \( -name .git -o -name sandbox -o -name .android-shared -o -name .gradle-home -o -name .gradle \) -prune -o -type f -exec chmod o+r {} +
     if [ -d "$sandbox" ] && [ ! -L "$sandbox" ]; then

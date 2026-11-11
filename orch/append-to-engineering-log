@@ -2,8 +2,8 @@
 # append-to-engineering-log
 # Controlled wrapper for appending ONLY to ENGINEERING_LOG.md.
 # Agents MUST use this (never direct edits or >>).
-# chattr +a on the log prevents modification of existing lines even if someone
-# has write permission.
+# The log is a normal group-writable file. Git pull and checkout must be able
+# to replace it, so it is not marked append-only.
 
 set -euo pipefail
 
@@ -54,7 +54,7 @@ if [[ ! $ENTRY =~ ^##\ [0-9]{4}- ]]; then
   exit 1
 fi
 
-# One path: a direct append. The log is group ai-shared, chattr +a (append only); every role is
+# One path: a direct append. The log is group ai-shared and group-writable; every role is
 # in ai-shared. No sudo: Landlock sets no-new-privileges, so it could never work from an agent.
 printf '\n%s\n' "$ENTRY" >> "$LOGFILE" || {
   echo "ERROR: cannot append to $LOGFILE as $(id -un) (needs group write; file is $(stat -c '%U:%G %a' "$LOGFILE"))" >&2

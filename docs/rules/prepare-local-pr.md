@@ -36,7 +36,7 @@ Goal: a logical progression from base to tip, as if written with perfect foresig
 
 Wrong: one squash; one commit per file; soft reset then committing groups of whole files ("squash and segment").
 
-**Engineering log** (`merge=ve-englog` in `.gitattributes`, `ENGINEERING_LOG.md`) is a record of what happened: append-only (`chattr +a`), never shortened, never reverted, never a source of deviations. The rewrite keeps its full content, the first commit carries it with the helper's two entries, and each later commit adds one entry via `./orch/append-to-engineering-log`.
+**Engineering log** (`merge=ve-englog` in `.gitattributes`, `ENGINEERING_LOG.md`) is a record of what happened. Agents append through `./orch/append-to-engineering-log` and do not shorten it. It is a normal file, so git pull and checkout can replace it. The rewrite keeps its full content, the first commit carries it with the helper's two entries, and each later commit adds one entry via `./orch/append-to-engineering-log`.
 **Infrastructure** (paths in `rules.manifest` and the project root's `rules.manifest.local`, `third_party/*/libpin.toml`, `third_party/*/SOURCE.md`, `third_party/fetch-deps`) belongs to the orchestrator, not to product steps. The helper sets it to `TARGET`'s version when the branch only took a rules sync, else to the branch's copy or the 3-way merge, so the PR never reverts infra on `TARGET`; branch-only infra changes go in the first commit.
 `project-facts.md` and `TODO.md` are ordinary files: they change with the commit that makes them true.
 `CHANGELOG.md` is not a record: if it exists it may be rewritten to describe only the final kept changes in plain language, never mistakes.
