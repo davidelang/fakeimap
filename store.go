@@ -1327,7 +1327,7 @@ func parseSearch(toks []Token) ([]searchKey, error) {
 		case "ALL", "SEEN", "UNSEEN", "FLAGGED", "UNFLAGGED", "DELETED", "UNDELETED":
 			keys = append(keys, searchKey{op: op})
 			i++
-		case "FROM", "TO", "SUBJECT":
+		case "FROM", "TO", "SUBJECT", "TEXT", "BODY", "CC":
 			if i+1 >= len(toks) {
 				return nil, fmt.Errorf("bad search")
 			}
@@ -1403,6 +1403,13 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 		return strings.Contains(strings.ToLower(m.to), strings.ToLower(k.arg))
 	case "SUBJECT":
 		return strings.Contains(strings.ToLower(m.subject), strings.ToLower(k.arg))
+	case "TEXT":
+		return strings.Contains(strings.ToLower(string(m.bytes())), strings.ToLower(k.arg))
+	case "BODY":
+		_, body := splitHB(m.bytes())
+		return strings.Contains(strings.ToLower(string(body)), strings.ToLower(k.arg))
+	case "CC":
+		return strings.Contains(strings.ToLower(m.cc), strings.ToLower(k.arg))
 	case "SINCE":
 		return ymd(m.internal) >= ymd(k.when)
 	case "BEFORE":

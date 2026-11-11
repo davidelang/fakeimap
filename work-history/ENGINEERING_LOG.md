@@ -233,3 +233,14 @@
 
 - FETCH and UID FETCH of BINARY.PEEK and BINARY return the part with base64 and quoted-printable removed. The reply name is BINARY, and a partial origin is the start offset. BINARY.PEEK does not set \Seen. BINARY does.
 - personalities/binary.json advertises BINARY. The already-running liveimap-cyrus-3137 kind diff was empty, so BINARY is on cyrus-3137.json and sasl.json where that server sends it, and gone from the gaps file. BINARY.SIZE, binary APPEND, and URLAUTH=BINARY stay unimplemented. The container was not recreated and was not stopped. cyrusprobe -binary does not replace the earlier scripts.
+
+## 2026-11-11 - SEARCH TEXT BODY CC
+
+- Approved plan: sandbox/plans/search-text-20261111-0913-plan.md
+- Work: SEARCH and UID SEARCH accept TEXT, BODY, and CC. TEXT is the rendered RFC822. BODY is the body after the header break. CC is the Cc header. OR, NOT, parentheses, and FUZZY stay BAD.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - SEARCH TEXT BODY CC landed
+
+- SEARCH and UID SEARCH match TEXT against the rendered RFC822, BODY against the body after the header break, and CC against the Cc header. Comparison is a case-insensitive substring. FROM, TO, and SUBJECT are unchanged. OR, NOT, parentheses, and FUZZY stay BAD.
+- Loopback covers CHARSET UTF-8, a body-only word, a generated message, and ESEARCH RETURN (ALL) and RETURN (COUNT). No personality file changed.
