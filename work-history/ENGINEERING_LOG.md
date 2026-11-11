@@ -130,3 +130,7 @@
 ## 2026-11-11 - ESEARCH and PARTIAL
 
 - SEARCH RETURN answers with one ESEARCH line when the personality lists ESEARCH. PARTIAL slices that result. personalities/esearch.json advertises both. cyrusprobe -esearch compares response kinds. SORT, ESORT, and COMPRESS=DEFLATE are unchanged.
+
+## 2026-11-11 - COMPRESS=DEFLATE
+
+- COMPRESS DEFLATE sends a cleartext tagged OK, then both directions are raw deflate with a sync flush. personalities/compress.json advertises COMPRESS=DEFLATE. The running liveimap-cyrus-3137 kind diff was empty, so the capability is on cyrus-3137.json and gone from the gaps file. cyrusprobe -compress decompresses before it compares response kinds. A second COMPRESS is NO. SORT and ESORT are unchanged.

@@ -29,7 +29,8 @@
     "LIST-STATUS",
     "CREATE-SPECIAL-USE",
     "ESEARCH",
-    "PARTIAL"
+    "PARTIAL",
+    "COMPRESS=DEFLATE"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -48,7 +49,8 @@
     "LIST-STATUS",
     "CREATE-SPECIAL-USE",
     "ESEARCH",
-    "PARTIAL"
+    "PARTIAL",
+    "COMPRESS=DEFLATE"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

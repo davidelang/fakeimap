@@ -39,7 +39,7 @@ func TestPersonalityData(t *testing.T) {
 	if p.Delimiter != "/" || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
 		t.Fatalf("personality fields: %+v", p)
 	}
-	want := []string{"IMAP4rev1", "AUTH=PLAIN", "AUTH=LOGIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT", "CONDSTORE", "QRESYNC", "LIST-EXTENDED", "CHILDREN", "SPECIAL-USE", "LIST-STATUS", "CREATE-SPECIAL-USE", "ESEARCH", "PARTIAL"}
+	want := []string{"IMAP4rev1", "AUTH=PLAIN", "AUTH=LOGIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT", "CONDSTORE", "QRESYNC", "LIST-EXTENDED", "CHILDREN", "SPECIAL-USE", "LIST-STATUS", "CREATE-SPECIAL-USE", "ESEARCH", "PARTIAL", "COMPRESS=DEFLATE"}
 	if strings.Join(p.PreLogin, " ") != strings.Join(want, " ") {
 		t.Fatalf("pre-login %#v", p.PreLogin)
 	}
@@ -1012,7 +1012,9 @@ func forbidCaps(t *testing.T, got []string) {
 		switch {
 		case u == "COMPRESS" || u == "AUTH=DIGEST-MD5":
 			t.Fatalf("forbidden %s", c)
-		case strings.HasPrefix(u, "COMPRESS=") || strings.Contains(u, "SCRAM") || strings.Contains(u, "DIGEST-MD5"):
+		case strings.HasPrefix(u, "COMPRESS=") && u != "COMPRESS=DEFLATE":
+			t.Fatalf("forbidden %s", c)
+		case strings.Contains(u, "SCRAM") || strings.Contains(u, "DIGEST-MD5"):
 			t.Fatalf("forbidden %s", c)
 		}
 	}

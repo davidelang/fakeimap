@@ -14,8 +14,9 @@ func main() {
 	condstore := false
 	listProbe := false
 	esearch := false
+	compress := false
 	args := os.Args[1:]
-	usage := "usage: cyrusprobe [-gaps gaps.json] [-condstore] [-list] [-esearch] operator.json"
+	usage := "usage: cyrusprobe [-gaps gaps.json] [-condstore] [-list] [-esearch] [-compress] operator.json"
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "-gaps":
@@ -34,6 +35,9 @@ func main() {
 		case "-esearch":
 			esearch = true
 			args = args[1:]
+		case "-compress":
+			compress = true
+			args = args[1:]
 		default:
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
@@ -49,6 +53,9 @@ func main() {
 	if esearch {
 		modes++
 	}
+	if compress {
+		modes++
+	}
 	if modes > 1 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -61,6 +68,19 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if compress {
+		diff, err := compareCompress(cfg)
+		if diff != "" {
+			fmt.Fprint(os.Stdout, diff)
+			os.Exit(1)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "diff empty")
+		return
 	}
 	if esearch {
 		diff, err := compareEsearch(cfg)

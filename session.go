@@ -23,22 +23,23 @@ var (
 // session is one IMAP connection. box, readonly, seenID, and wake are
 // guarded by Store.mu.
 type session struct {
-	srv      *Server
-	conn     net.Conn
-	br       *bufio.Reader
-	bw       *bufio.Writer
-	wmu      sync.Mutex
-	id       int
-	authed   bool
-	secure   bool
-	box      *Mailbox
-	readonly bool
-	seenID   uint64
-	wake     chan struct{}
-	enabled  map[string]struct{}
-	pers     *Personality
-	fault    *fault
-	capture  *bytes.Buffer
+	srv        *Server
+	conn       net.Conn
+	br         *bufio.Reader
+	bw         *bufio.Writer
+	wmu        sync.Mutex
+	id         int
+	authed     bool
+	secure     bool
+	box        *Mailbox
+	readonly   bool
+	seenID     uint64
+	wake       chan struct{}
+	enabled    map[string]struct{}
+	pers       *Personality
+	fault      *fault
+	capture    *bytes.Buffer
+	compressed bool
 }
 
 type command struct {
@@ -321,6 +322,8 @@ func (s *session) dispatch(cmd command) error {
 		return errLogout
 	case "STARTTLS":
 		return s.cmdStartTLS(cmd)
+	case "COMPRESS":
+		return s.cmdCompress(cmd)
 	case "LOGIN":
 		return s.cmdLogin(cmd)
 	case "AUTHENTICATE":
@@ -372,6 +375,26 @@ func (s *session) cmdCapability(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, "CAPABILITY completed")
+}
+
+func (s *session) cmdCompress(cmd command) error {
+	if len(cmd.args) != 1 {
+		return s.bad(cmd.tag, "COMPRESS syntax")
+	}
+	algo, ok := astring(cmd.args[0])
+	if !ok || algo == "" {
+		return s.bad(cmd.tag, "COMPRESS syntax")
+	}
+	if !strings.EqualFold(algo, "DEFLATE") {
+		return s.bad(cmd.tag, "COMPRESS unknown algorithm")
+	}
+	if s.compressed || !s.advertiseCap("COMPRESS=DEFLATE") {
+		return s.no(cmd.tag, "COMPRESS failed")
+	}
+	if err := s.ok(cmd.tag, "COMPRESS completed"); err != nil {
+		return err
+	}
+	return s.startDeflate()
 }
 
 func (s *session) cmdStartTLS(cmd command) error {

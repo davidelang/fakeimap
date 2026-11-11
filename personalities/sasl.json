@@ -51,7 +51,8 @@
     "LIST-STATUS",
     "CREATE-SPECIAL-USE",
     "ESEARCH",
-    "PARTIAL"
+    "PARTIAL",
+    "COMPRESS=DEFLATE"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

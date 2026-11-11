@@ -5,7 +5,6 @@
     "APPENDLIMIT=2147483647",
     "BINARY",
     "CATENATE",
-    "COMPRESS=DEFLATE",
     "DIGEST=SHA1",
     "ESORT",
     "ID",
