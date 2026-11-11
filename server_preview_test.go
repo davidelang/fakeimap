@@ -116,6 +116,110 @@ func TestPreviewRequiresCap(t *testing.T) {
 	}
 }
 
+func TestPreviewShared(t *testing.T) {
+	_, bound := start(t, Config{
+		Listen:      "127.0.0.1:0",
+		JmapListen:  "127.0.0.1:0",
+		Personality: "personalities/preview.json",
+	})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("CREATE PrevShare").ok(t)
+	cl.cmd("SELECT PrevShare").ok(t)
+
+	long := strings.Repeat("y", 300)
+	msgs := []struct {
+		raw  string
+		want string
+	}{
+		{plainCharset("iso-8859-1", "quoted-printable", "caf=E9\r\n"), "café"},
+		{plainCharset("windows-1252", "8bit", "caf\xe9\r\n"), "café"},
+		{plainCharset("utf-8", "8bit", "café\r\n"), "café"},
+		{plainCharset("", "7bit", "plain missing\r\n"), "plain missing"},
+		{plainCharset("utf-8", "8bit", "bad\xff\r\n"), ""},
+		{plainCharset("x-unknown", "8bit", "bad\xff\r\n"), ""},
+		{htmlOnly(), ""},
+		{plainCharset("utf-8", "8bit", long+"\r\n"), strings.Repeat("y", 256)},
+		{plainCharset("", "7bit", "   \r\n\t"), ""},
+		{htmlThenPlain(), "from plain"},
+	}
+	for _, m := range msgs {
+		cl.cmd("APPEND PrevShare \"01-Jan-2024 00:00:00 +0000\" {" + strconv.Itoa(len(m.raw)) + "+}\r\n" + m.raw).ok(t)
+	}
+
+	session := jmapSession(t, bound.Jmap, "demo", "secret")
+	accountID := objectField(t, session, "primaryAccounts")["urn:ietf:params:jmap:mail"].(string)
+	boxes := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Mailbox/get", map[string]any{"accountId": accountID}, "0"},
+	})
+	var boxID string
+	for _, item := range arrayField(t, methodArgs(t, boxes, "Mailbox/get"), "list") {
+		row := item.(map[string]any)
+		if row["name"] == "PrevShare" {
+			boxID, _ = row["id"].(string)
+		}
+	}
+	if boxID == "" {
+		t.Fatal("PrevShare missing")
+	}
+	got := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/query", map[string]any{
+			"accountId": accountID,
+			"filter":    map[string]any{"inMailbox": boxID},
+			"sort":      []any{map[string]any{"property": "receivedAt", "isAscending": true}},
+		}, "0"},
+		[]any{"Email/get", map[string]any{
+			"accountId":  accountID,
+			"#ids":       map[string]any{"resultOf": "0", "name": "Email/query", "path": "/ids"},
+			"properties": []any{"preview"},
+		}, "1"},
+	})
+	ids := stringArray(t, methodArgs(t, got, "Email/query")["ids"])
+	rows := emailList(t, got)
+	if len(ids) != len(msgs) || len(rows) != len(msgs) {
+		t.Fatalf("emails %d want %d", len(rows), len(msgs))
+	}
+	byID := map[string]string{}
+	for _, row := range rows {
+		byID[row["id"].(string)] = row["preview"].(string)
+	}
+	for i, m := range msgs {
+		seq := strconv.Itoa(i + 1)
+		line := fetchLine(t, cl.cmd("FETCH "+seq+" (PREVIEW)").mustOK(t))
+		if previewValue(t, line) != m.want {
+			t.Fatalf("seq %s preview %q want %q line %s", seq, previewValue(t, line), m.want, line)
+		}
+		if m.want == "" && !strings.Contains(line, "PREVIEW NIL") {
+			t.Fatalf("seq %s not NIL: %s", seq, line)
+		}
+		if byID[ids[i]] != m.want {
+			t.Fatalf("jmap %d preview %q want %q", i, byID[ids[i]], m.want)
+		}
+	}
+	rawByte := plainCharset("", "8bit", "caf\xe9\r\n")
+	cl.cmd("APPEND PrevShare \"01-Jan-2024 00:00:00 +0000\" {" + strconv.Itoa(len(rawByte)) + "+}\r\n" + rawByte).ok(t)
+	rawLine := fetchLine(t, cl.cmd("FETCH "+strconv.Itoa(len(msgs)+1)+" (PREVIEW)").mustOK(t))
+	if previewValue(t, rawLine) != "caf\xe9" {
+		t.Fatalf("missing charset changed %q", previewValue(t, rawLine))
+	}
+}
+
+func plainCharset(cs, cte, body string) string {
+	var b strings.Builder
+	b.WriteString("From: a@e.test\r\nTo: b@e.test\r\nSubject: s\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\nMIME-Version: 1.0\r\n")
+	if cs == "" {
+		b.WriteString("Content-Type: text/plain\r\n")
+	} else {
+		b.WriteString("Content-Type: text/plain; charset=" + cs + "\r\n")
+	}
+	if cte != "" {
+		b.WriteString("Content-Transfer-Encoding: " + cte + "\r\n")
+	}
+	b.WriteString("\r\n")
+	b.WriteString(body)
+	return b.String()
+}
+
 func htmlOnly() string {
 	return "From: a@e.test\r\nTo: b@e.test\r\nSubject: h\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>hello html</p>\r\n"
 }

@@ -307,3 +307,7 @@
 - Approved plan: sandbox/plans/preview-20261111-1037-plan.md
 - FETCH and UID FETCH of PREVIEW return a trimmed plain-text snippet of at most 256 characters when the personality advertises PREVIEW. personalities/preview.json lists it on the pre-login and post-login lists. PREVIEW does not set \Seen. PREVIEW (LAZY) is BAD. HTML is not parsed. cyrusprobe -preview does not replace the earlier scripts.
 - liveimap-cyrus-3137 was already running and was the only liveimap container. Its greeting, pre-login, and post-login CAPABILITY lists do not include PREVIEW, so personalities/cyrus-3137.json, personalities/sasl.json, and the gaps file were left unchanged. The container was not recreated and was not stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - Shared IMAP and JMAP preview
+
+- FETCH PREVIEW and JMAP Email/get preview are one text/plain snippet: charset-decoded like JMAP body text, collapsed, at most 256 characters. A charset problem is empty (IMAP NIL, JMAP "").

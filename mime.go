@@ -653,20 +653,26 @@ func decodeBinaryPart(raw []byte, section string) ([]byte, int) {
 
 const previewLimit = 256
 
-// previewSnippet is the first text/plain part, or the body when the
-// message itself is text/plain. Transfer encoding is removed the same
-// way BINARY does. Whitespace runs become one space. The result is at
-// most 256 characters. HTML is not parsed. An empty result is NIL.
+// previewSnippet is the IMAP PREVIEW text. An empty result is NIL.
 func previewSnippet(raw []byte) string {
-	part := firstTextPlain(parseRoot(raw))
+	return snippetText(parseRoot(raw))
+}
+
+// snippetText is the shared IMAP and JMAP preview: the first text/plain
+// part, or the body when the message itself is text/plain. Charset is
+// decoded the way JMAP body text is. A charset that decode reports as a
+// problem is empty. Whitespace runs become one space. The result is at
+// most 256 characters. HTML is not parsed.
+func snippetText(n *node) string {
+	part := firstTextPlain(n)
 	if part == nil {
 		return ""
 	}
-	b, err := decodeTransfer(part)
-	if err != nil {
+	text, problem := decodePartText(part)
+	if problem {
 		return ""
 	}
-	text := strings.Join(strings.Fields(string(b)), " ")
+	text = strings.Join(strings.Fields(text), " ")
 	r := []rune(text)
 	if len(r) > previewLimit {
 		text = string(r[:previewLimit])

@@ -1643,31 +1643,7 @@ func jmapAddresses(s string) []any {
 }
 
 func jmapPreview(n *node) string {
-	text := strings.Join(strings.Fields(firstText(n)), " ")
-	r := []rune(text)
-	if len(r) > 160 {
-		return string(r[:160])
-	}
-	return text
-}
-
-func firstText(n *node) string {
-	if n == nil {
-		return ""
-	}
-	if n.multipart {
-		for _, c := range n.children {
-			if s := firstText(c); s != "" {
-				return s
-			}
-		}
-		return ""
-	}
-	if !strings.EqualFold(n.typ, "TEXT") {
-		return ""
-	}
-	val, _ := decodePartText(n)
-	return val
+	return snippetText(n)
 }
 
 func partAttached(n *node) bool {
