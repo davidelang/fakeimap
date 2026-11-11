@@ -118,3 +118,11 @@
 
 - AUTH=LOGIN is on the greeting and pre-login lists in personalities/cyrus-3137.json, not on the post-login list. It is gone from the gaps file. personalities/sasl.json still advertises it.
 - The original probe diff against the already-running liveimap-cyrus-3137 was empty. That container was not recreated and was not stopped.
+
+## 2026-11-11 - AUTH=LOGIN on fixture personalities
+
+- Work: put AUTH=LOGIN beside AUTH=PLAIN on the greeting and pre-login lists of personalities/list.json and personalities/condstore.json, and say in docs/facts/imap-server.md that the probed Cyrus personality advertises it there. No other capability changes. personalities/cyrus-3137.json and personalities/sasl.json stay as they are.
+
+## 2026-11-11 - AUTH=LOGIN on fixture personalities landed
+
+- AUTH=LOGIN is beside AUTH=PLAIN on the greeting and pre-login lists in personalities/list.json and personalities/condstore.json, and not on the post-login lists. personalities/cyrus-3137.json and personalities/sasl.json are unchanged. docs/facts/imap-server.md says the probed Cyrus personality advertises AUTH=LOGIN on the greeting and before login.
