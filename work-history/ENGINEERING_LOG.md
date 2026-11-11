@@ -443,3 +443,9 @@
   remote: * LIST () "/" "MB2"
   local:  * LIST (\HasNoChildren) "/" MB2
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-stalwart was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Stalwart FETCH order fix
+
+- Review on 8cb3ff9d: BODY[TEXT] uses the BODY[] rank, so personalities/stalwart.json lists BODY[] before FLAGS. A FETCH that sets Seen now puts FLAGS after the body. The FLAGS UID header fetch has no BODY[ item, so its order is unchanged.
+- The other leftovers stay: APPEND still has local EXISTS and RECENT, the ENVELOPE date text differs, BODYSTRUCTURE case and body MD5 differ, MOVE still has remote EXISTS after EXPUNGE, and LIST still has empty flags and a quoted name. Reply code was not changed.
+- liveimap-stalwart was stopped. The lab password stayed in the gitignored operator file.
