@@ -810,8 +810,13 @@ func (st *Store) delete(s *session, name string) error {
 	if len(mb.waiters) > 0 {
 		return fmt.Errorf("selected")
 	}
+	seenID := map[string]bool{}
 	for _, m := range mb.msgs {
-		st.noteMail("destroyed", m.jmapID)
+		if seenID[m.jmapID] {
+			continue
+		}
+		seenID[m.jmapID] = true
+		st.noteCopyGone(m.jmapID, nil, mb)
 	}
 	if len(mb.msgs) == 0 {
 		st.touch()
@@ -1586,7 +1591,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		for _, m := range src.msgs {
 			if drop[m.uid] {
 				src.noteExpunge(m)
-				st.noteMail("destroyed", m.jmapID)
+				st.noteCopyGone(m.jmapID, m, nil)
 				gone = append(gone, m.uid)
 				if !qresync {
 					res.lines = append(res.lines, fmt.Sprintf("* %d EXPUNGE", seq))
@@ -1653,7 +1658,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
 		}
 		if hit {
 			mb.noteExpunge(m)
-			st.noteMail("destroyed", m.jmapID)
+			st.noteCopyGone(m.jmapID, m, nil)
 			gone = append(gone, m.uid)
 			if !qresync {
 				lines = append(lines, fmt.Sprintf("* %d EXPUNGE", seq))
@@ -1689,7 +1694,7 @@ func (st *Store) closeBox(s *session) error {
 		for _, m := range mb.msgs {
 			if m.has(`\Deleted`) {
 				mb.noteExpunge(m)
-				st.noteMail("destroyed", m.jmapID)
+				st.noteCopyGone(m.jmapID, m, nil)
 				mb.push(mbEvent{kind: "expunge", seq: seq, uid: m.uid, modseq: m.modseq})
 				continue
 			}
@@ -2176,6 +2181,9 @@ func (st *Store) applyOneUpdate(p emailPatch) string {
 		next[id] = true
 	}
 	for _, id := range p.del {
+		if st.mailboxByJMAP(id) == nil {
+			return "invalidProperties"
+		}
 		delete(next, id)
 	}
 	if len(next) == 0 {
@@ -2218,6 +2226,28 @@ func (st *Store) applyOneUpdate(p emailPatch) string {
 		st.noteMail("updated", p.id)
 	}
 	return ""
+}
+
+// noteCopyGone records destroyed when no copy of id remains outside skip
+// and except. except may still sit in its mailbox. skip is a mailbox whose
+// copies are all going away. Caller holds st.mu.
+func (st *Store) noteCopyGone(id string, except *Message, skip *Mailbox) {
+	if id == "" {
+		return
+	}
+	for _, name := range st.order {
+		mb := st.boxes[name]
+		if mb == nil || mb == skip {
+			continue
+		}
+		for _, m := range mb.msgs {
+			if m != except && m.jmapID == id {
+				st.noteMail("updated", id)
+				return
+			}
+		}
+	}
+	st.noteMail("destroyed", id)
 }
 
 func (st *Store) destroyLocked(id string) bool {

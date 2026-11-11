@@ -178,3 +178,7 @@
 ## 2026-11-11 - JMAP Email/set update
 
 - Implementing Email/set update for keywords and mailbox membership (jmap-update-20261111-0630-plan.md). create stays invalidArguments. destroy stays as it is.
+
+## 2026-11-11 - JMAP copy change records
+
+- An unknown mailboxIds null is invalidProperties and changes nothing. Expunging one copy of a multi-mailbox email is updated while another copy remains.
