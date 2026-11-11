@@ -376,3 +376,17 @@
 - personalities/dovecot-10.json lists AUTH=PLAIN then AUTH=LOGIN at the end of the pre-login list, and uses flag order Answered Flagged Deleted Seen Draft Recent. Greeting, post-login tokens and order, NAMESPACE, and SELECT flags and order already matched. MULTIAPPEND and LOGIN-REFERRALS stay off.
 - The normalized diff still has shapes the file cannot express: LOGIN is a tagged OK with no capability code; APPEND and COPY are tagged OK with no UIDPLUS code; BODYSTRUCTURE tokens are lowercase and omit the final NIL; MOVE is tagged BAD, so the remote script stops there. Reply code was not changed.
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 and then started. liveimap-dovecot-10 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Dovecot 1.2 execution start
+
+- Approved plan: sandbox/plans/probe-dovecot-12-20261111-1544-plan.md
+- Work: run the base cyrusprobe script against liveimap-dovecot-12 and update personalities/dovecot-12.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Dovecot 1.2 landed
+
+- Approved plan: sandbox/plans/probe-dovecot-12-20261111-1544-plan.md
+- personalities/dovecot-12.json lists AUTH=PLAIN then AUTH=LOGIN after ENABLE on the greeting and at the end of the pre-login list, and uses flag order Answered Flagged Deleted Seen Draft Recent. Post-login tokens and order, NAMESPACE, and SELECT flags and order already matched. LOGIN-REFERRALS, ID, MULTIAPPEND, and I18NLEVEL=1 stay off. STARTTLS stays out of the file.
+- The normalized diff still has shapes the file cannot express: BODYSTRUCTURE tokens are lowercase. MOVE is tagged BAD because that capability is unlisted, so the remote script stops there. Reply code was not changed.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 and then started. liveimap-dovecot-12 was stopped. The lab password stayed in the gitignored operator file.
