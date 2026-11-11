@@ -62,6 +62,8 @@ type ctrlReply struct {
 	Listen            string         `json:"listen"`
 	ImplicitTLSListen string         `json:"implicit_tls_listen"`
 	Control           string         `json:"control"`
+	Smtp              string         `json:"smtp"`
+	Jmap              string         `json:"jmap"`
 	Personality       string         `json:"personality"`
 	Dataset           string         `json:"dataset"`
 	Faults            []faultView    `json:"faults"`
@@ -142,11 +144,23 @@ func TestControlSocket(t *testing.T) {
 		t.Fatalf("ready %q", bound.Control)
 	}
 	stt := cc.call(map[string]any{"op": "status"}).ok(t)
-	if stt.Listen != bound.Listen || stt.Control != path || stt.Personality == "" || stt.Dataset == "" {
+	if stt.Listen != bound.Listen || stt.ImplicitTLSListen != bound.ImplicitTLSListen || stt.Control != path || stt.Personality == "" || stt.Dataset == "" {
 		t.Fatalf("status %+v", stt)
+	}
+	if stt.Smtp != "" || stt.Jmap != "" {
+		t.Fatalf("unbound smtp/jmap %+v", stt)
 	}
 	if stt.Connections != 0 || stt.ClockFrozen || len(stt.Faults) != 0 {
 		t.Fatalf("status live %+v", stt)
+	}
+	_, boundLJ, ccLJ := startCtrl(t, Config{
+		Listen:     "127.0.0.1:0",
+		SmtpListen: "127.0.0.1:0",
+		JmapListen: "127.0.0.1:0",
+	})
+	gotLJ := ccLJ.call(map[string]any{"op": "status"}).ok(t)
+	if gotLJ.Listen != boundLJ.Listen || gotLJ.ImplicitTLSListen != "" || gotLJ.Control != boundLJ.Control || gotLJ.Smtp != boundLJ.Smtp || gotLJ.Jmap != boundLJ.Jmap || gotLJ.Smtp == "" || gotLJ.Jmap == "" {
+		t.Fatalf("status listeners %+v bound %+v", gotLJ, boundLJ)
 	}
 	if cc.call(map[string]any{"op": "nope"}).OK {
 		t.Fatal("unknown op")

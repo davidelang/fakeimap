@@ -236,6 +236,8 @@ func (s *Server) ctrlStatus() map[string]any {
 		"listen":              s.bound.Listen,
 		"implicit_tls_listen": s.bound.ImplicitTLSListen,
 		"control":             s.bound.Control,
+		"smtp":                s.bound.Smtp,
+		"jmap":                s.bound.Jmap,
 		"personality":         s.cfg.Personality,
 		"dataset":             s.cfg.Dataset,
 		"connections":         len(s.imap),

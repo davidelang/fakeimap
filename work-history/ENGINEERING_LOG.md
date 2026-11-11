@@ -164,3 +164,8 @@
 
 - Approved plan: sandbox/plans/jmap-read-20261111-0525-plan.md
 - jmap_listen binds a cleartext HTTP listener. GET /.well-known/jmap returns the session. Mailbox/get, Mailbox/query, Email/query, and Email/get read the IMAP store. Email/set, Email/import, Email/changes, and EmailSubmission/set return unknownMethod.
+
+## 2026-11-11 - status lists SMTP and JMAP
+
+- Approved plan: sandbox/plans/status-listeners-20261111-0554-plan.md
+- Control status includes smtp and jmap as the bound host:port, or an empty string when that listener is not up. listen, implicit_tls_listen, and control are unchanged.
