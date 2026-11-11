@@ -335,3 +335,16 @@
 - Work: personalities for Courier 5.0, Courier 6.0.6, and UW-IMAP. NAMESPACE can list more than one prefix in a group, and an entry delimiter can be NIL. No new capability.
 - First action per standard-plan-compliance-block.md
 - The lab password stays out of this log.
+
+## 2026-11-11 - probe Dovecot 2.4.5 execution start
+
+- Approved plan: sandbox/plans/probe-dovecot-245-20261111-1505-plan.md
+- Work: run the base cyrusprobe script against liveimap-dovecot-245 and update personalities/dovecot-245.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Dovecot 2.4.5 landed
+
+- Approved plan: sandbox/plans/probe-dovecot-245-20261111-1505-plan.md
+- personalities/dovecot-245.json now lists AUTH=PLAIN and AUTH=EXTERNAL after LITERAL+ on the greeting and pre-login lists, uses flag order Answered Flagged Deleted Seen Draft Recent, and sends MOVE COPYUID untagged. IMAP4rev2, ID, and LOGIN-REFERRALS stay off. Post-login tokens and order, NAMESPACE, and SELECT flags and order already matched.
+- The normalized diff still has shapes the file cannot express: LOGIN sends an untagged CAPABILITY and a tagged OK with no capability code; BODYSTRUCTURE tokens are lowercase; MOVE still sends RECENT after EXPUNGE; LIST of the two probe mailboxes is MB2 then MB1. Reply code was not changed. liveimap-dovecot-245 was stopped. The lab password stayed in the gitignored operator file.
