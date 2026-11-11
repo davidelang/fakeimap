@@ -26,6 +26,19 @@ if has setup_agent.sh; then bad "includes setup_agent.sh"; else ok "omits setup_
 if has remove_worktree.sh; then bad "includes remove_worktree.sh"; else ok "omits remove_worktree.sh"; fi
 if has clone-orchestration-project; then bad "includes clone script"; else ok "omits clone script"; fi
 if printf '%s\n' "${paths[@]}" | grep -q '^build-examples/'; then bad "includes build-examples"; else ok "omits build-examples"; fi
+if grep -Eq '\$DEST/orch/ve-resolve-orch' "$canon/clone-orchestration-project" \
+  && grep -Eq '\$DEST/orch/install-refresh-shell\.sh' "$canon/clone-orchestration-project" \
+  && grep -Eq '\$DEST/orch/agent-landlock' "$canon/clone-orchestration-project" \
+  && grep -Eq '\$DEST/master/orch/agent-landlock' "$canon/clone-orchestration-project"; then
+  ok "helpers are under orch/"
+else
+  bad "helper paths are not under orch/"
+fi
+if grep -Eq '\$DEST/(ve-resolve-orch|install-refresh-shell\.sh|agent-landlock)|\$DEST/master/agent-landlock' "$canon/clone-orchestration-project"; then
+  bad "still calls a helper from the repo root"
+else
+  ok "no root-level helper paths"
+fi
 
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT

@@ -32,9 +32,10 @@
 #
 # ./run-grok-* from a worktree (including master/) needs orch_root= in that
 # worktree's project.config. This tool seeds dest and dest/master via
-# ve_seed_worktree_project_config. Use --repair on a dest that was cloned
-# before that seed existed. --repair seeds project.config, the filter config and
-# smudge check, and the dest-root DAC on an existing clone.
+# ve_seed_worktree_project_config from dest/orch/ve-resolve-orch. Use --repair
+# on a dest that was cloned before that seed existed. --repair seeds
+# project.config, the filter config and smudge check, and the dest-root DAC.
+# It does not copy the app framework into an empty master.
 #
 # Source: --source DIR, else the directory holding this script. It must have
 # run-grok-orchestrator, setup_agent.sh, AGENT_MANDATES.md and project.config
@@ -253,31 +254,31 @@ seed_dest_project_configs() {
   if [ "$DRY" -eq 1 ]; then
     return 0
   fi
-  as_primary test -f "$DEST/ve-resolve-orch" || die "ve-resolve-orch missing in $DEST"
+  as_primary test -f "$DEST/orch/ve-resolve-orch" || die "orch/ve-resolve-orch missing in $DEST"
   as_primary test -d "$DEST/master" || die "master worktree missing: $DEST/master"
   as_primary bash -c '
     set -euo pipefail
     DEST="$1"
     # shellcheck source=/dev/null
-    . "$DEST/ve-resolve-orch"
+    . "$DEST/orch/ve-resolve-orch"
     ve_seed_worktree_project_config "$DEST" "$DEST"
     ve_seed_worktree_project_config "$DEST/master" "$DEST"
   ' bash "$DEST"
 }
 
 verify_dest_orch_root() {
-  step check "$DEST/ve-resolve-orch $DEST  (must print $DEST)"
-  step check "$DEST/ve-resolve-orch $DEST/master  (must print $DEST)"
+  step check "$DEST/orch/ve-resolve-orch $DEST  (must print $DEST)"
+  step check "$DEST/orch/ve-resolve-orch $DEST/master  (must print $DEST)"
   if [ "$DRY" -eq 1 ]; then
     return 0
   fi
   local got
-  got=$(as_primary bash "$DEST/ve-resolve-orch" "$DEST") || die "ve-resolve-orch failed for $DEST"
+  got=$(as_primary bash "$DEST/orch/ve-resolve-orch" "$DEST") || die "orch/ve-resolve-orch failed for $DEST"
   got="${got//$'\r'/}"
-  [ "$got" = "$DEST" ] || die "ve-resolve-orch $DEST printed '$got' (want $DEST)"
-  got=$(as_primary bash "$DEST/ve-resolve-orch" "$DEST/master") || die "ve-resolve-orch failed for $DEST/master"
+  [ "$got" = "$DEST" ] || die "orch/ve-resolve-orch $DEST printed '$got' (want $DEST)"
+  got=$(as_primary bash "$DEST/orch/ve-resolve-orch" "$DEST/master") || die "orch/ve-resolve-orch failed for $DEST/master"
   got="${got//$'\r'/}"
-  [ "$got" = "$DEST" ] || die "ve-resolve-orch $DEST/master printed '$got' (want $DEST)"
+  [ "$got" = "$DEST" ] || die "orch/ve-resolve-orch $DEST/master printed '$got' (want $DEST)"
 }
 
 do_fix_perms() {
@@ -310,7 +311,7 @@ do_dest_root_dac() {
 
 do_landlock_exec_dac() {
   local f
-  for f in "$DEST/agent-landlock" "$DEST/master/agent-landlock"; do
+  for f in "$DEST/orch/agent-landlock" "$DEST/master/orch/agent-landlock"; do
     step root "chown $PRIMARY_USER:$CODE_GROUP $f && chmod 775 (o+x for ai-planner)"
     if [ "$DRY" -eq 1 ]; then
       continue
@@ -839,11 +840,11 @@ do_perms() {
   do_dest_root_dac
   do_landlock_exec_dac
 
-  step root "$DEST/install-refresh-shell.sh $DEST"
-  step root "$DEST/install-refresh-shell.sh $DEST/master"
+  step root "$DEST/orch/install-refresh-shell.sh $DEST"
+  step root "$DEST/orch/install-refresh-shell.sh $DEST/master"
   if [ "$DRY" -eq 0 ]; then
-    as_root "$DEST/install-refresh-shell.sh" "$DEST"
-    as_root "$DEST/install-refresh-shell.sh" "$DEST/master"
+    as_root "$DEST/orch/install-refresh-shell.sh" "$DEST"
+    as_root "$DEST/orch/install-refresh-shell.sh" "$DEST/master"
   fi
 
   local u
@@ -934,7 +935,7 @@ if [ -n "$REPAIR_ARG" ]; then
     echo "Dry-run complete. No files written."
   else
     echo "Repaired $DEST"
-    echo "  ve-resolve-orch from dest and dest/master must print $DEST"
+    echo "  orch/ve-resolve-orch from dest, run on dest and dest/master, must print $DEST"
     echo "  Next: $DEST/master/run-grok-planner"
   fi
   exit 0
