@@ -1,0 +1,37 @@
+#!/bin/sh
+# A required json-pretty filter with no smudge aborts checkout and leaves the
+# worktree empty. smudge=cat lets the same checkout finish.
+set -eu
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+pass=0
+fail=0
+ok() { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+git init -q -b main "$T/src"
+printf '%s\n' '{"a":1}' > "$T/src/a.json"
+printf '%s\n' '*.json filter=json-pretty' > "$T/src/.gitattributes"
+git -C "$T/src" add -- a.json .gitattributes
+git -C "$T/src" -c user.name=t -c user.email=t@t commit -q -m init
+git -C "$T/src" config filter.json-pretty.clean cat
+git -C "$T/src" config filter.json-pretty.required true
+git -C "$T/src" checkout -q -b holder
+git -C "$T/src" worktree add --no-checkout "$T/empty" main
+if git -C "$T/empty" checkout HEAD -- . >/dev/null 2>"$T/err"; then
+  bad "required filter with no smudge checked out"
+else
+  grep -q 'smudge filter json-pretty failed' "$T/err" && ok "no smudge: checkout fails" || bad "no smudge: $(cat "$T/err")"
+fi
+[ ! -f "$T/empty/a.json" ] && ok "no smudge: json file absent" || bad "no smudge: a.json was written"
+git -C "$T/src" config filter.json-pretty.smudge cat
+git -C "$T/src" worktree remove --force "$T/empty"
+git -C "$T/src" worktree add --no-checkout "$T/full" main
+if git -C "$T/full" checkout HEAD -- . >/dev/null 2>"$T/err2"; then
+  ok "smudge cat: checkout exits 0"
+else
+  bad "smudge cat: checkout failed: $(cat "$T/err2")"
+fi
+[ -f "$T/full/a.json" ] && ok "smudge cat: a.json present" || bad "smudge cat: a.json missing"
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

@@ -51,13 +51,11 @@ git config filter.manage-configs.clean "bash ./filter-clean-config %f"
 git config filter.manage-configs.smudge "bash ./filter-apply-config"
 git config filter.manage-configs.required true
 
-# json-pretty: checked-in *.json is indent 2. Clean only.
+# json-pretty: checked-in *.json is indent 2. Smudge is cat. A required filter
+# with no smudge command makes `git checkout` fail and leaves a new worktree empty.
 git config filter.json-pretty.clean "python3 ./orch/json-pretty-filter clean"
+git config filter.json-pretty.smudge cat
 git config filter.json-pretty.required true
-# Clean only. Drop a smudge left by an older install; a missing key is not an error.
-if git config --get filter.json-pretty.smudge >/dev/null; then
-  git config --unset filter.json-pretty.smudge
-fi
 
 # Legacy alias: refuse now delegates to ve-special-ours
 git config merge.ve-special-refuse.name "VE special-file keep-ours (deprecated alias)"

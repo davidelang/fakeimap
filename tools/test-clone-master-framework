@@ -1,0 +1,39 @@
+#!/bin/bash
+# The app branch file list is the launchers, rules, and work-tracking files.
+# It is not the managing tree: setup_agent.sh and remove_worktree.sh stay off it.
+set -euo pipefail
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
+canon="$(git rev-parse --show-toplevel)"
+# shellcheck source=/dev/null
+source "$canon/clone-orchestration-project"
+pass=0
+fail=0
+ok() { pass=$((pass+1)); echo "ok   $*"; }
+bad() { fail=$((fail+1)); echo "FAIL $*"; }
+mapfile -t paths < <(master_framework_paths "$canon")
+has() {
+  local p
+  for p in "${paths[@]}"; do [ "$p" = "$1" ] && return 0; done
+  return 1
+}
+has run-grok-orchestrator && ok "includes run-grok-orchestrator" || bad "missing run-grok-orchestrator"
+has AGENTS.md && ok "includes AGENTS.md" || bad "missing AGENTS.md"
+has TODO.md && ok "includes TODO.md" || bad "missing TODO.md"
+has ENGINEERING_LOG.md && ok "includes ENGINEERING_LOG.md" || bad "missing ENGINEERING_LOG.md"
+has .grok/hooks/master-blocks.sh && ok "includes master-blocks.sh" || bad "missing master-blocks.sh"
+has project-facts.md && ok "includes project-facts.md" || bad "missing project-facts.md"
+if has setup_agent.sh; then bad "includes setup_agent.sh"; else ok "omits setup_agent.sh"; fi
+if has remove_worktree.sh; then bad "includes remove_worktree.sh"; else ok "omits remove_worktree.sh"; fi
+if has clone-orchestration-project; then bad "includes clone script"; else ok "omits clone script"; fi
+if printf '%s\n' "${paths[@]}" | grep -q '^build-examples/'; then bad "includes build-examples"; else ok "omits build-examples"; fi
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+git init -q -b orchestration "$T/src"
+printf '%s\n' 'tool' > "$T/src/run-grok"
+git -C "$T/src" add -- run-grok
+git -C "$T/src" -c user.name=t -c user.email=t@t commit -q -m init
+git -C "$T/src" worktree add --orphan -b master "$T/app"
+[ ! -f "$T/app/run-grok" ] && ok "orphan master starts empty" || bad "orphan master has files"
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

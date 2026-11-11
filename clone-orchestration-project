@@ -5,8 +5,20 @@
 # (Grok role launchers, packs, Landlock, setup_agent, fix-perms).
 #
 # Usage:
-#   ./clone-orchestration-project [-n|--dry-run] [-s|--source DIR] [-g|--git-home DIR] <new-name>
+#   ./clone-orchestration-project [-n|--dry-run] [-s|--source DIR] [-g|--git-home DIR] [-t|--build-type TYPE] <new-name>
 #   ./clone-orchestration-project [-n|--dry-run] [-r|--repair DIR]
+#
+# Build type: asked on a terminal when --build-type is omitted. android-gradle
+# copies that build-examples directory (except README.md) into master/. none
+# (also accepted as "other") copies no build tools. The choice is recorded in
+# project-facts.md.
+#
+# Dest root is the managing tree, branch orchestration: a clone of this
+# template with project.config filled in for this machine. master/ is not that
+# tree. It is a new empty branch. The script copies the app framework into it:
+# run-* launchers, the visible and hidden rules, TODO and ENGINEERING_LOG,
+# and the orch helpers those need. setup_agent.sh and remove_worktree.sh stay
+# on the orchestration root only.
 #
 # Layout of dest:
 #   git_home/<name>/         branch orchestration (managing tree)
@@ -49,22 +61,26 @@ DRY=0
 SOURCE_ARG=""
 GIT_HOME_ARG=""
 REPAIR_ARG=""
+BUILD_TYPE_ARG=""
+BUILD_TYPE=""
 NAME=""
 
-USAGE_LINE="usage: ./clone-orchestration-project [-h] [-n] [-s DIR] [-g DIR] NEW-NAME | [-n] -r DIR"
+USAGE_LINE="usage: ./clone-orchestration-project [-h] [-n] [-s DIR] [-g DIR] [-t TYPE] NEW-NAME | [-n] -r DIR"
 usage() {
   cat <<EOF
 $USAGE_LINE
 
 Clone this orchestration-example tree to git_home/NEW-NAME as a new multi-agent
-host (orchestration branch at the dest root, master/ worktree).
+host (orchestration branch at the dest root, master/ worktree populated with
+the tools). Asks the build type unless --build-type is set.
 
 options:
-  -h, --help          show this help message and exit
-  -n, --dry-run       print resolved paths and planned steps; change nothing
-  -s, --source DIR    the orchestration-example to clone (default: this script's dir)
-  -g, --git-home DIR  git_home to clone into (default: the source's git_home)
-  -r, --repair DIR    bring an existing clone DIR up to date instead of cloning
+  -h, --help             show this help message and exit
+  -n, --dry-run          print resolved paths and planned steps; change nothing
+  -s, --source DIR       the orchestration-example to clone (default: this script's dir)
+  -g, --git-home DIR     git_home to clone into (default: the source's git_home)
+  -t, --build-type TYPE  android-gradle, none, or other (other means none)
+  -r, --repair DIR       bring an existing clone DIR up to date instead of cloning
 
 Details: the comment at the top of ./clone-orchestration-project.
 EOF
@@ -391,13 +407,149 @@ add_safe_directory() {
   fi
 }
 
+# Directories under build-examples/ that install files, plus none.
+list_build_types() {
+  local d name
+  [ -d "$SOURCE/build-examples" ] || return 0
+  for d in "$SOURCE"/build-examples/*/; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    if git -C "$SOURCE" ls-files -- "build-examples/$name/" | grep -qv '/README\.md$'; then
+      printf '%s\n' "$name"
+    fi
+  done
+  printf '%s\n' none
+}
+
+build_type_known() {
+  local t
+  [ -n "${1:-}" ] || return 1
+  while IFS= read -r t; do
+    [ "$t" = "$1" ] && return 0
+  done < <(list_build_types)
+  return 1
+}
+
+facts_build_lines() {
+  if git -C "$SOURCE" ls-files -- "build-examples/$BUILD_TYPE/build_app" | grep -q .; then
+    printf '%s\n' \
+      "- **Build type:** ${BUILD_TYPE}" \
+      '- Build: `./build_app --standard --test`. Never `--play`: it needs David at a terminal.' \
+      '- Commit: `./build_app --standard --test "<message>"|@<msg_file> <paths...>` (commits exactly the named paths, builds, and tags builds). Do not push.'
+  else
+    printf '%s\n' \
+      "- **Build type:** ${BUILD_TYPE}" \
+      '- Build: none' \
+      '- Commit: `git add` the files of that change, then `git commit` as David Lang <david@lang.hm>. Do not push.'
+  fi
+}
+
+choose_build_type() {
+  local choice="${BUILD_TYPE_ARG:-}" known=""
+  known=$(list_build_types | tr '\n' ' ' | sed 's/ *$//')
+  [ -n "$known" ] || die "no build types under $SOURCE/build-examples and none is missing"
+  if [ "$choice" = other ]; then
+    choice=none
+  fi
+  if [ -n "$choice" ]; then
+    build_type_known "$choice" || die "unknown build type '$choice' (one of: $known; other means none)"
+    BUILD_TYPE=$choice
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    die "pass --build-type ($known). other means none. stdin is not a terminal"
+  fi
+  echo "What kind of project is this?"
+  local t
+  while IFS= read -r t; do
+    case "$t" in
+      android-gradle) echo "  android-gradle  Android app. Installs build_app, deploy, and screenshot capture." ;;
+      none) echo "  none            Not Android. Does not install those tools. (other means this)" ;;
+      *) echo "  $t" ;;
+    esac
+  done < <(list_build_types)
+  local ans
+  while true; do
+    read -r -p "Build type: " ans || die "no build type read"
+    [ "$ans" = other ] && ans=none
+    if build_type_known "$ans"; then
+      BUILD_TYPE=$ans
+      return 0
+    fi
+    echo "Choose one of: $known (other means none)" >&2
+  done
+}
+
+# Tracked paths that belong on a new app branch. Not the managing tree:
+# setup_agent.sh and remove_worktree.sh stay on orchestration only.
+master_framework_paths() {
+  local tree="${1:-$DEST}"
+  git -C "$tree" ls-files -- \
+    'run-grok' 'run-grok-*' 'run-cursor' 'run-cursor-*' \
+    'run-antigravity' 'run-antigravity-*' \
+    AGENTS.md CLAUDE.md GEMINI.md GROK.md ANTIGRAVITY.md \
+    AGENT_MANDATES.md new_agent_prompt standard-plan-compliance-block.md \
+    MULTI_AGENT_USER_INSTRUCTIONS.md README-multi-agent.md \
+    roles.config roles docs/rules docs/facts \
+    .grok .cursor .gemini \
+    TODO.md ENGINEERING_LOG.md work-history project-facts.md \
+    orch git-merge-drivers filter-apply-config filter-clean-config hooks \
+    .gitattributes .gitignore project.config.example \
+    fix-perms landlock.config landlock.config.example \
+    rules.manifest update-rules.sh \
+    third_party/fetch-deps third_party/agent-coordination-tickets
+}
+
+# Copy build-examples/<type>/* except README.md into the master worktree.
+# The caller commits them there. The root only records the local paths.
+install_build_type() {
+  local into="${1:-$DEST/master}"
+  if [ "$BUILD_TYPE" = none ]; then
+    step primary "build type none: do not install build-examples"
+    return 0
+  fi
+  local path rel
+  local -a rels=()
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    rel="${path#build-examples/$BUILD_TYPE/}"
+    [ "$rel" = README.md ] && continue
+    rels+=("$rel")
+    step primary "install build-examples/$BUILD_TYPE/$rel -> $into/$rel"
+  done < <(git -C "$SOURCE" ls-files -- "build-examples/$BUILD_TYPE/")
+  [ "${#rels[@]}" -gt 0 ] || die "build type $BUILD_TYPE has no files to install"
+  [ "$DRY" -eq 1 ] && return 0
+  local rel
+  for rel in "${rels[@]}"; do
+    as_primary mkdir -p "$(dirname "$into/$rel")"
+    as_primary cp -a "$SOURCE/build-examples/$BUILD_TYPE/$rel" "$into/$rel"
+  done
+  as_primary bash -c '
+    set -euo pipefail
+    file="$1"; shift
+    touch "$file"
+    for rel in "$@"; do
+      line="local $rel"
+      grep -qxF "$line" "$file" && continue
+      if [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ]; then
+        printf "\n" >> "$file"
+      fi
+      printf "%s\n" "$line" >> "$file"
+    done
+  ' bash "$DEST/rules.manifest.local" "${rels[@]}"
+  git_primary -C "$DEST" add -- rules.manifest.local
+  if ! git_primary -C "$DEST" diff --cached --quiet; then
+    git_primary -C "$DEST" commit -m "Record $BUILD_TYPE build tools as project-local"
+  fi
+}
+
 write_identity_files() {
   write_as_primary "$DEST/AGENT_CONTEXT.md" <<EOF
-# AGENT_CONTEXT.md — master
+# AGENT_CONTEXT.md — orchestration
 
-- **Agent ID:** master
-- **Current Branch:** master
-- **Role:** Master
+- **Agent ID:** orchestration
+- **Current Branch:** orchestration
+- **Role:** Orchestrator
 - **Sandbox:** ${DEST}/sandbox/
 - **Status:** ACTIVE
 EOF
@@ -412,6 +564,9 @@ EOF
 - Launch: \`./run-grok-*\` via \`.grok/lib/grok-launch-common.sh\` + \`agent-landlock\`
 - Groups: source \`./orch/env\` (refresh-shell setuid)
 - Before adding or changing user-visible wording, translations, or the user manual: read \`docs/facts/translations.md\`.
+
+## Build and commit
+$(facts_build_lines)
 EOF
 
   write_as_primary "$DEST/README.md" <<EOF
@@ -438,18 +593,6 @@ Landlock (mutation-only) wraps agents via \`agent-landlock\` from \`run-grok*\`.
 EOF
 }
 
-write_orchestration_context() {
-  write_as_primary "$DEST/AGENT_CONTEXT.md" <<EOF
-# AGENT_CONTEXT.md — orchestration
-
-- **Agent ID:** orchestration
-- **Current Branch:** orchestration
-- **Role:** Orchestrator
-- **Sandbox:** ${DEST}/sandbox/
-- **Status:** ACTIVE
-EOF
-}
-
 # A fresh clone must be clean in both trees: a dirty master/ makes ./build_app refuse.
 require_clean() {
   local wt="$1" st
@@ -467,6 +610,9 @@ print_header() {
   echo "new-name:     $NAME"
   echo "dest:         $DEST"
   echo "primary_user: $PRIMARY_USER"
+  if [ -n "$BUILD_TYPE" ]; then
+    echo "build type:   $BUILD_TYPE"
+  fi
   echo "sandbox:      $DEST/$SANDBOX_REL"
   if [ "$DRY" -eq 1 ]; then
     echo "mode:         dry-run (no writes, no sudo)"
@@ -588,26 +734,67 @@ do_clone_layout() {
 
   seed_sandbox_repo
 
-  # Each step line is printed right before its command, so git's own output follows its step.
-  step primary "git checkout -b orchestration"
-  [ "$DRY" -eq 1 ] || git_primary -C "$DEST" checkout -b orchestration
-  step primary "commit AGENT_CONTEXT.md (orchestration identity)"
+  # The cloned branch may be named master when the template checkout is.
+  # That full tree is the managing branch. Name it orchestration. master is
+  # a new empty branch, not this commit.
+  step primary "name the managing branch orchestration"
   if [ "$DRY" -eq 0 ]; then
-    write_orchestration_context
-    git_primary -C "$DEST" commit -m "Orchestration identity for $NAME" -- AGENT_CONTEXT.md
-  fi
-  step primary "git worktree add --no-checkout $DEST/master master"
-  if [ "$DRY" -eq 0 ]; then
-    git_primary -C "$DEST" worktree add --no-checkout "$DEST/master" master
+    cur=$(git_primary -C "$DEST" rev-parse --abbrev-ref HEAD)
+    if [ "$cur" != orchestration ]; then
+      if git_primary -C "$DEST" show-ref --verify --quiet refs/heads/orchestration; then
+        die "clone HEAD is $cur and branch orchestration already exists"
+      fi
+      git_primary -C "$DEST" branch -m "$cur" orchestration
+    fi
   fi
 
-  # project.config before checkout: the smudge filter needs it.
-  seed_dest_project_configs
-  # The filter scripts first: git runs ./filter-*-config from the worktree being populated.
-  step primary "git -C $DEST/master checkout HEAD -- filter-apply-config filter-clean-config && checkout HEAD -- ."
+  step primary "git worktree add --orphan -b master $DEST/master (empty app branch)"
   if [ "$DRY" -eq 0 ]; then
-    git_primary -C "$DEST/master" checkout HEAD -- filter-apply-config filter-clean-config
-    git_primary -C "$DEST/master" checkout HEAD -- .
+    if git_primary -C "$DEST" show-ref --verify --quiet refs/heads/master; then
+      die "branch master already exists; refusing to reuse the managing tree"
+    fi
+    git_primary -C "$DEST" worktree add --orphan -b master "$DEST/master"
+  fi
+
+  install_build_type "$DEST/master"
+  seed_dest_project_configs
+  step primary "copy app framework into $DEST/master (run-*, rules, TODO, ENGINEERING_LOG)"
+  if [ "$DRY" -eq 0 ]; then
+    local path
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      as_primary mkdir -p "$(dirname "$DEST/master/$path")"
+      as_primary cp -a "$DEST/$path" "$DEST/master/$path"
+    done < <(master_framework_paths "$DEST")
+    write_as_primary "$DEST/master/AGENT_CONTEXT.md" <<EOF
+# AGENT_CONTEXT.md — master
+
+- **Agent ID:** master
+- **Current Branch:** master
+- **Role:** Master
+- **Sandbox:** ${DEST}/sandbox/
+- **Status:** ACTIVE
+EOF
+    write_as_primary "$DEST/master/README.md" <<EOF
+# ${NAME}
+
+App branch. The managing tree is \`${DEST}/\` on branch \`orchestration\`.
+Build type: ${BUILD_TYPE}.
+EOF
+    git_primary -C "$DEST/master" add -A -- .
+    git_primary -C "$DEST/master" commit -m "App framework for $NAME"
+    as_primary test -f "$DEST/master/run-grok-orchestrator" \
+      || die "master worktree was not populated (missing run-grok-orchestrator)"
+    as_primary test -f "$DEST/master/AGENTS.md" \
+      || die "master worktree was not populated (missing AGENTS.md)"
+    as_primary test -e "$DEST/master/TODO.md" \
+      || die "master worktree was not populated (missing TODO.md)"
+    as_primary test ! -e "$DEST/master/setup_agent.sh" \
+      || die "master worktree contains setup_agent.sh; that stays on the orchestration root"
+    if [ "$BUILD_TYPE" != none ]; then
+      as_primary test -f "$DEST/master/build_app" \
+        || die "master worktree has no build_app for build type $BUILD_TYPE"
+    fi
   fi
   smudge_and_verify "$DEST/master"
   verify_dest_orch_root
@@ -667,16 +854,22 @@ do_perms() {
 
 }
 
+# Tests source this file and call master_framework_paths. Running it clones.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
+fi
+
 # --- args ---
 # getopt errors go to a variable, not a temp file (stdout is discarded only here; the parse below keeps it).
-if ! _cl_err=$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "$@" 2>&1 >/dev/null); then
+if ! _cl_err=$(getopt -o hns:g:r:t: -l help,dry-run,source:,git-home:,repair:,build-type: -- "$@" 2>&1 >/dev/null); then
   if printf '%s\n' "$_cl_err" | grep -q 'requires an argument'; then
     _cl_opt=$(printf '%s\n' "$_cl_err" | sed -n "s/.*'\\(--[^']*\\)'.*/\\1/p; s/.*option requires an argument -- '\\([^']*\\)'.*/-\\1/p" | head -1)
     case "$_cl_opt" in
       --source|-s) die "--source requires a directory" ;;
       --git-home|-g) die "--git-home requires a directory" ;;
       --repair|-r) die "--repair requires a directory" ;;
-      *) die "${_cl_opt:-option} requires a directory" ;;
+      --build-type|-t) die "--build-type requires a type (android-gradle, none, or other)" ;;
+      *) die "${_cl_opt:-option} requires an argument" ;;
     esac
   fi
   _cl_bad=$(printf '%s\n' "$_cl_err" | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | head -1)
@@ -684,7 +877,7 @@ if ! _cl_err=$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "
   echo "clone-orchestration-project: error: unrecognized option: ${_cl_bad:-?}" >&2
   exit 2
 fi
-parsed=$(getopt -o hns:g:r: -l help,dry-run,source:,git-home:,repair: -- "$@")
+parsed=$(getopt -o hns:g:r:t: -l help,dry-run,source:,git-home:,repair:,build-type: -- "$@")
 eval set -- "$parsed"
 while true; do
   case "$1" in
@@ -699,6 +892,9 @@ while true; do
     -r|--repair)
       [ -n "${2:-}" ] || die "--repair requires a directory"
       REPAIR_ARG="$2"; shift 2 ;;
+    -t|--build-type)
+      [ -n "${2:-}" ] || die "--build-type requires a type (android-gradle, none, or other)"
+      BUILD_TYPE_ARG="$2"; shift 2 ;;
     --) shift; break ;;
     *) echo "$USAGE_LINE" >&2; echo "clone-orchestration-project: error: unrecognized option: $1" >&2; exit 2 ;;
   esac
@@ -713,6 +909,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$REPAIR_ARG" ]; then
+  [ -z "$BUILD_TYPE_ARG" ] || die "do not pass --build-type with --repair"
   [ -z "$NAME" ] || die "do not pass <new-name> with --repair"
   resolve_source
   load_source_config
@@ -754,6 +951,7 @@ resolve_source
 resolve_git_home
 load_source_config
 require_users
+choose_build_type
 
 DEST="$GIT_HOME/$NAME"
 

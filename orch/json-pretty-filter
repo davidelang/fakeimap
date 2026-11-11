@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean filter: store JSON with indent 2. No smudge.
+"""Clean filter: store JSON with indent 2. Smudge is cat, set by install-merge-drivers.sh.
 
 Git runs `clean` on stdin. Key order is kept. Invalid JSON fails the git command
 when filter.json-pretty.required is true.

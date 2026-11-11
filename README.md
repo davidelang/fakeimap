@@ -21,8 +21,13 @@ source ./orch/env                 # umask 002 + group refresh via ./orch/refresh
 
 ## Clone a new host
 
-Create `git_home/<new-name>/` (branch `orchestration`) plus a `master/` worktree
-from this example. Works from this tree, from `git_home`, or with `--source`.
+Create `git_home/<new-name>/` on branch `orchestration` (this managing tree, with
+`project.config` filled in) plus a `master/` worktree. `master` starts empty.
+The script copies the app framework into it: `run-*`, the rules, `TODO.md`,
+and `ENGINEERING_LOG.md`. It asks the build type (`android-gradle` or `none`;
+`other` means `none`) and, for Android, also copies `build_app` and `deploy`
+into `master/`. `setup_agent.sh` stays on the orchestration root.
+Pass `--build-type` to skip the question.
 
 ```bash
 ./clone-orchestration-project <new-name>
