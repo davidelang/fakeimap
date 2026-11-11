@@ -651,6 +651,47 @@ func decodeBinaryPart(raw []byte, section string) ([]byte, int) {
 	return b, binaryReady
 }
 
+const previewLimit = 256
+
+// previewSnippet is the first text/plain part, or the body when the
+// message itself is text/plain. Transfer encoding is removed the same
+// way BINARY does. Whitespace runs become one space. The result is at
+// most 256 characters. HTML is not parsed. An empty result is NIL.
+func previewSnippet(raw []byte) string {
+	part := firstTextPlain(parseRoot(raw))
+	if part == nil {
+		return ""
+	}
+	b, err := decodeTransfer(part)
+	if err != nil {
+		return ""
+	}
+	text := strings.Join(strings.Fields(string(b)), " ")
+	r := []rune(text)
+	if len(r) > previewLimit {
+		text = string(r[:previewLimit])
+	}
+	return text
+}
+
+func firstTextPlain(n *node) *node {
+	if n == nil {
+		return nil
+	}
+	if n.multipart {
+		for _, c := range n.children {
+			if p := firstTextPlain(c); p != nil {
+				return p
+			}
+		}
+		return nil
+	}
+	if n.typ == "TEXT" && n.sub == "PLAIN" {
+		return n
+	}
+	return nil
+}
+
 func decodeTransfer(n *node) ([]byte, error) {
 	body := n.body
 	if body == nil {

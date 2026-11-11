@@ -22,8 +22,9 @@ func main() {
 	binaryProbe := false
 	fuzzyProbe := false
 	multiProbe := false
+	previewProbe := false
 	args := os.Args[1:]
-	usage := "usage: cyrusprobe [-gaps gaps.json] [-condstore] [-list] [-esearch] [-compress] [-sort] [-display] [-utf8] [-thread] [-binary] [-fuzzy] [-multisearch] operator.json"
+	usage := "usage: cyrusprobe [-gaps gaps.json] [-condstore] [-list] [-esearch] [-compress] [-sort] [-display] [-utf8] [-thread] [-binary] [-fuzzy] [-multisearch] [-preview] operator.json"
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "-gaps":
@@ -66,6 +67,9 @@ func main() {
 		case "-multisearch":
 			multiProbe = true
 			args = args[1:]
+		case "-preview":
+			previewProbe = true
+			args = args[1:]
 		default:
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
@@ -105,6 +109,9 @@ func main() {
 	if multiProbe {
 		modes++
 	}
+	if previewProbe {
+		modes++
+	}
 	if modes > 1 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -117,6 +124,19 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if previewProbe {
+		diff, err := comparePreview(cfg)
+		if diff != "" {
+			fmt.Fprint(os.Stdout, diff)
+			os.Exit(1)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "diff empty")
+		return
 	}
 	if multiProbe {
 		diff, err := compareMultisearch(cfg)

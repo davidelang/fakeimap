@@ -1116,7 +1116,7 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, ch
 	if s.box == nil {
 		return nil, nil, fmt.Errorf("not selected")
 	}
-	expanded, err := expandFetch(items, uidMode, s.advertiseCap("BINARY"))
+	expanded, err := expandFetch(items, uidMode, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1225,7 +1225,7 @@ func itemListed(items []string, name string) bool {
 	return false
 }
 
-func expandFetch(items []string, uidMode bool, binary bool) ([]string, error) {
+func expandFetch(items []string, uidMode bool, binary, preview bool) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
 	var add func(string) error
@@ -1239,7 +1239,7 @@ func expandFetch(items []string, uidMode bool, binary bool) ([]string, error) {
 		case "FULL":
 			return addAll([]string{"FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY"}, add)
 		}
-		if !knownFetch(u, binary) {
+		if !knownFetch(u, binary, preview) {
 			return fmt.Errorf("bad fetch item")
 		}
 		key := u
@@ -1275,11 +1275,13 @@ func addAll(items []string, add func(string) error) error {
 	return nil
 }
 
-func knownFetch(u string, binary bool) bool {
+func knownFetch(u string, binary, preview bool) bool {
 	switch u {
 	case "FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY", "BODYSTRUCTURE",
 		"RFC822", "RFC822.HEADER", "RFC822.TEXT", "MODSEQ":
 		return true
+	case "PREVIEW":
+		return preview
 	}
 	if strings.HasPrefix(u, "BODY[") || strings.HasPrefix(u, "BODY.PEEK[") {
 		return strings.Contains(u, "]")

@@ -294,3 +294,16 @@
 - Approved plan: sandbox/plans/subscribe-20261111-1021-plan.md
 - Work: each account keeps a subscription set. INBOX starts subscribed. SUBSCRIBE adds an existing mailbox and is NO when it is missing. UNSUBSCRIBE removes one and is OK when it was not subscribed. DELETE drops it. RENAME keeps it on the new name. reset and set-dataset leave only INBOX. LIST (SUBSCRIBED) and LSUB return that set. ESEARCH IN (subscribed) searches it.
 - Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - PREVIEW execution start
+
+- Approved plan: sandbox/plans/preview-20261111-1037-plan.md
+- Work: answer FETCH and UID FETCH of PREVIEW with a short plain-text snippet when the personality advertises it. PREVIEW does not set \Seen. PREVIEW (LAZY) is BAD. Do not parse HTML.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - PREVIEW landed
+
+- Approved plan: sandbox/plans/preview-20261111-1037-plan.md
+- FETCH and UID FETCH of PREVIEW return a trimmed plain-text snippet of at most 256 characters when the personality advertises PREVIEW. personalities/preview.json lists it on the pre-login and post-login lists. PREVIEW does not set \Seen. PREVIEW (LAZY) is BAD. HTML is not parsed. cyrusprobe -preview does not replace the earlier scripts.
+- liveimap-cyrus-3137 was already running and was the only liveimap container. Its greeting, pre-login, and post-login CAPABILITY lists do not include PREVIEW, so personalities/cyrus-3137.json, personalities/sasl.json, and the gaps file were left unchanged. The container was not recreated and was not stopped. The lab password stayed in the gitignored operator file.

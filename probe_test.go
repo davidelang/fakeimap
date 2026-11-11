@@ -509,6 +509,51 @@ func TestBinaryProbeEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestPreviewProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/preview.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runPreviewScript(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runPreviewScript(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := normalizeKinds(a.lines, a.mb1, a.mb2)
+	diff := scriptDiff(kinds, normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("shape diff:\n%s\n--- a ---\n%s", diff, strings.Join(kinds, "\n"))
+	}
+	var fetches []string
+	for _, line := range a.lines {
+		if strings.Contains(line, " FETCH (") {
+			fetches = append(fetches, fetchKind(line))
+		}
+	}
+	if len(fetches) != 1 || fetches[0] != "* FETCH PREVIEW" {
+		t.Fatalf("fetch kinds %v", fetches)
+	}
+}
+
 func TestFuzzyProbeEmptyDiff(t *testing.T) {
 	const user, pass = "probe", "probe-secret"
 	pers := "personalities/fuzzy.json"

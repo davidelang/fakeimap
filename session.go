@@ -1341,6 +1341,8 @@ func (s *session) fetchItemText(item string, sn fetchSnap) string {
 		return "RFC822.TEXT " + literal(body)
 	case "MODSEQ":
 		return fmt.Sprintf("MODSEQ (%d)", sn.modseq)
+	case "PREVIEW":
+		return "PREVIEW " + nstring(previewSnippet(sn.raw))
 	}
 	if strings.HasPrefix(item, "BODY[") || strings.HasPrefix(item, "BODY.PEEK[") {
 		return bodySection(item, sn.raw, s.pers.FetchPeekBody)
