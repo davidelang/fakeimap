@@ -1,7 +1,8 @@
 # Project Grok config (tracked; published by deploy-orchestration via rules.manifest).
 # Role write limits are the Grok sandbox profile (cursor: agent-landlock) and ROLE_KEY hooks in .grok/hooks/.
 # Launchers pass --always-approve. These deny rules and the hooks still apply.
-# deny > ask > allow across all scopes. Agents commit only through the project-facts.md Commit path (./build_app or ./commit-build).
+# Do not turn the project hooks off in /hooks. Since grok 1.0.75 that disable is per repository and drops the write guard here.
+# deny > ask > allow across all scopes. Agents commit only through the project-facts.md Commit line.
 
 [permission]
 rules = [
@@ -41,12 +42,13 @@ rules = [
   { action = "allow", tool = "bash", pattern = "./channel-*" },
   { action = "allow", tool = "bash", pattern = "./third_party/fetch-deps*" },
   { action = "allow", tool = "bash", pattern = "mkdir -p @@SANDBOX_PATH@@/*" },
-  { action = "allow", tool = "search_replace", pattern = "@@SANDBOX_PATH@@/**" },
-  { action = "allow", tool = "write", pattern = "@@SANDBOX_PATH@@/**" },
-  { action = "allow", tool = "search_replace", pattern = "**/project-facts.md" },
-  { action = "allow", tool = "write", pattern = "**/project-facts.md" },
-  { action = "deny", tool = "bash", pattern = "git add*" },
-  { action = "deny", tool = "bash", pattern = "git commit*" },
+  # search_replace and write are the permission class `edit` (unknown variants are skipped).
+  { action = "allow", tool = "edit", pattern = "@@SANDBOX_PATH@@/**" },
+  { action = "allow", tool = "edit", pattern = "**/project-facts.md" },
+  # git add and git commit are not denied here. The orchestrator runs this host's
+  # Commit line. .grok/hooks/master-blocks.sh denies them for every other role.
+  # That file is deploy class master: every branch except orchestration.
+  # The coder commits with ./build_app or ./commit-build.
   { action = "deny", tool = "bash", pattern = "git push*" },
   { action = "deny", tool = "bash", pattern = "git reset*" },
   { action = "deny", tool = "bash", pattern = "git checkout -- *" },

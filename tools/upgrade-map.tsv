@@ -1,5 +1,6 @@
 # keyword<TAB>probe (relative to probes/). Row "reviewed<TAB><version>" = last reviewed grok version.
-reviewed	1.0.52
+# 2026-11-10: local changelog covered 1.0.71-1.0.77 only. 1.0.53-1.0.70 were not in that file.
+reviewed	1.0.77
 AGENTS.md	general/agents-md-first-message.md
 compact	general/agents-md-first-message.md
 --rules	general/rules-flag.md

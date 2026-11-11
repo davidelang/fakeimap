@@ -38,6 +38,10 @@ Rules:
   published (DIVERGED) fails unless --override-path names it; older published copies update.
   A leftover build_type= in project.config fails (delete it). Not run with --host-only.
 - Class root goes to project roots only, never into worktrees (setup_agent.sh, remove_worktree.sh).
+- Class master is payload for every branch except orchestration. Master can advance
+  or be rewritten after a fork, so ancestry is not the test. The file is removed from
+  the orchestration branch. The template repo keeps the file even when it has no master
+  branch; a cloned master may start empty and receive the file from here.
 - Class purge deletes the path everywhere it is tracked.
 - No write access to a target gives a read-only report for it, not a failure.
 - Commits use `git commit --only` on exactly the copied paths; other changes are untouched.
@@ -376,16 +380,64 @@ def apply_target(src, wt, acts, msg):
     left = git(wt, "status", "--porcelain", "--", *paths, check=False).strip()
     return git(wt, "rev-parse", "--short", "HEAD").strip(), left
 
+def receives_master_class(repo):
+    """Every checkout except the orchestration branch. Master can advance or be rewritten
+    after a fork, so this does not ask whether master is an ancestor."""
+    br = git(repo, "rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+    return br != "orchestration"
+
+def master_acts(wt, dirty):
+    """Class master: publish onto every branch except orchestration, and remove it there.
+    Blobs are inlined from MASTER_REPO so the target repo need not contain the object."""
+    if not MASTER_SEL:
+        return [], None
+    on = receives_master_class(wt)
+    try:
+        t_tree = tree(wt)
+    except RuntimeError as e:
+        return None, "no HEAD (%s)" % e
+    acts = []
+    for p in sorted(MASTER_SEL):
+        mode, blob = MASTER_TREE[p]
+        cur = t_tree.get(p)
+        if p in dirty:
+            return None, "dirty: " + p
+        if on:
+            if cur and cur[1] == blob:
+                continue
+            if cur is None and os.path.lexists(os.path.join(wt, p)):
+                return None, "untracked file in the way: " + p
+            data = git(MASTER_REPO, "cat-file", "blob", blob, binary=True)
+            acts.append(("add" if cur is None else "update", p, mode, data))
+        elif cur is not None:
+            acts.append(("delete", p, None, None))
+    return acts, None
+
 def sync(src, wt, sel, src_tree, retired, rep, host_label, wt_label, apply, msg):
     if not writable(wt):
         acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label, PURGE)
-        rep.row(host_label, wt_label, "REPORT-ONLY", "no write access; " + (why or "%d change(s) pending" % len(acts)))
+        status = git(wt, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
+        dirty = set(e[3:].decode(errors="replace") for e in status if len(e) > 3)
+        extra, why2 = master_acts(wt, dirty)
+        if not why and why2:
+            why = why2
+        elif extra:
+            acts = list(acts or []) + extra
+        rep.row(host_label, wt_label, "REPORT-ONLY", "no write access; " + (why or "%d change(s) pending" % len(acts or [])))
         return False
     acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label, PURGE)
     if why:
         rep.row(host_label, wt_label, "SKIPPED", why)
         rep.warn.append("%s %s skipped: %s" % (host_label, wt_label, why))
         return False
+    status = git(wt, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
+    dirty = set(e[3:].decode(errors="replace") for e in status if len(e) > 3)
+    extra, why = master_acts(wt, dirty)
+    if why:
+        rep.row(host_label, wt_label, "SKIPPED", why)
+        rep.warn.append("%s %s skipped: %s" % (host_label, wt_label, why))
+        return False
+    acts = list(acts) + extra
     if not acts:
         rep.row(host_label, wt_label, "up-to-date")
         return False
@@ -434,14 +486,14 @@ def check(src):
     man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
     problems = []
     for cls, pat in man:
-        if cls not in ("law", "shared", "opt", "replace", "root", "retired", "purge"):
+        if cls not in ("law", "shared", "opt", "replace", "root", "master", "retired", "purge"):
             problems.append("bad class: %s %s" % (cls, pat))
         hits = [p for p in t if glob_match(pat, p)]
-        if cls in ("law", "shared", "replace", "root") and not hits and "*" not in pat:
+        if cls in ("law", "shared", "replace", "root", "master") and not hits and "*" not in pat:
             problems.append("missing in source: %s" % pat)
         if cls in ("retired", "purge") and hits:
             problems.append("retired but still tracked: %s" % ", ".join(hits))
-    sel = entries_for(src, man, t, ("law", "shared", "opt", "replace", "root"))
+    sel = entries_for(src, man, t, ("law", "shared", "opt", "replace", "root", "master"))
     for p in t:
         if (p.startswith((".grok/", "roles/", "docs/rules/", "probes/")) or p in ("roles.config",)) and p not in sel:
             problems.append("rule-ish file not in manifest: %s" % p)
@@ -663,7 +715,10 @@ def main():
     st = git(src, "status", "--porcelain", "--untracked-files=no").splitlines()
     src_man = parse_manifest(git(src, "show", "HEAD:rules.manifest"))
     src_tree = tree(src)
-    sel_src = entries_for(src, src_man, src_tree, ("law", "shared", "opt", "replace", "root"))
+    sel_src = entries_for(src, src_man, src_tree, ("law", "shared", "opt", "replace", "root", "master"))
+    global MASTER_REPO, MASTER_TREE, MASTER_SEL
+    MASTER_REPO, MASTER_TREE = src, src_tree
+    MASTER_SEL = entries_for(src, src_man, src_tree, ("master",))
     dirty_src = [l[3:] for l in st if l[3:] in sel_src or l[3:] == "rules.manifest"]
     if dirty_src:
         print("FAIL: source %s has uncommitted manifest paths: %s" % (src, ", ".join(dirty_src)))
@@ -742,6 +797,14 @@ def main():
                 if why:
                     rep.row(hl, wl, "SKIPPED", why); continue
                 acts, w2 = plan_target(first_src, u_tree, sel_u, retired, wt, rep, wl, PURGE)
+                if not w2:
+                    status = git(wt, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
+                    dirty = set(e[3:].decode(errors="replace") for e in status if len(e) > 3)
+                    extra, w3 = master_acts(wt, dirty)
+                    if w3:
+                        w2 = w3
+                    else:
+                        acts = list(acts or []) + extra
                 rep.row(hl, wl, "SKIPPED" if w2 else ("WOULD-COMMIT" if acts else "up-to-date"),
                         w2 or ("%d change(s) after root" % len(acts) if acts else ""))
             continue

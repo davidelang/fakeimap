@@ -1,7 +1,7 @@
 {
   "hooks": {
     "PreToolUse": [
-      { "hooks": [ { "type": "command", "command": "bash \"${GROK_PROMPT_ROOT:-.}/.grok/hooks/rules-hooks.sh\" pretool", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "bash \"${GROK_PROMPT_ROOT:-.}/.grok/hooks/rules-hooks.sh\" pretool", "timeout": 10, "failClosed": true } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "bash \"${GROK_PROMPT_ROOT:-.}/.grok/hooks/rules-hooks.sh\" stop", "timeout": 10 } ] }

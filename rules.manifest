@@ -5,6 +5,9 @@
 #   shared   tooling; created if missing
 #   opt      updated only where the target already has it
 #   root     tooling for the orchestration root only; never published into worktrees
+#   master   payload published onto every branch except orchestration. Master may
+#            advance or be rewritten after a fork. Removed from the orchestration
+#            branch. The template keeps the file; a cloned master may start empty.
 #   replace  overwritten even if the host changed it (its host specifics moved to rules.manifest.local)
 #   retired  removed from targets (kept, with a warning, if the target's copy is not from our history)
 #   purge    removed from every target wherever tracked
@@ -33,6 +36,7 @@ shared .grok/config.toml
 shared .grok/hooks/rules-hooks.json
 shared .grok/hooks/rules-hooks.sh
 shared .grok/hooks/cmd-words.py
+master .grok/hooks/master-blocks.sh
 shared .grok/roles/*.toml
 shared .grok/agents/*.md
 shared .grok/lib/grok-launch-common.sh

@@ -8,6 +8,7 @@ after VAR=value words and the wrappers env/nohup/time/exec/command/nice/sudo/tim
 (with their -options and timeout's duration), and also inside sh/bash/dash -c '...'.
 
   build COMMAND          exit 1 when a command word is build_app or commit-build (any path), else 0
+  git-commit COMMAND     exit 1 when a command word is git and its subcommand is add or commit, else 0
   channel-watch COMMAND  print "PLAN<TAB>NODE<TAB>stop|arm" for each run of cursor-channel-watch
                          (any path) with its first two arguments; nothing when there is none
 An unparsable command (unbalanced quotes) exits 2 with the reason on stderr.
@@ -63,9 +64,31 @@ def strip_prefix(ws, depth):
     yield ws
 
 
+# Global git options that take a separate argument. Their values are not the subcommand.
+GIT_TAKES_ARG = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"}
+
+
+def git_subcommand(ws):
+    """Subcommand of a git argv, after global options. Empty when there is none."""
+    i = 1
+    while i < len(ws):
+        w = ws[i]
+        if w == "--":
+            i += 1
+            break
+        if w in GIT_TAKES_ARG:
+            i += 2
+            continue
+        if w.startswith("-"):
+            i += 1
+            continue
+        return w
+    return ws[i] if i < len(ws) else ""
+
+
 def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in ("build", "channel-watch"):
-        print("usage: cmd-words.py build|channel-watch COMMAND", file=sys.stderr)
+    if len(sys.argv) != 3 or sys.argv[1] not in ("build", "git-commit", "channel-watch"):
+        print("usage: cmd-words.py build|git-commit|channel-watch COMMAND", file=sys.stderr)
         sys.exit(2)
     mode, text = sys.argv[1], sys.argv[2]
     try:
@@ -75,6 +98,8 @@ def main():
         sys.exit(2)
     if mode == "build":
         sys.exit(1 if any(os.path.basename(c[0]) in ("build_app", "commit-build") for c in cmds) else 0)
+    if mode == "git-commit":
+        sys.exit(1 if any(os.path.basename(c[0]) == "git" and git_subcommand(c) in ("add", "commit") for c in cmds) else 0)
     for c in cmds:
         if os.path.basename(c[0]) == "cursor-channel-watch" and len(c) >= 3:
             print("%s\t%s\t%s" % (c[1], c[2], "stop" if len(c) > 3 and c[3] == "--stop" else "arm"))

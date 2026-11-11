@@ -1,4 +1,4 @@
 Feature: hooks PreToolUse (additionalContext, deny), Stop/SubagentStop (decision:block).
 Rule it supports: .grok/hooks/rules-hooks.sh role write limits, facts injection, STATUS line.
-How to check: grok docs/changelog for hook events and field names (sessionId, toolName, toolInput, lastAssistantMessage, stopHookActive).
-Expected: all present with those names.
+How to check: grok docs/changelog for hook events and field names (sessionId, toolName, toolInput, lastAssistantMessage, stopHookActive). `grep failClosed .grok/hooks/rules-hooks.json`.
+Expected: all present with those names. PreToolUse has failClosed true. Stop and SubagentStop do not (grok ignores it there).

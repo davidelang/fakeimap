@@ -10,6 +10,9 @@
 # input (jq, GROK_PROMPT_ROOT, session id, project.config sandbox_dir) is an ERROR: pretool
 # denies and stop blocks with the reason, so it is never silent.
 # TODO-VERIFY (live): ROLE_KEY visible in subagent hooks.
+# PreToolUse is failClosed in rules-hooks.json. Do not disable these hooks in /hooks:
+# since grok 1.0.75 that disable is per repository and drops the write guard here.
+# failClosed is ignored on Stop and SubagentStop.
 set -uo pipefail
 ev="${1:-}"
 in="$(cat)"
@@ -42,6 +45,7 @@ sandbox_dir() {  # sets sb
 }
 # build_cmd CMD: exit 1 when a command word of CMD is build_app/commit-build (cmd-words.py;
 # arguments such as channel-send message text are never matched). Unparsable = hook ERROR.
+# master-blocks.sh (class master) holds the git add/commit block. Absent on the orchestration branch only.
 build_cmd() {
   command -v python3 >/dev/null 2>&1 || hook_error "python3 not installed (build guard)"
   [[ -f "$root/.grok/hooks/cmd-words.py" ]] || hook_error "$root/.grok/hooks/cmd-words.py missing (build guard)"
@@ -50,6 +54,10 @@ build_cmd() {
   [[ $rc == 2 ]] && hook_error "build guard: $err"
   return $rc
 }
+if [[ -f "$root/.grok/hooks/master-blocks.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$root/.grok/hooks/master-blocks.sh"
+fi
 sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 
 inject_facts() {  # $1 = hook event name
@@ -75,6 +83,9 @@ pretool)
   is_build=0; [[ -n "$cmd" ]] && { build_cmd "$cmd"; is_build=$?; }
   deny() { jq -cn --arg r "$1" '{decision:"deny",reason:$r}'; exit 0; }
   sandbox_dir
+  if declare -F apply_master_blocks >/dev/null 2>&1; then
+    apply_master_blocks
+  fi
   case "$role" in
   planner|reviewer|tester)
     if [[ $is_edit == 1 && -n "$fpath" ]]; then
