@@ -1,0 +1,42 @@
+{
+  "greeting": "Cyrus IMAP 3.13.7 server ready",
+  "delimiter": ".",
+  "pre_login_capabilities": [
+    "IMAP4rev1",
+    "LITERAL+",
+    "IDLE",
+    "NAMESPACE",
+    "UIDPLUS",
+    "MOVE",
+    "UNSELECT",
+    "ENABLE",
+    "SASL-IR",
+    "AUTH=PLAIN"
+  ],
+  "post_login_capabilities": [
+    "IMAP4rev1",
+    "LITERAL+",
+    "IDLE",
+    "NAMESPACE",
+    "UIDPLUS",
+    "MOVE",
+    "UNSELECT",
+    "ENABLE",
+    "SASL-IR"
+  ],
+  "logout_bye": true,
+  "fetch_item_order": [
+    "FLAGS",
+    "UID",
+    "INTERNALDATE",
+    "RFC822.SIZE",
+    "ENVELOPE",
+    "BODY",
+    "BODYSTRUCTURE",
+    "RFC822",
+    "RFC822.HEADER",
+    "RFC822.TEXT",
+    "BODY[]",
+    "BODY.PEEK[]"
+  ]
+}

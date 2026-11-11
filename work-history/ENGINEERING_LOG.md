@@ -37,3 +37,8 @@
 - fix-perms: agent-landlock and env in executable-scripts list (2775/775 o+x)
 - clone-orchestration-project: this-tree fix-perms --skip-sudoers DEST and DEST/master; force landlock 775
 - Live dest not repaired from this session (sudo/Landlock nnp). Human: --repair torque-ford-gas-tracking as dlang
+
+## 2026-11-10 - imap session core
+
+- Approved plan: sandbox/plans/imap-session-core-20261110-2318-plan.md
+- Work: Go IMAP session core with a Cyrus 3.13-shaped personality, in-memory store, loopback tests, and a makefile build

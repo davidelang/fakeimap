@@ -29,3 +29,6 @@ third_party/*/*.local
 # Build writes these from app/src/main/i18n. colors.xml and themes.xml stay tracked.
 app/src/main/res/values/strings.xml
 app/src/main/res/values-*/strings.xml
+
+# fakeimap server binary (make)
+/fakeimap

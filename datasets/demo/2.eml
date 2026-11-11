@@ -1,0 +1,21 @@
+From: Demo Sender <sender@example.com>
+To: Demo User <demo@example.com>
+Subject: Multipart sample
+Date: Mon, 10 Nov 2025 13:00:00 +0000
+Message-ID: <overlay-2@fakeimap.example>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="demo-boundary"
+
+--demo-boundary
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+This is the plain part.
+
+--demo-boundary
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<html><body>html part</body></html>
+
+--demo-boundary--

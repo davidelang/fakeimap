@@ -1,0 +1,10 @@
+From: Demo Sender <sender@example.com>
+To: Demo User <demo@example.com>
+Subject: =?utf-8?Q?Na=C3=AFve_caf=C3=A9?=
+Date: Mon, 10 Nov 2025 12:00:00 +0000
+Message-ID: <overlay-1@fakeimap.example>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Naïve café is in the body.

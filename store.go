@@ -1,0 +1,1403 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/mail"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Message is one mailbox entry. A generated message keeps the header index
+// only: raw stays nil, and bytes() rebuilds RFC822 from the seed and genUID.
+// genUID is the id baked into the body, so a copy keeps the same bytes
+// without storing them.
+type Message struct {
+	uid      uint32
+	flags    map[string]struct{}
+	keywords []string
+	recent   bool
+	internal time.Time
+	raw      []byte
+	from     string
+	to       string
+	subject  string
+	size     int
+
+	generated bool
+	genSeed   string
+	genUID    uint32
+}
+
+func (m *Message) bytes() []byte {
+	if m.generated {
+		return renderGenerated(m)
+	}
+	return m.raw
+}
+
+func (m *Message) has(flag string) bool {
+	if flag == `\Recent` {
+		return m.recent
+	}
+	_, ok := m.flags[flag]
+	return ok
+}
+
+var systemFlagOrder = []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`, `\Recent`}
+
+func canonFlag(f string) (string, bool) {
+	switch strings.ToLower(f) {
+	case `\answered`:
+		return `\Answered`, true
+	case `\flagged`:
+		return `\Flagged`, true
+	case `\deleted`:
+		return `\Deleted`, true
+	case `\seen`:
+		return `\Seen`, true
+	case `\draft`:
+		return `\Draft`, true
+	case `\recent`:
+		return `\Recent`, true
+	}
+	if f == "" || strings.HasPrefix(f, `\`) || strings.ContainsAny(f, " (){%*\"\\") {
+		return "", false
+	}
+	for i := 0; i < len(f); i++ {
+		if f[i] < 0x21 || f[i] > 0x7e {
+			return "", false
+		}
+	}
+	return f, true
+}
+
+func (m *Message) addFlag(f string) bool {
+	c, ok := canonFlag(f)
+	if !ok || c == `\Recent` {
+		return c == `\Recent`
+	}
+	if _, exists := m.flags[c]; exists {
+		return true
+	}
+	m.flags[c] = struct{}{}
+	if !strings.HasPrefix(c, `\`) {
+		m.keywords = append(m.keywords, c)
+	}
+	return true
+}
+
+func (m *Message) removeFlag(f string) bool {
+	c, ok := canonFlag(f)
+	if !ok || c == `\Recent` {
+		return c == `\Recent`
+	}
+	delete(m.flags, c)
+	if !strings.HasPrefix(c, `\`) {
+		out := m.keywords[:0]
+		for _, k := range m.keywords {
+			if !strings.EqualFold(k, c) {
+				out = append(out, k)
+			}
+		}
+		m.keywords = out
+	}
+	return true
+}
+
+func copyFlags(src *Message) (map[string]struct{}, []string) {
+	dst := make(map[string]struct{}, len(src.flags))
+	for k := range src.flags {
+		dst[k] = struct{}{}
+	}
+	return dst, append([]string(nil), src.keywords...)
+}
+
+func formatFlags(m *Message) string {
+	var parts []string
+	for _, f := range systemFlagOrder {
+		if m.has(f) {
+			parts = append(parts, f)
+		}
+	}
+	keys := append([]string(nil), m.keywords...)
+	sort.Strings(keys)
+	parts = append(parts, keys...)
+	if len(parts) == 0 {
+		return "()"
+	}
+	return "(" + strings.Join(parts, " ") + ")"
+}
+
+type mbEvent struct {
+	id     uint64
+	kind   string // expunge, exists, flags
+	seq    uint32
+	exists int
+	recent int
+	flags  string
+}
+
+// Mailbox fields are guarded by Store.mu. uidValidity stays for the
+// life of the process.
+type Mailbox struct {
+	name        string
+	uidValidity uint32
+	uidNext     uint32
+	msgs        []*Message
+	events      []mbEvent
+	nextID      uint64
+	waiters     []chan struct{}
+}
+
+func (mb *Mailbox) maxUID() uint32 {
+	if len(mb.msgs) == 0 {
+		return 0
+	}
+	return mb.msgs[len(mb.msgs)-1].uid
+}
+
+func (mb *Mailbox) recentCount() int {
+	n := 0
+	for _, m := range mb.msgs {
+		if m.recent {
+			n++
+		}
+	}
+	return n
+}
+
+func (mb *Mailbox) unseenCount() int {
+	n := 0
+	for _, m := range mb.msgs {
+		if !m.has(`\Seen`) {
+			n++
+		}
+	}
+	return n
+}
+
+func (mb *Mailbox) firstUnseen() uint32 {
+	for i, m := range mb.msgs {
+		if !m.has(`\Seen`) {
+			return uint32(i + 1)
+		}
+	}
+	return 0
+}
+
+func (mb *Mailbox) push(e mbEvent) uint64 {
+	mb.nextID++
+	e.id = mb.nextID
+	mb.events = append(mb.events, e)
+	for _, ch := range mb.waiters {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	return e.id
+}
+
+func (mb *Mailbox) pushExists() uint64 {
+	return mb.push(mbEvent{kind: "exists", exists: len(mb.msgs), recent: mb.recentCount()})
+}
+
+// Store is the shared in-memory mailstore.
+type Store struct {
+	mu       sync.Mutex
+	accounts map[string]string
+	boxes    map[string]*Mailbox
+	order    []string
+	delim    string
+	usedUIDV map[uint32]bool
+	nextUIDV uint32
+}
+
+func (st *Store) check(user, pass string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	p, ok := st.accounts[user]
+	return ok && p == pass
+}
+
+func (st *Store) canon(name string) (string, error) {
+	if name == "" || strings.Contains(name, "\r") || strings.Contains(name, "\n") {
+		return "", fmt.Errorf("bad mailbox name")
+	}
+	if strings.EqualFold(name, "INBOX") {
+		return "INBOX", nil
+	}
+	pref := "INBOX" + st.delim
+	if len(name) >= len(pref) && strings.EqualFold(name[:len(pref)], pref) {
+		name = "INBOX" + st.delim + name[len(pref):]
+	}
+	if strings.HasPrefix(name, st.delim) || strings.HasSuffix(name, st.delim) || strings.Contains(name, st.delim+st.delim) {
+		return "", fmt.Errorf("bad mailbox name")
+	}
+	return name, nil
+}
+
+func (st *Store) allocUIDV() uint32 {
+	for {
+		st.nextUIDV++
+		if st.nextUIDV == 0 {
+			st.nextUIDV = 1
+		}
+		if !st.usedUIDV[st.nextUIDV] {
+			st.usedUIDV[st.nextUIDV] = true
+			return st.nextUIDV
+		}
+	}
+}
+
+func (st *Store) noteUIDV(v uint32) uint32 {
+	if v == 0 {
+		return st.allocUIDV()
+	}
+	if st.usedUIDV[v] {
+		return st.allocUIDV()
+	}
+	st.usedUIDV[v] = true
+	if v > st.nextUIDV {
+		st.nextUIDV = v
+	}
+	return v
+}
+
+type selectInfo struct {
+	exists      int
+	recent      int
+	uidValidity uint32
+	uidNext     uint32
+	unseen      uint32
+	readOnly    bool
+}
+
+func (st *Store) selectBox(s *session, name string, readOnly bool) (selectInfo, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return selectInfo{}, err
+	}
+	mb := st.boxes[cn]
+	if mb == nil {
+		return selectInfo{}, fmt.Errorf("no mailbox")
+	}
+	st.detachLocked(s)
+	info := selectInfo{
+		exists:      len(mb.msgs),
+		recent:      mb.recentCount(),
+		uidValidity: mb.uidValidity,
+		uidNext:     mb.uidNext,
+		unseen:      mb.firstUnseen(),
+		readOnly:    readOnly,
+	}
+	if !readOnly {
+		for _, m := range mb.msgs {
+			m.recent = false
+		}
+	}
+	s.box = mb
+	s.readonly = readOnly
+	s.seenID = mb.nextID
+	s.wake = make(chan struct{}, 1)
+	mb.waiters = append(mb.waiters, s.wake)
+	return info, nil
+}
+
+func (st *Store) detachLocked(s *session) {
+	if s.box == nil {
+		return
+	}
+	mb := s.box
+	if s.wake != nil {
+		out := mb.waiters[:0]
+		for _, ch := range mb.waiters {
+			if ch != s.wake {
+				out = append(out, ch)
+			}
+		}
+		mb.waiters = out
+	}
+	s.box = nil
+	s.wake = nil
+	s.readonly = false
+}
+
+func (st *Store) deselect(s *session) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.detachLocked(s)
+}
+
+func (st *Store) drain(s *session) []mbEvent {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return nil
+	}
+	var out []mbEvent
+	for _, e := range s.box.events {
+		if e.id > s.seenID {
+			out = append(out, e)
+			s.seenID = e.id
+		}
+	}
+	return out
+}
+
+type listEntry struct {
+	flags string
+	name  string
+}
+
+func canonPattern(pat, delim string) string {
+	i := strings.IndexAny(pat, "*%")
+	lit, rest := pat, ""
+	if i >= 0 {
+		lit, rest = pat[:i], pat[i:]
+	}
+	if lit == "" {
+		return pat
+	}
+	if strings.EqualFold(lit, "INBOX") {
+		return "INBOX" + rest
+	}
+	pref := "INBOX" + delim
+	if strings.EqualFold(lit, pref) {
+		return pref + rest
+	}
+	if len(lit) >= len(pref) && strings.EqualFold(lit[:len(pref)], pref) {
+		return pref + lit[len(pref):] + rest
+	}
+	return pat
+}
+
+func wildMatch(name, pat, delim string) bool {
+	for {
+		if pat == "" {
+			return name == ""
+		}
+		switch pat[0] {
+		case '*':
+			rest := pat[1:]
+			if wildMatch(name, rest, delim) {
+				return true
+			}
+			for i := 0; i < len(name); i++ {
+				if wildMatch(name[i+1:], rest, delim) {
+					return true
+				}
+			}
+			return false
+		case '%':
+			rest := pat[1:]
+			if wildMatch(name, rest, delim) {
+				return true
+			}
+			for i := 0; i < len(name); i++ {
+				if strings.Contains(name[:i+1], delim) {
+					break
+				}
+				if wildMatch(name[i+1:], rest, delim) {
+					return true
+				}
+			}
+			return false
+		default:
+			if name == "" || name[0] != pat[0] {
+				return false
+			}
+			name = name[1:]
+			pat = pat[1:]
+		}
+	}
+}
+
+func (st *Store) list(ref, pat string) ([]listEntry, string, bool, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if pat == "" {
+		name := strings.TrimSuffix(ref, st.delim)
+		return []listEntry{{flags: `(\Noselect)`, name: name}}, st.delim, true, nil
+	}
+	full := pat
+	if ref != "" && !strings.HasPrefix(pat, st.delim) {
+		if strings.HasSuffix(ref, st.delim) {
+			full = ref + pat
+		} else {
+			full = ref + st.delim + pat
+		}
+	}
+	full = canonPattern(full, st.delim)
+	var out []listEntry
+	for _, name := range st.order {
+		if !wildMatch(name, full, st.delim) {
+			continue
+		}
+		flags := `\HasNoChildren`
+		pref := name + st.delim
+		for _, other := range st.order {
+			if strings.HasPrefix(other, pref) {
+				flags = `\HasChildren`
+				break
+			}
+		}
+		out = append(out, listEntry{flags: `(` + flags + `)`, name: name})
+	}
+	return out, st.delim, false, nil
+}
+
+func (st *Store) status(name string, items []string) (string, [][2]string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return "", nil, err
+	}
+	mb := st.boxes[cn]
+	if mb == nil {
+		return "", nil, fmt.Errorf("no mailbox")
+	}
+	var out [][2]string
+	for _, it := range items {
+		var v uint32
+		switch strings.ToUpper(it) {
+		case "MESSAGES":
+			v = uint32(len(mb.msgs))
+		case "RECENT":
+			v = uint32(mb.recentCount())
+		case "UIDNEXT":
+			v = mb.uidNext
+		case "UIDVALIDITY":
+			v = mb.uidValidity
+		case "UNSEEN":
+			v = uint32(mb.unseenCount())
+		default:
+			return "", nil, fmt.Errorf("bad status item")
+		}
+		out = append(out, [2]string{strings.ToUpper(it), strconv.FormatUint(uint64(v), 10)})
+	}
+	return cn, out, nil
+}
+
+func (st *Store) create(name string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return err
+	}
+	if _, ok := st.boxes[cn]; ok {
+		return fmt.Errorf("exists")
+	}
+	mb := &Mailbox{name: cn, uidValidity: st.allocUIDV(), uidNext: 1}
+	st.boxes[cn] = mb
+	st.order = append(st.order, cn)
+	return nil
+}
+
+func (st *Store) delete(s *session, name string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return err
+	}
+	if cn == "INBOX" {
+		return fmt.Errorf("cannot delete INBOX")
+	}
+	mb := st.boxes[cn]
+	if mb == nil {
+		return fmt.Errorf("no mailbox")
+	}
+	pref := cn + st.delim
+	for _, other := range st.order {
+		if strings.HasPrefix(other, pref) {
+			return fmt.Errorf("has children")
+		}
+	}
+	if s.box == mb {
+		st.detachLocked(s)
+	}
+	if len(mb.waiters) > 0 {
+		return fmt.Errorf("selected")
+	}
+	delete(st.boxes, cn)
+	order := st.order[:0]
+	for _, n := range st.order {
+		if n != cn {
+			order = append(order, n)
+		}
+	}
+	st.order = order
+	return nil
+}
+
+func (st *Store) rename(oldName, newName string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	oldC, err := st.canon(oldName)
+	if err != nil {
+		return err
+	}
+	newC, err := st.canon(newName)
+	if err != nil {
+		return err
+	}
+	if oldC == "INBOX" {
+		return fmt.Errorf("cannot rename INBOX")
+	}
+	if st.boxes[oldC] == nil {
+		return fmt.Errorf("no mailbox")
+	}
+	if oldC == newC {
+		return nil
+	}
+	type pair struct{ old, neu string }
+	var moves []pair
+	pref := oldC + st.delim
+	for _, name := range st.order {
+		if name == oldC {
+			moves = append(moves, pair{name, newC})
+		} else if strings.HasPrefix(name, pref) {
+			moves = append(moves, pair{name, newC + name[len(oldC):]})
+		}
+	}
+	moving := map[string]bool{}
+	for _, mv := range moves {
+		moving[mv.old] = true
+	}
+	for _, mv := range moves {
+		if _, ok := st.boxes[mv.neu]; ok && !moving[mv.neu] {
+			return fmt.Errorf("exists")
+		}
+	}
+	neuBoxes := make(map[string]*Mailbox, len(st.boxes))
+	for k, v := range st.boxes {
+		if !moving[k] {
+			neuBoxes[k] = v
+		}
+	}
+	rewritten := map[string]string{}
+	for _, mv := range moves {
+		mb := st.boxes[mv.old]
+		mb.name = mv.neu
+		neuBoxes[mv.neu] = mb
+		rewritten[mv.old] = mv.neu
+	}
+	st.boxes = neuBoxes
+	for i, name := range st.order {
+		if n, ok := rewritten[name]; ok {
+			st.order[i] = n
+		}
+	}
+	return nil
+}
+
+type seqBound struct {
+	n    uint32
+	star bool
+}
+
+type seqSpan struct{ a, b seqBound }
+
+type seqSet struct{ spans []seqSpan }
+
+func parseSeqSet(s string) (*seqSet, error) {
+	if s == "" {
+		return nil, fmt.Errorf("bad sequence")
+	}
+	var spans []seqSpan
+	for _, part := range strings.Split(s, ",") {
+		if part == "" {
+			return nil, fmt.Errorf("bad sequence")
+		}
+		left, right, ok := strings.Cut(part, ":")
+		a, err := parseBound(left)
+		if err != nil {
+			return nil, err
+		}
+		b := a
+		if ok {
+			b, err = parseBound(right)
+			if err != nil {
+				return nil, err
+			}
+		}
+		spans = append(spans, seqSpan{a, b})
+	}
+	return &seqSet{spans: spans}, nil
+}
+
+func parseBound(s string) (seqBound, error) {
+	if s == "*" {
+		return seqBound{star: true}, nil
+	}
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil || n == 0 {
+		return seqBound{}, fmt.Errorf("bad sequence")
+	}
+	return seqBound{n: uint32(n)}, nil
+}
+
+func (b seqBound) val(max uint32) uint32 {
+	if b.star {
+		return max
+	}
+	return b.n
+}
+
+func (set *seqSet) contains(n, max uint32) bool {
+	if n == 0 {
+		return false
+	}
+	for _, sp := range set.spans {
+		a, b := sp.a.val(max), sp.b.val(max)
+		if a == 0 || b == 0 {
+			continue
+		}
+		if a > b {
+			a, b = b, a
+		}
+		if n >= a && n <= b {
+			return true
+		}
+	}
+	return false
+}
+
+func (mb *Mailbox) starMax(uidMode bool) uint32 {
+	if uidMode {
+		if len(mb.msgs) == 0 {
+			return mb.uidNext
+		}
+		return mb.maxUID()
+	}
+	return uint32(len(mb.msgs))
+}
+
+func (mb *Mailbox) each(uidMode bool, set *seqSet, fn func(seq uint32, m *Message)) {
+	max := mb.starMax(uidMode)
+	for i, m := range mb.msgs {
+		seq := uint32(i + 1)
+		n := seq
+		if uidMode {
+			n = m.uid
+		}
+		if set.contains(n, max) {
+			fn(seq, m)
+		}
+	}
+}
+
+type fetchSnap struct {
+	seq      uint32
+	uid      uint32
+	flags    string
+	internal time.Time
+	size     int
+	raw      []byte
+}
+
+func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([]fetchSnap, []string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return nil, nil, fmt.Errorf("not selected")
+	}
+	expanded, err := expandFetch(items, uidMode)
+	if err != nil {
+		return nil, nil, err
+	}
+	var snaps []fetchSnap
+	mb := s.box
+	mb.each(uidMode, set, func(seq uint32, m *Message) {
+		if fetchSetsSeen(expanded) && !m.has(`\Seen`) {
+			m.addFlag(`\Seen`)
+			id := mb.push(mbEvent{kind: "flags", seq: seq, flags: formatFlags(m)})
+			s.seenID = id
+		}
+		raw := append([]byte(nil), m.bytes()...)
+		snaps = append(snaps, fetchSnap{
+			seq: seq, uid: m.uid, flags: formatFlags(m),
+			internal: m.internal, size: m.size, raw: raw,
+		})
+	})
+	return snaps, expanded, nil
+}
+
+func expandFetch(items []string, uidMode bool) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	var add func(string) error
+	add = func(it string) error {
+		u := strings.ToUpper(it)
+		switch u {
+		case "ALL":
+			return addAll([]string{"FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE"}, add)
+		case "FAST":
+			return addAll([]string{"FLAGS", "INTERNALDATE", "RFC822.SIZE"}, add)
+		case "FULL":
+			return addAll([]string{"FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY"}, add)
+		}
+		if !knownFetch(u) {
+			return fmt.Errorf("bad fetch item")
+		}
+		key := u
+		if seen[key] {
+			return nil
+		}
+		seen[key] = true
+		out = append(out, u)
+		return nil
+	}
+	for _, it := range items {
+		if err := add(it); err != nil {
+			return nil, err
+		}
+	}
+	if uidMode {
+		if err := add("UID"); err != nil {
+			return nil, err
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("bad fetch item")
+	}
+	return out, nil
+}
+
+func addAll(items []string, add func(string) error) error {
+	for _, it := range items {
+		if err := add(it); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func knownFetch(u string) bool {
+	switch u {
+	case "FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY", "BODYSTRUCTURE",
+		"RFC822", "RFC822.HEADER", "RFC822.TEXT":
+		return true
+	}
+	if strings.HasPrefix(u, "BODY[") || strings.HasPrefix(u, "BODY.PEEK[") {
+		return strings.Contains(u, "]")
+	}
+	return false
+}
+
+func fetchSetsSeen(items []string) bool {
+	for _, it := range items {
+		u := strings.ToUpper(it)
+		switch {
+		case strings.HasPrefix(u, "BODY.PEEK"):
+			continue
+		case strings.HasPrefix(u, "BODY["):
+			return true
+		case u == "RFC822" || u == "RFC822.TEXT":
+			return true
+		}
+	}
+	return false
+}
+
+func parseFlagList(toks []Token, i int) (flags []string, next int, err error) {
+	if i >= len(toks) || toks[i].Kind != "lparen" {
+		return nil, i, fmt.Errorf("bad flags")
+	}
+	i++
+	for i < len(toks) && toks[i].Kind != "rparen" {
+		if toks[i].Kind != "atom" && toks[i].Kind != "quoted" {
+			return nil, i, fmt.Errorf("bad flags")
+		}
+		if _, ok := canonFlag(toks[i].Val); !ok {
+			return nil, i, fmt.Errorf("bad flag")
+		}
+		flags = append(flags, toks[i].Val)
+		i++
+	}
+	if i >= len(toks) || toks[i].Kind != "rparen" {
+		return nil, i, fmt.Errorf("bad flags")
+	}
+	return flags, i + 1, nil
+}
+
+type storeSnap struct {
+	seq   uint32
+	uid   uint32
+	flags string
+}
+
+func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, flags []string) ([]storeSnap, bool, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return nil, false, fmt.Errorf("not selected")
+	}
+	if s.readonly {
+		return nil, false, fmt.Errorf("read-only")
+	}
+	u := strings.ToUpper(item)
+	silent := false
+	op := u
+	if strings.HasSuffix(u, ".SILENT") {
+		silent = true
+		op = strings.TrimSuffix(u, ".SILENT")
+	}
+	switch op {
+	case "FLAGS", "+FLAGS", "-FLAGS":
+	default:
+		return nil, false, fmt.Errorf("bad store item")
+	}
+	var snaps []storeSnap
+	mb := s.box
+	var last uint64
+	mb.each(uidMode, set, func(seq uint32, m *Message) {
+		switch op {
+		case "FLAGS":
+			m.flags = map[string]struct{}{}
+			m.keywords = nil
+			for _, f := range flags {
+				m.addFlag(f)
+			}
+		case "+FLAGS":
+			for _, f := range flags {
+				m.addFlag(f)
+			}
+		case "-FLAGS":
+			for _, f := range flags {
+				m.removeFlag(f)
+			}
+		}
+		formatted := formatFlags(m)
+		last = mb.push(mbEvent{kind: "flags", seq: seq, flags: formatted})
+		if !silent {
+			snaps = append(snaps, storeSnap{seq: seq, uid: m.uid, flags: formatted})
+		}
+	})
+	if last > s.seenID {
+		s.seenID = last
+	}
+	return snaps, uidMode, nil
+}
+
+type searchKey struct {
+	op   string
+	arg  string
+	num  int
+	when time.Time
+	set  *seqSet
+}
+
+func parseSearch(toks []Token) ([]searchKey, error) {
+	var keys []searchKey
+	for i := 0; i < len(toks); {
+		if toks[i].Kind == "lparen" || toks[i].Kind == "rparen" {
+			return nil, fmt.Errorf("bad search")
+		}
+		op := strings.ToUpper(toks[i].Val)
+		switch op {
+		case "ALL", "SEEN", "UNSEEN", "FLAGGED", "UNFLAGGED", "DELETED", "UNDELETED":
+			keys = append(keys, searchKey{op: op})
+			i++
+		case "FROM", "TO", "SUBJECT":
+			if i+1 >= len(toks) {
+				return nil, fmt.Errorf("bad search")
+			}
+			arg, ok := astring(toks[i+1])
+			if !ok {
+				return nil, fmt.Errorf("bad search")
+			}
+			keys = append(keys, searchKey{op: op, arg: arg})
+			i += 2
+		case "SINCE", "BEFORE", "ON":
+			if i+1 >= len(toks) {
+				return nil, fmt.Errorf("bad search")
+			}
+			ds, ok := astring(toks[i+1])
+			if !ok {
+				return nil, fmt.Errorf("bad search")
+			}
+			dt, err := parseIMAPDate(ds)
+			if err != nil {
+				return nil, fmt.Errorf("bad search")
+			}
+			keys = append(keys, searchKey{op: op, when: dt})
+			i += 2
+		case "LARGER", "SMALLER":
+			if i+1 >= len(toks) || toks[i+1].Kind != "atom" {
+				return nil, fmt.Errorf("bad search")
+			}
+			n, err := strconv.Atoi(toks[i+1].Val)
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("bad search")
+			}
+			keys = append(keys, searchKey{op: op, num: n})
+			i += 2
+		case "UID":
+			if i+1 >= len(toks) || toks[i+1].Kind != "atom" {
+				return nil, fmt.Errorf("bad search")
+			}
+			set, err := parseSeqSet(toks[i+1].Val)
+			if err != nil {
+				return nil, fmt.Errorf("bad search")
+			}
+			keys = append(keys, searchKey{op: "UID", set: set})
+			i += 2
+		default:
+			return nil, fmt.Errorf("bad search")
+		}
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("bad search")
+	}
+	return keys, nil
+}
+
+func (m *Message) matches(k searchKey, maxUID uint32) bool {
+	switch k.op {
+	case "ALL":
+		return true
+	case "SEEN":
+		return m.has(`\Seen`)
+	case "UNSEEN":
+		return !m.has(`\Seen`)
+	case "FLAGGED":
+		return m.has(`\Flagged`)
+	case "UNFLAGGED":
+		return !m.has(`\Flagged`)
+	case "DELETED":
+		return m.has(`\Deleted`)
+	case "UNDELETED":
+		return !m.has(`\Deleted`)
+	case "FROM":
+		return strings.Contains(strings.ToLower(m.from), strings.ToLower(k.arg))
+	case "TO":
+		return strings.Contains(strings.ToLower(m.to), strings.ToLower(k.arg))
+	case "SUBJECT":
+		return strings.Contains(strings.ToLower(m.subject), strings.ToLower(k.arg))
+	case "SINCE":
+		return ymd(m.internal) >= ymd(k.when)
+	case "BEFORE":
+		return ymd(m.internal) < ymd(k.when)
+	case "ON":
+		return ymd(m.internal) == ymd(k.when)
+	case "LARGER":
+		return m.size > k.num
+	case "SMALLER":
+		return m.size < k.num
+	case "UID":
+		return k.set.contains(m.uid, maxUID)
+	default:
+		return false
+	}
+}
+
+func (st *Store) search(s *session, uidMode bool, keys []searchKey) ([]uint32, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return nil, fmt.Errorf("not selected")
+	}
+	mb := s.box
+	maxUID := mb.starMax(true)
+	var ids []uint32
+	for i, m := range mb.msgs {
+		ok := true
+		for _, k := range keys {
+			if !m.matches(k, maxUID) {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		if uidMode {
+			ids = append(ids, m.uid)
+		} else {
+			ids = append(ids, uint32(i+1))
+		}
+	}
+	return ids, nil
+}
+
+func indexOverlay(m *Message) {
+	msg, err := mail.ReadMessage(bytes.NewReader(m.raw))
+	if err != nil {
+		return
+	}
+	m.from = decodeHdr(msg.Header.Get("From"))
+	m.to = decodeHdr(msg.Header.Get("To"))
+	m.subject = decodeHdr(msg.Header.Get("Subject"))
+}
+
+func (st *Store) appendMsg(s *session, name string, flags []string, date *time.Time, raw []byte) (uint32, uint32, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return 0, 0, err
+	}
+	mb := st.boxes[cn]
+	if mb == nil {
+		return 0, 0, fmt.Errorf("no mailbox")
+	}
+	for _, f := range flags {
+		if _, ok := canonFlag(f); !ok {
+			return 0, 0, fmt.Errorf("bad flag")
+		}
+	}
+	raw = toCRLF(raw)
+	m := &Message{
+		uid:      mb.uidNext,
+		flags:    map[string]struct{}{},
+		recent:   true,
+		internal: time.Now(),
+		raw:      raw,
+		size:     len(raw),
+	}
+	if date != nil {
+		m.internal = *date
+	}
+	for _, f := range flags {
+		m.addFlag(f)
+	}
+	indexOverlay(m)
+	mb.uidNext++
+	mb.msgs = append(mb.msgs, m)
+	mb.pushExists()
+	return mb.uidValidity, m.uid, nil
+}
+
+func cloneMsg(src *Message, uid uint32) *Message {
+	flags, kw := copyFlags(src)
+	nm := &Message{
+		uid:       uid,
+		flags:     flags,
+		keywords:  kw,
+		recent:    true,
+		internal:  src.internal,
+		from:      src.from,
+		to:        src.to,
+		subject:   src.subject,
+		size:      src.size,
+		generated: src.generated,
+		genSeed:   src.genSeed,
+		genUID:    src.genUID,
+	}
+	if src.generated {
+		nm.raw = nil
+	} else {
+		nm.raw = src.raw
+	}
+	return nm
+}
+
+type copyResult struct {
+	uidv  uint32
+	src   []uint32
+	dst   []uint32
+	lines []string // expunge lines for MOVE, already accounted on this session
+}
+
+func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, move bool) (copyResult, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return copyResult{}, fmt.Errorf("not selected")
+	}
+	if move && s.readonly {
+		return copyResult{}, fmt.Errorf("read-only")
+	}
+	cn, err := st.canon(dest)
+	if err != nil {
+		return copyResult{}, err
+	}
+	dst := st.boxes[cn]
+	if dst == nil {
+		return copyResult{}, fmt.Errorf("no mailbox")
+	}
+	src := s.box
+	var picked []*Message
+	var srcUIDs []uint32
+	src.each(uidMode, set, func(seq uint32, m *Message) {
+		picked = append(picked, m)
+		srcUIDs = append(srcUIDs, m.uid)
+	})
+	res := copyResult{uidv: dst.uidValidity, src: srcUIDs}
+	if move && len(picked) > 0 {
+		drop := map[uint32]bool{}
+		for _, u := range srcUIDs {
+			drop[u] = true
+		}
+		var keep []*Message
+		seq := uint32(1)
+		var last uint64
+		for _, m := range src.msgs {
+			if drop[m.uid] {
+				res.lines = append(res.lines, fmt.Sprintf("* %d EXPUNGE", seq))
+				last = src.push(mbEvent{kind: "expunge", seq: seq})
+				continue
+			}
+			keep = append(keep, m)
+			seq++
+		}
+		src.msgs = keep
+		if last > s.seenID {
+			s.seenID = last
+		}
+		src.pushExists()
+	}
+	var dstUIDs []uint32
+	for _, m := range picked {
+		nm := cloneMsg(m, dst.uidNext)
+		dst.uidNext++
+		dst.msgs = append(dst.msgs, nm)
+		dstUIDs = append(dstUIDs, nm.uid)
+	}
+	res.dst = dstUIDs
+	if len(picked) > 0 {
+		dst.pushExists()
+	}
+	return res, nil
+}
+
+func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return nil, fmt.Errorf("not selected")
+	}
+	if s.readonly {
+		return nil, fmt.Errorf("read-only")
+	}
+	mb := s.box
+	maxUID := mb.starMax(true)
+	var keep []*Message
+	var lines []string
+	seq := uint32(1)
+	var last uint64
+	for _, m := range mb.msgs {
+		hit := m.has(`\Deleted`)
+		if uidSet != nil && !uidSet.contains(m.uid, maxUID) {
+			hit = false
+		}
+		if hit {
+			lines = append(lines, fmt.Sprintf("* %d EXPUNGE", seq))
+			last = mb.push(mbEvent{kind: "expunge", seq: seq})
+			continue
+		}
+		keep = append(keep, m)
+		seq++
+	}
+	mb.msgs = keep
+	if last > s.seenID {
+		s.seenID = last
+	}
+	if len(lines) > 0 {
+		mb.pushExists()
+	}
+	return lines, nil
+}
+
+// closeBox expunges on a read-write mailbox without sending EXPUNGE to this
+// session, then deselects. Other sessions still see the events.
+func (st *Store) closeBox(s *session) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return fmt.Errorf("not selected")
+	}
+	mb := s.box
+	if !s.readonly {
+		var keep []*Message
+		seq := uint32(1)
+		for _, m := range mb.msgs {
+			if m.has(`\Deleted`) {
+				mb.push(mbEvent{kind: "expunge", seq: seq})
+				continue
+			}
+			keep = append(keep, m)
+			seq++
+		}
+		if len(keep) != len(mb.msgs) {
+			mb.msgs = keep
+			mb.pushExists()
+		}
+	}
+	// Skip the events this session must not echo.
+	s.seenID = mb.nextID
+	st.detachLocked(s)
+	return nil
+}
+
+func (st *Store) selected(s *session) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return s.box != nil
+}
+
+func (st *Store) generatedBodiesStored() int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	n := 0
+	for _, mb := range st.boxes {
+		for _, m := range mb.msgs {
+			if m.generated && m.raw != nil {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func (st *Store) mailboxLen(name string) int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	mb := st.boxes[name]
+	if mb == nil {
+		return -1
+	}
+	return len(mb.msgs)
+}
+
+type datasetFile struct {
+	Accounts []struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	} `json:"accounts"`
+	Mailboxes []struct {
+		Name        string `json:"name"`
+		UIDValidity uint32 `json:"uid_validity"`
+		Messages    []struct {
+			File         string   `json:"file"`
+			Flags        []string `json:"flags"`
+			InternalDate string   `json:"internal_date"`
+		} `json:"messages"`
+		Generated *struct {
+			Count       int    `json:"count"`
+			Seed        string `json:"seed"`
+			From        string `json:"from"`
+			To          string `json:"to"`
+			Subject     string `json:"subject"`
+			Start       string `json:"start"`
+			StepSeconds int    `json:"step_seconds"`
+		} `json:"generated"`
+	} `json:"mailboxes"`
+}
+
+func loadStore(dir, delim string) (*Store, error) {
+	f, err := os.Open(filepath.Join(dir, "dataset.json"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
+	var df datasetFile
+	if err := dec.Decode(&df); err != nil {
+		return nil, fmt.Errorf("dataset %s: %w", dir, err)
+	}
+	if len(df.Accounts) == 0 {
+		return nil, fmt.Errorf("dataset %s: no accounts", dir)
+	}
+	st := &Store{
+		accounts: map[string]string{},
+		boxes:    map[string]*Mailbox{},
+		delim:    delim,
+		usedUIDV: map[uint32]bool{},
+	}
+	for _, a := range df.Accounts {
+		if a.Username == "" {
+			return nil, fmt.Errorf("dataset %s: empty username", dir)
+		}
+		st.accounts[a.Username] = a.Password
+	}
+	for _, mbj := range df.Mailboxes {
+		name, err := st.canon(mbj.Name)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := st.boxes[name]; ok {
+			return nil, fmt.Errorf("dataset %s: duplicate mailbox %s", dir, name)
+		}
+		mb := &Mailbox{
+			name:        name,
+			uidValidity: st.noteUIDV(mbj.UIDValidity),
+			uidNext:     1,
+		}
+		for _, mj := range mbj.Messages {
+			path := mj.File
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(dir, path)
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			b = toCRLF(b)
+			when, err := parseIMAPDateTime(mj.InternalDate)
+			if err != nil {
+				return nil, fmt.Errorf("dataset %s: %s: %w", dir, mj.File, err)
+			}
+			m := &Message{
+				uid:      mb.uidNext,
+				flags:    map[string]struct{}{},
+				recent:   true,
+				internal: when,
+				raw:      b,
+				size:     len(b),
+			}
+			for _, fl := range mj.Flags {
+				if !m.addFlag(fl) && !strings.EqualFold(fl, `\Recent`) {
+					return nil, fmt.Errorf("dataset %s: bad flag %s", dir, fl)
+				}
+			}
+			indexOverlay(m)
+			mb.uidNext++
+			mb.msgs = append(mb.msgs, m)
+		}
+		if g := mbj.Generated; g != nil {
+			if g.Count < 0 {
+				return nil, fmt.Errorf("dataset %s: negative generated count", dir)
+			}
+			start, err := parseIMAPDateTime(g.Start)
+			if err != nil {
+				return nil, fmt.Errorf("dataset %s: generated start: %w", dir, err)
+			}
+			for i := 0; i < g.Count; i++ {
+				uid := mb.uidNext
+				m := &Message{
+					uid:       uid,
+					flags:     map[string]struct{}{},
+					recent:    true,
+					internal:  start.Add(time.Duration(int64(i)*int64(g.StepSeconds)) * time.Second),
+					from:      g.From,
+					to:        g.To,
+					subject:   fmt.Sprintf("%s %d", g.Subject, uid),
+					generated: true,
+					genSeed:   g.Seed,
+					genUID:    uid,
+				}
+				m.size = len(m.bytes())
+				mb.uidNext++
+				mb.msgs = append(mb.msgs, m)
+			}
+		}
+		st.boxes[name] = mb
+		st.order = append(st.order, name)
+	}
+	return st, nil
+}

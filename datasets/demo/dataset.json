@@ -1,0 +1,41 @@
+{
+  "accounts": [
+    {
+      "username": "demo",
+      "password": "secret"
+    }
+  ],
+  "mailboxes": [
+    {
+      "name": "INBOX",
+      "uid_validity": 1,
+      "messages": [
+        {
+          "file": "1.eml",
+          "flags": [
+            "\\Seen"
+          ],
+          "internal_date": "10-Nov-2025 12:00:00 +0000"
+        },
+        {
+          "file": "2.eml",
+          "flags": [],
+          "internal_date": "10-Nov-2025 13:00:00 +0000"
+        }
+      ]
+    },
+    {
+      "name": "INBOX.Generated",
+      "uid_validity": 2,
+      "generated": {
+        "count": 3,
+        "seed": "demo",
+        "from": "Alice Example <alice@example.com>",
+        "to": "Demo User <demo@example.com>",
+        "subject": "Generated",
+        "start": "01-Jan-2020 00:00:00 +0000",
+        "step_seconds": 86400
+      }
+    }
+  ]
+}
