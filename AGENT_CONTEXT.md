@@ -1,7 +1,7 @@
-# AGENT_CONTEXT.md
+# AGENT_CONTEXT.md — orchestration
 
-- **Agent ID:** master
-- **Current Branch:** master
-- **Role:** template / drift SoT
+- **Agent ID:** orchestration
+- **Current Branch:** orchestration
+- **Role:** Orchestrator
 - **Sandbox:** @@ORCH_ROOT@@/@@SANDBOX_PATH@@/
 - **Status:** ACTIVE
