@@ -6,14 +6,16 @@
     "ENABLE",
     "IDLE",
     "SASL-IR",
-    "LITERAL+"
+    "LITERAL+",
+    "AUTH=PLAIN"
   ],
   "pre_login_capabilities": [
     "IMAP4rev1",
     "ENABLE",
     "IDLE",
     "SASL-IR",
-    "LITERAL+"
+    "LITERAL+",
+    "AUTH=PLAIN"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -43,6 +45,7 @@
     "LITERAL+"
   ],
   "logout_bye": true,
+  "move_copyuid_untagged": true,
   "select_flags": "\\Answered \\Flagged \\Deleted \\Seen \\Draft",
   "permanent_flags": "\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*",
   "select_order": [
@@ -55,12 +58,12 @@
     "UIDNEXT"
   ],
   "flag_order": [
-    "\\Recent",
     "\\Answered",
     "\\Flagged",
-    "\\Draft",
     "\\Deleted",
-    "\\Seen"
+    "\\Seen",
+    "\\Draft",
+    "\\Recent"
   ],
   "fetch_peek_body": true,
   "fetch_seen_flags": true,

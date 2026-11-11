@@ -348,3 +348,17 @@
 - Approved plan: sandbox/plans/probe-dovecot-245-20261111-1505-plan.md
 - personalities/dovecot-245.json now lists AUTH=PLAIN and AUTH=EXTERNAL after LITERAL+ on the greeting and pre-login lists, uses flag order Answered Flagged Deleted Seen Draft Recent, and sends MOVE COPYUID untagged. IMAP4rev2, ID, and LOGIN-REFERRALS stay off. Post-login tokens and order, NAMESPACE, and SELECT flags and order already matched.
 - The normalized diff still has shapes the file cannot express: LOGIN sends an untagged CAPABILITY and a tagged OK with no capability code; BODYSTRUCTURE tokens are lowercase; MOVE still sends RECENT after EXPUNGE; LIST of the two probe mailboxes is MB2 then MB1. Reply code was not changed. liveimap-dovecot-245 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Dovecot dev execution start
+
+- Approved plan: sandbox/plans/probe-dovecot-dev-20261111-1521-plan.md
+- Work: run the base cyrusprobe script against liveimap-dovecot-dev and update personalities/dovecot-dev.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Dovecot dev landed
+
+- Approved plan: sandbox/plans/probe-dovecot-dev-20261111-1521-plan.md
+- personalities/dovecot-dev.json lists AUTH=PLAIN after LITERAL+ on the greeting and pre-login lists, uses flag order Answered Flagged Deleted Seen Draft Recent, and sends MOVE COPYUID untagged. ID and LOGIN-REFERRALS stay off. Post-login tokens and order, NAMESPACE, and SELECT flags and order already matched.
+- The normalized diff still has shapes the file cannot express: LOGIN sends an untagged CAPABILITY and a tagged OK with no capability code; APPEND sends an unsolicited FLAGS line that adds attachment keywords; FETCH and the later SELECT include those keywords; BODYSTRUCTURE tokens are lowercase; MOVE still sends RECENT after EXPUNGE; LIST of the two probe mailboxes is MB2 then MB1. Reply code was not changed.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 and then started. liveimap-dovecot-dev was stopped. The lab password stayed in the gitignored operator file.

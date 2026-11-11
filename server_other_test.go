@@ -70,9 +70,9 @@ func TestOtherServerPersonalities(t *testing.T) {
 		},
 		{
 			file:     "personalities/dovecot-dev.json",
-			greeting: "* OK [CAPABILITY " + devGreet + "] Dovecot ready.",
-			greet:    devGreet,
-			pre:      devGreet,
+			greeting: "* OK [CAPABILITY " + devGreet + " AUTH=PLAIN] Dovecot ready.",
+			greet:    devGreet + " AUTH=PLAIN",
+			pre:      devGreet + " AUTH=PLAIN",
 			post:     devPost,
 			delim:    "/",
 			ns:       `* NAMESPACE (("" "/")) NIL NIL`,
