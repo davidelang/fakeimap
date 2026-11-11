@@ -46,6 +46,17 @@ if grep -Eq '\$DEST/(ve-resolve-orch|install-refresh-shell\.sh|agent-landlock)|\
 else
   ok "no root-level helper paths"
 fi
+# install-merge-drivers makes *.json a required clean filter. git status then
+# shows any file whose bytes are not the filter output, and the clone stops.
+json_bad=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if ! python3 "$canon/orch/json-pretty-filter" clean < "$canon/$f" | cmp -s - "$canon/$f"; then
+    bad "json-pretty would rewrite $f"
+    json_bad=1
+  fi
+done < <(git -C "$canon" ls-files '*.json')
+[ "$json_bad" -eq 0 ] && ok "tracked json matches json-pretty"
 
 D=$(mktemp -d)
 mkdir -p "$D/a/b"
