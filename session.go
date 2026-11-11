@@ -586,24 +586,171 @@ func (s *session) cmdList(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
 	}
-	if len(cmd.args) != 2 {
-		return s.bad(cmd.tag, "LIST syntax")
-	}
-	ref, ok1 := astring(cmd.args[0])
-	pat, ok2 := astring(cmd.args[1])
-	if !ok1 || !ok2 {
-		return s.bad(cmd.tag, "LIST syntax")
-	}
-	entries, delim, _, err := s.srv.store.list(ref, pat)
+	parsed, err := parseListArgs(cmd.args)
 	if err != nil {
+		return s.bad(cmd.tag, "LIST syntax")
+	}
+	if parsed.extended && !s.advertiseCap("LIST-EXTENDED") {
+		return s.bad(cmd.tag, "LIST syntax")
+	}
+	if parsed.children && !s.advertiseCap("CHILDREN") {
+		return s.bad(cmd.tag, "LIST syntax")
+	}
+	if parsed.special && !s.advertiseCap("SPECIAL-USE") {
+		return s.bad(cmd.tag, "LIST syntax")
+	}
+	if parsed.hasStatus && !s.advertiseCap("LIST-STATUS") {
+		return s.bad(cmd.tag, "LIST syntax")
+	}
+	q := listQuery{
+		extended:    parsed.extended,
+		specialOnly: parsed.specialOnly,
+		showSpecial: s.advertiseCap("SPECIAL-USE"),
+		wantStatus:  parsed.hasStatus,
+		status:      parsed.status,
+	}
+	entries, delim, _, err := s.srv.store.list(parsed.ref, parsed.pat, q)
+	if err != nil {
+		if err.Error() == "bad status item" {
+			return s.bad(cmd.tag, "LIST bad item")
+		}
 		return s.bad(cmd.tag, "LIST syntax")
 	}
 	for _, e := range entries {
 		if err := s.sendLine(fmt.Sprintf("* LIST %s %s %s", e.flags, imapString(delim), imapAtom(e.name))); err != nil {
 			return err
 		}
+		if e.status != nil {
+			if err := s.sendLine(formatStatus(e.name, e.status)); err != nil {
+				return err
+			}
+		}
 	}
 	return s.ok(cmd.tag, "LIST completed")
+}
+
+type parsedList struct {
+	ref, pat    string
+	extended    bool
+	specialOnly bool
+	children    bool
+	special     bool
+	hasStatus   bool
+	status      []string
+}
+
+func parseListArgs(args []Token) (parsedList, error) {
+	var p parsedList
+	if len(args) == 0 {
+		return p, fmt.Errorf("bad")
+	}
+	i := 0
+	if args[0].Kind == "lparen" {
+		p.extended = true
+		i = 1
+		for {
+			if i >= len(args) {
+				return p, fmt.Errorf("bad")
+			}
+			if args[i].Kind == "rparen" {
+				i++
+				break
+			}
+			if args[i].Kind != "atom" {
+				return p, fmt.Errorf("bad")
+			}
+			switch strings.ToUpper(args[i].Val) {
+			case "SPECIAL-USE":
+				p.specialOnly = true
+				p.special = true
+			default:
+				return p, fmt.Errorf("bad")
+			}
+			i++
+		}
+	}
+	if i+1 >= len(args) {
+		return p, fmt.Errorf("bad")
+	}
+	ref, ok1 := astring(args[i])
+	pat, ok2 := astring(args[i+1])
+	if !ok1 || !ok2 {
+		return p, fmt.Errorf("bad")
+	}
+	p.ref, p.pat = ref, pat
+	i += 2
+	if i == len(args) {
+		return p, nil
+	}
+	p.extended = true
+	if args[i].Kind != "atom" || !strings.EqualFold(args[i].Val, "RETURN") {
+		return p, fmt.Errorf("bad")
+	}
+	i++
+	if i >= len(args) || args[i].Kind != "lparen" {
+		return p, fmt.Errorf("bad")
+	}
+	i++
+	for {
+		if i >= len(args) {
+			return p, fmt.Errorf("bad")
+		}
+		if args[i].Kind == "rparen" {
+			i++
+			break
+		}
+		if args[i].Kind != "atom" {
+			return p, fmt.Errorf("bad")
+		}
+		switch strings.ToUpper(args[i].Val) {
+		case "CHILDREN":
+			p.children = true
+			i++
+		case "SPECIAL-USE":
+			p.special = true
+			i++
+		case "STATUS":
+			i++
+			if i >= len(args) || args[i].Kind != "lparen" {
+				return p, fmt.Errorf("bad")
+			}
+			i++
+			for {
+				if i >= len(args) {
+					return p, fmt.Errorf("bad")
+				}
+				if args[i].Kind == "rparen" {
+					i++
+					break
+				}
+				if args[i].Kind != "atom" {
+					return p, fmt.Errorf("bad")
+				}
+				p.status = append(p.status, args[i].Val)
+				i++
+			}
+			p.hasStatus = true
+		default:
+			return p, fmt.Errorf("bad")
+		}
+	}
+	if i != len(args) {
+		return p, fmt.Errorf("bad")
+	}
+	return p, nil
+}
+
+func formatStatus(name string, pairs [][2]string) string {
+	var b strings.Builder
+	for i, p := range pairs {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(p[0])
+		b.WriteByte(' ')
+		b.WriteString(p[1])
+	}
+	return fmt.Sprintf("* STATUS %s (%s)", imapString(name), b.String())
 }
 
 func (s *session) cmdStatus(cmd command) error {
@@ -631,16 +778,7 @@ func (s *session) cmdStatus(cmd command) error {
 		}
 		return s.no(cmd.tag, "STATUS no such mailbox")
 	}
-	var b strings.Builder
-	for i, p := range pairs {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(p[0])
-		b.WriteByte(' ')
-		b.WriteString(p[1])
-	}
-	if err := s.sendLine(fmt.Sprintf("* STATUS %s (%s)", imapString(cn), b.String())); err != nil {
+	if err := s.sendLine(formatStatus(cn, pairs)); err != nil {
 		return err
 	}
 	return s.ok(cmd.tag, "STATUS completed")
@@ -650,17 +788,46 @@ func (s *session) cmdCreate(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
 	}
-	if len(cmd.args) != 1 {
+	if len(cmd.args) < 1 {
 		return s.bad(cmd.tag, "CREATE syntax")
 	}
 	name, ok := astring(cmd.args[0])
 	if !ok {
 		return s.bad(cmd.tag, "CREATE syntax")
 	}
-	if err := s.srv.store.create(name); err != nil {
+	var uses []string
+	if len(cmd.args) > 1 {
+		if !s.advertiseCap("CREATE-SPECIAL-USE") {
+			return s.bad(cmd.tag, "CREATE syntax")
+		}
+		var err error
+		uses, err = parseCreateUse(cmd.args[1:])
+		if err != nil {
+			return s.bad(cmd.tag, "CREATE syntax")
+		}
+	}
+	if err := s.srv.store.create(name, uses); err != nil {
 		return s.no(cmd.tag, "CREATE failed")
 	}
 	return s.ok(cmd.tag, "CREATE completed")
+}
+
+func parseCreateUse(args []Token) ([]string, error) {
+	if len(args) < 4 || args[0].Kind != "lparen" || args[len(args)-1].Kind != "rparen" {
+		return nil, fmt.Errorf("bad")
+	}
+	inner := args[1 : len(args)-1]
+	if len(inner) < 3 || inner[0].Kind != "atom" || !strings.EqualFold(inner[0].Val, "USE") || inner[1].Kind != "lparen" || inner[len(inner)-1].Kind != "rparen" {
+		return nil, fmt.Errorf("bad")
+	}
+	var uses []string
+	for _, t := range inner[2 : len(inner)-1] {
+		if t.Kind != "atom" {
+			return nil, fmt.Errorf("bad")
+		}
+		uses = append(uses, t.Val)
+	}
+	return uses, nil
 }
 
 func (s *session) cmdDelete(cmd command) error {

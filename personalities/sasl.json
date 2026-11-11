@@ -44,7 +44,12 @@
     "UIDPLUS",
     "UNSELECT",
     "CONDSTORE",
-    "QRESYNC"
+    "QRESYNC",
+    "LIST-EXTENDED",
+    "CHILDREN",
+    "SPECIAL-USE",
+    "LIST-STATUS",
+    "CREATE-SPECIAL-USE"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

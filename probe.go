@@ -1006,6 +1006,10 @@ func kindOf(line string) (string, bool) {
 		return "* VANISHED EARLIER", true
 	case strings.HasPrefix(line, "* VANISHED"):
 		return "* VANISHED", true
+	case strings.HasPrefix(line, "* LIST "):
+		return listKind(line), true
+	case strings.HasPrefix(line, "* STATUS "):
+		return statusKind(line), true
 	case reExists.MatchString(line):
 		return "* EXISTS", true
 	case reRecent.MatchString(line):
@@ -1113,6 +1117,203 @@ func skipKindValue(s string) (string, string) {
 		}
 		return s[:j], s[j:]
 	}
+}
+
+func listKind(line string) string {
+	i := strings.IndexByte(line, '(')
+	j := strings.IndexByte(line, ')')
+	if i < 0 || j < i {
+		return "* LIST"
+	}
+	flags := strings.TrimSpace(line[i+1 : j])
+	if flags == "" {
+		return "* LIST"
+	}
+	return "* LIST " + flags
+}
+
+func statusKind(line string) string {
+	i := strings.LastIndexByte(line, '(')
+	j := strings.LastIndexByte(line, ')')
+	if i < 0 || j < i {
+		return "* STATUS"
+	}
+	fields := strings.Fields(line[i+1 : j])
+	var names []string
+	for n := 0; n+1 < len(fields); n += 2 {
+		names = append(names, fields[n])
+	}
+	if len(names) == 0 {
+		return "* STATUS"
+	}
+	return "* STATUS " + strings.Join(names, " ")
+}
+
+// runListScript is the third probe. It exercises extended LIST and CREATE USE.
+// The first two scripts are unchanged. The kind diff ignores counts.
+func runListScript(host string, port int, tlsMode, user, pass string) (probeScript, error) {
+	mb1, mb2, err := freshMailboxPair()
+	if err != nil {
+		return probeScript{}, err
+	}
+	child := mb1 + "/k"
+	clash := mb2 + "x"
+	out := probeScript{mb1: mb1, mb2: mb2}
+	talk, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return out, err
+	}
+	defer talk.close()
+	greet, err := talk.readLogical()
+	if err != nil {
+		return out, err
+	}
+	out.lines = append(out.lines, greet)
+	if tlsMode == "starttls" {
+		lines, err := talk.command("l0", "STARTTLS")
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return out, err
+		}
+		if len(lines) == 0 || taggedNo(lines[len(lines)-1], "l0") {
+			return out, fmt.Errorf("STARTTLS failed")
+		}
+		tlsConn := tls.Client(talk.conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.Handshake(); err != nil {
+			return out, err
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+		talk.conn = tlsConn
+		talk.r = bufio.NewReader(tlsConn)
+		talk.w = bufio.NewWriter(tlsConn)
+	}
+	fail := func(err error) (probeScript, error) {
+		_ = deleteListMailboxes(host, port, tlsMode, user, pass, child, mb1, mb2)
+		return out, err
+	}
+	step := func(tag, cmd string, allowNo bool) error {
+		lines, err := talk.command(tag, cmd)
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return err
+		}
+		if len(lines) == 0 || (taggedNo(lines[len(lines)-1], tag) && !allowNo) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	q := func(s string) string { return quoteIMAP(s) }
+	steps := []struct {
+		tag, cmd string
+		allowNo  bool
+	}{
+		{"l1", "CAPABILITY", false},
+		{"l2", "LOGIN " + q(user) + " " + q(pass), false},
+		{"l3", "CAPABILITY", false},
+		{"l4", "CREATE " + q(mb1), false},
+		{"l5", "CREATE " + q(child), false},
+		{"l6", "LIST " + q("") + " " + q(mb1+"*"), false},
+		{"l7", "LIST " + q("") + " " + q(mb1+"*") + " RETURN (CHILDREN)", false},
+		{"l8", "LIST " + q("") + " " + q(mb1+"*") + " RETURN (CHILDREN SPECIAL-USE)", false},
+		{"l9", "LIST " + q("") + " " + q(mb1+"*") + " RETURN (STATUS (MESSAGES UNSEEN))", false},
+		{"l10", "CREATE " + q(mb2) + ` (USE (\Sent))`, false},
+		{"l11", "LIST " + q("") + " " + q(mb2), false},
+		{"l12", "LIST " + q("") + " " + q(mb2) + " RETURN (CHILDREN SPECIAL-USE)", false},
+		{"l13", "LIST (SPECIAL-USE) " + q("") + " " + q(mb2), false},
+		{"l14", "CREATE " + q(clash) + ` (USE (\Sent))`, true},
+		{"l15", "LIST " + q("") + " " + q(clash), false},
+		{"l16", "LIST " + q("") + " " + q(""), false},
+		{"l17", "LIST " + q("") + " " + q("") + " RETURN (CHILDREN)", false},
+		{"l18", "LOGOUT", true},
+	}
+	for _, st := range steps {
+		if err := step(st.tag, st.cmd, st.allowNo); err != nil {
+			return fail(err)
+		}
+	}
+	if err := deleteListMailboxes(host, port, tlsMode, user, pass, child, mb1, mb2); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func deleteListMailboxes(host string, port int, tlsMode, user, pass, child, mb1, mb2 string) error {
+	talk, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return err
+	}
+	defer talk.close()
+	if _, err := talk.readLogical(); err != nil {
+		return err
+	}
+	if tlsMode == "starttls" {
+		if _, err := talk.command("d0", "STARTTLS"); err != nil {
+			return err
+		}
+		tlsConn := tls.Client(talk.conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.Handshake(); err != nil {
+			return err
+		}
+		talk.conn = tlsConn
+		talk.r = bufio.NewReader(tlsConn)
+		talk.w = bufio.NewWriter(tlsConn)
+	}
+	lines, err := talk.command("d1", "LOGIN "+quoteIMAP(user)+" "+quoteIMAP(pass))
+	if err != nil {
+		return err
+	}
+	if len(lines) == 0 || taggedNo(lines[len(lines)-1], "d1") {
+		return fmt.Errorf("cleanup login failed")
+	}
+	// Cyrus refuses DELETE while a special-use flag is set. Clearing it is
+	// not part of the compared script. A server without SETMETADATA still
+	// deletes the mailbox below.
+	_, _ = talk.command("d2", "SETMETADATA "+quoteIMAP(mb2)+" (/private/specialuse NIL)")
+	names := []string{child, mb1, mb2}
+	for i, name := range names {
+		tag := fmt.Sprintf("d%d", i+3)
+		lines, err = talk.command(tag, "DELETE "+quoteIMAP(name))
+		if err != nil {
+			return err
+		}
+		if taggedNo(lines[len(lines)-1], tag) {
+			return fmt.Errorf("cleanup delete failed")
+		}
+	}
+	_, err = talk.command("d6", "LOGOUT")
+	return err
+}
+
+func compareList(cfg opConfig) (string, error) {
+	remote, err := runListScript(cfg.Host, cfg.Port, cfg.TLS, cfg.Username, cfg.Password)
+	if err != nil && len(remote.lines) == 0 {
+		return "", err
+	}
+	addr, stop, serr := startProbeServer(cfg.Username, cfg.Password, cfg.Personality)
+	if serr != nil {
+		if err != nil {
+			return "", err
+		}
+		return "", serr
+	}
+	defer stop()
+	host, portS, perr := net.SplitHostPort(addr)
+	if perr != nil {
+		return "", perr
+	}
+	port, perr := strconv.Atoi(portS)
+	if perr != nil {
+		return "", perr
+	}
+	local, lerr := runListScript(host, port, "none", cfg.Username, cfg.Password)
+	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
+	if err != nil && diff == "" {
+		return "", err
+	}
+	if lerr != nil && diff == "" {
+		return "", lerr
+	}
+	return diff, nil
 }
 
 func compareCondstore(cfg opConfig) (string, error) {

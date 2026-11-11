@@ -171,6 +171,7 @@ type Mailbox struct {
 	waiters       []chan struct{}
 	highestModseq uint64
 	expunged      []expungedRec
+	special       []string
 }
 
 func (mb *Mailbox) bump(m *Message) uint64 {
@@ -461,8 +462,19 @@ func (st *Store) drain(s *session) []mbEvent {
 }
 
 type listEntry struct {
-	flags string
-	name  string
+	flags  string
+	name   string
+	status [][2]string
+}
+
+// listQuery is the extended LIST this server honors. A two-argument LIST
+// leaves it zero, which keeps the old reply.
+type listQuery struct {
+	extended    bool
+	specialOnly bool
+	showSpecial bool
+	wantStatus  bool
+	status      []string
 }
 
 func canonPattern(pat, delim string) string {
@@ -528,10 +540,25 @@ func wildMatch(name, pat, delim string) bool {
 	}
 }
 
-func (st *Store) list(ref, pat string) ([]listEntry, string, bool, error) {
+func formatListFlags(child string, special []string) string {
+	parts := make([]string, 0, 1+len(special))
+	parts = append(parts, child)
+	parts = append(parts, special...)
+	return "(" + strings.Join(parts, " ") + ")"
+}
+
+func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if q.wantStatus {
+		if _, err := statusPairs(nil, q.status); err != nil {
+			return nil, "", false, err
+		}
+	}
 	if pat == "" {
+		if q.extended {
+			return nil, st.delim, false, nil
+		}
 		name := strings.TrimSuffix(ref, st.delim)
 		return []listEntry{{flags: `(\Noselect)`, name: name}}, st.delim, true, nil
 	}
@@ -546,6 +573,10 @@ func (st *Store) list(ref, pat string) ([]listEntry, string, bool, error) {
 	full = canonPattern(full, st.delim)
 	var out []listEntry
 	for _, name := range st.order {
+		mb := st.boxes[name]
+		if q.specialOnly && len(mb.special) == 0 {
+			continue
+		}
 		if !wildMatch(name, full, st.delim) {
 			continue
 		}
@@ -557,7 +588,22 @@ func (st *Store) list(ref, pat string) ([]listEntry, string, bool, error) {
 				break
 			}
 		}
-		out = append(out, listEntry{flags: `(` + flags + `)`, name: name})
+		var spec []string
+		if q.showSpecial {
+			spec = mb.special
+		}
+		var pairs [][2]string
+		if q.wantStatus {
+			var err error
+			pairs, err = statusPairs(mb, q.status)
+			if err != nil {
+				return nil, "", false, err
+			}
+			if pairs == nil {
+				pairs = [][2]string{}
+			}
+		}
+		out = append(out, listEntry{flags: formatListFlags(flags, spec), name: name, status: pairs})
 	}
 	return out, st.delim, false, nil
 }
@@ -573,29 +619,87 @@ func (st *Store) status(name string, items []string) (string, [][2]string, error
 	if mb == nil {
 		return "", nil, fmt.Errorf("no mailbox")
 	}
+	out, err := statusPairs(mb, items)
+	if err != nil {
+		return "", nil, err
+	}
+	return cn, out, nil
+}
+
+// statusPairs reads one mailbox. A nil mailbox only checks the item names.
+func statusPairs(mb *Mailbox, items []string) ([][2]string, error) {
 	var out [][2]string
 	for _, it := range items {
 		var v uint32
 		switch strings.ToUpper(it) {
 		case "MESSAGES":
-			v = uint32(len(mb.msgs))
+			if mb != nil {
+				v = uint32(len(mb.msgs))
+			}
 		case "RECENT":
-			v = uint32(mb.recentCount())
+			if mb != nil {
+				v = uint32(mb.recentCount())
+			}
 		case "UIDNEXT":
-			v = mb.uidNext
+			if mb != nil {
+				v = mb.uidNext
+			}
 		case "UIDVALIDITY":
-			v = mb.uidValidity
+			if mb != nil {
+				v = mb.uidValidity
+			}
 		case "UNSEEN":
-			v = uint32(mb.unseenCount())
+			if mb != nil {
+				v = uint32(mb.unseenCount())
+			}
 		default:
-			return "", nil, fmt.Errorf("bad status item")
+			return nil, fmt.Errorf("bad status item")
 		}
 		out = append(out, [2]string{strings.ToUpper(it), strconv.FormatUint(uint64(v), 10)})
 	}
-	return cn, out, nil
+	return out, nil
 }
 
-func (st *Store) create(name string) error {
+var specialUseOrder = []string{`\All`, `\Archive`, `\Drafts`, `\Flagged`, `\Junk`, `\Sent`, `\Trash`}
+
+func canonSpecialUse(f string) (string, bool) {
+	for _, s := range specialUseOrder {
+		if strings.EqualFold(s, f) {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+func canonSpecialUses(in []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range in {
+		c, ok := canonSpecialUse(f)
+		if !ok {
+			return nil, fmt.Errorf("bad use")
+		}
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (st *Store) specialOwned(flag string) bool {
+	for _, mb := range st.boxes {
+		for _, f := range mb.special {
+			if f == flag {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (st *Store) create(name string, uses []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	cn, err := st.canon(name)
@@ -605,7 +709,16 @@ func (st *Store) create(name string) error {
 	if _, ok := st.boxes[cn]; ok {
 		return fmt.Errorf("exists")
 	}
-	mb := &Mailbox{name: cn, uidValidity: st.allocUIDV(), uidNext: 1}
+	special, err := canonSpecialUses(uses)
+	if err != nil {
+		return err
+	}
+	for _, u := range special {
+		if st.specialOwned(u) {
+			return fmt.Errorf("use conflict")
+		}
+	}
+	mb := &Mailbox{name: cn, uidValidity: st.allocUIDV(), uidNext: 1, special: special}
 	st.boxes[cn] = mb
 	st.order = append(st.order, cn)
 	return nil
@@ -1478,6 +1591,7 @@ type datasetFile struct {
 			Start       string `json:"start"`
 			StepSeconds int    `json:"step_seconds"`
 		} `json:"generated"`
+		SpecialUse []string `json:"special_use,omitempty"`
 	} `json:"mailboxes"`
 }
 
@@ -1581,6 +1695,16 @@ func loadStore(dir, delim string) (*Store, error) {
 				mb.msgs = append(mb.msgs, m)
 			}
 		}
+		special, err := canonSpecialUses(mbj.SpecialUse)
+		if err != nil {
+			return nil, fmt.Errorf("dataset %s: bad special_use on %s", dir, name)
+		}
+		for _, u := range special {
+			if st.specialOwned(u) {
+				return nil, fmt.Errorf("dataset %s: special_use %s already used", dir, u)
+			}
+		}
+		mb.special = special
 		st.boxes[name] = mb
 		st.order = append(st.order, name)
 	}

@@ -119,6 +119,51 @@ func TestCondstoreProbeEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestListProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/list.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runListScript(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runListScript(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := normalizeKinds(a.lines, a.mb1, a.mb2)
+	diff := scriptDiff(kinds, normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("kind diff:\n%s\n--- a ---\n%s", diff, strings.Join(kinds, "\n"))
+	}
+	joined := strings.Join(kinds, "\n")
+	for _, want := range []string{"* LIST \\HasChildren", "* LIST \\HasNoChildren \\Sent", "* STATUS MESSAGES UNSEEN", "* LIST \\Noselect", "T NO"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s in\n%s", want, joined)
+		}
+	}
+	if strings.Count(joined, "* LIST \\Noselect") != 1 {
+		t.Fatalf("noselect count\n%s", joined)
+	}
+}
+
 func splitAddr(addr string) (string, int, error) {
 	host, portS, err := net.SplitHostPort(addr)
 	if err != nil {

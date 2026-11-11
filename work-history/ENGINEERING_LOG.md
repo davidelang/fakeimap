@@ -97,3 +97,13 @@
 
 - Personalities that list CONDSTORE and QRESYNC speak HIGHESTMODSEQ, MODSEQ, CHANGEDSINCE, UNCHANGEDSINCE, ENABLE, VANISHED, and SELECT QRESYNC.
 - The second probe kind diff against the already-running liveimap-cyrus-3137 was empty. That container was not recreated and was not stopped. CONDSTORE and QRESYNC are on personalities/cyrus-3137.json and are gone from the gaps file.
+
+## 2026-11-11 - extended LIST execution start
+
+- Implementing LIST-EXTENDED, CHILDREN, SPECIAL-USE, LIST-STATUS, and CREATE-SPECIAL-USE, plus a third probe that compares reply kinds.
+- liveimap-cyrus-3137 is already running. It will not be recreated or stopped. ESEARCH and COMPRESS=DEFLATE stay unimplemented.
+
+## 2026-11-11 - extended LIST landed
+
+- Personalities that list LIST-EXTENDED, CHILDREN, SPECIAL-USE, LIST-STATUS, and CREATE-SPECIAL-USE answer extended LIST and CREATE USE. A two-argument LIST is unchanged. Without those capabilities the new syntax is tagged BAD.
+- The third probe kind diff against the already-running liveimap-cyrus-3137 was empty. That container was not recreated and was not stopped. The five capabilities are on personalities/cyrus-3137.json and are gone from the gaps file. ESEARCH and COMPRESS=DEFLATE stay unimplemented.
