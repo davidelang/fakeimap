@@ -152,14 +152,85 @@ func TestSearchTextBodyCC(t *testing.T) {
 	}
 
 	for _, bad := range []string{
-		"SEARCH OR SEEN UNSEEN",
-		"SEARCH NOT SEEN",
-		"SEARCH (SEEN)",
 		"SEARCH FUZZY TEXT seed",
 		"SEARCH NEW",
 		"SEARCH HEADER FROM x",
-		"UID SEARCH OR TEXT a TEXT b",
 		"SEARCH TEXT",
+	} {
+		rp := cl.cmd(bad)
+		if rp.status != "BAD" {
+			t.Fatalf("%s -> %s", bad, rp.status)
+		}
+	}
+}
+
+func TestSearchBool(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0"})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("SELECT INBOX").ok(t)
+
+	want := map[string]string{
+		"SEARCH OR SEEN UNSEEN":                             "1 2",
+		"SEARCH NOT SEEN":                                   "2",
+		"SEARCH (SEEN)":                                     "1",
+		"SEARCH NOT (SEEN)":                                 "2",
+		"SEARCH SEEN UNSEEN":                                "",
+		"SEARCH FROM sender@example.com SEEN":               "1",
+		"SEARCH (FROM sender@example.com) (UNSEEN)":         "2",
+		"SEARCH (SEEN UNSEEN)":                              "",
+		`SEARCH OR (SUBJECT "Naïve café") (TEXT overlay-2)`: "1 2",
+		`SEARCH OR (FROM nosuch@example.com SUBJECT "Naïve café") (TEXT overlay-2)`: "2",
+		"SEARCH NOT (TEXT overlay-2)":                                   "1",
+		`SEARCH OR NOT (SEEN) (SUBJECT "Naïve café")`:                   "1 2",
+		"SEARCH NOT (OR SEEN (TEXT overlay-2))":                         "",
+		`SEARCH (OR (SEEN) (NOT (TEXT "in the body")))`:                 "1 2",
+		"SEARCH ((SEEN))":                                               "1",
+		"SEARCH OR (SEEN FROM nosuch@example.com) NOT (TEXT overlay-2)": "1",
+		"SEARCH NOT NOT UNSEEN":                                         "2",
+		`SEARCH CHARSET UTF-8 OR SUBJECT "Naïve café" TEXT overlay-2`:   "1 2",
+		"UID SEARCH CHARSET UTF-8 NOT SEEN":                             "2",
+		"UID SEARCH OR SEEN UNSEEN":                                     "1 2",
+		"UID SEARCH (SEEN)":                                             "1",
+	}
+	for cmd, ids := range want {
+		if got := strings.Join(searchIDs(t, cl.cmd(cmd)), " "); got != ids {
+			t.Fatalf("%s -> %q, want %q", cmd, got, ids)
+		}
+	}
+
+	tag, line := oneEsearch(t, cl.cmd(`UID SEARCH RETURN (ALL) CHARSET UTF-8 OR TEXT "in the body" TEXT overlay-2`))
+	if line != `* ESEARCH (TAG "`+tag+`") UID ALL 1:2` {
+		t.Fatalf("uid esearch %q", line)
+	}
+	tag, line = oneEsearch(t, cl.cmd("SEARCH RETURN (ALL) NOT SEEN"))
+	if line != `* ESEARCH (TAG "`+tag+`") ALL 2` {
+		t.Fatalf("esearch not %q", line)
+	}
+	tag, line = oneEsearch(t, cl.cmd("UID SEARCH RETURN (ALL) (SEEN)"))
+	if line != `* ESEARCH (TAG "`+tag+`") UID ALL 1` {
+		t.Fatalf("esearch paren %q", line)
+	}
+
+	for _, bad := range []string{
+		"SEARCH FUZZY TEXT x",
+		"SEARCH FUZZY",
+		"SEARCH NEW",
+		"SEARCH HEADER FROM x",
+		"SEARCH 1",
+		"SEARCH OR",
+		"SEARCH OR SEEN",
+		"SEARCH OR SEEN NOT",
+		"SEARCH NOT",
+		"SEARCH NOT OR",
+		"UID SEARCH NOT",
+		"SEARCH ()",
+		"SEARCH (SEEN",
+		"SEARCH (OR SEEN",
+		"SEARCH OR (SEEN UNSEEN",
+		"SEARCH NOT (SEEN",
+		"SEARCH SEEN)",
+		"SEARCH ((SEEN)",
 	} {
 		rp := cl.cmd(bad)
 		if rp.status != "BAD" {

@@ -310,7 +310,7 @@ func TestSearch(t *testing.T) {
 		t.Fatalf("gen UNSEEN %v", got)
 	}
 
-	for _, bad := range []string{"SEARCH FUZZY hello", "SEARCH (SEEN)", "SEARCH NEW", "SEARCH NOT SEEN", "SEARCH OR SEEN UNSEEN", "SEARCH 1", "SEARCH HEADER FROM x"} {
+	for _, bad := range []string{"SEARCH FUZZY hello", "SEARCH NEW", "SEARCH 1", "SEARCH HEADER FROM x"} {
 		rp := cl.cmd(bad)
 		if rp.status != "BAD" {
 			t.Fatalf("%s -> %s", bad, rp.status)

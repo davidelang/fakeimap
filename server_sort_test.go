@@ -154,7 +154,7 @@ func TestSortKeys(t *testing.T) {
 		"SORT (NOTAKEY) UTF-8 ALL",
 		"SORT (FROM FROM) UTF-8 ALL",
 		"SORT (FROM) KOI8-R ALL",
-		"SORT (FROM) UTF-8 OR FROM a FROM b",
+		"SORT (FROM) UTF-8 FUZZY ALL",
 		"SORT FROM UTF-8 ALL",
 	} {
 		if cl.cmd(line).status != "BAD" {

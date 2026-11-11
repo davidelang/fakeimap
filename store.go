@@ -1314,75 +1314,130 @@ type searchKey struct {
 	num  int
 	when time.Time
 	set  *seqSet
+	kids []searchKey
 }
 
 func parseSearch(toks []Token) ([]searchKey, error) {
-	var keys []searchKey
-	for i := 0; i < len(toks); {
-		if toks[i].Kind == "lparen" || toks[i].Kind == "rparen" {
-			return nil, fmt.Errorf("bad search")
-		}
-		op := strings.ToUpper(toks[i].Val)
-		switch op {
-		case "ALL", "SEEN", "UNSEEN", "FLAGGED", "UNFLAGGED", "DELETED", "UNDELETED":
-			keys = append(keys, searchKey{op: op})
-			i++
-		case "FROM", "TO", "SUBJECT", "TEXT", "BODY", "CC":
-			if i+1 >= len(toks) {
-				return nil, fmt.Errorf("bad search")
-			}
-			arg, ok := astring(toks[i+1])
-			if !ok {
-				return nil, fmt.Errorf("bad search")
-			}
-			keys = append(keys, searchKey{op: op, arg: arg})
-			i += 2
-		case "SINCE", "BEFORE", "ON":
-			if i+1 >= len(toks) {
-				return nil, fmt.Errorf("bad search")
-			}
-			ds, ok := astring(toks[i+1])
-			if !ok {
-				return nil, fmt.Errorf("bad search")
-			}
-			dt, err := parseIMAPDate(ds)
-			if err != nil {
-				return nil, fmt.Errorf("bad search")
-			}
-			keys = append(keys, searchKey{op: op, when: dt})
-			i += 2
-		case "LARGER", "SMALLER":
-			if i+1 >= len(toks) || toks[i+1].Kind != "atom" {
-				return nil, fmt.Errorf("bad search")
-			}
-			n, err := strconv.Atoi(toks[i+1].Val)
-			if err != nil || n < 0 {
-				return nil, fmt.Errorf("bad search")
-			}
-			keys = append(keys, searchKey{op: op, num: n})
-			i += 2
-		case "UID":
-			if i+1 >= len(toks) || toks[i+1].Kind != "atom" {
-				return nil, fmt.Errorf("bad search")
-			}
-			set, err := parseSeqSet(toks[i+1].Val)
-			if err != nil {
-				return nil, fmt.Errorf("bad search")
-			}
-			keys = append(keys, searchKey{op: "UID", set: set})
-			i += 2
-		default:
-			return nil, fmt.Errorf("bad search")
-		}
-	}
-	if len(keys) == 0 {
+	keys, rest, err := parseSearchSeq(toks, false)
+	if err != nil || len(rest) != 0 || len(keys) == 0 {
 		return nil, fmt.Errorf("bad search")
 	}
 	return keys, nil
 }
 
+// parseSearchSeq reads keys until the input ends. Inside a parenthesis the
+// closing parenthesis is left unconsumed. An unclosed parenthesis is an error.
+func parseSearchSeq(toks []Token, inside bool) ([]searchKey, []Token, error) {
+	var keys []searchKey
+	for len(toks) > 0 {
+		if toks[0].Kind == "rparen" {
+			if !inside {
+				return nil, nil, fmt.Errorf("bad search")
+			}
+			return keys, toks, nil
+		}
+		k, rest, err := parseSearchKey(toks)
+		if err != nil {
+			return nil, nil, err
+		}
+		keys = append(keys, k)
+		toks = rest
+	}
+	if inside {
+		return nil, nil, fmt.Errorf("bad search")
+	}
+	return keys, nil, nil
+}
+
+func parseSearchKey(toks []Token) (searchKey, []Token, error) {
+	if len(toks) == 0 || toks[0].Kind == "rparen" {
+		return searchKey{}, nil, fmt.Errorf("bad search")
+	}
+	if toks[0].Kind == "lparen" {
+		inner, rest, err := parseSearchSeq(toks[1:], true)
+		if err != nil || len(inner) == 0 || len(rest) == 0 || rest[0].Kind != "rparen" {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: "AND", kids: inner}, rest[1:], nil
+	}
+	op := strings.ToUpper(toks[0].Val)
+	switch op {
+	case "OR":
+		a, rest, err := parseSearchKey(toks[1:])
+		if err != nil {
+			return searchKey{}, nil, err
+		}
+		b, rest, err := parseSearchKey(rest)
+		if err != nil {
+			return searchKey{}, nil, err
+		}
+		return searchKey{op: "OR", kids: []searchKey{a, b}}, rest, nil
+	case "NOT":
+		a, rest, err := parseSearchKey(toks[1:])
+		if err != nil {
+			return searchKey{}, nil, err
+		}
+		return searchKey{op: "NOT", kids: []searchKey{a}}, rest, nil
+	case "ALL", "SEEN", "UNSEEN", "FLAGGED", "UNFLAGGED", "DELETED", "UNDELETED":
+		return searchKey{op: op}, toks[1:], nil
+	case "FROM", "TO", "SUBJECT", "TEXT", "BODY", "CC":
+		if len(toks) < 2 {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		arg, ok := astring(toks[1])
+		if !ok {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: op, arg: arg}, toks[2:], nil
+	case "SINCE", "BEFORE", "ON":
+		if len(toks) < 2 {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		ds, ok := astring(toks[1])
+		if !ok {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		dt, err := parseIMAPDate(ds)
+		if err != nil {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: op, when: dt}, toks[2:], nil
+	case "LARGER", "SMALLER":
+		if len(toks) < 2 || toks[1].Kind != "atom" {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		n, err := strconv.Atoi(toks[1].Val)
+		if err != nil || n < 0 {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: op, num: n}, toks[2:], nil
+	case "UID":
+		if len(toks) < 2 || toks[1].Kind != "atom" {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		set, err := parseSeqSet(toks[1].Val)
+		if err != nil {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: "UID", set: set}, toks[2:], nil
+	default:
+		return searchKey{}, nil, fmt.Errorf("bad search")
+	}
+}
+
 func (m *Message) matches(k searchKey, maxUID uint32) bool {
 	switch k.op {
+	case "OR":
+		return m.matches(k.kids[0], maxUID) || m.matches(k.kids[1], maxUID)
+	case "NOT":
+		return !m.matches(k.kids[0], maxUID)
+	case "AND":
+		for _, c := range k.kids {
+			if !m.matches(c, maxUID) {
+				return false
+			}
+		}
+		return true
 	case "ALL":
 		return true
 	case "SEEN":

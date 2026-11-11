@@ -244,3 +244,14 @@
 
 - SEARCH and UID SEARCH match TEXT against the rendered RFC822, BODY against the body after the header break, and CC against the Cc header. Comparison is a case-insensitive substring. FROM, TO, and SUBJECT are unchanged. OR, NOT, parentheses, and FUZZY stay BAD.
 - Loopback covers CHARSET UTF-8, a body-only word, a generated message, and ESEARCH RETURN (ALL) and RETURN (COUNT). No personality file changed.
+
+## 2026-11-11 - SEARCH OR and NOT
+
+- Approved plan: sandbox/plans/search-bool-20261111-0923-plan.md
+- Work: SEARCH and UID SEARCH accept OR, NOT, and a parenthesized key list. A top-level sequence stays AND. FUZZY stays BAD.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - SEARCH OR and NOT landed
+
+- SEARCH and UID SEARCH accept OR, NOT, and a parenthesized key list. OR matches either key. NOT matches when its key does not. A parenthesized list matches only when every key inside it matches. The three nest. A top-level sequence stays AND.
+- FUZZY and any other unknown key stay BAD. A missing key after OR or NOT, or an unclosed parenthesis, is BAD. Loopback covers CHARSET UTF-8 and ESEARCH RETURN (ALL). No personality file changed.
