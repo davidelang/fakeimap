@@ -27,8 +27,10 @@ type Message struct {
 	raw      []byte
 	from     string
 	to       string
+	cc       string
 	subject  string
 	size     int
+	sent     time.Time
 
 	generated bool
 	genSeed   string
@@ -1277,7 +1279,67 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 	}
 }
 
-func (st *Store) search(s *session, uidMode bool, keys []searchKey) ([]uint32, error) {
+// sortCrit is one SORT key. REVERSE flips that key only.
+type sortCrit struct {
+	key string
+	rev bool
+}
+
+func addrMailbox(h string) string {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return ""
+	}
+	if addrs, err := mail.ParseAddressList(h); err == nil && len(addrs) > 0 {
+		return addrs[0].Address
+	}
+	if i := strings.IndexByte(h, '<'); i >= 0 {
+		if j := strings.IndexByte(h[i+1:], '>'); j >= 0 {
+			return strings.TrimSpace(h[i+1 : i+1+j])
+		}
+	}
+	return h
+}
+
+func (m *Message) sortDate() time.Time {
+	if !m.sent.IsZero() {
+		return m.sent
+	}
+	return m.internal
+}
+
+// lessSort orders one key. Equal keys return false so a stable sort
+// keeps mailbox order, which is ascending UID, including under REVERSE.
+func lessSort(a, b *Message, c *sortCrit) bool {
+	cmp := 0
+	switch c.key {
+	case "ARRIVAL":
+		cmp = a.internal.Compare(b.internal)
+	case "DATE":
+		cmp = a.sortDate().Compare(b.sortDate())
+	case "SIZE":
+		switch {
+		case a.size < b.size:
+			cmp = -1
+		case a.size > b.size:
+			cmp = 1
+		}
+	case "FROM":
+		cmp = strings.Compare(strings.ToLower(addrMailbox(a.from)), strings.ToLower(addrMailbox(b.from)))
+	case "TO":
+		cmp = strings.Compare(strings.ToLower(addrMailbox(a.to)), strings.ToLower(addrMailbox(b.to)))
+	case "CC":
+		cmp = strings.Compare(strings.ToLower(addrMailbox(a.cc)), strings.ToLower(addrMailbox(b.cc)))
+	case "SUBJECT":
+		cmp = strings.Compare(strings.ToLower(a.subject), strings.ToLower(b.subject))
+	}
+	if c.rev {
+		cmp = -cmp
+	}
+	return cmp < 0
+}
+
+func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCrit) ([]uint32, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
@@ -1285,7 +1347,11 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey) ([]uint32, e
 	}
 	mb := s.box
 	maxUID := mb.starMax(true)
-	var ids []uint32
+	type hit struct {
+		id uint32
+		m  *Message
+	}
+	var hits []hit
 	for i, m := range mb.msgs {
 		ok := true
 		for _, k := range keys {
@@ -1297,11 +1363,20 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey) ([]uint32, e
 		if !ok {
 			continue
 		}
+		id := uint32(i + 1)
 		if uidMode {
-			ids = append(ids, m.uid)
-		} else {
-			ids = append(ids, uint32(i+1))
+			id = m.uid
 		}
+		hits = append(hits, hit{id: id, m: m})
+	}
+	if crit != nil {
+		sort.SliceStable(hits, func(i, j int) bool {
+			return lessSort(hits[i].m, hits[j].m, crit)
+		})
+	}
+	ids := make([]uint32, len(hits))
+	for i, h := range hits {
+		ids[i] = h.id
 	}
 	return ids, nil
 }
@@ -1313,7 +1388,11 @@ func indexOverlay(m *Message) {
 	}
 	m.from = decodeHdr(msg.Header.Get("From"))
 	m.to = decodeHdr(msg.Header.Get("To"))
+	m.cc = decodeHdr(msg.Header.Get("Cc"))
 	m.subject = decodeHdr(msg.Header.Get("Subject"))
+	if t, err := mail.ParseDate(msg.Header.Get("Date")); err == nil {
+		m.sent = t
+	}
 }
 
 func (st *Store) appendMsg(s *session, name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, uint32, error) {
@@ -1368,8 +1447,10 @@ func cloneMsg(src *Message, uid uint32) *Message {
 		internal:  src.internal,
 		from:      src.from,
 		to:        src.to,
+		cc:        src.cc,
 		subject:   src.subject,
 		size:      src.size,
+		sent:      src.sent,
 		generated: src.generated,
 		genSeed:   src.genSeed,
 		genUID:    src.genUID,

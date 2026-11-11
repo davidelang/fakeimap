@@ -30,7 +30,9 @@
     "CREATE-SPECIAL-USE",
     "ESEARCH",
     "PARTIAL",
-    "COMPRESS=DEFLATE"
+    "COMPRESS=DEFLATE",
+    "SORT",
+    "ESORT"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -50,7 +52,9 @@
     "CREATE-SPECIAL-USE",
     "ESEARCH",
     "PARTIAL",
-    "COMPRESS=DEFLATE"
+    "COMPRESS=DEFLATE",
+    "SORT",
+    "ESORT"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",
@@ -77,6 +81,7 @@
   "fetch_peek_body": true,
   "fetch_seen_flags": true,
   "move_copyuid_untagged": true,
+  "sort_partial_count_only": true,
   "fetch_item_order": [
     "FLAGS",
     "UID",

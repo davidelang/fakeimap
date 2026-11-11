@@ -10,23 +10,24 @@ import (
 // Personality is the Cyrus-shaped reply data. A listed capability is
 // advertised only when this server implements it.
 type Personality struct {
-	Greeting            string   `json:"greeting"`
-	Delimiter           string   `json:"delimiter"`
-	GreetingCaps        []string `json:"greeting_capabilities,omitempty"`
-	PreLogin            []string `json:"pre_login_capabilities"`
-	PostLogin           []string `json:"post_login_capabilities"`
-	OtherUsers          string   `json:"other_users,omitempty"`
-	SharedFolders       string   `json:"shared_folders,omitempty"`
-	LogoutBye           bool     `json:"logout_bye"`
-	FetchItemOrder      []string `json:"fetch_item_order"`
-	SelectFlags         string   `json:"select_flags,omitempty"`
-	PermanentFlags      string   `json:"permanent_flags,omitempty"`
-	SelectOrder         []string `json:"select_order,omitempty"`
-	FlagOrder           []string `json:"flag_order,omitempty"`
-	FetchPeekBody       bool     `json:"fetch_peek_body,omitempty"`
-	FetchSeenFlags      bool     `json:"fetch_seen_flags,omitempty"`
-	MoveCopyUIDUntagged bool     `json:"move_copyuid_untagged,omitempty"`
-	rank                map[string]int
+	Greeting             string   `json:"greeting"`
+	Delimiter            string   `json:"delimiter"`
+	GreetingCaps         []string `json:"greeting_capabilities,omitempty"`
+	PreLogin             []string `json:"pre_login_capabilities"`
+	PostLogin            []string `json:"post_login_capabilities"`
+	OtherUsers           string   `json:"other_users,omitempty"`
+	SharedFolders        string   `json:"shared_folders,omitempty"`
+	LogoutBye            bool     `json:"logout_bye"`
+	FetchItemOrder       []string `json:"fetch_item_order"`
+	SelectFlags          string   `json:"select_flags,omitempty"`
+	PermanentFlags       string   `json:"permanent_flags,omitempty"`
+	SelectOrder          []string `json:"select_order,omitempty"`
+	FlagOrder            []string `json:"flag_order,omitempty"`
+	FetchPeekBody        bool     `json:"fetch_peek_body,omitempty"`
+	FetchSeenFlags       bool     `json:"fetch_seen_flags,omitempty"`
+	MoveCopyUIDUntagged  bool     `json:"move_copyuid_untagged,omitempty"`
+	SortPartialCountOnly bool     `json:"sort_partial_count_only,omitempty"`
+	rank                 map[string]int
 }
 
 func loadPersonality(path string) (*Personality, error) {
@@ -72,7 +73,9 @@ var implementedCaps = map[string]struct{}{
 	"LIST-STATUS":             {},
 	"CREATE-SPECIAL-USE":      {},
 	"ESEARCH":                 {},
+	"ESORT":                   {},
 	"PARTIAL":                 {},
+	"SORT":                    {},
 	"COMPRESS=DEFLATE":        {},
 	"SASL-IR":                 {},
 	"AUTH=PLAIN":              {},

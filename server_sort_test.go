@@ -1,0 +1,264 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+)
+
+func TestSortPersonality(t *testing.T) {
+	p, err := loadPersonality("personalities/sort.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.SortPartialCountOnly {
+		t.Fatal("sort.json returns no window")
+	}
+	for _, c := range []string{"SORT", "ESORT"} {
+		if !listed(p.PreLogin, c) || !listed(p.PostLogin, c) {
+			t.Fatalf("sort.json missing %s", c)
+		}
+	}
+	cyrus, err := loadPersonality("personalities/cyrus-3137.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cyrus.SortPartialCountOnly {
+		t.Fatal("cyrus personality should omit the PARTIAL window")
+	}
+	for _, c := range []string{"SORT", "ESORT"} {
+		if !listed(cyrus.PreLogin, c) || !listed(cyrus.PostLogin, c) {
+			t.Fatalf("cyrus personality missing %s", c)
+		}
+	}
+	for _, c := range []string{"SORT=DISPLAY", "SORT=MODSEQ", "SORT=UID"} {
+		if listed(cyrus.PreLogin, c) || listed(cyrus.PostLogin, c) || capImplemented(c) {
+			t.Fatalf("%s is implemented or advertised", c)
+		}
+	}
+}
+
+func TestSortKeys(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/sort.json"})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	caps := cl.cmd("CAPABILITY")
+	caps.ok(t)
+	requireCaps(t, capsOf(caps.untagged[0]), []string{"SORT", "ESORT"})
+
+	cl.cmd("CREATE SortBox").ok(t)
+	cl.cmd("SELECT SortBox").ok(t)
+	raws := []string{
+		sortMsg("mid@e.com", "z@e.com", "b@e.com", "mango", "Mon, 01 Jan 2020 00:00:00 +0000", "aaaa"),
+		sortMsg("zed@e.com", "a@e.com", "", "apple", "Wed, 03 Jan 2020 00:00:00 +0000", "a"),
+		sortMsg("amy@e.com", "m@e.com", "a@e.com", "cherry", "Tue, 02 Jan 2020 00:00:00 +0000", strings.Repeat("b", 20)),
+	}
+	internals := []string{
+		"03-Mar-2020 00:00:00 +0000",
+		"01-Mar-2020 00:00:00 +0000",
+		"02-Mar-2020 00:00:00 +0000",
+	}
+	for i, raw := range raws {
+		cl.cmd(fmt.Sprintf("APPEND SortBox \"%s\" {%d+}\r\n%s", internals[i], len(raw), raw)).ok(t)
+	}
+
+	if got := sortIDs(t, cl.cmd("SORT (FROM) UTF-8 ALL")); got != "3 1 2" {
+		t.Fatalf("FROM %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (FROM) US-ASCII ALL")); got != "3 1 2" {
+		t.Fatalf("UID FROM %q", got)
+	}
+	if got := sortIDs(t, cl.cmd(`SORT (REVERSE FROM) "UTF-8" ALL`)); got != "2 1 3" {
+		t.Fatalf("REVERSE FROM %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (ARRIVAL) UTF-8 ALL")); got != "2 3 1" {
+		t.Fatalf("ARRIVAL %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (DATE) UTF-8 ALL")); got != "1 3 2" {
+		t.Fatalf("DATE %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (SUBJECT) UTF-8 ALL")); got != "2 3 1" {
+		t.Fatalf("SUBJECT %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (TO) UTF-8 ALL")); got != "2 3 1" {
+		t.Fatalf("TO %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (CC) UTF-8 ALL")); got != "2 3 1" {
+		t.Fatalf("CC %q", got)
+	}
+	sizeOrder := []int{0, 1, 2}
+	sort.SliceStable(sizeOrder, func(i, j int) bool {
+		return len(raws[sizeOrder[i]]) < len(raws[sizeOrder[j]])
+	})
+	var sizeWant []string
+	for _, i := range sizeOrder {
+		sizeWant = append(sizeWant, fmt.Sprintf("%d", i+1))
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (SIZE) UTF-8 ALL")); got != strings.Join(sizeWant, " ") {
+		t.Fatalf("SIZE %q want %s", got, strings.Join(sizeWant, " "))
+	}
+	if got := sortIDs(t, cl.cmd("SORT (FROM) UTF-8 FROM amy@e.com")); got != "3" {
+		t.Fatalf("filtered %q", got)
+	}
+
+	tag, line := oneEsearch(t, cl.cmd("UID SORT RETURN (ALL COUNT) (FROM) UTF-8 ALL"))
+	if line != `* ESEARCH (TAG "`+tag+`") UID COUNT 3 ALL 3,1:2` {
+		t.Fatalf("all %q", line)
+	}
+	tag, line = oneEsearch(t, cl.cmd("SORT RETURN (ALL COUNT) (FROM) UTF-8 ALL"))
+	if line != `* ESEARCH (TAG "`+tag+`") COUNT 3 ALL 3,1:2` {
+		t.Fatalf("seq all %q", line)
+	}
+	tag, line = oneEsearch(t, cl.cmd("UID SORT RETURN (PARTIAL 1:2 COUNT) (FROM) UTF-8 ALL"))
+	if line != `* ESEARCH (TAG "`+tag+`") UID COUNT 3 PARTIAL (1:2 3,1)` {
+		t.Fatalf("partial %q", line)
+	}
+	tag, line = oneEsearch(t, cl.cmd("UID SORT RETURN (PARTIAL -1:-1 COUNT) (FROM) UTF-8 ALL"))
+	if line != `* ESEARCH (TAG "`+tag+`") UID COUNT 3 PARTIAL (-1:-1 2)` {
+		t.Fatalf("negative %q", line)
+	}
+	tag, line = oneEsearch(t, cl.cmd("UID SORT RETURN (PARTIAL 4:9 COUNT) (FROM) UTF-8 ALL"))
+	if line != `* ESEARCH (TAG "`+tag+`") UID COUNT 3 PARTIAL (4:9 NIL)` {
+		t.Fatalf("miss %q", line)
+	}
+	tag, line = oneEsearch(t, cl.cmd("UID SORT RETURN (MIN MAX COUNT) (FROM) UTF-8 ALL"))
+	if line != `* ESEARCH (TAG "`+tag+`") UID COUNT 3 MIN 1 MAX 3` {
+		t.Fatalf("min max %q", line)
+	}
+	empty := cl.cmd("SORT RETURN (COUNT) (FROM) UTF-8 FROM nosuch@e.com")
+	tag, line = oneEsearch(t, empty)
+	if line != `* ESEARCH (TAG "`+tag+`") COUNT 0` {
+		t.Fatalf("empty esort %q", line)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (SUBJECT) UTF-8 FROM nosuch@e.com")); got != "" {
+		t.Fatalf("empty sort %q", got)
+	}
+
+	tie := sortMsg("Amy <amy@e.com>", "z@e.com", "", "zed", "Mon, 01 Jan 2020 00:00:00 +0000", "z")
+	cl.cmd(fmt.Sprintf("APPEND SortBox \"04-Mar-2020 00:00:00 +0000\" {%d+}\r\n%s", len(tie), tie)).ok(t)
+	if got := sortIDs(t, cl.cmd("SORT (FROM) UTF-8 ALL")); got != "3 4 1 2" {
+		t.Fatalf("tie %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (REVERSE FROM) UTF-8 ALL")); got != "2 1 3 4" {
+		t.Fatalf("reverse tie %q", got)
+	}
+
+	for _, line := range []string{
+		"SORT (NOTAKEY) UTF-8 ALL",
+		"SORT (FROM FROM) UTF-8 ALL",
+		"SORT (FROM) KOI8-R ALL",
+		"SORT (FROM) UTF-8 OR FROM a FROM b",
+		"SORT FROM UTF-8 ALL",
+	} {
+		if cl.cmd(line).status != "BAD" {
+			t.Fatalf("%s was accepted", line)
+		}
+	}
+
+	cl.cmd("CREATE SortUid").ok(t)
+	cl.cmd("SELECT SortUid").ok(t)
+	one := sortMsg("only@e.com", "a@e.com", "", "one", "Mon, 01 Jan 2020 00:00:00 +0000", "z")
+	cl.cmd(fmt.Sprintf("APPEND SortUid \"01-Jan-2020 00:00:00 +0000\" {%d+}\r\n%s", len(one), one)).ok(t)
+	cl.cmd(fmt.Sprintf("APPEND SortUid \"02-Jan-2020 00:00:00 +0000\" {%d+}\r\n%s", len(one), one)).ok(t)
+	cl.cmd(`STORE 1 +FLAGS (\Deleted)`).ok(t)
+	cl.cmd("EXPUNGE").ok(t)
+	if got := sortIDs(t, cl.cmd("SORT (ARRIVAL) UTF-8 ALL")); got != "1" {
+		t.Fatalf("seq after expunge %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (ARRIVAL) UTF-8 ALL")); got != "2" {
+		t.Fatalf("uid after expunge %q", got)
+	}
+}
+
+func TestSortPartialCountOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "count-only.json")
+	p, err := loadPersonality("personalities/sort.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SortPartialCountOnly = true
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: path})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("SELECT INBOX").ok(t)
+	tag, line := oneEsearch(t, cl.cmd("UID SORT RETURN (PARTIAL 1:1 COUNT) (ARRIVAL) UTF-8 ALL"))
+	if line != `* ESEARCH (TAG "`+tag+`") UID COUNT 2` {
+		t.Fatalf("count only %q", line)
+	}
+	if strings.Contains(line, "PARTIAL") {
+		t.Fatalf("window returned %q", line)
+	}
+}
+
+func TestSortRequiresCaps(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/condstore.json"})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("SELECT INBOX").ok(t)
+	if cl.cmd("SORT (FROM) UTF-8 ALL").status != "BAD" {
+		t.Fatal("SORT was accepted")
+	}
+	if cl.cmd("UID SORT (DATE) UTF-8 ALL").status != "BAD" {
+		t.Fatal("UID SORT was accepted")
+	}
+	plain := cl.cmd("SEARCH ALL")
+	if strings.Join(searchIDs(t, plain), " ") != "1 2" {
+		t.Fatalf("search after rejected SORT %+v", plain)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sort-only.json")
+	p, err := loadPersonality("personalities/sort.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.PreLogin = dropCap(p.PreLogin, "ESORT")
+	p.PostLogin = dropCap(p.PostLogin, "ESORT")
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, bound = start(t, Config{Listen: "127.0.0.1:0", Personality: path})
+	cl = dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("SELECT INBOX").ok(t)
+	if cl.cmd("UID SORT RETURN (ALL COUNT) (ARRIVAL) UTF-8 ALL").status != "BAD" {
+		t.Fatal("RETURN was accepted without ESORT")
+	}
+	if got := sortIDs(t, cl.cmd("SORT (ARRIVAL) UTF-8 ALL")); got != "1 2" {
+		t.Fatalf("plain sort without ESORT %q", got)
+	}
+}
+
+func sortMsg(from, to, cc, subj, date, body string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "From: %s\r\nTo: %s\r\n", from, to)
+	if cc != "" {
+		fmt.Fprintf(&b, "Cc: %s\r\n", cc)
+	}
+	fmt.Fprintf(&b, "Subject: %s\r\nDate: %s\r\n\r\n%s", subj, date, body)
+	return b.String()
+}
+
+func sortIDs(t *testing.T, rp *reply) string {
+	t.Helper()
+	if rp.status != "OK" || len(rp.untagged) != 1 || !strings.HasPrefix(rp.untagged[0], "* SORT") {
+		t.Fatalf("sort reply %+v", rp)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(rp.untagged[0], "* SORT"))
+}

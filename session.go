@@ -186,7 +186,7 @@ func (s *session) readCommand() (command, error) {
 		}
 		cmd.name = strings.ToUpper(name)
 		switch cmd.name {
-		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "EXPUNGE":
+		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "EXPUNGE", "SORT":
 		default:
 			return cmd, errSyntax
 		}
@@ -350,6 +350,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdStore(cmd)
 	case "SEARCH":
 		return s.cmdSearch(cmd)
+	case "SORT":
+		return s.cmdSort(cmd)
 	case "APPEND":
 		return s.cmdAppend(cmd)
 	case "COPY", "MOVE":
@@ -1488,11 +1490,22 @@ func formatEsearch(tag string, uid bool, ids []uint32, ret searchReturn) string 
 		fmt.Fprintf(&b, " COUNT %d", len(ids))
 	}
 	if len(ids) > 0 {
-		if ret.min {
-			fmt.Fprintf(&b, " MIN %d", ids[0])
-		}
-		if ret.max {
-			fmt.Fprintf(&b, " MAX %d", ids[len(ids)-1])
+		if ret.min || ret.max {
+			mn, mx := ids[0], ids[0]
+			for _, id := range ids[1:] {
+				if id < mn {
+					mn = id
+				}
+				if id > mx {
+					mx = id
+				}
+			}
+			if ret.min {
+				fmt.Fprintf(&b, " MIN %d", mn)
+			}
+			if ret.max {
+				fmt.Fprintf(&b, " MAX %d", mx)
+			}
 		}
 		if ret.all {
 			b.WriteString(" ALL ")
@@ -1523,7 +1536,7 @@ func (s *session) cmdSearch(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
-	ids, err := s.srv.store.search(s, cmd.uid, keys)
+	ids, err := s.srv.store.search(s, cmd.uid, keys, nil)
 	if err != nil {
 		return s.no(cmd.tag, "SEARCH not selected")
 	}
@@ -1540,6 +1553,102 @@ func (s *session) cmdSearch(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, "SEARCH completed")
+}
+
+func knownCharset(s string) bool {
+	switch strings.ToUpper(s) {
+	case "UTF-8", "US-ASCII":
+		return true
+	default:
+		return false
+	}
+}
+
+// parseSortCrit reads one parenthesized key. A second key is syntax, not a sort.
+func parseSortCrit(args []Token) (sortCrit, []Token, error) {
+	if len(args) == 0 || args[0].Kind != "lparen" {
+		return sortCrit{}, nil, fmt.Errorf("syntax")
+	}
+	i := 1
+	rev := false
+	if i < len(args) && args[i].Kind == "atom" && strings.EqualFold(args[i].Val, "REVERSE") {
+		rev = true
+		i++
+	}
+	if i >= len(args) || args[i].Kind != "atom" {
+		return sortCrit{}, nil, fmt.Errorf("syntax")
+	}
+	key := strings.ToUpper(args[i].Val)
+	switch key {
+	case "ARRIVAL", "CC", "DATE", "FROM", "SIZE", "SUBJECT", "TO":
+	default:
+		return sortCrit{}, nil, fmt.Errorf("key")
+	}
+	i++
+	if i >= len(args) || args[i].Kind != "rparen" {
+		return sortCrit{}, nil, fmt.Errorf("syntax")
+	}
+	return sortCrit{key: key, rev: rev}, args[i+1:], nil
+}
+
+func (s *session) cmdSort(cmd command) error {
+	if !s.advertiseCap("SORT") {
+		return s.bad(cmd.tag, "SORT unsupported")
+	}
+	if !s.srv.store.selected(s) {
+		return s.no(cmd.tag, "SORT not selected")
+	}
+	ret, rest, err := parseSearchReturn(cmd.args)
+	if err != nil {
+		return s.bad(cmd.tag, "SORT syntax")
+	}
+	if ret.on && !s.advertiseCap("ESORT") {
+		return s.bad(cmd.tag, "SORT syntax")
+	}
+	if ret.partial && !s.advertiseCap("PARTIAL") {
+		return s.bad(cmd.tag, "SORT syntax")
+	}
+	crit, rest, err := parseSortCrit(rest)
+	if err != nil {
+		if err.Error() == "key" {
+			return s.bad(cmd.tag, "SORT bad key")
+		}
+		return s.bad(cmd.tag, "SORT syntax")
+	}
+	if len(rest) == 0 {
+		return s.bad(cmd.tag, "SORT syntax")
+	}
+	cs, ok := astring(rest[0])
+	if !ok || !knownCharset(cs) {
+		return s.bad(cmd.tag, "SORT bad charset")
+	}
+	keys, err := parseSearch(rest[1:])
+	if err != nil {
+		return s.bad(cmd.tag, "SORT bad key")
+	}
+	ids, err := s.srv.store.search(s, cmd.uid, keys, &crit)
+	if err != nil {
+		return s.no(cmd.tag, "SORT not selected")
+	}
+	line := ""
+	if ret.on {
+		out := ret
+		if s.pers.SortPartialCountOnly {
+			out.partial = false
+		}
+		line = formatEsearch(cmd.tag, cmd.uid, ids, out)
+	} else {
+		var b strings.Builder
+		b.WriteString("* SORT")
+		for _, id := range ids {
+			fmt.Fprintf(&b, " %d", id)
+		}
+		line = b.String()
+	}
+	if err := s.sendLine(line); err != nil {
+		return err
+	}
+	return s.ok(cmd.tag, "SORT completed")
 }
 
 func (s *session) cmdAppend(cmd command) error {

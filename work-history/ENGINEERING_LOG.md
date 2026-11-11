@@ -134,3 +134,16 @@
 ## 2026-11-11 - COMPRESS=DEFLATE
 
 - COMPRESS DEFLATE sends a cleartext tagged OK, then both directions are raw deflate with a sync flush. personalities/compress.json advertises COMPRESS=DEFLATE. The running liveimap-cyrus-3137 kind diff was empty, so the capability is on cyrus-3137.json and gone from the gaps file. cyrusprobe -compress decompresses before it compares response kinds. A second COMPRESS is NO. SORT and ESORT are unchanged.
+
+## 2026-11-11 - SORT and ESORT execution start
+
+- Approved plan: sandbox/plans/sort-esort-20261111-0443-plan.md
+- Work: answer SORT and UID SORT, including ESORT RETURN PARTIAL, when the personality advertises them. THREAD, SORT=DISPLAY, SORT=MODSEQ, and SORT=UID stay gaps.
+- A personality field sort_partial_count_only omits the PARTIAL window. The lab container is not recreated or stopped. The lab password stays out of this log.
+
+## 2026-11-11 - SORT and ESORT landed
+
+- Approved plan: sandbox/plans/sort-esort-20261111-0443-plan.md
+- SORT and UID SORT return sequence numbers or UIDs for one key, and ESORT reuses ESEARCH with ALL and PARTIAL in that order. personalities/sort.json returns the window.
+- The already-running liveimap-cyrus-3137 omits the PARTIAL window, so personalities/cyrus-3137.json sets sort_partial_count_only and lists SORT and ESORT. Those two are gone from the gaps file. SORT=DISPLAY, SORT=MODSEQ, and SORT=UID stay unimplemented. The container was not recreated and was not stopped. cyrusprobe -sort kind diff was empty.
+- The lab password stayed in the gitignored operator file.
