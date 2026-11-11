@@ -1,0 +1,335 @@
+#!/bin/bash
+# filter-clean-config
+# Git clean filter for manage-configs.
+# Scrubs real values back to @@TOKEN@@ on git add.
+# - Shell-like files:
+#     1) LHS assignment scrub only when the RHS equals the configured value
+#        (git_home="" stays empty; git_home=<git_home> becomes @@GIT_HOME@@)
+#     2) free-form scrub for path-like config values (contain / or $)
+#        Short names are not rewritten: a literal ${var:-ai-planner} is not a
+#        token, and a token default cannot be told apart from that literal.
+# - Other files (toml/md/text): dumb value→token replace (longer values first).
+# Run: git config filter.manage-configs.clean 'bash ./filter-clean-config %f'
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="$SCRIPT_DIR/project.config"
+
+if [ ! -f "$CONFIG" ]; then
+  echo "filter-clean-config: ERROR: $CONFIG missing; cannot scrub values back to @@TOKEN@@" >&2
+  exit 1
+fi
+
+# Parse config into env (simple name=value)
+while IFS='=' read -r key val; do
+  if [[ "$key" =~ ^[a-z_]+$ && -n "$val" ]]; then
+    export "CONF_${key^^}=$val"
+  fi
+done < "$CONFIG"
+
+# Tokens to scrub: common ones
+declare -A TOKENS=(
+  [planning_user]="@@PLANNING_USER@@"
+  [coder_user]="@@CODER_USER@@"
+  [orchestrator_user]="@@ORCHESTRATOR_USER@@"
+  [code_group]="@@CODE_GROUP@@"
+  [sandbox_group]="@@SANDBOX_GROUP@@"
+  [shared_group]="@@SHARED_GROUP@@"
+  [grok_bin_default]="@@GROK_BIN_DEFAULT@@"
+  [gemini_bin_default]="@@GEMINI_BIN_DEFAULT@@"
+  [git_home]="@@GIT_HOME@@"
+  [primary_user]="@@PRIMARY_USER@@"
+  [antigravity_bin]="@@ANTIGRAVITY_BIN@@"
+  [cursor_bin]="@@CURSOR_BIN@@"
+  [orch_root]="@@ORCH_ROOT@@"
+)
+
+# One token for the sandbox directory: sandbox_dir. It is not in TOKENS: a dumb
+# substring replace of a short dirname such as sandbox also rewrites ordinary sentences.
+SANDBOX_TOKEN='@@SANDBOX_PATH@@'
+if [ -z "${CONF_SANDBOX_DIR:-}" ]; then
+  echo "filter-clean-config: ERROR: sandbox_dir has no value in $CONFIG" >&2
+  exit 1
+fi
+resolve_sandbox_dir() {
+  printf '%s' "${CONF_SANDBOX_DIR:-}"
+}
+
+
+apply_sandbox_boundary() {
+  local content="$1"
+  local shell_mode="$2"
+  local val
+  val="$(resolve_sandbox_dir)"
+  printf '%s' "$content" | SANDBOX_VAL="$val" SANDBOX_SHELL="$shell_mode" SANDBOX_ORCH="${CONF_ORCH_ROOT:-}" python3 -c "$(cat <<'PYBOUND'
+
+import os
+import re
+import sys
+
+TOKEN = "@@SANDBOX_PATH@@"
+TOKEN_ROOT = "@@ORCH_ROOT@@/" + TOKEN
+ABS_RE = re.compile(
+    r"/(?:[A-Za-z0-9._-]+/)+(?:dev-ai-interaction|sandbox)(?=/|[`\"']|$)"
+)
+PROBE_RE = re.compile(r"(^|[\s\[])-[dLef]([\s\]]|$)")
+
+
+def _shaped(name, line):
+    if re.search(r"(^|[/`\"=(\s])" + re.escape(name) + r"(?=[/`\"']|$)", line):
+        return True
+    if re.search(r"=" + re.escape(name) + r"(?=\s|$)", line):
+        return True
+    return False
+
+
+def _both_layouts(line):
+    return _shaped("dev-ai-interaction", line) and _shaped("sandbox", line)
+
+
+def _longer_path(src, end):
+    if src[end:end + 1] != "/":
+        return False
+    nxt = src[end + 1:end + 2]
+    return nxt.isalnum() or nxt in "._-"
+
+
+def _rewrite_absolute(body, orch):
+    def repl(match):
+        full = match.group(0)
+        parent = full.rsplit("/", 1)[0]
+        if orch and parent == orch:
+            return TOKEN_ROOT
+        if "VehicleExpenses-automated/dev-ai-interaction" in full:
+            return TOKEN_ROOT
+        if "Sandbox" in body:
+            return TOKEN_ROOT
+        return full
+    return ABS_RE.sub(repl, body)
+
+
+def _foreign_absolute(src, name_at):
+    """True when name sits in an absolute path. Those are handled only by _rewrite_absolute."""
+    stop = (" ", "\t", "'", '"', "`")
+    i = name_at
+    while i > 0 and src[i - 1] not in stop:
+        i -= 1
+    return src[i:i + 1] == "/"
+
+
+def _boundary(body, names):
+    comparison = _both_layouts(body)
+    is_comment = body.lstrip().startswith("#")
+    directory_comment = bool(re.match(r"\s*#\s*sandbox_dir=", body))
+    for name in sorted({n for n in names if n}, key=len, reverse=True):
+        src = body
+
+        def repl_as(match, src=src):
+            if comparison or (is_comment and directory_comment):
+                return match.group(0)
+            return "=" + TOKEN
+
+        body = re.sub(r"=" + re.escape(name) + r"(?=\s|$)", repl_as, body)
+        src = body
+
+        def repl(match, src=src):
+            name_at = match.start() + len(match.group(1))
+            if _foreign_absolute(src, name_at):
+                return match.group(0)
+            if comparison and not _longer_path(src, match.end()):
+                return match.group(0)
+            prefix = match.group(1)
+            nxt = src[match.end():match.end() + 1]
+            if is_comment and directory_comment:
+                return match.group(0)
+            if is_comment and nxt != "/" and prefix != "=":
+                return match.group(0)
+            return prefix + TOKEN
+
+        body = re.sub(
+            r"(^|[/`\"=(\s])" + re.escape(name) + r"(?=[/`\"']|$)",
+            repl,
+            body,
+        )
+    return body
+
+
+def _layout_dirname(text, name):
+    # Path segment only. Do not treat the English possessive sandbox's as a dirname.
+    return re.search(
+        r"(?:^|[/`\"=])" + re.escape(name) + r"(?=[/`\"]|$)",
+        text,
+        re.M,
+    ) is not None
+
+
+def _file_has_both(text):
+    return _layout_dirname(text, "dev-ai-interaction") and _layout_dirname(text, "sandbox")
+
+
+def rewrite_line(body, names, shell_mode, orch, both_layouts_file=False):
+    # Whole-line skips: fallback assignment, and existence probes in a file
+    # that names both sandbox layouts. A single-layout use such as
+    # [ -L "$wt/<sandbox>" or readlink -f still retokenizes.
+    if shell_mode and "SANDBOX_REL=" in body:
+        return body
+    if shell_mode and both_layouts_file and PROBE_RE.search(body):
+        return body
+    body = body.replace("dev-ai*/plans/**", TOKEN + "/plans/**")
+    body = _rewrite_absolute(body, orch)
+    return _boundary(body, names)
+
+
+def rewrite_text(text, names, shell_mode, orch_root=""):
+    clean = []
+    for name in names:
+        name = (name or "").strip().strip("/")
+        if name and "@@" not in name:
+            clean.append(name)
+    orch = (orch_root or "").strip().rstrip("/")
+    both = _file_has_both(text)
+    lines = text.splitlines(keepends=True)
+    if text and not lines:
+        lines = [text]
+    out = []
+    prev = None
+    for line in lines:
+        nl = ""
+        body = line
+        if body.endswith("\n"):
+            nl = "\n"
+            body = body[:-1]
+            if body.endswith("\r"):
+                nl = "\r\n"
+                body = body[:-1]
+        body = rewrite_line(body, clean, bool(shell_mode), orch, both)
+        if (
+            prev is not None
+            and body == prev
+            and TOKEN + "/plans/**" in body
+        ):
+            continue
+        prev = body
+        out.append(body + nl)
+    return "".join(out)
+
+val = os.environ.get("SANDBOX_VAL", "")
+shell = os.environ.get("SANDBOX_SHELL", "0") == "1"
+orch = os.environ.get("SANDBOX_ORCH", "")
+names = [val] if val else []
+# Always retokenize the VehicleExpenses sandbox dirname. Hosts whose
+# configured name is "sandbox" otherwise leave historical dev-ai-interaction
+# paths literal. The English word sandbox is rewritten only when it is the
+# configured dirname. Lines that name both layouts are left alone.
+if "dev-ai-interaction" not in names:
+    names.append("dev-ai-interaction")
+sys.stdout.write(rewrite_text(sys.stdin.read(), names, shell, orch))
+PYBOUND
+)"
+}
+
+# For shell files: scrub VAR=<configured value> back to VAR=@@TOKEN@@.
+# Any other RHS, including git_home="", is left unchanged.
+scrub_shell_assignments() {
+  local content="$1"
+  local var token confvar val
+  for var in "${!TOKENS[@]}"; do
+    token="${TOKENS[$var]}"
+    confvar="CONF_${var^^}"
+    val="${!confvar:-}"
+    [ -n "$val" ] || continue
+    content=$(printf '%s\n' "$content" | SCRUB_VAR="$var" SCRUB_TOKEN="$token" SCRUB_VAL="$val" python3 -c '
+import os, re, sys
+var = os.environ["SCRUB_VAR"]
+token = os.environ["SCRUB_TOKEN"]
+val = os.environ["SCRUB_VAL"]
+pat = re.compile(r"^(\s*(?:export\s+)?" + re.escape(var) + r"\s*)=(.*)$")
+out = []
+for line in sys.stdin.read().splitlines():
+    m = pat.match(line)
+    if m:
+        rhs = m.group(2)
+        if len(rhs) >= 2 and rhs[0] == rhs[-1] and rhs[0] in (chr(34), chr(39)):
+            rhs = rhs[1:-1]
+        if rhs == val:
+            line = m.group(1) + "=" + token
+    out.append(line)
+sys.stdout.write("\n".join(out))
+')
+  done
+  printf '%s' "$content"
+}
+
+# Free-form value→token. If path_only=1, only values containing / or $.
+scrub_values() {
+  local content="$1"
+  local path_only="${2:-0}"
+  local var token confvar val
+  local -a pairs=()
+  local i
+
+  for var in "${!TOKENS[@]}"; do
+    token="${TOKENS[$var]}"
+    confvar="CONF_${var^^}"
+    val="${!confvar:-}"
+    [ -n "$val" ] || continue
+    if [ "$path_only" = "1" ]; then
+      # Skip short names/groups/sandbox dirnames used as intentional fallbacks
+      if [[ "$val" != */* && "$val" != *'$'* ]]; then
+        continue
+      fi
+    fi
+    pairs+=("${#val}|${val}|${token}")
+  done
+
+  if [ "${#pairs[@]}" -eq 0 ]; then
+    printf '%s' "$content"
+    return
+  fi
+
+  IFS=$'\n' pairs=($(printf '%s\n' "${pairs[@]}" | sort -t'|' -k1,1nr))
+  unset IFS
+
+  for i in "${pairs[@]}"; do
+    val="${i#*|}"
+    token="${val#*|}"
+    val="${val%%|*}"
+    # Whole token only. A short name such as the primary user must not match
+    # inside a longer id (davidlang contains dlang).
+    content=$(printf '%s' "$content" | SCRUB_VAL="$val" SCRUB_TOKEN="$token" python3 -c '
+import os, re, sys
+val = os.environ["SCRUB_VAL"]
+token = os.environ["SCRUB_TOKEN"]
+pat = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(val) + r"(?![A-Za-z0-9_])")
+sys.stdout.write(pat.sub(token, sys.stdin.read()))
+')
+  done
+  printf '%s' "$content"
+}
+
+filename="${1:-}"
+content=$(cat)
+
+if [[ "$filename" == *.sh \
+   || "$filename" == *run-grok* \
+   || "$filename" == *run-antigravity* \
+   || "$filename" == *setup* \
+   || "$filename" == *filter* \
+   || "$filename" == *set-* \
+   || "$filename" == *fetch-deps* \
+   || "$filename" == *get-artifacts* \
+   || "$filename" == *libpin* \
+   || "$filename" == *grok-launch-common* \
+   || "$filename" == *landlock.config* \
+   || -z "$filename" ]]; then
+  content=$(scrub_shell_assignments "$content")
+  # Restore path tokens that smudge rewrote inside comments/docs
+  content=$(scrub_values "$content" 1)
+  content=$(apply_sandbox_boundary "$content" 1)
+  printf '%s\n' "$content"
+else
+  content=$(scrub_values "$content" 0)
+  content=$(apply_sandbox_boundary "$content" 0)
+  printf '%s\n' "$content"
+fi

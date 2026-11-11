@@ -1,0 +1,384 @@
+#!/bin/bash
+# env — project shell environment: umask + group credentials for this multi-user tree.
+#
+# Intended UX (no full desktop logout):
+#   source ./orch/env
+#     → set umask 002
+#     → if project groups are missing from *this* shell but present on the account,
+#        re-exec a new shell with full groups via ./orch/refresh-shell (setuid helper).
+#        Other GUI apps stay open; only this terminal is replaced.
+#
+#   ./orch/env check
+#   ./orch/env help
+#   ./orch/env how-to-fix-groups   # if helper not installed yet
+#
+# One-time install of the group refresh helper (sudo):
+#   gcc -O2 -Wall -o refresh-shell refresh-shell.c
+#   refresh-shell only works when it is owned by root with mode 4755 (setuid root).
+#   Until it is, start a new login session (e.g. su - $USER, ssh localhost) to pick up groups.
+#   # or: sudo ./fix-perms   (builds/installs when present)
+#
+# Do NOT use newgrp for multi-group restore — it switches primary GID and drops others.
+
+set +e
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# This file lives in orch/. project.config stays at the checkout root.
+ENV_ROOT="$SCRIPT_DIR"
+if [ "$(basename "$SCRIPT_DIR")" = "orch" ]; then
+  ENV_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+if [ -f "$ENV_ROOT/project.config" ]; then
+  # Identity keys only. Other project.config lines hold paths and must not be sourced.
+  while IFS= read -r _env_line || [ -n "${_env_line:-}" ]; do
+    case "$_env_line" in
+      code_group=*|shared_group=*|sandbox_group=*|primary_user=*|planning_user=*|coder_user=*|orchestrator_user=*)
+        _env_key=${_env_line%%=*}
+        _env_val=${_env_line#*=}
+        _env_val=${_env_val%$'\r'}
+        export "${_env_key}=${_env_val}"
+        ;;
+    esac
+  done < "$ENV_ROOT/project.config"
+  unset _env_line _env_key _env_val
+fi
+
+CODE_GROUP=${code_group:-ai-code}
+SHARED_GROUP=${shared_group:-ai-shared}
+SANDBOX_GROUP=${sandbox_group:-ai-sandbox}
+PRIMARY_USER=${primary_user:-dlang}
+
+_ENV_SOURCED=0
+if [ -n "${BASH_VERSION:-}" ]; then
+  [[ "${BASH_SOURCE[0]}" != "${0}" ]] && _ENV_SOURCED=1
+elif [ -n "${ZSH_VERSION:-}" ]; then
+  case "${ZSH_EVAL_CONTEXT:-}" in
+    *:file*) _ENV_SOURCED=1 ;;
+  esac
+fi
+
+# Prefer a *good* helper: executable + setuid + owned by root.
+# Never return a setuid-but-ai-coder binary first (master worktree often has that).
+_env_helper_is_good() {
+  local b="$1"
+  [ -x "$b" ] || return 1
+  [ -u "$b" ] || return 1
+  [ "$(stat -c '%U' "$b" 2>/dev/null)" = "root" ] || return 1
+  return 0
+}
+
+_env_find_refresh() {
+  local d cand first_any=""
+  d="$SCRIPT_DIR"
+  for _ in 1 2 3 4 5; do
+    cand="$d/refresh-shell"
+    if [ -e "$cand" ]; then
+      [ -z "$first_any" ] && first_any="$cand"
+      if _env_helper_is_good "$cand"; then
+        echo "$cand"
+        return 0
+      fi
+    fi
+    [ "$d" = "/" ] && break
+    d=$(dirname "$d")
+  done
+  # Fall back to first existing path for error messages / install hints
+  if [ -n "$first_any" ]; then
+    echo "$first_any"
+    return 1
+  fi
+  echo "$SCRIPT_DIR/refresh-shell"
+  return 1
+}
+REFRESH="$(_env_find_refresh 2>/dev/null || true)"
+REFRESH=${REFRESH:-$SCRIPT_DIR/refresh-shell}
+
+_env_expected_groups() {
+  local u
+  u=$(id -un)
+  case "$u" in
+    "$PRIMARY_USER"|dlang) echo "$CODE_GROUP $SHARED_GROUP $SANDBOX_GROUP" ;;
+    ai-coder|"${coder_user:-ai-coder}") echo "$CODE_GROUP $SHARED_GROUP $SANDBOX_GROUP" ;;
+    ai-orchestrator|"${orchestrator_user:-ai-orchestrator}") echo "$CODE_GROUP $SHARED_GROUP $SANDBOX_GROUP" ;;
+    ai-planner|"${planning_user:-ai-planner}") echo "$SHARED_GROUP $SANDBOX_GROUP" ;;
+    *) echo "$SHARED_GROUP" ;;
+  esac
+}
+
+_env_account_groups() {
+  id -nG "$(id -un)" 2>/dev/null || true
+}
+
+_env_session_missing_stale() {
+  # prints space-separated groups missing from session but present on account
+  local g account need stale
+  g=$(id -nG)
+  account=$(_env_account_groups)
+  stale=""
+  for need in $(_env_expected_groups); do
+    if echo " $g " | grep -qw "$need"; then
+      continue
+    fi
+    if echo " $account " | grep -qw "$need"; then
+      stale="$stale $need"
+    fi
+  done
+  echo "$stale"
+}
+
+_env_refresh_installed() {
+  # Re-resolve so we pick a root-owned helper even if cwd worktree has a broken copy.
+  # Do NOT run the binary as a preflight subprocess: older builds ignore --check and
+  # exec an interactive shell, which hangs "source ./orch/env" forever.
+  REFRESH="$(_env_find_refresh 2>/dev/null || true)"
+  REFRESH=${REFRESH:-$SCRIPT_DIR/refresh-shell}
+  _env_helper_is_good "$REFRESH"
+}
+
+_env_try_refresh_shell() {
+  # Replace *this* shell with one that has full group list. No desktop logout.
+  # NEVER exec a non-root-owned setuid binary (kills terminal). Stat-only gate.
+  echo "env: looking for setuid-root refresh-shell..." >&2
+  if ! _env_refresh_installed; then
+    REFRESH="$(_env_find_refresh 2>/dev/null || true)"
+    REFRESH=${REFRESH:-$SCRIPT_DIR/refresh-shell}
+    if [ -x "$REFRESH" ] && [ -u "$REFRESH" ] && [ "$(stat -c '%U' "$REFRESH" 2>/dev/null)" != "root" ]; then
+      echo "env: refusing to exec $REFRESH (setuid but owner=$(stat -c '%U' "$REFRESH") — would kill this terminal)." >&2
+      echo "  $REFRESH only works when owned by root with mode 4755 (setuid root)." >&2
+      echo "  Until then, start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups." >&2
+      echo "  Or:   sudo rm -f $REFRESH   # then use orch root helper" >&2
+      echo "  Or:   sudo ./orch/install-refresh-shell.sh --all" >&2
+    elif [ ! -e "$REFRESH" ]; then
+      echo "env: no good refresh-shell found (need setuid root under worktree or parents)." >&2
+    else
+      echo "env: helper not usable: $REFRESH (need -rwsr-xr-x root root)" >&2
+      echo "  Rebuild+install: sudo ./orch/install-refresh-shell.sh \$(git rev-parse --show-toplevel 2>/dev/null || pwd)" >&2
+    fi
+    return 1
+  fi
+  export ENV_CWD="$(pwd)"
+  echo "env: re-executing shell with full project groups (other apps stay open)..."
+  echo "  helper: $REFRESH ($(stat -c '%U:%G %a' "$REFRESH" 2>/dev/null))"
+  # Replace this process only after printing — if exec fails, we return and keep the shell.
+  exec "$REFRESH" || {
+    echo "env: exec $REFRESH failed — shell kept open" >&2
+    return 1
+  }
+}
+
+_env_print_install_helper() {
+  cat <<EOF
+
+refresh-shell is not installed as setuid root yet (required to reload groups
+without a full desktop logout). One-time setup from the *orchestration root*
+(parent of agent-N), not necessarily this worktree:
+
+  cd /path/to/VehicleExpenses-automated   # orchestration root
+  gcc -O2 -Wall -o refresh-shell refresh-shell.c
+  # refresh-shell only works when owned by root with mode 4755 (setuid root).
+
+Until then, start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups.
+
+Or:  sudo ./fix-perms --verbose   # builds/installs the helper when source is present
+
+env looks for the helper in this directory and parents (so agent-N can use ../orch/refresh-shell).
+
+Then in this terminal:
+  source ./orch/env
+
+Until then, temporary workarounds (no full GUI logout):
+  exec sudo -iu $(id -un)          # new login shell as you (if sudo allows)
+  ssh $(id -un)@localhost          # new PAM session
+  sg $SHARED_GROUP -c 'git status' # one-shot under one group
+
+Do NOT use: newgrp $CODE_GROUP
+EOF
+}
+
+_env_print_how_to_fix_groups() {
+  cat <<EOF
+
+=== Fix project groups without closing all GUI apps ===
+
+Linux freezes supplementary groups at login. If groups were added later, this
+shell is "stale". env is *supposed* to fix that by re-execing a shell via
+setuid helper refresh-shell (other apps stay open).
+
+EOF
+  if _env_refresh_installed; then
+    echo "Helper is installed. From the repo:"
+    echo "  source ./orch/env"
+    echo "That will exec a new shell in the same cwd with full groups + umask 002."
+  else
+    _env_print_install_helper
+  fi
+  cat <<EOF
+
+Verify after refresh:
+  id -nG | tr ' ' '\\n' | grep -E '^(ai-code|ai-shared|ai-sandbox)\$'
+  source ./orch/env check || ./orch/env check
+
+EOF
+}
+
+_env_check() {
+  local bad=0
+  local u g account missing stale not_member
+  u=$(id -un)
+  g=$(id -nG)
+  account=$(_env_account_groups)
+
+  echo "user: $u"
+  echo "session groups (this shell): $g"
+  echo "account groups (id $u / NSS): $account"
+  echo "umask: $(umask)"
+  echo "cwd: $(pwd)"
+  # Re-resolve in case cwd/layout changed
+  REFRESH="$(_env_find_refresh 2>/dev/null || echo "$SCRIPT_DIR/refresh-shell")"
+  if _env_refresh_installed; then
+    echo "refresh-shell: OK (setuid root) at $REFRESH"
+  elif [ -x "$REFRESH" ] && [ -u "$REFRESH" ]; then
+    echo "refresh-shell: BROKEN — setuid but owner=$(stat -c '%U' "$REFRESH" 2>/dev/null) (must be root)"
+    echo "  It only works when owned by root with mode 4755 (setuid root)."
+    echo "  Until then, source ./orch/env will NOT re-exec (avoids closing the terminal); start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups."
+    bad=1
+  elif [ -e "$REFRESH" ]; then
+    echo "refresh-shell: present but not setuid-root at $REFRESH"
+    echo "  It only works when owned by root with mode 4755 (setuid root)."
+    echo "  Until then, start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups."
+    bad=1
+  else
+    echo "refresh-shell: NOT found under $SCRIPT_DIR or parents — group auto-fix disabled"
+    echo "  One install at orchestration root is enough (parent of agent-N)."
+    echo "  cd <orch-root> && gcc -O2 -Wall -o refresh-shell refresh-shell.c"
+    echo "  refresh-shell only works when owned by root with mode 4755 (setuid root)."
+    echo "  Until then, start a new login session (e.g. su - $(id -un), ssh localhost) to pick up groups."
+    bad=1
+  fi
+
+  if [ "$(umask)" != "0002" ] && [ "$(umask)" != "002" ]; then
+    echo "WARN: umask is $(umask); want 002"
+    bad=1
+  else
+    echo "OK: umask $(umask)"
+  fi
+
+  missing=""
+  stale=""
+  not_member=""
+  for need in $(_env_expected_groups); do
+    if echo " $g " | grep -qw "$need"; then
+      continue
+    fi
+    missing="$missing $need"
+    bad=1
+    if echo " $account " | grep -qw "$need"; then
+      stale="$stale $need"
+    else
+      not_member="$not_member $need"
+    fi
+  done
+
+  if [ -z "$missing" ]; then
+    echo "OK: expected project groups present in this shell"
+  else
+    echo "WARN: missing from this shell:$missing"
+    if [ -n "$stale" ]; then
+      echo "CAUSE: stale session — account has:$stale but this process does not."
+      if _env_refresh_installed; then
+        echo "FIX:  source ./orch/env     # will re-exec shell with full groups (no full logout)"
+      else
+        echo "FIX:  install refresh-shell once, then source ./orch/env; until then start a new login session (e.g. su - $u, ssh localhost)"
+        echo "      details: ./orch/env how-to-fix-groups"
+      fi
+      echo "NOT:  newgrp (wrong tool for multi-group restore)"
+    fi
+    if [ -n "$not_member" ]; then
+      echo "CAUSE: account is NOT in:$not_member"
+      echo "       sudo usermod -aG $CODE_GROUP,$SHARED_GROUP,$SANDBOX_GROUP $u  && re-login/refresh"
+    fi
+  fi
+
+  if [ -f "$SCRIPT_DIR/.git/config" ]; then
+    if [ -r "$SCRIPT_DIR/.git/config" ] && [ -w "$SCRIPT_DIR/.git/config" ]; then
+      echo "OK: .git/config readable+writable"
+    else
+      echo "WARN: cannot read/write .git/config (groups or modes). After groups OK: sudo ./fix-perms"
+      bad=1
+    fi
+  fi
+
+  return $bad
+}
+
+_env_activate() {
+  umask 002
+  echo "umask set to $(umask) in this shell"
+
+  # Shared debug keystore (same cert for dlang + all ai-* builders)
+  if [ -d "$SCRIPT_DIR/.android-shared" ]; then
+    export ANDROID_USER_HOME="$SCRIPT_DIR/.android-shared"
+    echo "ANDROID_USER_HOME=$ANDROID_USER_HOME"
+  elif [ -d "$SCRIPT_DIR/../.android-shared" ]; then
+    export ANDROID_USER_HOME="$(cd "$SCRIPT_DIR/../.android-shared" && pwd)"
+    echo "ANDROID_USER_HOME=$ANDROID_USER_HOME"
+  fi
+
+  local stale
+  stale=$(_env_session_missing_stale)
+  if [ -n "$stale" ]; then
+    echo "Stale/missing session groups:$stale"
+    if _env_try_refresh_shell; then
+      : # exec never returns
+    fi
+    # helper missing or exec failed
+    _env_print_install_helper
+    _env_check || true
+    return 1
+  fi
+
+  _env_check || true
+}
+
+cmd="${1:-activate}"
+case "$cmd" in
+  help|-h|--help)
+    cat <<'EOF'
+usage: source ./orch/env [activate] | ./orch/env {check,how-to-fix-groups,help}
+
+Project shell environment: umask 002 plus this tree's project groups. When the
+groups are stale in this shell only, re-exec this terminal with them.
+
+commands:
+  activate           (default, sourced) set umask; refresh groups if stale
+  check              diagnose only
+  how-to-fix-groups  how to get the group refresh helper, and alternatives
+  help, -h, --help   show this help message and exit
+
+Details: the comment at the top of ./orch/env.
+EOF
+    ;;
+  how-to-fix-groups|fix-groups)
+    _env_print_how_to_fix_groups
+    ;;
+  check)
+    if _env_check; then exit 0; else exit 1; fi
+    ;;
+  activate|"")
+    if [ "$_ENV_SOURCED" -eq 1 ]; then
+      _env_activate
+    else
+      echo "env: not sourced — run:  source ./orch/env"
+      _env_check || true
+      exit 1
+    fi
+    ;;
+  *)
+    echo "usage: source ./orch/env [activate] | ./orch/env {check,how-to-fix-groups,help}" >&2
+    echo "env: error: unrecognized command: $cmd" >&2
+    # Sourced: return, so a typo does not close the caller's shell.
+    if [ "$_ENV_SOURCED" -eq 1 ]; then return 2; fi
+    exit 2
+    ;;
+esac

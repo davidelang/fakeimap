@@ -1,0 +1,31 @@
+project.config
+refresh-shell
+# Generated at launch by .grok/lib/grok-launch-common.sh (role sandbox profile).
+.grok/sandbox.toml
+.grok/sandbox.toml.lock
+.grok/sandbox.toml.tmp
+@@SANDBOX_PATH@@/.planning-agent-prompt.txt
+*.local
+.android-shared/
+@@SANDBOX_PATH@@
+/master/
+/agent-*/
+
+# --- third_party consumer (managed by apply-third-party-gitignore.sh) ---
+# third_party: ignore checkouts/local state; track tool + pin contract under each lib dir
+third_party/*
+!third_party/fetch-deps
+!third_party/get-artifacts
+!third_party/libpin-bwrap
+!third_party/libpin-landlock
+!third_party/libpin-sandbox
+!third_party/README.md
+!third_party/*/
+third_party/*/src/
+third_party/*/status.local
+third_party/*/*.local
+# --- end third_party consumer ---
+
+# Build writes these from app/src/main/i18n. colors.xml and themes.xml stay tracked.
+app/src/main/res/values/strings.xml
+app/src/main/res/values-*/strings.xml

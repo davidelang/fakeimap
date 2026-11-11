@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+# landlock-smoke-matrix — non-interactive allow/deny matrix via agent-landlock.
+# Usage: ./orch/landlock-smoke-matrix [WORKTREE]
+# Env: AGENT_LANDLOCK_STRICT=1 recommended for smoke (fail if ABI missing).
+set -euo pipefail
+
+USAGE_LINE="usage: ./orch/landlock-smoke-matrix [-h] [WORKTREE]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Non-interactive allow/deny matrix via agent-landlock for WORKTREE (default: this tree).
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./orch/landlock-smoke-matrix.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "landlock-smoke-matrix: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WT="$(cd "${1:-$ROOT}" && pwd)"
+HELPER="$ROOT/agent-landlock"
+# Prefer helper inside worktree if present
+if [[ -f "$WT/agent-landlock" ]]; then
+  HELPER="$WT/agent-landlock"
+fi
+PROBE="$ROOT/landlock-write-probe"
+if [[ -f "$WT/landlock-write-probe" ]]; then
+  PROBE="$WT/landlock-write-probe"
+fi
+
+chmod +x "$HELPER" "$PROBE" 2>/dev/null || true
+
+if [[ ! -x "$HELPER" && ! -f "$HELPER" ]]; then
+  echo "ERROR: agent-landlock not found" >&2
+  exit 2
+fi
+
+STATUS="$("$HELPER" --status 2>/dev/null || true)"
+echo "=== agent-landlock status: $STATUS ==="
+if [[ "$STATUS" != available* ]]; then
+  echo "ENFORCEMENT: unavailable — will not mark enforced PASS rows"
+  ENFORCED=0
+else
+  ENFORCED=1
+fi
+
+# Resolve monorepo root for sibling worktree deny paths.
+# Smoke worktrees often have run-grok/.grok but are NOT the orch root — prefer
+# git common-dir parent / worktree list over "has .grok".
+ORCH="$WT"
+if git -C "$WT" rev-parse --git-common-dir >/dev/null 2>&1; then
+  _gcd="$(git -C "$WT" rev-parse --git-common-dir)"
+  [[ "$_gcd" != /* ]] && _gcd="$WT/$_gcd"
+  # common dir is e.g. /path/VehicleExpenses-automated/.git → monorepo root is parent
+  if [[ -d "$_gcd" ]]; then
+    ORCH="$(cd "$_gcd/.." && pwd)"
+  fi
+fi
+# If this WT itself contains other agent/master dirs, it is the monorepo root
+if [[ -d "$WT/master" || -d "$WT/agent-2" || -d "$WT/agent-1" ]]; then
+  ORCH="$WT"
+fi
+
+GIT_HOME=""
+if [[ -f "$WT/project.config" ]]; then
+  GIT_HOME="$(grep -E '^git_home=' "$WT/project.config" | head -1 | cut -d= -f2- || true)"
+fi
+GIT_HOME="${GIT_HOME:-${GIT_HOME_ENV:-/home/dlang/git}}"
+
+SANDBOX_REL="dev-ai-interaction"
+if [[ -d "$WT/sandbox" && ! -d "$WT/dev-ai-interaction" ]]; then
+  SANDBOX_REL="sandbox"
+fi
+SANDBOX="$WT/$SANDBOX_REL"
+# ensure sandbox exists for planner allow
+mkdir -p "$SANDBOX" 2>/dev/null || true
+touch "$WT/TODO.md" 2>/dev/null || true
+touch "$WT/ENGINEERING_LOG.md" 2>/dev/null || true
+
+# Sibling / other worktrees for deny
+OTHER_WT=""
+for cand in "$ORCH/master" "$ORCH/agent-2" "$ORCH/agent-4" "$ORCH/agent-1"; do
+  if [[ -d "$cand" && "$(cd "$cand" 2>/dev/null && pwd)" != "$WT" ]]; then
+    OTHER_WT="$cand"
+    break
+  fi
+done
+# If WT is orch and other worktrees are *under* WT, PATH_BENEATH cannot deny them
+# for orchestrator — use external path instead.
+HOME_DENY="${HOME}/landlock-probe-deny-$$"
+mkdir -p "$(dirname "$HOME_DENY")" 2>/dev/null || true
+OUTSIDE_GIT="${HOME}/landlock-probe-outside-git-$$"
+# Host lib working tree (if present). Session Landlock grants host .git only when
+# third_party/<lib>/libpin.toml exists under start worktree — seed a marker for smoke
+# so grant resolution matches design.
+LIB_WT=""
+LIB_GIT=""
+LIB_NAME=""
+for lib in remotetable extractmail; do
+  if [[ -d "$GIT_HOME/$lib" ]]; then
+    if [[ -d "$GIT_HOME/$lib/.git" || -f "$GIT_HOME/$lib/.git" ]]; then
+      LIB_GIT="$GIT_HOME/$lib/.git"
+      LIB_NAME="$lib"
+    fi
+    if [[ -d "$GIT_HOME/$lib/master" ]]; then
+      LIB_WT="$GIT_HOME/$lib/master"
+    else
+      LIB_WT="$GIT_HOME/$lib"
+    fi
+    break
+  fi
+done
+if [[ -n "$LIB_NAME" ]]; then
+  mkdir -p "$WT/third_party/$LIB_NAME"
+  if [[ ! -f "$WT/third_party/$LIB_NAME/libpin.toml" ]]; then
+    printf '# smoke marker for agent-landlock host .git grant\nname = "%s"\n' "$LIB_NAME" \
+      >"$WT/third_party/$LIB_NAME/libpin.toml"
+  fi
+fi
+
+GIT_COMMON="$(git -C "$WT" rev-parse --git-common-dir 2>/dev/null || true)"
+if [[ -n "$GIT_COMMON" && "$GIT_COMMON" != /* ]]; then
+  GIT_COMMON="$WT/$GIT_COMMON"
+fi
+
+run_role() {
+  local role="$1"
+  shift
+  local allow=() deny=()
+  # parse --allow/--deny pairs from remaining
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --allow) allow+=("$2"); shift 2 ;;
+      --deny) deny+=("$2"); shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local cmd=(python3 "$PROBE" --label "$role")
+  local a d
+  for a in "${allow[@]+"${allow[@]}"}"; do
+    cmd+=(--allow "$a")
+  done
+  for d in "${deny[@]+"${deny[@]}"}"; do
+    cmd+=(--deny "$d")
+  done
+
+  echo "--- role=$role ---"
+  if [[ "$ENFORCED" -eq 0 ]]; then
+    echo "$role	SKIP	ENFORCE	n/a	landlock_unavailable"
+    # still run bare for diagnostics but mark not enforced
+    AGENT_LANDLOCK_DISABLE=1 python3 "$PROBE" --label "$role-bare" \
+      $(printf -- '--allow %q ' "${allow[@]+"${allow[@]}"}") \
+      $(printf -- '--deny %q ' "${deny[@]+"${deny[@]}"}") 2>&1 || true
+    return 0
+  fi
+
+  # Apply landlock as this process then probe (same binary path as launch)
+  set +e
+  AGENT_LANDLOCK_STRICT=1 "$HELPER" --role "$role" --worktree "$WT" -- "${cmd[@]}"
+  local rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    echo "$role	MATRIX_RC	$rc"
+    return "$rc"
+  fi
+  return 0
+}
+
+FAIL=0
+
+# --- planner ---
+PLANNER_ALLOW=("$SANDBOX" "$WT/TODO.md" "$WT/ENGINEERING_LOG.md" "/tmp")
+PLANNER_DENY=()
+[[ -n "$OTHER_WT" ]] && PLANNER_DENY+=("$OTHER_WT")
+# app/feature source inside start worktree
+if [[ -d "$WT/app" ]]; then
+  PLANNER_DENY+=("$WT/app")
+else
+  PLANNER_DENY+=("$WT/landlock-planner-must-not-create")
+  # file under worktree root other than TODO/eng-log
+  PLANNER_DENY+=("$WT/.landlock-planner-deny-root-file")
+fi
+PLANNER_DENY+=("$HOME_DENY")
+[[ -n "$LIB_WT" && -d "$LIB_WT" ]] && PLANNER_DENY+=("$LIB_WT")
+
+args=()
+for a in "${PLANNER_ALLOW[@]}"; do args+=(--allow "$a"); done
+for d in "${PLANNER_DENY[@]}"; do args+=(--deny "$d"); done
+run_role planner "${args[@]}" || FAIL=1
+
+# --- coder (same as master for FS) ---
+CODER_ALLOW=("$WT" "$SANDBOX" "/tmp")
+[[ -n "$GIT_COMMON" && -e "$GIT_COMMON" ]] && CODER_ALLOW+=("$GIT_COMMON")
+if [[ -d "$WT/app" ]]; then CODER_ALLOW+=("$WT/app"); fi
+CODER_DENY=()
+[[ -n "$OTHER_WT" ]] && CODER_DENY+=("$OTHER_WT")
+CODER_DENY+=("$HOME_DENY")
+[[ -n "$LIB_WT" && -d "$LIB_WT" ]] && CODER_DENY+=("$LIB_WT")
+# lib .git allow when present — only if OS-writable under landlock grant.
+# If OS denies, record SKIP (not Landlock failure).
+if [[ -n "$LIB_GIT" && -e "$LIB_GIT" ]]; then
+  # Must actually create a file (directory -w is not sufficient under sticky DAC).
+  if touch "$LIB_GIT/.landlock-os-writecheck" 2>/dev/null; then
+    rm -f "$LIB_GIT/.landlock-os-writecheck" 2>/dev/null || true
+    CODER_ALLOW+=("$LIB_GIT")
+  else
+    echo "NOTE: skip ALLOW $LIB_GIT — not OS-writable by $(id -un) (landlock grant still resolved if libpin.toml present)"
+  fi
+fi
+
+args=()
+for a in "${CODER_ALLOW[@]}"; do args+=(--allow "$a"); done
+for d in "${CODER_DENY[@]}"; do args+=(--deny "$d"); done
+run_role coder "${args[@]}" || FAIL=1
+
+args=()
+for a in "${CODER_ALLOW[@]}"; do args+=(--allow "$a"); done
+for d in "${CODER_DENY[@]}"; do args+=(--deny "$d"); done
+run_role master "${args[@]}" || FAIL=1
+
+# --- orchestrator ---
+# Start worktree + sandbox. Deny outside start root (HOME probe or other repo).
+ORCH_ALLOW=("$WT" "$SANDBOX" "/tmp")
+ORCH_DENY=("$HOME_DENY")
+# If another project exists under git_home outside WT, deny it
+if [[ -d "$GIT_HOME/remotetable" ]]; then
+  # only if remotetable is not under WT
+  case "$GIT_HOME/remotetable" in
+    "$WT"/*) ;;
+    *) ORCH_DENY+=("$GIT_HOME/remotetable") ;;
+  esac
+fi
+# Sibling worktree: only a valid deny if not PATH_BENEATH of WT
+if [[ -n "$OTHER_WT" ]]; then
+  case "$OTHER_WT" in
+    "$WT"/*) echo "NOTE: OTHER_WT $OTHER_WT is under start worktree; orch PATH_BENEATH cannot deny it (design)" ;;
+    *) ORCH_DENY+=("$OTHER_WT") ;;
+  esac
+fi
+
+args=()
+for a in "${ORCH_ALLOW[@]}"; do args+=(--allow "$a"); done
+for d in "${ORCH_DENY[@]}"; do args+=(--deny "$d"); done
+run_role orchestrator "${args[@]}" || FAIL=1
+
+# --- primary ---
+# Primary grant is git_home tree; OS may not allow creating files at git_home root.
+# Probe a path under git_home that is OS-writable (this WT if nested).
+PRIM_ALLOW=("/tmp")
+if [[ -n "$GIT_HOME" && -d "$GIT_HOME" ]]; then
+  case "$WT" in
+    "$GIT_HOME"/*) PRIM_ALLOW+=("$WT") ;;
+    *)
+      if [[ -w "$GIT_HOME" ]]; then
+        PRIM_ALLOW+=("$GIT_HOME")
+      else
+        echo "NOTE: git_home=$GIT_HOME not OS-writable by $(id -un); primary ALLOW uses nested WT if any"
+      fi
+      ;;
+  esac
+fi
+PRIM_DENY=("$OUTSIDE_GIT")
+# $HOME itself is often under /home/user not under git_home — deny a path under HOME outside git
+if [[ -n "$HOME" && ( -z "$GIT_HOME" || "$HOME" != "$GIT_HOME"* ) ]]; then
+  PRIM_DENY+=("$HOME_DENY")
+fi
+
+args=()
+for a in "${PRIM_ALLOW[@]}"; do args+=(--allow "$a"); done
+for d in "${PRIM_DENY[@]}"; do args+=(--deny "$d"); done
+run_role primary "${args[@]}" || FAIL=1
+
+# cleanup deny probe leftovers if created without landlock somehow
+rm -f "$HOME_DENY" "$OUTSIDE_GIT" 2>/dev/null || true
+rmdir "$HOME_DENY" 2>/dev/null || true
+
+echo "=== matrix_exit=$FAIL enforced=$ENFORCED ==="
+exit "$FAIL"

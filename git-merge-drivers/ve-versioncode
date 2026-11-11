@@ -1,0 +1,45 @@
+#!/bin/bash
+# ve-versioncode — Git merge driver for app/versionCode.txt
+# That integer is the Play versionCode deploy --play ships. The result is the
+# larger of the two branches, written as one decimal integer and a newline.
+# Not a text merge. A non-integer on either side is an error (exit 1).
+#
+# Args (git): %O ancestor  %A ours (result path)  %B theirs  %L marker  %P path
+
+set -euo pipefail
+export LC_ALL=C
+
+A="${2:-}"
+B="${3:-}"
+P="${5:-app/versionCode.txt}"
+
+if [ -z "$A" ] || [ -z "$B" ] || [ ! -f "$A" ] || [ ! -f "$B" ]; then
+  echo "ve-versioncode: ERROR: need readable ours (%A) and theirs (%B) for ${P}" >&2
+  exit 1
+fi
+
+read_code() {
+  local f="$1" side="$2" s
+  s=$(tr -d '[:space:]' < "$f")
+  if ! [[ "$s" =~ ^[0-9]+$ ]]; then
+    echo "ve-versioncode: ERROR: ${P} on ${side} is '${s}', not an integer" >&2
+    exit 1
+  fi
+  printf '%s' "$s" | sed 's/^0*//'
+}
+
+# read_code runs in a subshell via $(...). An empty result after stripping
+# leading zeros is zero. A failed read_code exits the subshell non-zero.
+ours=$(read_code "$A" ours)
+theirs=$(read_code "$B" theirs)
+[ -n "$ours" ] || ours=0
+[ -n "$theirs" ] || theirs=0
+
+max="$ours"
+if [ "${#theirs}" -gt "${#ours}" ] || { [ "${#theirs}" -eq "${#ours}" ] && [[ "$theirs" > "$ours" ]]; }; then
+  max="$theirs"
+fi
+
+printf '%s\n' "$max" > "$A"
+echo "ve-versioncode: ${P} is ${max} (ours ${ours}, theirs ${theirs})" >&2
+exit 0

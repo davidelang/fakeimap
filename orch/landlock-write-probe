@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Write allow/deny probes under an already-applied Landlock domain (or bare).
+
+Exit 0 if all expectations hold; 1 otherwise. Prints lines: role|RESULT|EXPECT|PATH|detail
+"""
+from __future__ import annotations
+
+import argparse
+import errno
+import os
+import sys
+import uuid
+from pathlib import Path
+
+
+def try_write(path: Path) -> tuple[bool, str]:
+    """Create a unique file under path if path is dir, or write path if file parent.
+
+    Returns (ok, detail).
+    """
+    try:
+        if path.exists() and path.is_dir():
+            probe = path / f".landlock-probe-{uuid.uuid4().hex[:10]}"
+            probe.write_text("probe\n", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return True, f"create+delete under {path}"
+        # treat as file target
+        parent = path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("probe\n", encoding="utf-8")
+        if path.name.startswith(".landlock-probe") or "landlock-probe" in path.name:
+            path.unlink(missing_ok=True)
+        return True, f"wrote {path}"
+    except OSError as e:
+        return False, f"{errno.errorcode.get(e.errno, e.errno)}:{e.strerror}"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="landlock-write-probe",
+        description="Write allow/deny probes under an already-applied Landlock domain (or bare). "
+                    "Exit 0 if all expectations hold, 1 otherwise.",
+        epilog="Details: the docstring at the top of landlock-write-probe.")
+    ap.add_argument(
+        "-a",
+        "--allow",
+        action="append",
+        default=[],
+        help="path that must be writable (dir or file)",
+    )
+    ap.add_argument(
+        "-d",
+        "--deny",
+        action="append",
+        default=[],
+        help="path that must NOT be writable",
+    )
+    ap.add_argument("-l", "--label", default="", help="role/label prefix for lines")
+    args = ap.parse_args()
+    failed = 0
+    prefix = args.label + "|" if args.label else ""
+
+    for a in args.allow:
+        ok, detail = try_write(Path(a))
+        if ok:
+            print(f"{prefix}PASS|ALLOW|{a}|{detail}")
+        else:
+            print(f"{prefix}FAIL|ALLOW|{a}|{detail}")
+            failed += 1
+
+    for d in args.deny:
+        ok, detail = try_write(Path(d))
+        if not ok:
+            # permission errors expected
+            print(f"{prefix}PASS|DENY|{d}|{detail}")
+        else:
+            print(f"{prefix}FAIL|DENY|{d}|write_succeeded:{detail}")
+            failed += 1
+
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

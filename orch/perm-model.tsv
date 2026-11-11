@@ -1,0 +1,39 @@
+# perm-model.tsv: the one permission model. fix-perms, setup_agent.sh, build_app and
+# deploy-orchestration read it through perm-lib.sh (perm_apply / perm_verify / perm_umask);
+# nothing else decides an owner, group, mode or umask.
+#
+# Columns (tab-separated):
+#   area     name used by the tools
+#   owner    '-' keep, 'root', or a project.config key (primary_user, coder_user, ...)
+#   group    '-' keep, 'root', or a project.config key (code_group, shared_group, sandbox_group)
+#   dir      directory mode: '-' keep, absolute octal (2770), or chmod symbolic (u+rwx,g+rwxs,o+rx)
+#   file     regular-file mode, same forms; X = execute only where some x bit is already set
+#   umask    umask for processes that create files there ('-' = nobody creates files there)
+#   writers  who creates/changes files there
+#   what     the paths, and the boundaries a recursive pass never crosses
+#
+# A recursive pass over one area always prunes every other area's root that lies inside it
+# (other worktrees from 'git worktree list', sandbox_dir, the shared homes, .git).
+area	owner	group	dir	file	umask	writers	what
+worktree	-	code_group	u+rwx,g+rwxs,o+rx	u+rw,g+rw,o+r	002	coder,primary	one worktree's files (a path from git worktree list); prunes .git and nested areas
+planner-files	-	shared_group	-	664	002	planner	TODO.md and project-facts.md in a worktree
+work-history	-	shared_group	2775	664	002	planner	work-history/ directory (TODO and the log live here; the log file is then reset by englog)
+worktree-scripts	primary_user	code_group	-	2775	002	primary	scripts run by path (build_app, deploy, *.sh, ...) at a worktree's top level
+sandbox	-	sandbox_group	u+rwx,g+rwxs,o+rx	g+rwX	002	planner,primary	sandbox_dir (its own git repo included)
+common-git	-	shared_group	2770	660	007	git as any agent	git --git-common-dir
+worktree-admin	-	shared_group	2770	660	007	git as any agent	<common .git>/worktrees/<name>
+git-hooks	-	shared_group	-	775	-	primary	active hooks (not *.sample) in a hooks dir
+git-pointer	-	shared_group	-	660	-	git	a linked worktree's .git file
+englog	root	shared_group	-	660	-	append-to-engineering-log	ENGINEERING_LOG.md (normal file; no chattr +a)
+englog-wrapper	root	shared_group	-	2755	-	-	append-to-engineering-log
+shared-build-homes	primary_user	shared_group	2770	ug+rw,o-rwx	007	gradle	<orch_root>/.gradle-shared and <orch_root>/.android-shared
+worktree-build-homes	-	-	2770	-	007	gradle	the dirs <worktree>/.gradle-home and <worktree>/.android-shared themselves (contents are gradle's)
+git-config	primary_user	shared_group	-	660	-	primary	<common .git>/config
+merge-drivers	primary_user	code_group	-	775	-	primary	files under <worktree>/git-merge-drivers
+gradlew	primary_user	code_group	-	2750	-	primary	<worktree>/gradlew (not executable by the planner)
+gradle-properties	primary_user	code_group	-	664	-	primary	<worktree>/gradle.properties
+setuid-run-as-primary	primary_user	code_group	-	4755	-	fix-perms	<worktree>/run-as-primary (built from run-as-primary.c)
+setuid-refresh-shell	root	root	-	4755	-	fix-perms	<worktree>/orch/refresh-shell (built from orch/refresh-shell.c)
+build-intermediates	coder_user	code_group	g+rwxs	ug+rwX	002	build_app (gradle)	<worktree>/app/build and <worktree>/.gradle, owned by the builder (coder_user) so build_app can fix its own outputs; the worktree pass never enters them; 'other' bits are never forced
+deliverables	-	code_group	-	644	002	build_app	APKs, AAB and output-metadata.json that build_app names (project.config)
+deliverable-dirs	-	-	u+rwx,g+rwxs,o+rx	-	002	build_app	each directory from the worktree down to a deliverable, so it is reachable without group membership

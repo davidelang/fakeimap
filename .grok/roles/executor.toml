@@ -1,0 +1,4 @@
+description = "Rules v3 executor role (strict; see roles/executor.md)"
+default_capability_mode = "all"
+reasoning_effort = "high"
+prompt_file = "roles/executor.md"

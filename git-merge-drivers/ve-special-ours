@@ -1,0 +1,22 @@
+#!/bin/bash
+# ve-special-ours — Git merge driver for TODO.md and project-facts.md
+# Always keep ours (master / current branch checked out). Never text-merge theirs.
+# Master still MUST run todo-close/todo-append and project-facts prune after merge.
+#
+# Args (git): %O ancestor  %A ours (result path)  %B theirs  %L marker  %P path
+
+set -euo pipefail
+
+O="${1:-}"
+A="${2:-}"
+B="${3:-}"
+P="${5:-special-file}"
+
+if [ -z "$A" ] || [ ! -f "$A" ]; then
+  echo "ve-special-ours: ERROR: missing ours file %A for ${P}" >&2
+  exit 1
+fi
+
+echo "ve-special-ours: keeping ours for ${P} (no branch text-merge; Master review still required)" >&2
+# %A already contains our version on input; result = ours unchanged.
+exit 0

@@ -1,0 +1,113 @@
+#!/bin/bash
+# ve-englog — Git merge driver for ENGINEERING_LOG.md
+#
+# Args (git): %O ancestor  %A ours (result path)  %B theirs  %L marker  %P path
+# Policy: append branch-only tail onto master via ./orch/append-to-engineering-log.
+# Result is usually a THIRD version (ours + branch tail), not pure ours or theirs.
+# The worktree log is a normal file. Do not mark it append-only.
+
+set -euo pipefail
+
+O="${1:-}"
+A="${2:-}"
+B="${3:-}"
+# L="${4:-}"  # unused
+P="${5:-ENGINEERING_LOG.md}"
+
+if [ -z "$A" ] || [ -z "$B" ] || [ ! -f "$A" ] || [ ! -f "$B" ]; then
+  echo "ve-englog: ERROR: need readable ours (%A) and theirs (%B)" >&2
+  exit 1
+fi
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$ROOT" || exit 1
+
+APPEND="$ROOT/append-to-engineering-log"
+if [ ! -x "$APPEND" ]; then
+  echo "ve-englog: ERROR: $APPEND not executable" >&2
+  exit 1
+fi
+
+# Longest common line-prefix of ours (A) and theirs (B)
+mapfile -t lines_a < "$A"
+mapfile -t lines_b < "$B"
+n_a=${#lines_a[@]}
+n_b=${#lines_b[@]}
+common=0
+max=$n_a
+[ "$n_b" -lt "$max" ] && max=$n_b
+while [ "$common" -lt "$max" ]; do
+  if [ "${lines_a[$common]}" = "${lines_b[$common]}" ]; then
+    common=$((common + 1))
+  else
+    break
+  fi
+done
+
+if [ "$common" -ge "$n_b" ]; then
+  echo "ve-englog: theirs is prefix of common history; keeping ours ($P)" >&2
+  # %A already ours
+  exit 0
+fi
+
+# Build branch-only tail (everything past common point on theirs)
+# Not /tmp: that is a tmpfs, and abandoned files there are not what we want.
+if [ -d "$ROOT/work-history" ]; then
+  tmp=$(mktemp "$ROOT/work-history/.ve-englog.XXXXXX")
+else
+  tmp=$(mktemp "$ROOT/.ve-englog.XXXXXX")
+fi
+trap 'rm -f "$tmp"' EXIT
+if [ "$common" -eq 0 ]; then
+  cat "$B" > "$tmp"
+else
+  # lines_b[common..end]
+  i=$common
+  while [ "$i" -lt "$n_b" ]; do
+    printf '%s\n' "${lines_b[$i]}"
+    i=$((i + 1))
+  done > "$tmp"
+fi
+
+# Trim leading blank lines from tail
+sed -i '/./,$!d' "$tmp" 2>/dev/null || true
+
+if [ ! -s "$tmp" ]; then
+  echo "ve-englog: empty tail after trim; keeping ours ($P)" >&2
+  exit 0
+fi
+
+# Idempotent: if worktree log already ends with this tail, skip append
+LOG="$ROOT/ENGINEERING_LOG.md"
+if [ -f "$LOG" ]; then
+  tail_bytes=$(wc -c < "$tmp" | tr -d ' ')
+  if [ "$tail_bytes" -gt 0 ]; then
+    end=$(tail -c "$tail_bytes" "$LOG" 2>/dev/null || true)
+    if [ "$end" = "$(cat "$tmp")" ]; then
+      echo "ve-englog: tail already present on worktree log; syncing %A from worktree" >&2
+      cp "$LOG" "$A"
+      exit 0
+    fi
+  fi
+fi
+
+# Wrapper requires entry to start with ## YYYY-MM-DD
+first=$(head -1 "$tmp" | tr -d '\r')
+if [[ ! $first =~ ^##\ [0-9]{4}- ]]; then
+  echo "ve-englog: ERROR: branch-only tail for $P does not start with '## YYYY-MM-DD - ...'" >&2
+  echo "ve-englog: first line was: $first" >&2
+  echo "ve-englog: mid-file edits are not supported; fix branch log or append via wrapper." >&2
+  exit 1
+fi
+
+n_lines=$(wc -l < "$tmp" | tr -d ' ')
+echo "ve-englog: appending $n_lines-line branch tail onto worktree log via append-to-engineering-log (third-version result)" >&2
+"$APPEND" @"$tmp"
+
+# Index result = full worktree log after append (≠ pure ours, ≠ pure theirs)
+if [ ! -f "$LOG" ]; then
+  echo "ve-englog: ERROR: $LOG missing after append" >&2
+  exit 1
+fi
+cp "$LOG" "$A"
+exit 0

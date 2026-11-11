@@ -1,0 +1,75 @@
+# Do NOT apply to the filter scripts themselves to avoid circular "no such file" during initial checkout.
+
+# Grok launchers + shared common (pack stack; tokens where present)
+
+# Antigravity launchers (when using @@ / machine paths)
+
+# third_party pin tooling (paths may include @@GIT_HOME@@)
+
+# Explicitly disable filters on the filter implementation scripts (prevents checkout-time "No such file" errors)
+
+# Special-file merge drivers (install via ./orch/install-merge-drivers.sh / update-rules)
+# ve-englog: append branch tail via append-to-engineering-log (third-version result)
+# ve-special-ours: always keep master/ours; Master still reviews vs branch delta (todo-close/append, facts prune)
+# ve-versioncode: Play versionCode (deploy --play); larger integer of the merged branches
+ENGINEERING_LOG.md merge=ve-englog
+TODO.md merge=ve-special-ours
+project-facts.md merge=ve-special-ours
+app/versionCode.txt merge=ve-versioncode
+# After the move the blobs live here; the root paths are symlinks.
+work-history/ENGINEERING_LOG.md merge=ve-englog
+work-history/TODO.md merge=ve-special-ours
+
+# manage-configs (smudge/clean @@ tokens) — maintained by hand here (verify-smudge, deploy-orchestration, publish-smudge-fix read it via git check-attr)
+setup-project filter=manage-configs
+set-sandbox-perms filter=manage-configs
+project.config.example filter=manage-configs
+landlock.config filter=manage-configs
+landlock.config.example filter=manage-configs
+run-grok filter=manage-configs
+run-grok-master filter=manage-configs
+run-grok-planner filter=manage-configs
+run-grok-coder filter=manage-configs
+run-grok-orchestrator filter=manage-configs
+.grok/lib/grok-launch-common.sh filter=manage-configs
+run-antigravity filter=manage-configs
+run-antigravity-master filter=manage-configs
+run-antigravity-planner filter=manage-configs
+run-antigravity-coder filter=manage-configs
+run-antigravity-orchestrator filter=manage-configs
+third_party/fetch-deps filter=manage-configs
+third_party/get-artifacts filter=manage-configs
+third_party/libpin-landlock filter=manage-configs
+third_party/libpin-bwrap filter=manage-configs
+third_party/libpin-sandbox filter=manage-configs
+filter-apply-config !filter
+filter-clean-config !filter
+# @@SANDBOX_PATH@@ — project.config sandbox_dir, else sandbox_path
+new_agent_prompt filter=manage-configs
+AGENTS.md filter=manage-configs
+AGENT_MANDATES.md filter=manage-configs
+standard-plan-compliance-block.md filter=manage-configs
+GROK.md filter=manage-configs
+GEMINI.md filter=manage-configs
+MULTI_AGENT_USER_INSTRUCTIONS.md filter=manage-configs
+MASTER_AGENT_MANDATE.md filter=manage-configs
+project-facts.md filter=manage-configs
+AGENT_CONTEXT.md filter=manage-configs
+.grok/config.toml filter=manage-configs
+.grok/prompts/role-planner.md filter=manage-configs
+.grok/prompts/role-coder.md filter=manage-configs
+.grok/prompts/role-master.md filter=manage-configs
+.grok/prompts/role-orchestrator.md filter=manage-configs
+.grok/prompts/dedicated-planner.md filter=manage-configs
+.grok/prompts/planning-subagent.md filter=manage-configs
+.grok/agents/plan.md filter=manage-configs
+.grok/agents/explore.md filter=manage-configs
+.gitignore filter=manage-configs
+
+# Checked-in JSON is pretty (indent 2). Clean pretty-prints; smudge is cat. install-merge-drivers.sh sets the filter.
+*.json filter=json-pretty
+
+# Translation sources are LFS. The manuals stay normal text. Generated strings.xml is gitignored.
+docs/i18n/** filter=lfs diff=lfs merge=lfs -text
+docs/i18n/**/user-manual.md !filter !diff !merge text
+app/src/main/i18n/** filter=lfs diff=lfs merge=lfs -text

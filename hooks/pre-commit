@@ -1,0 +1,9 @@
+#!/bin/bash
+# pre-commit hook — install as .git/hooks/pre-commit (chmod 775).
+# Rejects a commit in which a staged file gains error-swallowing idioms
+# (stderr to /dev/null plus || true) (tools/audit-swallow --staged). Existing ones may stay or go.
+set -euo pipefail
+top="$(git rev-parse --show-toplevel)"
+audit="$top/tools/audit-swallow"
+[ -x "$audit" ] || { echo "pre-commit: $audit missing or not executable" >&2; exit 1; }
+exec "$audit" --staged --repo "$top"

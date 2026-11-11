@@ -1,0 +1,12 @@
+#!/bin/bash
+# run-grok-coder — generic multi-agent launcher (no project rules in this file).
+# Rules: AGENTS.md + roles/coder.md (--rules); settings in roles.config
+# Same script body is used across VehicleExpenses and library hosts.
+set -euo pipefail
+GROK_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export GROK_LAUNCHER_DIR
+ROLE_KEY=coder
+export ROLE_KEY
+# shellcheck source=/dev/null
+source "$GROK_LAUNCHER_DIR/.grok/lib/grok-launch-common.sh"
+grok_launch_main "$@"

@@ -1,0 +1,101 @@
+# project.config.example
+# Committed template. Copy to project.config (gitignored) and fill real values.
+# Used by clean/smudge filters (manage-configs) and setup-project.
+
+sandbox_path=@@SANDBOX_PATH@@
+planning_user=@@PLANNING_USER@@
+coder_user=@@CODER_USER@@
+orchestrator_user=@@ORCHESTRATOR_USER@@
+code_group=@@CODE_GROUP@@
+sandbox_group=@@SANDBOX_GROUP@@
+shared_group=@@SHARED_GROUP@@
+
+# Example paths (will be @@ substituted in scripts via manage-configs filter)
+# Bin paths may use $HOME/… (expanded at runtime by launchers).
+grok_bin_default=@@GROK_BIN_DEFAULT@@
+antigravity_bin=@@ANTIGRAVITY_BIN@@
+cursor_bin=@@CURSOR_BIN@@
+gemini_bin_default=@@GEMINI_BIN_DEFAULT@@
+primary_user=@@PRIMARY_USER@@
+
+# Absolute directory holding first-party / pin host clones (remotetable, extractmail, …).
+# MUST be absolute on this machine (e.g. /home/you/git), NOT ~/git:
+#   - @@CODER_USER@@ / @@PLANNING_USER@@ have different $HOME; ~/git is not shared.
+#   - Landlock and open() need a concrete path.
+# Checked-in templates use @@GIT_HOME@@; local project.config has the real path.
+# landlock.config (tracked) is smudged from the same git_home= / sandbox_path=.
+git_home=@@GIT_HOME@@
+
+# Absolute orchestration root (managing tree). Worktrees do not guess via
+# ../.gradle-shared. update-rules.sh / setup_agent.sh write the real path into
+# gitignored project.config. Runtime: ./orch/ve-resolve-orch or source it.
+orch_root=@@ORCH_ROOT@@
+
+# Special sandbox paths (for setup-project to create)
+sandbox_special_paths=plans,historical-plans,implementation-failure-logs,PRs,research
+
+# Prefer sandbox_dir for launchers/generate_pr (generic hosts).
+# VehicleExpenses default: dev-ai-interaction
+# Library hosts default: sandbox
+# Legacy alias still accepted: sandbox_path
+# sandbox_dir=dev-ai-interaction
+# sandbox_dir=sandbox
+
+# The project's build type is NOT here: it is the '- **Build type:**' line in the committed
+# project-facts.md ('## Build and commit'), read by deploy-orchestration.
+
+# Optional build gate for master-merge on non-Android hosts:
+# build_command=./build
+
+# Android build_app (authoritative copy: build-examples/android-gradle/build_app).
+# Every build runs as coder_user (above); other invokers are re-executed via
+# sudo -n -u <coder_user> /usr/bin/env. Without a project.config (or with @@TOKEN@@ values left)
+# build_app and deploy run in single-user mode instead (no sudo, no groups, local caches).
+# The JDK for Gradle and keytool: a JDK home with a release file and bin/java, bin/javac,
+# bin/keytool. Optional: unset = the OS default java on PATH (build_app prints which).
+java_home=/usr/lib/jvm/java-17-openjdk-amd64
+#
+# What the standard and test builds are is not configured here: it is declared in the app
+# branch's committed project-facts.md, '## Build and commit':
+#   - **Standard build:** debug
+#   - **Test build:** qa | instrumentation:<variant> | none   (a comma-separated list is allowed)
+# and the APKs are read from Gradle's output-metadata.json. The Android SDK comes from sdk.dir in
+# local.properties, else ANDROID_HOME.
+# ./build_app builds standard, test (unless 'none') and Play by default; --standard / --test /
+# --play select them individually. The default needs the release keys below plus a terminal for
+# the Play passwords; agents and unattended runs pass --standard/--test explicitly.
+#
+# Play build (--play / --bundle, or the default): signed release AAB for Play upload. One upload key per app, outside
+# the repo, readable by coder_user and not world-readable. How is your choice (ACL, group, mode);
+# if coder_user can't read it, build_app shows each step of the path and the options.
+# Both keys are required for the Play build; no default.
+# release_keystore=/home/@@PRIMARY_USER@@/keys/<app>-upload.jks
+# release_key_alias=upload
+# Optional (unset = bundleRelease and app/build/outputs/bundle/release/app-release.aab).
+# ABI-flavored apps with a "play" flavor:
+# release_bundle_task=bundlePlayRelease
+# release_bundle_path=app/build/outputs/bundle/playRelease/app-play-release.aab
+# Optional extra gradle args for the release build only, space-separated:
+# release_gradle_args=-Pfuelsmoothing.official=true
+# Fuel Smoothing only, --standard builds only (not --play): 1 passes -Pfuelsmoothing.official=true;
+# absent or empty passes nothing; any other value is passed through as -Pfuelsmoothing.official=<value>.
+# fuelsmoothing_official=1
+#
+# deploy --play (upload to Internal testing, promote to alpha, send for review): absolute path
+# to the Play Developer API service-account JSON, readable by primary_user (who runs deploy) and
+# not world-readable. Required for --play; no default.
+# play_service_account_json=/home/@@PRIMARY_USER@@/keys/play-service-account.json
+
+# landlock.config is smudged separately (landlock.config.example); it may
+# reference @@GIT_HOME@@ for host .git allow paths.
+
+# Users/groups creation (for reference in setup-project, emitted only)
+# groupadd @@CODE_GROUP@@
+# groupadd @@SANDBOX_GROUP@@
+# groupadd @@SHARED_GROUP@@
+# useradd -g @@SANDBOX_GROUP@@ @@PLANNING_USER@@
+# useradd -g @@CODE_GROUP@@ @@CODER_USER@@
+# useradd -g @@CODE_GROUP@@ -G @@SHARED_GROUP@@ @@ORCHESTRATOR_USER@@
+# usermod -aG @@CODE_GROUP@@ @@ORCHESTRATOR_USER@@
+
+# Notes for filters: use @@VAR@@ in source scripts for substitution.

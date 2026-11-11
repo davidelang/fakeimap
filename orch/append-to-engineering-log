@@ -1,0 +1,64 @@
+#!/bin/bash
+# append-to-engineering-log
+# Controlled wrapper for appending ONLY to ENGINEERING_LOG.md.
+# Agents MUST use this (never direct edits or >>).
+# The log is a normal group-writable file. Git pull and checkout must be able
+# to replace it, so it is not marked append-only.
+
+set -euo pipefail
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: ./orch/append-to-engineering-log MESSAGE"
+  echo "       ./orch/append-to-engineering-log @file"
+  exit 0
+fi
+
+# Ensure group-writable files in multi-user environment
+umask 007
+
+# Locate the worktree root reliably.
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  ROOT=$(git rev-parse --show-toplevel)
+else
+  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+# Root path may be a symlink into work-history/. Append follows the symlink.
+LOGFILE="$ROOT/ENGINEERING_LOG.md"
+if [ ! -f "$LOGFILE" ]; then
+  echo "ERROR: $LOGFILE not found" >&2
+  exit 1
+fi
+
+if [ $# -eq 0 ]; then
+  echo "Usage: $(basename "$0") '## YYYY-MM-DD - Title\n\n- bullet ...'" >&2
+  echo "   or: $(basename "$0") @file-with-entry.txt" >&2
+  exit 1
+fi
+
+if [[ "$1" == @* ]]; then
+  f="${1#@}"
+  if [ -f "$f" ]; then
+    ENTRY=$(cat "$f")
+  else
+    echo "ERROR: $f not found" >&2
+    exit 1
+  fi
+else
+  ENTRY="$*"
+fi
+
+# Enforce the required dated header format.
+if [[ ! $ENTRY =~ ^##\ [0-9]{4}- ]]; then
+  echo "ERROR: Entry must start with '## YYYY-MM-DD - ...'" >&2
+  exit 1
+fi
+
+# One path: a direct append. The log is group ai-shared and group-writable; every role is
+# in ai-shared. No sudo: Landlock sets no-new-privileges, so it could never work from an agent.
+printf '\n%s\n' "$ENTRY" >> "$LOGFILE" || {
+  echo "ERROR: cannot append to $LOGFILE as $(id -un) (needs group write; file is $(stat -c '%U:%G %a' "$LOGFILE"))" >&2
+  exit 1
+}
+
+echo "Appended entry to ENGINEERING_LOG.md"

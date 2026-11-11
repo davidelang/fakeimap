@@ -1,0 +1,18 @@
+name = "agent-coordination-tickets"
+git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
+git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
+git_sha = "a42642c4368b5246f259e4c818a429647aade68e"
+git_describe = "a42642c"
+track_branch = "master"
+reproducible = true
+build_time = "minutes"
+requires_writable_src = false
+# GOCACHE and GOTMPDIR (go build's work dir) in src/build, the pin's writable build scratch, never /tmp; removed after the build.
+build = ["mkdir -p src/build && d=$(mktemp -d \"$PWD/src/build/gocache.XXXXXX\") && cd src/go && GOCACHE=$d GOTMPDIR=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -buildvcs=false -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
+consumer_note = "Channel handoff tools. The built go/channel is committed as artifact/channel (multi-call: artifact/channel-{setup,arm,send,ping,status} are symlinks to it); agents run only those from the repo root and never need src/. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them. Consumers do not rerun the connector's tests."
+
+[[artifact]]
+# Static Go binary (CGO_ENABLED=0, -trimpath, -buildvcs=false: same bytes from any checkout): committed, so a new worktree needs no library checkout.
+path = "artifact/channel"
+from = "src/go/channel"
+sha256 = "aa5e5af5f4f29246675fdc9f29be661684d892bb4280b6b213ae456d345bb7d6"

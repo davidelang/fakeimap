@@ -1,0 +1,479 @@
+#!/usr/bin/env python3
+"""prepare-pr-rewrite: the /prepare-local-pr history-rewrite helper (docs/rules/prepare-local-pr.md).
+
+  ./orch/prepare-pr-rewrite [TARGET]               start: tag the tip backup-<branch>, reset to merge-base(TARGET, HEAD)
+  ./orch/prepare-pr-rewrite --redo [TARGET]        redo: backup-<branch> exists and stays; reset to merge-base(TARGET, HEAD) again
+  ./orch/prepare-pr-rewrite --plan-input [TARGET]  read-only: write $SANDBOX/PRs/rewrite-input-<branch>.md
+  ./orch/prepare-pr-rewrite --check [TARGET]       final check
+TARGET defaults to master. The reference is backup-<branch> (or HEAD before the first start).
+
+Kinds of paths:
+  log    paths with merge=ve-englog in .gitattributes (ENGINEERING_LOG.md). Append-only: never written
+         by a reset; the worktree keeps its full content; this helper appends the start entries.
+         Compared by content with symlinks followed on both sides (ENGINEERING_LOG.md is a symlink to
+         work-history/ENGINEERING_LOG.md since the work-history move; a reference from before the
+         move holds the regular file, whose content must prefix the current log).
+  infra  rules.manifest paths (law/shared/opt/replace/retired/purge), the project root's
+         rules.manifest.local paths, third_party pins (third_party/*/libpin.toml, third_party/*/SOURCE.md)
+         and third_party/fetch-deps. Expected version: TARGET's when the reference copy is TARGET's or
+         came from TARGET's history (a rules sync); else the reference copy when TARGET kept the fork
+         copy (a branch-only delta); else the 3-way merge fork/reference/TARGET (both changed it). A
+         conflicting merge is written with conflict markers: resolve it by hand in the first commit
+         (--check fails while markers remain and lists the path for review). All infra deltas go in
+         the first commit.
+  product everything else. Expected: the reference copy if the branch changed it since the fork
+         (merge-base(TARGET, reference)), else the base copy.
+Untracked files are left alone; one that is tracked at the base is an error.
+Preflight (before the tag or any change): every path the reset writes must be replaceable by this
+user (writable parent dir, no a/i attribute); offenders are listed with the fix and nothing changes.
+Resume: start/redo record the pre-reset tip in $GIT_DIR/prepare-pr-rewrite.state until they finish.
+After an interrupted run, ./orch/prepare-pr-rewrite --redo finishes it: uncommitted changes in paths the
+reset sets (log, infra, the reset product paths) and untracked infra paths are allowed; the log is
+never written, the tag never touched.
+"""
+import argparse, datetime, os, posixpath, re, subprocess, sys
+
+def die(msg):
+    print("ERROR: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+def git(*a, check=True, binary=False):
+    p = subprocess.run(["git", *a], capture_output=True)
+    if check and p.returncode:
+        die("git %s: %s" % (" ".join(a), p.stderr.decode(errors="replace").strip()))
+    return p.stdout if binary else p.stdout.decode(errors="replace")
+
+def ok(*a):
+    return subprocess.run(["git", *a], capture_output=True).returncode == 0
+
+def glob_match(pat, path):
+    rx = re.escape(pat).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*").replace(r"\?", "[^/]")
+    return re.fullmatch(rx, path) is not None
+
+def blob(rev, path):
+    out = git("rev-parse", "-q", "--verify", "%s:%s" % (rev, path), check=False).strip()
+    return out or None
+
+def tree_paths(rev):
+    return [p for p in git("ls-tree", "-r", "-z", "--name-only", rev).split("\0") if p]
+
+def show(rev, path):
+    return git("show", "%s:%s" % (rev, path), binary=True, check=False)
+
+def log_paths(rev):
+    ga = show(rev, ".gitattributes").decode(errors="replace")
+    out = [l.split()[0] for l in ga.splitlines() if l.strip() and not l.startswith("#") and "merge=ve-englog" in l.split()[1:]]
+    if not out:
+        die(".gitattributes at %s names no merge=ve-englog path (the engineering log)" % rev[:9])
+    return out
+
+INFRA_EXTRA = ["third_party/*/libpin.toml", "third_party/*/SOURCE.md", "third_party/fetch-deps"]
+
+def host_local():
+    """rules.manifest.local is committed on the project root (the main worktree), as deploy-orchestration reads it."""
+    host = os.path.dirname(os.path.realpath(git("rev-parse", "--git-common-dir").strip()))
+    p = subprocess.run(["git", "-C", host, "show", "HEAD:rules.manifest.local"], capture_output=True)
+    return p.stdout if p.returncode == 0 else b""
+
+def infra_pats(rev, local):
+    pats = list(INFRA_EXTRA)
+    for text, classes in ((show(rev, "rules.manifest"), ("law", "shared", "opt", "replace", "retired", "purge")), (local, ("local",))):
+        for line in text.decode(errors="replace").splitlines():
+            line = line.split("#", 1)[0].strip()
+            cls, _, pat = line.partition(" ")
+            if cls in classes and pat.strip():
+                pats.append(pat.strip())
+    return pats
+
+def history_blobs(rev, path):
+    out = git("log", "--format=", "--raw", "--no-abbrev", "--no-renames", rev, "--", path, check=False)
+    return {l.split()[3] for l in out.splitlines() if l.startswith(":")}
+
+def merge3(fv, rv, tv, labels):
+    """3-way merge of blob ids (fork, reference, target): (content, clean). A side that deleted the file is
+    merged as empty content, so the conflict shows what the other side has."""
+    import tempfile
+    # Scratch in this repo's git dir (never committed, same machine); never /tmp.
+    with tempfile.TemporaryDirectory(prefix="prepare-pr-rewrite-", dir=git("rev-parse", "--absolute-git-dir").strip()) as d:
+        fs = []
+        for n, b in (("r", rv), ("o", fv), ("t", tv)):
+            f = os.path.join(d, n)
+            open(f, "wb").write(git("cat-file", "blob", b, binary=True) if b else b"")
+            fs.append(f)
+        p = subprocess.run(["git", "merge-file", "-p", "-L", labels[0], "-L", "fork", "-L", labels[1], *fs], capture_output=True)
+        if p.returncode < 0 or p.returncode > 127:
+            die("git merge-file failed: " + p.stderr.decode(errors="replace"))
+        return p.stdout, p.returncode == 0
+
+MARK = re.compile(rb"(?m)^(<<<<<<< |=======$|>>>>>>> )")
+
+class Ctx:
+    def __init__(self, target, need_tag):
+        self.root = git("rev-parse", "--show-toplevel").strip()
+        os.chdir(self.root)
+        b = git("symbolic-ref", "-q", "--short", "HEAD", check=False).strip()
+        if not b:
+            die("detached HEAD")
+        self.branch, self.target = b, target
+        self.tag = "backup-" + b
+        if not ok("rev-parse", "-q", "--verify", target + "^{commit}"):
+            die("no such TARGET: " + target)
+        self.has_tag = ok("rev-parse", "-q", "--verify", "refs/tags/%s" % self.tag)
+        if need_tag is True and not self.has_tag:
+            die("no tag %s (run ./orch/prepare-pr-rewrite first)" % self.tag)
+        if need_tag is False and self.has_tag:
+            die("%s exists: to rewrite again use ./orch/prepare-pr-rewrite --redo %s (the tag stays)" % (self.tag, target))
+        self.head = git("rev-parse", "HEAD").strip()
+        self.ref = git("rev-parse", self.tag + "^{commit}").strip() if self.has_tag else self.head
+        self.state = os.path.abspath(git("rev-parse", "--git-path", "prepare-pr-rewrite.state").strip())
+        self.resume, self.state_bad = None, None  # pre-reset tip of an interrupted run
+        if os.path.isfile(self.state):
+            v = open(self.state).read().split()
+            if len(v) != 2 or not all(ok("rev-parse", "-q", "--verify", x + "^{commit}") for x in v):
+                self.state_bad = "%s is unreadable; inspect it, then remove it" % self.state
+            elif self.head not in v:
+                self.state_bad = "%s names tip %s / base %s but HEAD is %s; inspect it, then remove it" % (self.state, v[0][:9], v[1][:9], self.head[:9])
+            else:
+                self.resume = v[0]
+        self.tip = self.resume or self.head  # the commit the reset starts from
+        self.base = git("merge-base", target, self.tip, check=False).strip() or die("no merge-base of HEAD with " + target)
+        self.fork = git("merge-base", target, self.ref, check=False).strip() or die("no merge-base of %s with %s" % (self.ref[:9], target))
+        self.tgt = git("rev-parse", target + "^{commit}").strip()
+        self.logs = log_paths(self.ref)
+        local = host_local()
+        pats = infra_pats(self.ref, local) + infra_pats(self.tgt, local)
+        cand = set(tree_paths(self.ref)) | set(tree_paths(self.tgt)) | set(tree_paths(self.fork))
+        self.infra = sorted(p for p in cand if p not in self.logs and any(glob_match(x, p) for x in pats))
+        infra_set = set(self.infra)
+        self.changed = sorted(p for p in git("diff", "--name-only", "-z", "--no-renames", self.fork, self.ref).split("\0")
+                              if p and p not in infra_set and p not in self.logs)
+        self.expect, self.kind, self.merged, self.infra_conflict = {}, {}, {}, []
+        for p in self.infra:
+            rv, tv, fv = blob(self.ref, p), blob(self.tgt, p), blob(self.fork, p)
+            if rv == tv or (rv and rv in history_blobs(self.tgt, p)) or (rv is None and fv is None):
+                self.expect[p], self.kind[p] = (self.tgt, tv), "infra-target"
+            elif tv == fv:
+                self.expect[p], self.kind[p] = (self.ref, rv), "infra-branch"
+            else:
+                m, clean = merge3(fv, rv, tv, (self.tag, target))
+                self.merged[p] = m
+                h = subprocess.run(["git", "hash-object", "--stdin"], input=m, capture_output=True).stdout.decode().strip()
+                self.expect[p], self.kind[p] = (None, h), "infra-merged" if clean else "infra-conflict"
+                if not clean:
+                    self.infra_conflict.append(p)
+        self.conflict = []
+        for p in self.changed:
+            self.expect[p], self.kind[p] = (self.ref, blob(self.ref, p)), "product"
+            if blob(self.base, p) not in (blob(self.fork, p), blob(self.ref, p)):
+                self.conflict.append(p)
+
+    def sandbox(self):
+        cfg = open("project.config").read() if os.path.isfile("project.config") else die("project.config missing")
+        v = [l.split("=", 1)[1].strip() for l in cfg.splitlines() if l.startswith("sandbox_dir=")]
+        if not v or not v[-1] or "@@" in v[-1] or not os.path.isdir(os.path.join(v[-1], "PRs")):
+            die("project.config sandbox_dir has no value or its PRs/ is missing")
+        return v[-1]
+
+def append_log(entry):
+    p = subprocess.run(["./orch/append-to-engineering-log", entry])
+    if p.returncode:
+        die("./orch/append-to-engineering-log failed")
+
+def log_prefix_ok(c, data_by_path):
+    for lp in c.logs:
+        ref = log_at(c.ref, lp) or b""
+        cur = data_by_path[lp]
+        if cur is None or not cur.startswith(ref):
+            die("%s does not start with the %s copy: the log is append-only, it was rewritten" % (lp, c.tag))
+
+def tree_entry(rev, path):
+    """(mode, type, sha) of path in rev's tree, or None."""
+    out = git("ls-tree", "-z", rev, "--", path, binary=True).split(b"\0")[0]
+    if not out:
+        return None
+    mode, typ, sha = out.split(b"\t", 1)[0].decode().split()
+    return mode, typ, sha
+
+def log_at(rev, lp):
+    """Content of log path lp at rev with git symlinks (mode 120000) followed inside the tree, on
+    every path component, the way open() follows them in the worktree. None when lp is not in rev;
+    a dangling, looping, absolute or escaping link is an error."""
+    path, hops = posixpath.normpath(lp), 0
+    while True:
+        parts, i, e = path.split("/"), 0, None
+        while i < len(parts):
+            cur = "/".join(parts[:i + 1])
+            e = tree_entry(rev, cur)
+            if e is None:
+                if hops:
+                    die("%s at %s: symlink resolves to %s, which is not in the tree (dangling)" % (lp, rev[:9], path))
+                return None
+            if e[0] == "120000":
+                hops += 1
+                if hops > 40:
+                    die("%s at %s: too many symlink levels (loop?)" % (lp, rev[:9]))
+                t = git("cat-file", "blob", e[2], binary=True).decode(errors="replace")
+                if t.startswith("/"):
+                    die("%s at %s: symlink %s has absolute target %s" % (lp, rev[:9], cur, t))
+                new = posixpath.normpath(posixpath.join(posixpath.dirname(cur), t, *parts[i + 1:]))
+                if new == ".." or new.startswith("../") or new == ".":
+                    die("%s at %s: symlink %s target %s leaves the repo" % (lp, rev[:9], cur, t))
+                path = new
+                break
+            if i < len(parts) - 1 and e[1] != "tree":
+                die("%s at %s: %s is not a directory" % (lp, rev[:9], cur))
+            i += 1
+        else:
+            if e[1] != "blob":
+                die("%s at %s: resolves to %s, not a file" % (lp, rev[:9], path))
+            return git("cat-file", "blob", e[2], binary=True)
+
+def read_log(lp):
+    """Worktree content of log path lp, symlinks followed by open(). None when lp does not exist;
+    a dangling symlink or a non-file is an error, never empty content."""
+    if not os.path.lexists(lp):
+        return None
+    if not os.path.exists(lp):
+        die("%s is a dangling symlink (-> %s)" % (lp, os.readlink(lp)))
+    if not os.path.isfile(lp):
+        die("%s is not a regular file" % lp)
+    with open(lp, "rb") as f:
+        return f.read()
+
+def read_logs(c):
+    out = {}
+    for lp in c.logs:
+        d = read_log(lp)
+        if d is None and log_at(c.ref, lp) is not None:
+            die("%s is missing from the worktree but is in %s" % (lp, c.tag))
+        out[lp] = d
+    return out
+
+def preflight(c, paths):
+    """Every path the reset may write must be replaceable by this user; report all offenders at once."""
+    bad, dirs = [], set()
+    for p in paths:
+        d = os.path.dirname(p) or "."
+        while not os.path.isdir(d):
+            d = os.path.dirname(d) or "."
+        dirs.add(d)
+        if p in c.merged and os.path.isfile(p) and not os.access(p, os.W_OK):
+            bad.append("%s: file not writable" % p)
+    for d in sorted(dirs):
+        if not os.access(d, os.W_OK | os.X_OK):
+            bad.append("%s/: dir not writable (%s)" % (d, subprocess.run(["stat", "-c", "%U:%G %A", d], capture_output=True, text=True).stdout.strip()))
+    check = [p for p in paths if os.path.isfile(p) and not os.path.islink(p)] + sorted(dirs)
+    for i in range(0, len(check), 200):
+        out = subprocess.run(["lsattr", "-d", "--", *check[i:i + 200]], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            flags, _, name = line.partition(" ")
+            if re.search(r"[ai]", flags):
+                bad.append("%s: attribute %s" % (name.strip(), flags))
+    if bad:
+        die("preflight: %d path(s) this user (%s) cannot replace; nothing changed:\n  %s\n"
+            "fix: sudo ./fix-perms %s   (or, as the owner: chmod g+w on the dirs; chattr -a/-i needs root)"
+            % (len(bad), os.environ.get("USER") or subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip(),
+               "\n  ".join(bad), c.root))
+
+def reset(c, redo):
+    if c.branch in ("master", "orchestration"):
+        die("refusing to rewrite " + c.branch)
+    if c.state_bad:
+        die(c.state_bad)
+    if c.resume and not redo:
+        die("an interrupted run left %s: finish it with ./orch/prepare-pr-rewrite --redo %s" % (c.state, c.target))
+    dirty = [l for l in git("status", "--porcelain", "--untracked-files=no", "--no-renames").splitlines() if l]
+    product = set(git("diff", "--name-only", "-z", "--no-renames", c.base, c.tip).split("\0")) - {""} - set(c.logs) - set(c.infra)
+    # redo: the log and infra are set by the reset; an interrupted run may also leave its product paths.
+    settled = set(c.logs) | set(c.infra) | (product if c.resume and c.head == c.base else set())
+    bad = [l for l in dirty if not (redo and l[3:] in settled)]
+    if bad:
+        die("uncommitted tracked changes; commit or remove them first:\n" + "\n".join(bad))
+    if not redo and c.base == c.head:
+        die("nothing to rewrite: HEAD is the merge-base with " + c.target)
+    untracked = [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
+    # redo: an untracked infra path is one an interrupted run wrote; the reset sets it again.
+    hit = [p for p in untracked if (blob(c.base, p) or p in c.expect) and not (redo and p in c.infra)]
+    if hit:
+        die("untracked files are tracked at the base or the reference; move them away first:\n" + "\n".join(hit))
+    if c.conflict:
+        print("NOTE: also changed on %s since the fork (their steps must keep %s's change): %s" % (c.target, c.target, ", ".join(c.conflict)))
+    logs0 = read_logs(c)
+    log_prefix_ok(c, logs0)
+    preflight(c, sorted(product | set(c.infra)))
+    if not redo:
+        git("tag", c.tag, c.head)
+        if git("rev-parse", c.tag + "^{commit}").strip() != c.head:
+            die("%s does not point at %s; nothing reset" % (c.tag, c.head))
+    # Mixed reset: moves the branch and index only. The log is never written (same guarantee as
+    # reset-to-builds.sh's skip-worktree handling); every other path is set explicitly below.
+    if not c.resume:
+        with open(c.state, "w") as f:
+            f.write("%s %s\n" % (c.head, c.base))
+    git("reset", "-q", c.base)
+    for p in sorted(product):
+        if blob(c.base, p):
+            git("checkout", "-q", c.base, "--", p)
+        elif os.path.lexists(p):
+            os.remove(p)
+    kept = []
+    for p in c.infra:
+        rev, want = c.expect[p]
+        if p in c.merged:
+            if not os.path.isfile(p):
+                mode = git("ls-tree", c.ref if blob(c.ref, p) else c.tgt, "--", p).split()[0]
+                os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+                open(p, "wb").close()
+                os.chmod(p, 0o775 if mode == "100755" else 0o664)
+            open(p, "wb").write(c.merged[p])
+            if p not in c.infra_conflict:
+                git("add", "--", p)
+        elif want:
+            git("checkout", "-q", rev, "--", p)
+        elif blob(c.base, p):
+            git("rm", "-q", "--", p)
+        elif os.path.lexists(p):
+            os.remove(p)
+        if blob(c.base, p) != want:
+            kept.append(p)
+    for lp in c.logs:
+        if read_log(lp) != logs0[lp]:
+            die("%s changed during the reset (tag %s keeps the history)" % (lp, c.tag))
+    allowed = set(c.logs) | set(kept)
+    left = [l for l in git("status", "--porcelain", "--untracked-files=no", "--no-renames").splitlines() if l[3:] not in allowed]
+    if left:
+        die("tree is not base + log + infra after the reset (tag %s keeps the tip):\n%s" % (c.tag, "\n".join(left)))
+    today = datetime.date.today().isoformat()
+    what = "redo (backup tag %s kept)" % c.tag if redo else "started (backup tag %s)" % c.tag
+    append_log("## %s - history rewrite %s\n\n- Branch %s, reference %s (%s)." % (today, what, c.branch, c.tag, c.ref[:9]))
+    append_log("## %s - reset to %s done\n\n- Reset to merge-base with %s; log kept; infra kept: %d path(s)." % (today, c.base[:9], c.target, len(kept)))
+    log_prefix_ok(c, read_logs(c))
+    os.remove(c.state)
+    print("REWRITE-%s branch=%s tag=%s ref=%s base=%s target=%s" % ("REDO" if redo else "START", c.branch, c.tag, c.ref[:9], c.base[:9], c.target))
+    print("FIRST COMMIT (commit path, before any product step): %s" % " ".join(c.logs + kept))
+    for p in kept:
+        print("  %s %s" % (c.kind[p], p))
+    for p in c.infra_conflict:
+        print("RESOLVE %s: branch and %s both changed it; conflict markers are in the file. Keep %s's version plus the branch's own change (git diff %s %s -- %s), then include it in the first commit." % (p, c.target, c.target, c.fork[:9], c.tag, p))
+    print("Then per step: ./orch/append-to-engineering-log one entry, and name %s in that commit. Final: ./orch/prepare-pr-rewrite --check %s" % (" ".join(c.logs), c.target))
+
+def check(c):
+    bad = []
+    for lp in c.logs:
+        h = log_at("HEAD", lp)
+        if h is None:
+            bad.append("%s is not in HEAD" % lp)
+            continue
+        if not h.startswith(log_at(c.ref, lp) or b""):
+            bad.append("%s at HEAD does not start with the %s copy (append-only)" % (lp, c.tag))
+        if read_log(lp) != h:
+            bad.append("%s in the worktree differs from HEAD (commit the appended entries)" % lp)
+    for p in c.infra:
+        rev, want = c.expect[p]
+        if p in c.infra_conflict:
+            if MARK.search(show("HEAD", p)):
+                bad.append("infra %s at HEAD still has conflict markers" % p)
+            continue
+        if blob("HEAD", p) != want:
+            bad.append("infra %s at HEAD is not the expected copy (%s: %s)" % (p, c.kind[p], {"infra-target": c.target, "infra-branch": c.tag, "infra-merged": "3-way merge %s+%s" % (c.tag, c.target)}[c.kind[p]]))
+    for p in c.conflict:
+        print("NOTE: %s also changed on %s since the fork: confirm by hand that HEAD keeps both changes" % (p, c.target))
+    print("LOG %s; INFRA %d path(s) checked" % (" ".join(c.logs), len(c.infra)))
+    if bad:
+        die("check failed:\n  " + "\n  ".join(bad))
+    print("LOG-OK INFRA-OK")
+    for p in c.infra_conflict:
+        print("REVIEW infra %s (resolved by hand): git diff %s HEAD -- %s must show only the branch's own change" % (p, c.target, p))
+    skip = set(c.logs) | set(c.infra) | set(c.changed)
+    extra = [p for p in git("diff", "--name-only", "-z", "--no-renames", c.base, "HEAD").split("\0") if p and p not in skip]
+    prod = [p for p in c.changed if blob("HEAD", p) != c.expect[p][1]]
+    print("deviations to review hunk by hunk (git diff %s HEAD -- <path>):" % c.tag)
+    if prod:
+        sys.stdout.write(git("diff", "--stat", c.ref, "HEAD", "--", *prod))
+    else:
+        print("  none: every product file the branch changed equals %s" % c.tag)
+    if extra:
+        print("changed on this branch but not by the original branch (deviations too, git diff %s HEAD -- <path>):" % c.base[:9])
+        sys.stdout.write(git("diff", "--stat", c.base, "HEAD", "--", *extra))
+
+def plan_input(c):
+    out = os.path.join(c.sandbox(), "PRs", "rewrite-input-%s.md" % c.branch)
+    commits = [l.split(" ", 1) for l in git("log", "--reverse", "--format=%h %s", c.fork + ".." + c.ref).splitlines()]
+    full = {git("rev-parse", h).strip(): h for h, _ in commits}
+    touched = {}
+    for h, _ in commits:
+        for f in git("diff-tree", "--no-commit-id", "-r", "--name-only", "--no-renames", h).split():
+            touched.setdefault(f, []).append(h)
+    kept = [p for p in c.infra if blob(c.base, p) != c.expect[p][1]]
+    DBG = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|println\(|Log\.d\(|System\.out\.|printStackTrace|console\.log|breakpoint\(|pdb\.set_trace|\bDEBUG\b")
+    L = ["# rewrite input: %s" % c.branch, "",
+         "reference %s (%s), base %s = merge-base(%s, HEAD), fork %s; %d original commits; %d product files."
+         % (c.ref[:9], c.tag if c.has_tag else "HEAD", c.base[:9], c.target, c.fork[:9], len(commits), len(c.changed)),
+         "Log (kept whole, appended per commit): %s" % ", ".join(c.logs),
+         "", "## First commit: log + infra (not part of any product step)"]
+    L += ["- %s %s" % (c.kind[p], p) for p in kept] or ["- no infra delta"]
+    L += ["  - %s: resolve by hand in the first commit (%s's version + git diff %s %s -- %s)" % (p, c.target, c.fork[:9], c.tag if c.has_tag else "HEAD", p) for p in c.infra_conflict]
+    L += ["", "## Product files also changed on %s since the fork (keep both changes)" % c.target] + (["- " + p for p in c.conflict] or ["- none"])
+    L += ["", "## Original commits (oldest first)"] + ["- %s %s" % (h, s) for h, s in commits]
+    gone = sorted(f for f in touched if f not in c.changed and f not in c.infra and f not in c.logs)
+    L += ["", "## Touched by commits but not in the net diff (changes cancel out: false starts)"] + (["- %s (%s)" % (f, ", ".join(touched[f])) for f in gone] or ["- none"])
+    L += ["", "## Net product diff by file and hunk (base -> reference)", "Each hunk lists the original commits that wrote its added lines (blame at the reference)."]
+    left = []
+    for f in c.changed:
+        num = git("diff", "--numstat", "--no-renames", c.base, c.ref, "--", f).split()
+        a, d = (num[0], num[1]) if num else ("0", "0")
+        L += ["", "### %s (+%s -%s) commits: %s" % (f, a, d, ", ".join(touched.get(f, [])) or "?")]
+        if a == "-":
+            L.append("- binary"); continue
+        bl = {}
+        for line in git("blame", "--porcelain", c.ref, "--", f, check=False).splitlines():
+            m = re.match(r"^([0-9a-f]{40}) \d+ (\d+)", line)
+            if m:
+                bl[int(m.group(2))] = full.get(m.group(1), "")
+        for hunk in re.split(r"(?m)^(?=@@ )", git("diff", "-U0", "--no-renames", c.base, c.ref, "--", f)):
+            m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", hunk)
+            if not m:
+                continue
+            ns = int(m.group(3)); nc = 0 if m.group(4) == "0" else int(m.group(4) or 1)
+            who = sorted({bl.get(n, "") for n in range(ns, ns + nc)} - {""})
+            first = next((l[1:].strip() for l in hunk.splitlines()[1:] if l[:1] in "+-" and l[1:].strip()), "")
+            L.append("- %s %s | %s | %s" % (hunk.split("@@")[1].strip(), m.group(5).strip()[:50], ",".join(who) or "deletion only", first[:90]))
+            n = ns
+            for l in hunk.splitlines()[1:]:
+                if l.startswith("+"):
+                    if DBG.search(l):
+                        left.append("- %s:%d %s" % (f, n, l[1:].strip()[:100]))
+                    n += 1
+    L += ["", "## Possible leftovers in added lines (candidates for Deviations)"] + (left or ["- none"])
+    open(out, "w").write("\n".join(L) + "\n")
+    print("PLAN-INPUT %s (%d commits, %d product files, %d infra in the first commit, %d cancelled-out, %d leftover candidates)"
+          % (out, len(commits), len(c.changed), len(kept), len(gone), len(left)))
+
+def main():
+    # argparse's own error: the usage line, then one "prepare-pr-rewrite: error: ..." line, exit 2.
+    ap = argparse.ArgumentParser(
+        prog="./orch/prepare-pr-rewrite",
+        description="The /prepare-local-pr history-rewrite helper. With no option: tag the tip "
+                    "backup-<branch> and reset to merge-base(TARGET, HEAD).",
+        epilog="Details: the docstring at the top of ./orch/prepare-pr-rewrite.")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("-r", "--redo", action="store_true",
+                   help="backup-<branch> exists and stays; reset to merge-base(TARGET, HEAD) again")
+    g.add_argument("-i", "--plan-input", action="store_true",
+                   help="read-only: write $SANDBOX/PRs/rewrite-input-<branch>.md")
+    g.add_argument("-c", "--check", action="store_true",
+                   help="final check")
+    ap.add_argument("target", nargs="?", default="master", metavar="TARGET",
+                    help="the branch to rewrite onto (default: master)")
+    a = ap.parse_args()
+    if a.redo:
+        reset(Ctx(a.target, need_tag=True), redo=True)
+    elif a.check:
+        check(Ctx(a.target, need_tag=True))
+    elif a.plan_input:
+        plan_input(Ctx(a.target, need_tag=None))
+    else:
+        reset(Ctx(a.target, need_tag=False), redo=False)
+
+if __name__ == "__main__":
+    main()

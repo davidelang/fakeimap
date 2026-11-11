@@ -1,0 +1,32 @@
+---
+name: master-merge
+description: >
+  Review and merge a feature branch into master: local PR review, plan
+  adherence, special-file merge (ENGINEERING_LOG, TODO, project-facts), post-merge
+  gate, and build gate. Same process on every host. Use for review PR, merge branch,
+  or /master-merge.
+when-to-use: "review PR, merge branch, master merge, integrate branch, /master-merge"
+disable-model-invocation: true
+---
+
+# master-merge
+
+`$SANDBOX` is `project.config` `sandbox_dir`; unset or missing: stop and report it.
+
+## Review
+1. Read `$SANDBOX/PRs/PR-<branch>.md`. It holds the plans and the backup tag.
+2. Check that `git log master..<branch>` is clean and has compiling commits. Compare `git diff master..<branch>` against the plans.
+3. Reject anything the plan or the PR doc's approved **Deviations** list did not name: silent improvements, refactors, or "best practice" changes. Ask the branch's coder to revert them.
+
+## Merge
+0. Stacked wrappers: `build_app`, `deploy` and similar wrappers (e.g. `ve-resolve-orch`) on master carry several independent layered fixes. Merge them hunk by hunk; never wholesale-restore one from a single SHA or take one side whole.
+1. Run `python3 $SANDBOX/audit_merge.py <branch>` if it exists.
+2. Run `./orch/install-merge-drivers.sh`, then `./orch/merge-branch-into-master.sh <branch>` from the master worktree.
+3. `ENGINEERING_LOG.md`: the ve-englog driver appends the branch tail via `./orch/append-to-engineering-log`. Never take the branch file. The log is a normal file; do not mark it append-only.
+4. `TODO.md` and `project-facts.md`: master's version stays (ve-special-ours). Then apply the branch delta with `./orch/todo-close` / `./orch/todo-append` and by editing facts by hand.
+   **Before changing any Testing section (project-wide or `## Worktree:`) of `project-facts.md`, ask David and wait.**
+5. Post-merge gate: `git diff --cached --name-only` must list the feature paths, not just `ENGINEERING_LOG.md`. Otherwise the merge FAILED; do not build.
+6. Build gate: the project-facts.md Build path (Android: `./build_app --standard --test @msg.txt files...`; never `--play`, which needs David at a terminal). If it has none, stop: `STATUS: BLOCKED no build/commit path in project-facts.md`.
+7. Never set or move `works`. Tell David he can run `./remove_worktree.sh <branch>`. Fixes to merge scripts land on the orchestration checkout first and are then published.
+
+End with the STATUS line.

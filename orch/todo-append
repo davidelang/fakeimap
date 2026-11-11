@@ -1,0 +1,77 @@
+#!/bin/bash
+# todo-append
+# Controlled append-only helper for TODO.md additions.
+# Additions are RARE: only when you identify a problem and *explicitly decide*
+# to defer it to a future turn (not per-commit noise).
+# Use this instead of direct edits or git add/commit on the whole file.
+# Format: one short line plus the path to the details (plan, review finding,
+# spec, research note). The details stay in that file, not in TODO.md.
+
+set -euo pipefail
+
+USAGE_LINE="usage: ./orch/todo-append [-h] '- [ ] ITEM (DETAILS)'|@FILE"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Append one item to TODO.md (the text, or the contents of FILE).
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./orch/todo-append.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "todo-append: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
+
+# Ensure group-writable files in multi-user environment
+umask 007
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TODOFILE="$SCRIPT_DIR/TODO.md"
+
+if [ $# -eq 0 ]; then
+  echo "Usage: $(basename "$0") '- [ ] <short description> (<path to details>)'"
+  echo "   or: $(basename "$0") @file-with-item.txt"
+  echo "One short line plus the path to the details (plan, review finding, spec, research note). Not the details themselves."
+  exit 1
+fi
+
+if [[ "$1" == @* ]]; then
+  f="${1#@}"
+  if [ -f "$f" ]; then
+    ITEM=$(cat "$f")
+  else
+    echo "ERROR: $f not found" >&2
+    exit 1
+  fi
+else
+  ITEM="$*"
+fi
+
+# Enforce high-level only, no execution transcripts.
+if [[ $ITEM =~ (##|###|Phase|forensic|build gate|commit) ]]; then
+  echo "ERROR: TODO additions must be high-level future items only. Details go in the plan + ENGINEERING_LOG." >&2
+  exit 1
+fi
+
+append_todo() {
+  if grep -q '^# Future work' "$TODOFILE"; then
+    printf '\n%s\n' "$ITEM" >> "$TODOFILE"
+  else
+    printf '\n# Future work\n\n%s\n' "$ITEM" >> "$TODOFILE"
+  fi
+}
+
+if ! append_todo; then
+  echo "ERROR: cannot append to $TODOFILE" >&2
+  stat -c '%a %U:%G %n' "$TODOFILE" >&2 || true
+  echo "id: $(id -un) groups: $(id -nG)" >&2
+  echo "needs :ai-shared 664; planner is not in ai-code; do not chmod 666; human: chgrp ai-shared && chmod 664 (fix-perms restamps 664)" >&2
+  exit 1
+fi
+
+echo "Appended (rare) item to TODO.md. Remember: keep it small and high-level only."

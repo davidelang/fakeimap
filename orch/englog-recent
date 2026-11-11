@@ -1,0 +1,55 @@
+#!/bin/bash
+# englog-recent — read ENGINEERING_LOG.md without reading it whole (read-only).
+# Usage: englog-recent [-n N|--last N] | [-S DATE|--since DATE] | [-s TEXT|--show TEXT]
+# Exit: 0 ok, 1 nothing found / no such header, 2 usage, bad log, or ambiguous header.
+set -euo pipefail
+usage() { echo "Usage: $(basename "$0") [-n N|--last N] | [-S DATE|--since DATE] | [-s TEXT|--show TEXT]" >&2; exit 2; }
+mode="" N=20 ARG=""
+parsed="$(getopt -o hn:S:s: -l help,last:,since:,show: -- "$@")" || exit 2
+eval set -- "$parsed"
+while true; do
+  case "$1" in
+    -h|--help)
+      echo "Usage: $(basename "$0") [-n N|--last N] | [-S DATE|--since DATE] | [-s TEXT|--show TEXT]"
+      echo "  -h, --help  print this usage and exit"
+      exit 0 ;;
+    -n|--last)
+      [ -z "$mode" ] || usage
+      [[ "$2" =~ ^[1-9][0-9]*$ ]] || usage
+      mode=last; N=$2; shift 2 ;;
+    -S|--since)
+      [ -z "$mode" ] || usage
+      [[ "$2" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || usage
+      mode=since; ARG=$2; shift 2 ;;
+    -s|--show)
+      [ -z "$mode" ] || usage
+      [ -n "$2" ] || usage
+      mode=show; ARG=$2
+      [[ "$ARG" == "## "* ]] || ARG="## $ARG"
+      shift 2 ;;
+    --) shift; break ;;
+    *) usage ;;
+  esac
+done
+[ $# -eq 0 ] || usage
+[ -n "$mode" ] || mode=last
+ROOT="$(git rev-parse --show-toplevel)"
+LOG="$ROOT/ENGINEERING_LOG.md"
+[ -r "$LOG" ] || { echo "ERROR: $LOG missing or unreadable" >&2; exit 2; }
+HDR='^## \[?[0-9]{4}-[0-9]{2}-[0-9]{2}\]? - '
+case $mode in
+  last)
+    out=$(grep -nE "$HDR" "$LOG" | tail -n "$N" | sed 's/^\([0-9]*\):/L\1: /') ;;
+  since)
+    out=$(SINCE="$ARG" HDR="$HDR" awk '
+      $0 ~ ENVIRON["HDR"] { d = $0; sub(/^## \[?/, "", d); d = substr(d, 1, 10); if (d >= ENVIRON["SINCE"]) print "L" NR ": " $0 }' "$LOG") ;;
+  show)
+    lines=$(SHOW="$ARG" awk '$0 == ENVIRON["SHOW"] { print NR }' "$LOG")
+    count=$(awk 'NF{c++} END{print c+0}' <<< "$lines")
+    if [ "$count" -eq 0 ]; then echo "ERROR: no such header: $ARG" >&2; exit 1; fi
+    if [ "$count" -gt 1 ]; then echo "ERROR: $count headers match; quote a unique one:" >&2; printf 'L%s\n' $lines >&2; exit 2; fi
+    awk -v s="$lines" 'NR == s { p = 1; print; next } p && /^## / { exit } p' "$LOG"
+    exit 0 ;;
+esac
+[ -n "$out" ] || { echo "No log headers found ($mode ${ARG:-$N})" >&2; exit 1; }
+printf '%s\n' "$out"

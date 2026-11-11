@@ -1,0 +1,84 @@
+#!/bin/bash
+# filter-apply-config: git smudge filter for manage-configs.
+# Replaces @@TOKEN@@ with values from project.config (next to this script).
+# Fails (non-zero) when project.config is missing or a token in the file has no value;
+# git then refuses the checkout (filter.manage-configs.required=true).
+#   bash ./filter-apply-config              smudge stdin to stdout
+#   bash ./filter-apply-config -t|--tokens  print the known tokens (used by ./orch/verify-smudge)
+#   bash ./filter-apply-config -h|--help
+# Files that must keep a literal @@TOKEN@@ are not filter=manage-configs in .gitattributes.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="$SCRIPT_DIR/project.config"
+
+# key -> token. The sandbox token comes from sandbox_dir (the one sandbox key).
+declare -A TOKENS=(
+  [sandbox_dir]="@@SANDBOX_PATH@@"
+  [planning_user]="@@PLANNING_USER@@"
+  [coder_user]="@@CODER_USER@@"
+  [orchestrator_user]="@@ORCHESTRATOR_USER@@"
+  [code_group]="@@CODE_GROUP@@"
+  [sandbox_group]="@@SANDBOX_GROUP@@"
+  [shared_group]="@@SHARED_GROUP@@"
+  [grok_bin_default]="@@GROK_BIN_DEFAULT@@"
+  [gemini_bin_default]="@@GEMINI_BIN_DEFAULT@@"
+  # Absolute path to sibling git hosts (e.g. /home/you/git), not ~/git.
+  [git_home]="@@GIT_HOME@@"
+  [primary_user]="@@PRIMARY_USER@@"
+  [antigravity_bin]="@@ANTIGRAVITY_BIN@@"
+  [cursor_bin]="@@CURSOR_BIN@@"
+  [orch_root]="@@ORCH_ROOT@@"
+)
+
+parsed="$(getopt -o ht -l help,tokens -- "$@")" || exit 2
+eval set -- "$parsed"
+_fa_tokens=0
+while true; do
+  case "$1" in
+    -h|--help)
+      echo "usage: filter-apply-config [-t|--tokens] [-h|--help]"
+      echo "  no arguments: smudge stdin to stdout"
+      echo "  -t, --tokens: print the known tokens"
+      exit 0 ;;
+    -t|--tokens) _fa_tokens=1; shift ;;
+    --) shift; break ;;
+    *) echo "usage: filter-apply-config [--tokens] (smudge stdin to stdout)" >&2; exit 2 ;;
+  esac
+done
+if [ "$_fa_tokens" -eq 1 ]; then
+  [ $# -eq 0 ] || { echo "usage: filter-apply-config [--tokens] (smudge stdin to stdout)" >&2; exit 2; }
+  for k in "${!TOKENS[@]}"; do printf '%s %s\n' "${TOKENS[$k]}" "$k"; done | sort
+  exit 0
+fi
+[ $# -eq 0 ] || { echo "usage: filter-apply-config [--tokens] (smudge stdin to stdout)" >&2; exit 2; }
+
+if [ ! -f "$CONFIG" ]; then
+  echo "filter-apply-config: ERROR: $CONFIG missing; cannot smudge @@TOKEN@@ values" >&2
+  exit 1
+fi
+
+declare -A VAL=()
+while IFS='=' read -r key val; do
+  [[ "$key" =~ ^[a-z_]+$ ]] || continue
+  VAL[$key]="$val"
+done < "$CONFIG"
+
+content=$(cat; printf x); content="${content%x}"
+missing=()
+for key in "${!TOKENS[@]}"; do
+  token="${TOKENS[$key]}"
+  [[ "$content" == *"$token"* ]] || continue
+  val="${VAL[$key]:-}"
+  if [ -z "$val" ] || [[ "$val" == @@* ]]; then
+    missing+=("$key ($token)")
+    continue
+  fi
+  content="${content//$token/$val}"
+done
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "filter-apply-config: ERROR: no value in $CONFIG for: ${missing[*]}" >&2
+  exit 1
+fi
+printf '%s' "$content"

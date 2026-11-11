@@ -1,0 +1,131 @@
+#!/bin/bash
+# post-checkout hook — install as .git/hooks/post-checkout (chmod 775)
+#
+# Checkout must NOT:
+#   - run fix-perms / fix-perms --all (or legacy whole-tree set-*-perms)
+#   - chown/chmod the common/core git store (objects, refs, HEAD, config, …)
+#
+# Checkout MAY (branch switch only):
+#   - best-effort light modes on worktree paths that actually changed
+#     (git diff --name-only old new), so umask 007 does not leave files
+#     unreadable to other roles via o+r
+#   - restamp worktree-root TODO.md / project-facts.md to :ai-shared 664
+#     (planner is in ai-shared, not ai-code; 666 is a bug)
+#
+# File checkout (3rd arg = 0): no permission walk — path list is not passed
+# to the hook; parent setgid + launcher umask / explicit recovery apply.
+#
+# Common .git DAC repair is explicit only:
+#   ./fix-multiuser-git-hosts.sh   (or ./fix-ve-git-shared.sh)
+#
+# Every checkout ends with ./orch/verify-smudge: all filter=manage-configs files must be
+# smudged, else the hook (and so the git command) fails. setup_agent sets
+# VE_SETUP_AGENT=1 while it populates a worktree and runs ./orch/verify-smudge itself.
+
+set -euo pipefail
+
+# setup_agent: no hook work mid-setup (avoid thrash before seed_smudge_inputs).
+if [ "${VE_SETUP_AGENT:-}" = "1" ]; then
+  exit 0
+fi
+
+PREV_HEAD="${1:-}"
+NEW_HEAD="${2:-}"
+# 1 = branch checkout, 0 = file checkout
+CHECKOUT_TYPE="${3:-1}"
+
+GIT_ROOT=$(git rev-parse --show-toplevel)
+cd "$GIT_ROOT"
+
+# Absolute common git directory (never touch DAC under this path).
+COMMON_GITDIR=$(git rev-parse --git-common-dir)
+case "${COMMON_GITDIR:-}" in
+  /*) ;;
+  "") COMMON_GITDIR="" ;;
+  *) COMMON_GITDIR="$GIT_ROOT/$COMMON_GITDIR" ;;
+esac
+# Normalize trailing slash for prefix checks
+if [ -n "$COMMON_GITDIR" ]; then
+  COMMON_GITDIR="${COMMON_GITDIR%/}"
+fi
+
+path_under_common_git() {
+  local p="$1"
+  [ -n "$COMMON_GITDIR" ] || return 1
+  case "$p" in
+    "$COMMON_GITDIR"|"$COMMON_GITDIR"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Soft cap so huge branch switches stay cheap (no full-tree find).
+MAX_SCOPED_PATHS=500
+
+shared_group_for_root() {
+  local g
+  g=$(sed -n 's/^shared_group=//p' "$GIT_ROOT/project.config" | tr -d '\r' | tail -1)
+  [ -n "$g" ] || { echo "post-checkout: ERROR: shared_group has no value in $GIT_ROOT/project.config" >&2; exit 1; }
+  printf '%s' "$g"
+}
+
+scoped_mode_fix_changed_paths() {
+  local old="$1" new="$2"
+  local list path n=0
+  local sg
+  sg=$(shared_group_for_root)
+
+  [ -n "$old" ] && [ -n "$new" ] || return 0
+  [ "$old" != "$new" ] || return 0
+
+  list=$(git diff --name-only "$old" "$new" 2>/dev/null || true)
+  [ -n "$list" ] || return 0
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    n=$((n + 1))
+    if [ "$n" -gt "$MAX_SCOPED_PATHS" ]; then
+      break
+    fi
+    # Worktree-relative paths only; never touch common .git
+    case "$path" in
+      .git|.git/*) continue ;;
+    esac
+    if path_under_common_git "$GIT_ROOT/$path" || path_under_common_git "$path"; then
+      continue
+    fi
+    if [ -d "$path" ]; then
+      # Keep setgid if present; ensure ug+rwx (no recursive chown)
+      chmod ug+rwx "$path" 2>/dev/null || true
+    elif [ -f "$path" ] || [ -L "$path" ]; then
+      # Worktree-root specials: planner writes via ai-shared, not other-write.
+      case "$path" in
+        TODO.md|project-facts.md)
+          chgrp "$sg" "$path" 2>/dev/null || true
+          chmod 664 "$path" 2>/dev/null || true
+          continue
+          ;;
+      esac
+      # PERMISSIONS_MODEL: planner-readable via o+r when group is ai-code.
+      # 100755 must also get o+x (planner is not in ai-code; 774 is EACCES).
+      local idxmode
+      idxmode=$(git ls-files -s -- "$path" 2>/dev/null | awk '{print $1; exit}')
+      if [ "$idxmode" = "100755" ]; then
+        chmod a+x "$path" 2>/dev/null || true
+      fi
+      chmod ug+rw,o+r "$path" 2>/dev/null || true
+    fi
+  done <<< "$list"
+}
+
+# Branch checkout only — never whole-tree recovery, never common .git DAC.
+if [ "$CHECKOUT_TYPE" = "1" ]; then
+  scoped_mode_fix_changed_paths "$PREV_HEAD" "$NEW_HEAD"
+fi
+# File checkout ($CHECKOUT_TYPE=0): intentional no-op for modes.
+
+# All filtered files smudged, git filter config present (fails loudly otherwise).
+if [ ! -x "$GIT_ROOT/orch/verify-smudge" ]; then
+  echo "post-checkout: ERROR: $GIT_ROOT/orch/verify-smudge missing; publish rules (deploy-orchestration)" >&2
+  exit 1
+fi
+"$GIT_ROOT/orch/verify-smudge"

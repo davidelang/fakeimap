@@ -1,0 +1,11 @@
+#!/bin/bash
+# ve-special-refuse — DEPRECATED: use ve-special-ours (keeps master, exit 0).
+# Retained for reference; .gitattributes should use merge=ve-special-ours.
+#
+# Refusing with exit 1 breaks git merge-tree (TODO silently became branch version).
+# ve-special-ours keeps ours and succeeds so drivers run in merge + merge-tree.
+
+set -euo pipefail
+P="${5:-special-file}"
+echo "ve-special-refuse: DEPRECATED — re-run ./orch/install-merge-drivers.sh and use ve-special-ours in .gitattributes (${P})" >&2
+exec "$(dirname "$0")/ve-special-ours" "$@"
