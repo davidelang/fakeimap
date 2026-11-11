@@ -174,3 +174,7 @@
 
 - Approved plan: sandbox/plans/jmap-write-20261111-0559-plan.md
 - Upload stores a blob and download returns it or an Email/get RFC822 blob. Email/import appends that blob into one mailbox. Email/set destroy expunges. Email/set create or update is invalidArguments and destroys nothing. Email/changes lists IMAP append, flag change, and expunge, plus JMAP import and destroy. EmailSubmission stays unknownMethod.
+
+## 2026-11-11 - JMAP Email/set update
+
+- Implementing Email/set update for keywords and mailbox membership (jmap-update-20261111-0630-plan.md). create stays invalidArguments. destroy stays as it is.

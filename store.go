@@ -2079,36 +2079,187 @@ func (st *Store) importJMAP(account string, items []jmapImport, frozen *time.Tim
 	return old, strconv.FormatUint(st.jmapState, 10), created, ""
 }
 
-func (st *Store) destroyJMAP(ids []string) (string, string, []string, []string) {
+type jmapLocated struct {
+	mb  *Mailbox
+	m   *Message
+	seq uint32
+}
+
+func (st *Store) locateJMAP(id string) []jmapLocated {
+	var out []jmapLocated
+	for _, name := range st.order {
+		mb := st.boxes[name]
+		if mb == nil {
+			continue
+		}
+		for i, m := range mb.msgs {
+			if m.jmapID == id {
+				out = append(out, jmapLocated{mb: mb, m: m, seq: uint32(i + 1)})
+			}
+		}
+	}
+	return out
+}
+
+// appendCopyLocked adds one mailbox copy of an existing email. The JMAP id
+// stays the same, so this is not a new email. Caller holds st.mu and records
+// the change itself.
+func (st *Store) appendCopyLocked(dst *Mailbox, src *Message) {
+	nm := cloneMsg(src, dst.uidNext)
+	nm.jmapID = src.jmapID
+	dst.bump(nm)
+	dst.uidNext++
+	dst.msgs = append(dst.msgs, nm)
+	dst.pushExists()
+}
+
+// expungeLocked removes one message and pushes EXPUNGE. It does not record a
+// JMAP change. Caller holds st.mu.
+func (st *Store) expungeLocked(mb *Mailbox, m *Message) {
+	var keep []*Message
+	seq := uint32(1)
+	for _, cur := range mb.msgs {
+		if cur == m {
+			mb.noteExpunge(cur)
+			mb.push(mbEvent{kind: "expunge", seq: seq, uid: cur.uid, modseq: cur.modseq})
+			continue
+		}
+		keep = append(keep, cur)
+		seq++
+	}
+	mb.msgs = keep
+}
+
+func applyKeywordPatch(m *Message, kw map[string]bool) bool {
+	changed := false
+	for flag, on := range kw {
+		if on {
+			if !m.has(flag) {
+				m.addFlag(flag)
+				changed = true
+			}
+			continue
+		}
+		if m.has(flag) {
+			m.removeFlag(flag)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// applyOneUpdate patches one email. An empty string means it was applied.
+// Caller holds st.mu.
+func (st *Store) applyOneUpdate(p emailPatch) string {
+	locs := st.locateJMAP(p.id)
+	if len(locs) == 0 {
+		return "notFound"
+	}
+	if !p.ok {
+		return "invalidProperties"
+	}
+	cur := map[string]jmapLocated{}
+	for _, loc := range locs {
+		cur[loc.mb.jmapID] = loc
+	}
+	next := map[string]bool{}
+	for id := range cur {
+		next[id] = true
+	}
+	addMB := map[string]*Mailbox{}
+	for _, id := range p.add {
+		mb := st.mailboxByJMAP(id)
+		if mb == nil {
+			return "invalidProperties"
+		}
+		addMB[id] = mb
+		next[id] = true
+	}
+	for _, id := range p.del {
+		delete(next, id)
+	}
+	if len(next) == 0 {
+		return "invalidProperties"
+	}
+	changed := false
+	for _, loc := range locs {
+		if !applyKeywordPatch(loc.m, p.keywords) {
+			continue
+		}
+		changed = true
+		if !next[loc.mb.jmapID] {
+			continue
+		}
+		loc.mb.bump(loc.m)
+		loc.mb.push(mbEvent{
+			kind:   "flags",
+			seq:    loc.seq,
+			uid:    loc.m.uid,
+			modseq: loc.m.modseq,
+			flags:  formatFlags(loc.m, nil),
+		})
+	}
+	src := locs[0].m
+	for id, mb := range addMB {
+		if _, ok := cur[id]; ok {
+			continue
+		}
+		st.appendCopyLocked(mb, src)
+		changed = true
+	}
+	for id, loc := range cur {
+		if next[id] {
+			continue
+		}
+		st.expungeLocked(loc.mb, loc.m)
+		changed = true
+	}
+	if changed {
+		st.noteMail("updated", p.id)
+	}
+	return ""
+}
+
+func (st *Store) destroyLocked(id string) bool {
+	locs := st.locateJMAP(id)
+	if len(locs) == 0 {
+		return false
+	}
+	for _, loc := range locs {
+		st.expungeLocked(loc.mb, loc.m)
+	}
+	st.noteMail("destroyed", id)
+	return true
+}
+
+func (st *Store) applyEmailSet(patches []emailPatch, destroyIDs []string) (string, string, []string, map[string]string, []string, []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	old := strconv.FormatUint(st.jmapState, 10)
+	var updated []string
+	notUpdated := map[string]string{}
+	for _, p := range patches {
+		if typ := st.applyOneUpdate(p); typ != "" {
+			notUpdated[p.id] = typ
+			continue
+		}
+		updated = append(updated, p.id)
+	}
 	seen := map[string]bool{}
 	var destroyed, missing []string
-	for _, id := range ids {
+	for _, id := range destroyIDs {
 		if seen[id] {
 			continue
 		}
 		seen[id] = true
-		mb, m := st.messageByJMAP(id)
-		if m == nil {
+		if !st.destroyLocked(id) {
 			missing = append(missing, id)
 			continue
 		}
-		var keep []*Message
-		seq := uint32(1)
-		for _, cur := range mb.msgs {
-			if cur == m {
-				mb.noteExpunge(cur)
-				mb.push(mbEvent{kind: "expunge", seq: seq, uid: cur.uid, modseq: cur.modseq})
-				continue
-			}
-			keep = append(keep, cur)
-			seq++
-		}
-		mb.msgs = keep
-		st.noteMail("destroyed", id)
 		destroyed = append(destroyed, id)
+	}
+	if updated == nil {
+		updated = []string{}
 	}
 	if destroyed == nil {
 		destroyed = []string{}
@@ -2116,7 +2267,7 @@ func (st *Store) destroyJMAP(ids []string) (string, string, []string, []string) 
 	if missing == nil {
 		missing = []string{}
 	}
-	return old, strconv.FormatUint(st.jmapState, 10), destroyed, missing
+	return old, strconv.FormatUint(st.jmapState, 10), updated, notUpdated, destroyed, missing
 }
 
 func (st *Store) emailChanges(since uint64, max int, limited bool) ([]string, []string, []string, string, bool, bool) {

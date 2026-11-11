@@ -479,13 +479,15 @@ func (s *Server) jmapEmailSet(user string, args map[string]any) (map[string]any,
 	if typ := jmapAccount(user, args); typ != "" {
 		return nil, typ
 	}
-	if args["create"] != nil || args["update"] != nil {
+	if args["create"] != nil {
 		return nil, "invalidArguments"
 	}
+	hasDestroy := args["destroy"] != nil
+	hasUpdate := args["update"] != nil
 	var ids []string
-	if raw := args["destroy"]; raw != nil {
+	if hasDestroy {
 		var typ string
-		ids, typ = stringList(raw)
+		ids, typ = stringList(args["destroy"])
 		if typ != "" {
 			return nil, typ
 		}
@@ -495,22 +497,134 @@ func (s *Server) jmapEmailSet(user string, args map[string]any) (map[string]any,
 			}
 		}
 	}
-	old, neu, destroyed, missing := s.store.destroyJMAP(ids)
+	var patches []emailPatch
+	if hasUpdate {
+		var typ string
+		patches, typ = parseEmailUpdate(args["update"])
+		if typ != "" {
+			return nil, typ
+		}
+	}
+	old, neu, updated, notUpdated, destroyed, missing := s.store.applyEmailSet(patches, ids)
 	res := map[string]any{
 		"accountId": user,
 		"oldState":  old,
 		"newState":  neu,
-		"destroyed": destroyed,
-		"notFound":  missing,
 	}
-	if len(missing) > 0 {
-		nd := map[string]any{}
-		for _, id := range missing {
-			nd[id] = map[string]any{"type": "notFound"}
+	if hasUpdate {
+		up := map[string]any{}
+		for _, id := range updated {
+			up[id] = nil
 		}
-		res["notDestroyed"] = nd
+		nu := map[string]any{}
+		for id, typ := range notUpdated {
+			nu[id] = map[string]any{"type": typ}
+		}
+		res["updated"] = up
+		res["notUpdated"] = nu
+	}
+	if hasDestroy || !hasUpdate {
+		res["destroyed"] = destroyed
+		res["notFound"] = missing
+		if len(missing) > 0 {
+			nd := map[string]any{}
+			for _, id := range missing {
+				nd[id] = map[string]any{"type": "notFound"}
+			}
+			res["notDestroyed"] = nd
+		}
 	}
 	return res, ""
+}
+
+// emailPatch is one Email/set update. ok is false when a key or value is not
+// a keyword or mailbox patch this server accepts.
+type emailPatch struct {
+	id       string
+	ok       bool
+	keywords map[string]bool
+	add      []string
+	del      []string
+}
+
+func parseEmailUpdate(v any) ([]emailPatch, string) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, "invalidArguments"
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []emailPatch
+	for _, id := range keys {
+		p := emailPatch{id: id, ok: true, keywords: map[string]bool{}}
+		row, ok := m[id].(map[string]any)
+		if !ok || id == "" {
+			p.ok = false
+			out = append(out, p)
+			continue
+		}
+		for k, raw := range row {
+			on, good := patchBool(raw)
+			if !good {
+				p.ok = false
+				break
+			}
+			switch {
+			case strings.HasPrefix(k, "keywords/"):
+				flag, ok := jmapPatchKeyword(strings.TrimPrefix(k, "keywords/"))
+				if !ok {
+					p.ok = false
+				} else {
+					p.keywords[flag] = on
+				}
+			case strings.HasPrefix(k, "mailboxIds/"):
+				box := strings.TrimPrefix(k, "mailboxIds/")
+				if box == "" {
+					p.ok = false
+				} else if on {
+					p.add = append(p.add, box)
+				} else {
+					p.del = append(p.del, box)
+				}
+			default:
+				p.ok = false
+			}
+			if !p.ok {
+				break
+			}
+		}
+		out = append(out, p)
+	}
+	return out, ""
+}
+
+func patchBool(v any) (bool, bool) {
+	if v == nil {
+		return false, true
+	}
+	b, ok := v.(bool)
+	if !ok || !b {
+		return false, false
+	}
+	return true, true
+}
+
+func jmapPatchKeyword(name string) (string, bool) {
+	switch name {
+	case "$seen":
+		return `\Seen`, true
+	case "$flagged":
+		return `\Flagged`, true
+	case "$answered":
+		return `\Answered`, true
+	case "$draft":
+		return `\Draft`, true
+	default:
+		return "", false
+	}
 }
 
 func (s *Server) jmapEmailImport(user string, args map[string]any) (map[string]any, string) {
@@ -1088,13 +1202,14 @@ type emHead struct {
 
 type emSnap struct {
 	emHead
-	keywords map[string]bool
-	size     int
-	sent     time.Time
-	subject  string
-	from     string
-	to       string
-	raw      []byte
+	mailboxes map[string]bool
+	keywords  map[string]bool
+	size      int
+	sent      time.Time
+	subject   string
+	from      string
+	to        string
+	raw       []byte
 }
 
 func (st *Store) jmapEmailHeads() (string, []emHead, map[string]bool) {
@@ -1124,12 +1239,22 @@ func (st *Store) jmapEmailSnaps(ids []string, all bool) (string, []emSnap, []str
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var order []emSnap
+	index := map[string]int{}
 	for _, name := range st.order {
 		mb := st.boxes[name]
 		if mb == nil {
 			continue
 		}
 		for _, m := range mb.msgs {
+			if i, ok := index[m.jmapID]; ok {
+				order[i].mailboxes[mb.jmapID] = true
+				for k, on := range jmapKeywords(m) {
+					if on {
+						order[i].keywords[k] = true
+					}
+				}
+				continue
+			}
 			snap := emSnap{
 				emHead: emHead{
 					id:        m.jmapID,
@@ -1137,17 +1262,19 @@ func (st *Store) jmapEmailSnaps(ids []string, all bool) (string, []emSnap, []str
 					received:  m.internal,
 					uid:       m.uid,
 				},
-				keywords: jmapKeywords(m),
-				size:     m.size,
-				sent:     m.sent,
-				subject:  m.subject,
-				from:     m.from,
-				to:       m.to,
-				raw:      append([]byte(nil), m.bytes()...),
+				mailboxes: map[string]bool{mb.jmapID: true},
+				keywords:  jmapKeywords(m),
+				size:      m.size,
+				sent:      m.sent,
+				subject:   m.subject,
+				from:      m.from,
+				to:        m.to,
+				raw:       append([]byte(nil), m.bytes()...),
 			}
 			if snap.sent.IsZero() {
 				snap.sent = m.internal
 			}
+			index[m.jmapID] = len(order)
 			order = append(order, snap)
 		}
 	}
@@ -1409,7 +1536,11 @@ func emailJSON(snap emSnap, props, bodyProps map[string]bool, fetchAll, fetchTex
 	}
 	put("blobId", snap.id+"-rfc822")
 	put("threadId", snap.id)
-	put("mailboxIds", map[string]bool{snap.mailboxID: true})
+	boxes := snap.mailboxes
+	if len(boxes) == 0 && snap.mailboxID != "" {
+		boxes = map[string]bool{snap.mailboxID: true}
+	}
+	put("mailboxIds", boxes)
 	if len(snap.keywords) == 0 {
 		put("keywords", map[string]bool{})
 	} else {

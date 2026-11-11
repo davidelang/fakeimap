@@ -607,16 +607,6 @@ func TestJMAPWrite(t *testing.T) {
 		[]any{"Email/set", map[string]any{
 			"accountId": accountID,
 			"destroy":   []any{doomedID},
-			"update":    map[string]any{kept: map[string]any{"keywords/$seen": true}},
-		}, "0"},
-	})
-	if methodType(t, held, "0") != "invalidArguments" {
-		t.Fatalf("update destroy %+v", held)
-	}
-	held = jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
-		[]any{"Email/set", map[string]any{
-			"accountId": accountID,
-			"destroy":   []any{doomedID},
 			"create":    map[string]any{"k": map[string]any{"mailboxIds": map[string]any{inboxID: true}}},
 		}, "0"},
 	})
@@ -727,6 +717,361 @@ func TestJMAPWrite(t *testing.T) {
 	if jsonBool(t, rest["hasMoreChanges"]) || rest["newState"] != now || len(stringArray(t, rest["created"])) != 1 {
 		t.Fatalf("page rest %+v now %s", rest, now)
 	}
+}
+
+func TestJMAPEmailUpdate(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", JmapListen: "127.0.0.1:0"})
+	session := jmapSession(t, bound.Jmap, "demo", "secret")
+	accountID := objectField(t, session, "primaryAccounts")["urn:ietf:params:jmap:mail"].(string)
+	boxes := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Mailbox/get", map[string]any{"accountId": accountID, "ids": nil}, "0"},
+	})
+	var inboxID string
+	for _, item := range arrayField(t, methodArgs(t, boxes, "Mailbox/get"), "list") {
+		obj := item.(map[string]any)
+		if obj["name"] == "INBOX" {
+			inboxID = obj["id"].(string)
+		}
+	}
+	if inboxID == "" {
+		t.Fatal("no inbox")
+	}
+	raw := []byte("From: a@example.com\r\nTo: b@example.com\r\nSubject: patch\r\nContent-Type: text/plain; charset=utf-8\r\n\r\npatch-body\r\n")
+	res, upBody := jmapDo(t, bound.Jmap, "demo", "secret", http.MethodPost, "/jmap/upload/"+accountID+"/", "message/rfc822", raw)
+	if res.StatusCode != 201 {
+		t.Fatalf("upload %d %s", res.StatusCode, upBody)
+	}
+	blobID := jmapJSON(t, upBody)["blobId"].(string)
+	im := dial(t, bound.Listen)
+	im.cmd("LOGIN demo secret").ok(t)
+	exists, _, _, _ := parseSelect(t, im.cmd("SELECT INBOX").mustOK(t))
+	imported := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/import", map[string]any{
+			"accountId": accountID,
+			"emails": map[string]any{
+				"k1": map[string]any{"blobId": blobID, "mailboxIds": map[string]any{inboxID: true}},
+			},
+		}, "0"},
+	})
+	emailID := objectField(t, objectField(t, methodArgs(t, imported, "Email/import"), "created"), "k1")["id"].(string)
+	if emailID == "" {
+		t.Fatal("no email")
+	}
+	seq := exists + 1
+
+	before := jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	set := emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		emailID: map[string]any{"keywords/$seen": true, "keywords/$flagged": true},
+	}, nil)
+	if _, ok := set["updated"].(map[string]any)[emailID]; !ok || set["updated"].(map[string]any)[emailID] != nil {
+		t.Fatalf("updated %+v", set["updated"])
+	}
+	flagCh := methodArgs(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/changes", map[string]any{"accountId": accountID, "sinceState": before}, "0"},
+	}), "Email/changes")
+	if strings.Join(stringArray(t, flagCh["updated"]), ",") != emailID ||
+		len(stringArray(t, flagCh["created"]))+len(stringArray(t, flagCh["destroyed"])) != 0 {
+		t.Fatalf("flag changes %+v", flagCh)
+	}
+	set = emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		emailID: map[string]any{"keywords/$seen": nil, "keywords/$answered": true},
+	}, nil)
+	if _, ok := set["updated"].(map[string]any)[emailID]; !ok {
+		t.Fatalf("clear %+v", set)
+	}
+	kw := emailKeywords(t, bound.Jmap, session, accountID, emailID)
+	if kw["$seen"] == true || kw["$flagged"] != true || kw["$answered"] != true || kw["$draft"] == true {
+		t.Fatalf("keywords %+v", kw)
+	}
+	im.cmd("NOOP").ok(t)
+	fetched := im.cmd("FETCH " + strconv.Itoa(seq) + " (FLAGS)").mustOK(t)
+	flags := fetched.untagged[len(fetched.untagged)-1]
+	for _, flag := range []string{`\Flagged`, `\Answered`} {
+		if !strings.Contains(flags, flag) {
+			t.Fatalf("flags %s missing %s", flags, flag)
+		}
+	}
+	if strings.Contains(flags, `\Seen`) || strings.Contains(flags, `\Draft`) {
+		t.Fatalf("flags %s", flags)
+	}
+
+	kept := emailKeywords(t, bound.Jmap, session, accountID, emailID)
+	for _, patch := range []map[string]any{
+		{"keywords/$draft": false},
+		{"keywords/$forwarded": true},
+		{"keywords/$flagged": nil, "keywords/$draft": "yes"},
+		{"subject": "nope"},
+	} {
+		bad := emailSet(t, bound.Jmap, session, accountID, map[string]any{emailID: patch}, nil)
+		if objectField(t, objectField(t, bad, "notUpdated"), emailID)["type"] != "invalidProperties" {
+			t.Fatalf("bad patch %+v -> %+v", patch, bad)
+		}
+		if _, ok := bad["updated"].(map[string]any)[emailID]; ok {
+			t.Fatalf("bad patch updated %+v", bad)
+		}
+	}
+	if kw := emailKeywords(t, bound.Jmap, session, accountID, emailID); kw["$flagged"] != kept["$flagged"] || kw["$answered"] != kept["$answered"] || kw["$draft"] == true || kw["$seen"] == true {
+		t.Fatalf("patch changed keywords %+v", kw)
+	}
+
+	other := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/import", map[string]any{
+			"accountId": accountID,
+			"emails": map[string]any{
+				"k2": map[string]any{"blobId": blobID, "mailboxIds": map[string]any{inboxID: true}},
+			},
+		}, "0"},
+	})
+	otherID := objectField(t, objectField(t, methodArgs(t, other, "Email/import"), "created"), "k2")["id"].(string)
+	mixed := emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		"missing-email": map[string]any{"keywords/$seen": true},
+		emailID:         map[string]any{"keywords/$draft": true},
+	}, nil)
+	if objectField(t, objectField(t, mixed, "notUpdated"), "missing-email")["type"] != "notFound" {
+		t.Fatalf("missing %+v", mixed)
+	}
+	if _, ok := mixed["updated"].(map[string]any)[emailID]; !ok {
+		t.Fatalf("sibling %+v", mixed)
+	}
+	if emailKeywords(t, bound.Jmap, session, accountID, emailID)["$draft"] != true {
+		t.Fatal("sibling did not set draft")
+	}
+	if emailKeywords(t, bound.Jmap, session, accountID, otherID)["$seen"] == true {
+		t.Fatal("other message changed")
+	}
+
+	im.cmd("CREATE Copies").ok(t)
+	boxes = jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Mailbox/get", map[string]any{"accountId": accountID, "ids": nil}, "0"},
+	})
+	var copiesID string
+	for _, item := range arrayField(t, methodArgs(t, boxes, "Mailbox/get"), "list") {
+		obj := item.(map[string]any)
+		if obj["name"] == "Copies" {
+			copiesID = obj["id"].(string)
+		}
+	}
+	if copiesID == "" {
+		t.Fatal("no Copies")
+	}
+	unknownBox := emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		emailID: map[string]any{"mailboxIds/no-such-box": true, "keywords/$seen": true},
+	}, nil)
+	if objectField(t, objectField(t, unknownBox, "notUpdated"), emailID)["type"] != "invalidProperties" {
+		t.Fatalf("unknown box %+v", unknownBox)
+	}
+	if emailKeywords(t, bound.Jmap, session, accountID, emailID)["$seen"] == true {
+		t.Fatal("unknown box set seen")
+	}
+
+	copies := dial(t, bound.Listen)
+	copies.cmd("LOGIN demo secret").ok(t)
+	copies.cmd("SELECT Copies").ok(t)
+	copies.send("c1 IDLE\r\n")
+	for {
+		rec := copies.readRec()
+		if strings.HasPrefix(strings.TrimRight(rec, "\r\n"), "+") {
+			break
+		}
+	}
+	mark := jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	added := emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		emailID: map[string]any{"mailboxIds/" + copiesID: true},
+	}, nil)
+	if _, ok := added["updated"].(map[string]any)[emailID]; !ok {
+		t.Fatalf("add %+v", added)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var sawExists bool
+	for time.Now().Before(deadline) {
+		copies.c.SetReadDeadline(time.Now().Add(time.Second))
+		rec := copies.readRec()
+		if strings.Contains(rec, "EXISTS") {
+			sawExists = true
+			break
+		}
+	}
+	if !sawExists {
+		t.Fatal("IDLE did not see EXISTS")
+	}
+	copies.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	copies.send("DONE\r\n")
+	copies.readTag("c1").ok(t)
+	copyFlags := strings.Join(copies.cmd("FETCH 1 (FLAGS)").mustOK(t).untagged, " ")
+	if !strings.Contains(copyFlags, `\Flagged`) || !strings.Contains(copyFlags, `\Draft`) || strings.Contains(copyFlags, `\Seen`) {
+		t.Fatalf("copy flags %s", copyFlags)
+	}
+	addCh := methodArgs(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/changes", map[string]any{"accountId": accountID, "sinceState": mark}, "0"},
+	}), "Email/changes")
+	if strings.Join(stringArray(t, addCh["updated"]), ",") != emailID ||
+		len(stringArray(t, addCh["created"]))+len(stringArray(t, addCh["destroyed"])) != 0 {
+		t.Fatalf("add changes %+v", addCh)
+	}
+	if !queryHas(t, bound.Jmap, session, accountID, inboxID, emailID) || !queryHas(t, bound.Jmap, session, accountID, copiesID, emailID) {
+		t.Fatal("query missing a mailbox")
+	}
+	mbox := emailMailboxes(t, bound.Jmap, session, accountID, emailID)
+	if mbox[inboxID] != true || mbox[copiesID] != true {
+		t.Fatalf("mailboxIds %+v", mbox)
+	}
+
+	im.send("i1 IDLE\r\n")
+	for {
+		rec := im.readRec()
+		if strings.HasPrefix(strings.TrimRight(rec, "\r\n"), "+") {
+			break
+		}
+	}
+	removed := emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		emailID: map[string]any{"mailboxIds/" + inboxID: nil},
+	}, nil)
+	if _, ok := removed["updated"].(map[string]any)[emailID]; !ok {
+		t.Fatalf("remove %+v", removed)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	var sawExpunge bool
+	for time.Now().Before(deadline) {
+		im.c.SetReadDeadline(time.Now().Add(time.Second))
+		rec := im.readRec()
+		if strings.Contains(rec, "EXPUNGE") {
+			sawExpunge = true
+			break
+		}
+	}
+	if !sawExpunge {
+		t.Fatal("IDLE did not see EXPUNGE")
+	}
+	im.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	im.send("DONE\r\n")
+	im.readTag("i1").ok(t)
+	if queryHas(t, bound.Jmap, session, accountID, inboxID, emailID) || !queryHas(t, bound.Jmap, session, accountID, copiesID, emailID) {
+		t.Fatal("membership after remove")
+	}
+	mbox = emailMailboxes(t, bound.Jmap, session, accountID, emailID)
+	if mbox[copiesID] != true || mbox[inboxID] == true {
+		t.Fatalf("mailboxIds after remove %+v", mbox)
+	}
+	last := emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		emailID: map[string]any{"mailboxIds/" + copiesID: nil, "keywords/$seen": true},
+	}, nil)
+	if objectField(t, objectField(t, last, "notUpdated"), emailID)["type"] != "invalidProperties" {
+		t.Fatalf("last mailbox %+v", last)
+	}
+	if !queryHas(t, bound.Jmap, session, accountID, copiesID, emailID) {
+		t.Fatal("last mailbox removed")
+	}
+	if emailKeywords(t, bound.Jmap, session, accountID, emailID)["$seen"] == true {
+		t.Fatal("last mailbox changed flags")
+	}
+
+	state := jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	created := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/set", map[string]any{
+			"accountId": accountID,
+			"create":    map[string]any{"k": map[string]any{"mailboxIds": map[string]any{inboxID: true}}},
+			"update":    map[string]any{emailID: map[string]any{"keywords/$seen": true}},
+			"destroy":   []any{otherID},
+		}, "0"},
+	})
+	if methodType(t, created, "0") != "invalidArguments" {
+		t.Fatalf("create %+v", created)
+	}
+	if jmapSession(t, bound.Jmap, "demo", "secret")["state"] != state {
+		t.Fatal("create changed state")
+	}
+	if emailKeywords(t, bound.Jmap, session, accountID, emailID)["$seen"] == true {
+		t.Fatal("create updated flags")
+	}
+	if !queryHas(t, bound.Jmap, session, accountID, inboxID, otherID) {
+		t.Fatal("create destroyed")
+	}
+
+	both := emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		emailID: map[string]any{"keywords/$seen": true},
+	}, []any{otherID, "missing-email"})
+	if _, ok := both["updated"].(map[string]any)[emailID]; !ok {
+		t.Fatalf("update with destroy %+v", both)
+	}
+	if strings.Join(stringArray(t, both["destroyed"]), ",") != otherID {
+		t.Fatalf("destroyed %+v", both)
+	}
+	if strings.Join(stringArray(t, both["notFound"]), ",") != "missing-email" {
+		t.Fatalf("notFound %+v", both)
+	}
+	if emailKeywords(t, bound.Jmap, session, accountID, emailID)["$seen"] != true {
+		t.Fatal("update with destroy did not set seen")
+	}
+	if queryHas(t, bound.Jmap, session, accountID, inboxID, otherID) {
+		t.Fatal("destroyed id remains")
+	}
+	gone := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/set", map[string]any{"accountId": accountID, "destroy": []any{emailID}}, "0"},
+	})
+	if strings.Join(stringArray(t, methodArgs(t, gone, "Email/set")["destroyed"]), ",") != emailID {
+		t.Fatalf("destroy copies %+v", gone)
+	}
+	if queryHas(t, bound.Jmap, session, accountID, copiesID, emailID) {
+		t.Fatal("destroy left a copy")
+	}
+}
+
+func emailSet(t *testing.T, addr string, session map[string]any, accountID string, update map[string]any, destroy []any) map[string]any {
+	t.Helper()
+	args := map[string]any{"accountId": accountID}
+	if update != nil {
+		args["update"] = update
+	}
+	if destroy != nil {
+		args["destroy"] = destroy
+	}
+	return methodArgs(t, jmapCall(t, addr, session, "demo", "secret", []any{
+		[]any{"Email/set", args, "0"},
+	}), "Email/set")
+}
+
+func emailKeywords(t *testing.T, addr string, session map[string]any, accountID, id string) map[string]any {
+	t.Helper()
+	row := emailList(t, jmapCall(t, addr, session, "demo", "secret", []any{
+		[]any{"Email/get", map[string]any{
+			"accountId":  accountID,
+			"ids":        []any{id},
+			"properties": []any{"keywords"},
+		}, "0"},
+	}))[0]
+	kw, _ := row["keywords"].(map[string]any)
+	if kw == nil {
+		return map[string]any{}
+	}
+	return kw
+}
+
+func emailMailboxes(t *testing.T, addr string, session map[string]any, accountID, id string) map[string]any {
+	t.Helper()
+	row := emailList(t, jmapCall(t, addr, session, "demo", "secret", []any{
+		[]any{"Email/get", map[string]any{
+			"accountId":  accountID,
+			"ids":        []any{id},
+			"properties": []any{"mailboxIds"},
+		}, "0"},
+	}))[0]
+	return objectField(t, row, "mailboxIds")
+}
+
+func queryHas(t *testing.T, addr string, session map[string]any, accountID, boxID, emailID string) bool {
+	t.Helper()
+	ids := stringArray(t, methodArgs(t, jmapCall(t, addr, session, "demo", "secret", []any{
+		[]any{"Email/query", map[string]any{
+			"accountId": accountID,
+			"filter":    map[string]any{"inMailbox": boxID},
+		}, "0"},
+	}), "Email/query")["ids"])
+	for _, id := range ids {
+		if id == emailID {
+			return true
+		}
+	}
+	return false
 }
 
 func jsonBool(t *testing.T, v any) bool {
