@@ -646,6 +646,24 @@ func (s *session) cmdFetch(cmd command) error {
 			return err
 		}
 	}
+	// The main line already has FLAGS and UID. The queued event was swallowed.
+	if !(itemListed(items, "FLAGS") && itemListed(items, "UID")) {
+		var last uint64
+		for _, sn := range snaps {
+			if sn.seenEvent == 0 {
+				continue
+			}
+			if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, cmd.uid)); err != nil {
+				return err
+			}
+			if sn.seenEvent > last {
+				last = sn.seenEvent
+			}
+		}
+		if last > 0 {
+			s.srv.store.advanceSeen(s, last)
+		}
+	}
 	if err := s.flush(); err != nil {
 		return err
 	}

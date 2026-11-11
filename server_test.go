@@ -480,6 +480,40 @@ func TestExamineFetchDoesNotSetSeen(t *testing.T) {
 	}
 }
 
+func TestUIDFetchSeenIncludesUID(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0"})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("SELECT INBOX").ok(t)
+
+	plain := cl.cmd("UID FETCH 2 (RFC822.TEXT)")
+	plain.ok(t)
+	nFlags, flagsLine := flagsUpdates(plain)
+	if nFlags != 1 || !strings.Contains(flagsLine, `\Seen`) || !strings.Contains(flagsLine, "UID 2") {
+		t.Fatalf("uid fetch seen line: n=%d line=%q all=%v", nFlags, flagsLine, plain.untagged)
+	}
+
+	cl.cmd(`UID STORE 2 -FLAGS (\Seen)`).ok(t)
+	both := cl.cmd("UID FETCH 2 (FLAGS RFC822.TEXT)")
+	both.ok(t)
+	nFlags, flagsLine = flagsUpdates(both)
+	if nFlags != 1 || !strings.Contains(flagsLine, `\Seen`) || !strings.Contains(flagsLine, "UID 2") {
+		t.Fatalf("uid fetch duplicated flags: n=%d line=%q all=%v", nFlags, flagsLine, both.untagged)
+	}
+}
+
+func flagsUpdates(rp *reply) (int, string) {
+	n := 0
+	line := ""
+	for _, u := range rp.untagged {
+		if strings.Contains(u, "FETCH (FLAGS ") {
+			n++
+			line = u
+		}
+	}
+	return n, line
+}
+
 func TestExpungeCopyMove(t *testing.T) {
 	_, bound := start(t, Config{Listen: "127.0.0.1:0"})
 	cl := dial(t, bound.Listen)

@@ -338,6 +338,14 @@ func (st *Store) deselect(s *session) {
 	st.detachLocked(s)
 }
 
+func (st *Store) advanceSeen(s *session, id uint64) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if id > s.seenID {
+		s.seenID = id
+	}
+}
+
 func (st *Store) drain(s *session) []mbEvent {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -700,12 +708,13 @@ func (mb *Mailbox) each(uidMode bool, set *seqSet, fn func(seq uint32, m *Messag
 }
 
 type fetchSnap struct {
-	seq      uint32
-	uid      uint32
-	flags    string
-	internal time.Time
-	size     int
-	raw      []byte
+	seq       uint32
+	uid       uint32
+	flags     string
+	internal  time.Time
+	size      int
+	raw       []byte
+	seenEvent uint64
 }
 
 func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([]fetchSnap, []string, error) {
@@ -720,18 +729,35 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([
 	}
 	var snaps []fetchSnap
 	mb := s.box
+	// FLAGS and UID already in this response cover the \Seen update.
+	// Swallow the event here, the same way STORE does after it sends them.
+	swallow := itemListed(expanded, "FLAGS") && itemListed(expanded, "UID")
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
+		var seenEvent uint64
 		if fetchSetsSeen(expanded) && !s.readonly && !m.has(`\Seen`) {
 			m.addFlag(`\Seen`)
-			mb.push(mbEvent{kind: "flags", seq: seq, flags: formatFlags(m)})
+			seenEvent = mb.push(mbEvent{kind: "flags", seq: seq, flags: formatFlags(m)})
+			if swallow && seenEvent > s.seenID {
+				s.seenID = seenEvent
+			}
 		}
 		raw := append([]byte(nil), m.bytes()...)
 		snaps = append(snaps, fetchSnap{
 			seq: seq, uid: m.uid, flags: formatFlags(m),
 			internal: m.internal, size: m.size, raw: raw,
+			seenEvent: seenEvent,
 		})
 	})
 	return snaps, expanded, nil
+}
+
+func itemListed(items []string, name string) bool {
+	for _, it := range items {
+		if it == name {
+			return true
+		}
+	}
+	return false
 }
 
 func expandFetch(items []string, uidMode bool) ([]string, error) {
