@@ -358,6 +358,57 @@ func TestCompressProbeEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestThreadProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/thread.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runThreadScript(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runThreadScript(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := normalizeKinds(a.lines, a.mb1, a.mb2)
+	diff := scriptDiff(kinds, normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("shape diff:\n%s\n--- a ---\n%s", diff, strings.Join(kinds, "\n"))
+	}
+	n := 0
+	for _, line := range a.lines {
+		if strings.HasPrefix(line, "* THREAD ") {
+			n++
+			if strings.TrimSpace(strings.TrimPrefix(line, "* THREAD")) != "(1 2)(3)" {
+				t.Fatalf("shape %q", line)
+			}
+		}
+	}
+	if n != 2 {
+		t.Fatalf("thread lines %d\n%s", n, strings.Join(a.lines, "\n"))
+	}
+	if !strings.Contains(strings.Join(kinds, "\n"), "* THREAD (N N)(N)") {
+		t.Fatalf("missing shape in\n%s", strings.Join(kinds, "\n"))
+	}
+}
+
 func splitAddr(addr string) (string, int, error) {
 	host, portS, err := net.SplitHostPort(addr)
 	if err != nil {

@@ -187,7 +187,7 @@ func (s *session) readCommand() (command, error) {
 		}
 		cmd.name = strings.ToUpper(name)
 		switch cmd.name {
-		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "EXPUNGE", "SORT":
+		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "EXPUNGE", "SORT", "THREAD":
 		default:
 			return cmd, errSyntax
 		}
@@ -353,6 +353,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdSearch(cmd)
 	case "SORT":
 		return s.cmdSort(cmd)
+	case "THREAD":
+		return s.cmdThread(cmd)
 	case "APPEND":
 		return s.cmdAppend(cmd)
 	case "COPY", "MOVE":
@@ -1739,6 +1741,59 @@ func (s *session) cmdSort(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, "SORT completed")
+}
+
+func (s *session) cmdThread(cmd command) error {
+	if len(cmd.args) == 0 {
+		return s.bad(cmd.tag, "THREAD syntax")
+	}
+	alg, ok := astring(cmd.args[0])
+	if !ok || alg == "" {
+		return s.bad(cmd.tag, "THREAD syntax")
+	}
+	alg = strings.ToUpper(alg)
+	switch alg {
+	case "REFERENCES", "REFS", "ORDEREDSUBJECT":
+	default:
+		return s.bad(cmd.tag, "THREAD bad algorithm")
+	}
+	if !s.advertiseCap("THREAD=" + alg) {
+		return s.bad(cmd.tag, "THREAD unsupported")
+	}
+	if !s.srv.store.selected(s) {
+		return s.no(cmd.tag, "THREAD not selected")
+	}
+	rest := cmd.args[1:]
+	if len(rest) == 0 {
+		return s.bad(cmd.tag, "THREAD syntax")
+	}
+	cs, ok := astring(rest[0])
+	if !ok || cs == "" {
+		return s.bad(cmd.tag, "THREAD syntax")
+	}
+	var keys []searchKey
+	var err error
+	if s.on("UTF8=ACCEPT") && knownCharset(cs) {
+		return s.bad(cmd.tag, "THREAD charset")
+	}
+	if s.on("UTF8=ACCEPT") {
+		keys, err = parseSearch(rest)
+	} else if !knownCharset(cs) {
+		return s.bad(cmd.tag, "THREAD bad charset")
+	} else {
+		keys, err = parseSearch(rest[1:])
+	}
+	if err != nil {
+		return s.bad(cmd.tag, "THREAD bad key")
+	}
+	line, err := s.srv.store.thread(s, cmd.uid, keys, alg)
+	if err != nil {
+		return s.no(cmd.tag, "THREAD not selected")
+	}
+	if err := s.sendLine(line); err != nil {
+		return err
+	}
+	return s.ok(cmd.tag, "THREAD completed")
 }
 
 func (s *session) cmdAppend(cmd command) error {

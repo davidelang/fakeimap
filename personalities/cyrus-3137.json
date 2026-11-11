@@ -32,7 +32,10 @@
     "PARTIAL",
     "COMPRESS=DEFLATE",
     "SORT",
-    "ESORT"
+    "ESORT",
+    "THREAD=REFERENCES",
+    "THREAD=ORDEREDSUBJECT",
+    "THREAD=REFS"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -54,7 +57,10 @@
     "PARTIAL",
     "COMPRESS=DEFLATE",
     "SORT",
-    "ESORT"
+    "ESORT",
+    "THREAD=REFERENCES",
+    "THREAD=ORDEREDSUBJECT",
+    "THREAD=REFS"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

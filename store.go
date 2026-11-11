@@ -19,18 +19,21 @@ import (
 // genUID is the id baked into the body, so a copy keeps the same bytes
 // without storing them.
 type Message struct {
-	uid      uint32
-	flags    map[string]struct{}
-	keywords []string
-	recent   bool
-	internal time.Time
-	raw      []byte
-	from     string
-	to       string
-	cc       string
-	subject  string
-	size     int
-	sent     time.Time
+	uid        uint32
+	flags      map[string]struct{}
+	keywords   []string
+	recent     bool
+	internal   time.Time
+	raw        []byte
+	from       string
+	to         string
+	cc         string
+	subject    string
+	msgID      string
+	inReplyTo  string
+	references string
+	size       int
+	sent       time.Time
 
 	generated bool
 	genSeed   string
@@ -1453,6 +1456,322 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCr
 	return ids, nil
 }
 
+// baseSubject strips leading Re: and Fwd: prefixes. Comparison is case-insensitive.
+func baseSubject(s string) string {
+	s = strings.TrimSpace(s)
+	for {
+		lower := strings.ToLower(s)
+		switch {
+		case strings.HasPrefix(lower, "re:"):
+			s = strings.TrimSpace(s[len("re:"):])
+		case strings.HasPrefix(lower, "fwd:"):
+			s = strings.TrimSpace(s[len("fwd:"):])
+		default:
+			return s
+		}
+	}
+}
+
+func headerMsgIDs(h string) []string {
+	var out []string
+	for i := 0; i < len(h); i++ {
+		if h[i] != '<' {
+			continue
+		}
+		j := strings.IndexByte(h[i+1:], '>')
+		if j <= 0 {
+			continue
+		}
+		id := h[i : i+1+j+1]
+		if strings.ContainsAny(id, " \t") {
+			i += j
+			continue
+		}
+		out = append(out, id)
+		i += j + 1
+	}
+	return out
+}
+
+func firstMsgID(h string) string {
+	ids := headerMsgIDs(h)
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
+// parentMsgID is the last References id, or the first In-Reply-To id.
+func parentMsgID(m *Message) string {
+	if ids := headerMsgIDs(m.references); len(ids) > 0 {
+		return ids[len(ids)-1]
+	}
+	if ids := headerMsgIDs(m.inReplyTo); len(ids) > 0 {
+		return ids[0]
+	}
+	return ""
+}
+
+type threadNode struct {
+	id     uint32
+	uid    uint32
+	when   time.Time
+	dummy  bool
+	parent *threadNode
+	kids   []*threadNode
+}
+
+func (n *threadNode) under(anc *threadNode) bool {
+	for p := n; p != nil; p = p.parent {
+		if p == anc {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *threadNode) detach() {
+	if n.parent == nil {
+		return
+	}
+	p := n.parent
+	kids := make([]*threadNode, 0, len(p.kids))
+	for _, k := range p.kids {
+		if k != n {
+			kids = append(kids, k)
+		}
+	}
+	p.kids = kids
+	n.parent = nil
+}
+
+func (n *threadNode) adopt(child *threadNode) {
+	child.detach()
+	child.parent = n
+	n.kids = append(n.kids, child)
+}
+
+func (n *threadNode) sortKey() (time.Time, uint32) {
+	if n.dummy {
+		if len(n.kids) == 0 {
+			return time.Time{}, 0
+		}
+		return n.kids[0].sortKey()
+	}
+	return n.when, n.uid
+}
+
+func threadBefore(a, b *threadNode) bool {
+	ta, ua := a.sortKey()
+	tb, ub := b.sortKey()
+	if c := ta.Compare(tb); c != 0 {
+		return c < 0
+	}
+	return ua < ub
+}
+
+func sortThread(n *threadNode) {
+	for _, k := range n.kids {
+		sortThread(k)
+	}
+	sort.SliceStable(n.kids, func(i, j int) bool {
+		return threadBefore(n.kids[i], n.kids[j])
+	})
+}
+
+func formatThread(n *threadNode) string {
+	if n.dummy {
+		var b strings.Builder
+		b.WriteByte('(')
+		for _, k := range n.kids {
+			b.WriteString(formatThread(k))
+		}
+		b.WriteByte(')')
+		return b.String()
+	}
+	if len(n.kids) == 0 {
+		return fmt.Sprintf("(%d)", n.id)
+	}
+	if len(n.kids) == 1 && !n.kids[0].dummy {
+		return fmt.Sprintf("(%d %s)", n.id, formatThreadInner(n.kids[0]))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "(%d ", n.id)
+	for _, k := range n.kids {
+		b.WriteString(formatThread(k))
+	}
+	b.WriteByte(')')
+	return b.String()
+}
+
+func formatThreadInner(n *threadNode) string {
+	if len(n.kids) == 0 {
+		return fmt.Sprintf("%d", n.id)
+	}
+	if len(n.kids) == 1 && !n.kids[0].dummy {
+		return fmt.Sprintf("%d %s", n.id, formatThreadInner(n.kids[0]))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d ", n.id)
+	for _, k := range n.kids {
+		b.WriteString(formatThread(k))
+	}
+	return b.String()
+}
+
+func formatThreadLine(roots []*threadNode) string {
+	var b strings.Builder
+	b.WriteString("* THREAD")
+	if len(roots) > 0 {
+		b.WriteByte(' ')
+	}
+	for _, r := range roots {
+		b.WriteString(formatThread(r))
+	}
+	return b.String()
+}
+
+type threadHit struct {
+	id uint32
+	m  *Message
+}
+
+func threadReferences(hits []threadHit) []*threadNode {
+	byID := map[string]*threadNode{}
+	nodes := make([]*threadNode, len(hits))
+	for i, h := range hits {
+		n := &threadNode{id: h.id, uid: h.m.uid, when: h.m.sortDate()}
+		nodes[i] = n
+		if h.m.msgID != "" {
+			if _, ok := byID[h.m.msgID]; !ok {
+				byID[h.m.msgID] = n
+			}
+		}
+	}
+	var dummies []*threadNode
+	dummyBy := map[string]*threadNode{}
+	for i, h := range hits {
+		n := nodes[i]
+		pref := parentMsgID(h.m)
+		if pref == "" || pref == h.m.msgID {
+			continue
+		}
+		if p := byID[pref]; p != nil {
+			if p != n && !p.under(n) {
+				p.adopt(n)
+			}
+			continue
+		}
+		d := dummyBy[pref]
+		if d == nil {
+			d = &threadNode{dummy: true}
+			dummyBy[pref] = d
+			dummies = append(dummies, d)
+		}
+		if !d.under(n) {
+			d.adopt(n)
+		}
+	}
+	var roots []*threadNode
+	for _, n := range nodes {
+		if n.parent == nil {
+			roots = append(roots, n)
+		}
+	}
+	for _, d := range dummies {
+		if d.parent == nil && len(d.kids) > 0 {
+			roots = append(roots, d)
+		}
+	}
+	for _, r := range roots {
+		sortThread(r)
+	}
+	sort.SliceStable(roots, func(i, j int) bool {
+		return threadBefore(roots[i], roots[j])
+	})
+	out := make([]*threadNode, 0, len(roots))
+	for _, r := range roots {
+		if !r.dummy {
+			out = append(out, r)
+			continue
+		}
+		if len(r.kids) == 1 {
+			r.kids[0].parent = nil
+			out = append(out, r.kids[0])
+			continue
+		}
+		if len(r.kids) > 1 {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func threadOrderedSubject(hits []threadHit) []*threadNode {
+	var order []string
+	groups := map[string][]threadHit{}
+	for _, h := range hits {
+		b := strings.ToLower(baseSubject(h.m.subject))
+		if _, ok := groups[b]; !ok {
+			order = append(order, b)
+		}
+		groups[b] = append(groups[b], h)
+	}
+	sort.Strings(order)
+	var roots []*threadNode
+	for _, b := range order {
+		ms := groups[b]
+		sort.SliceStable(ms, func(i, j int) bool {
+			c := ms[i].m.sortDate().Compare(ms[j].m.sortDate())
+			if c != 0 {
+				return c < 0
+			}
+			return ms[i].m.uid < ms[j].m.uid
+		})
+		root := &threadNode{id: ms[0].id, uid: ms[0].m.uid, when: ms[0].m.sortDate()}
+		for _, extra := range ms[1:] {
+			root.kids = append(root.kids, &threadNode{id: extra.id, uid: extra.m.uid, when: extra.m.sortDate()})
+		}
+		roots = append(roots, root)
+	}
+	return roots
+}
+
+func (st *Store) thread(s *session, uidMode bool, keys []searchKey, alg string) (string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return "", fmt.Errorf("not selected")
+	}
+	mb := s.box
+	maxUID := mb.starMax(true)
+	var hits []threadHit
+	for i, m := range mb.msgs {
+		ok := true
+		for _, k := range keys {
+			if !m.matches(k, maxUID) {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		id := uint32(i + 1)
+		if uidMode {
+			id = m.uid
+		}
+		hits = append(hits, threadHit{id: id, m: m})
+	}
+	var roots []*threadNode
+	if alg == "ORDEREDSUBJECT" {
+		roots = threadOrderedSubject(hits)
+	} else {
+		roots = threadReferences(hits)
+	}
+	return formatThreadLine(roots), nil
+}
+
 func indexOverlay(m *Message) {
 	msg, err := mail.ReadMessage(bytes.NewReader(m.raw))
 	if err != nil {
@@ -1462,6 +1781,9 @@ func indexOverlay(m *Message) {
 	m.to = decodeHdr(msg.Header.Get("To"))
 	m.cc = decodeHdr(msg.Header.Get("Cc"))
 	m.subject = decodeHdr(msg.Header.Get("Subject"))
+	m.msgID = firstMsgID(msg.Header.Get("Message-ID"))
+	m.inReplyTo = msg.Header.Get("In-Reply-To")
+	m.references = msg.Header.Get("References")
 	if t, err := mail.ParseDate(msg.Header.Get("Date")); err == nil {
 		m.sent = t
 	}
@@ -1523,20 +1845,23 @@ func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw 
 func cloneMsg(src *Message, uid uint32) *Message {
 	flags, kw := copyFlags(src)
 	nm := &Message{
-		uid:       uid,
-		flags:     flags,
-		keywords:  kw,
-		recent:    true,
-		internal:  src.internal,
-		from:      src.from,
-		to:        src.to,
-		cc:        src.cc,
-		subject:   src.subject,
-		size:      src.size,
-		sent:      src.sent,
-		generated: src.generated,
-		genSeed:   src.genSeed,
-		genUID:    src.genUID,
+		uid:        uid,
+		flags:      flags,
+		keywords:   kw,
+		recent:     true,
+		internal:   src.internal,
+		from:       src.from,
+		to:         src.to,
+		cc:         src.cc,
+		subject:    src.subject,
+		msgID:      src.msgID,
+		inReplyTo:  src.inReplyTo,
+		references: src.references,
+		size:       src.size,
+		sent:       src.sent,
+		generated:  src.generated,
+		genSeed:    src.genSeed,
+		genUID:     src.genUID,
 	}
 	if src.generated {
 		nm.raw = nil

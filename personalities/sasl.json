@@ -54,7 +54,10 @@
     "PARTIAL",
     "COMPRESS=DEFLATE",
     "SORT",
-    "ESORT"
+    "ESORT",
+    "THREAD=REFERENCES",
+    "THREAD=ORDEREDSUBJECT",
+    "THREAD=REFS"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

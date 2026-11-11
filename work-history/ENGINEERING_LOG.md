@@ -200,3 +200,14 @@
 ## 2026-11-11 - UTF8=ACCEPT
 
 - A personality that lists UTF8=ACCEPT accepts ENABLE UTF8=ACCEPT on that connection. Mailbox names stay Unicode. The wire form is modified UTF-7 until enable, then UTF-8. SEARCH CHARSET and a SORT charset are rejected only after enable. personalities/utf8.json advertises it. cyrusprobe -utf8 compares reply kinds and does not replace the earlier scripts.
+
+## 2026-11-11 - THREAD REFERENCES and ORDEREDSUBJECT
+
+- Approved plan: sandbox/plans/thread-20261111-0801-plan.md
+- Work: THREAD and UID THREAD for REFERENCES, REFS, and ORDEREDSUBJECT. personalities/thread.json advertises the three. cyrusprobe -thread compares thread shape and does not replace the earlier scripts.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - THREAD REFERENCES and ORDEREDSUBJECT landed
+
+- THREAD and UID THREAD answer REFERENCES, REFS, and ORDEREDSUBJECT. REFS uses the REFERENCES tree. personalities/thread.json advertises the three. After UTF8=ACCEPT a charset argument is BAD.
+- The already-running liveimap-cyrus-3137 thread-shape diff was empty, so those three capabilities are on cyrus-3137.json and gone from the gaps file. UTF8=ACCEPT was not added. The container was not recreated and was not stopped. cyrusprobe -thread does not replace the earlier scripts.
