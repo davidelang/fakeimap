@@ -93,8 +93,9 @@ func TestOtherServerPersonalities(t *testing.T) {
 			order:    dovOrder,
 		},
 	}
+	liveStalGreet := stalGreet + " AUTH=PLAIN"
+	liveStalPost := stalPost + " STARTTLS"
 	for _, name := range []string{
-		"personalities/stalwart.json",
 		"personalities/stalwart-01625.json",
 		"personalities/stalwart-dev.json",
 		"personalities/stalwart-0155.json",
@@ -137,6 +138,30 @@ func TestOtherServerPersonalities(t *testing.T) {
 		order    []string
 		other    string
 	}{
+		file:     "personalities/stalwart.json",
+		greeting: "* OK [CAPABILITY " + liveStalGreet + "] Stalwart IMAP4rev2 at your service.",
+		greet:    liveStalGreet,
+		pre:      liveStalGreet,
+		post:     liveStalPost,
+		delim:    "/",
+		ns:       `* NAMESPACE (("" "/")) NIL NIL`,
+		flags:    dovFlags,
+		perm:     stalPerm,
+		order:    stalOrder,
+	})
+	cases = append(cases, struct {
+		file     string
+		greeting string
+		greet    string
+		pre      string
+		post     string
+		delim    string
+		ns       string
+		flags    string
+		perm     string
+		order    []string
+		other    string
+	}{
 		file:     "personalities/zimbra-883.json",
 		greeting: "* OK IMAP4rev1 proxy server ready",
 		pre:      "BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT IDLE IMAP4rev1 LIST-EXTENDED LIST-STATUS LITERAL+ NAMESPACE QRESYNC SASL-IR SORT THREAD=ORDEREDSUBJECT UIDPLUS UNSELECT",
@@ -148,17 +173,17 @@ func TestOtherServerPersonalities(t *testing.T) {
 		order:    zimOrder,
 		other:    "/home/",
 	})
-	stalBytes, err := os.ReadFile("personalities/stalwart.json")
+	stalBytes, err := os.ReadFile("personalities/stalwart-dev.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"stalwart-01625.json", "stalwart-dev.json", "stalwart-0155.json"} {
+	for _, name := range []string{"stalwart-01625.json", "stalwart-0155.json"} {
 		b, err := os.ReadFile("personalities/" + name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if string(b) != string(stalBytes) {
-			t.Fatalf("%s differs from stalwart.json", name)
+			t.Fatalf("%s differs from stalwart-dev.json", name)
 		}
 	}
 	for _, c := range cases {
@@ -205,7 +230,17 @@ func TestOtherServerPersonalities(t *testing.T) {
 				t.Fatalf("pre-login %v", capsOf(pre.untagged[0]))
 			}
 			login := cl.cmd("LOGIN demo secret").mustOK(t)
-			if strings.Join(capsOf(login.tagLine), " ") != c.post {
+			wantPost := c.post
+			if strings.Contains(c.post, "STARTTLS") {
+				var kept []string
+				for _, tok := range strings.Fields(c.post) {
+					if tok != "STARTTLS" {
+						kept = append(kept, tok)
+					}
+				}
+				wantPost = strings.Join(kept, " ")
+			}
+			if strings.Join(capsOf(login.tagLine), " ") != wantPost {
 				t.Fatalf("post-login %v", capsOf(login.tagLine))
 			}
 			for _, name := range banned {

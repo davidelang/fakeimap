@@ -412,3 +412,34 @@
   remote: * RECENT
   local:  (no RECENT after MOVE EXPUNGE)
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 and then started. liveimap-dovecot-22 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Stalwart execution start
+
+- Approved plan: sandbox/plans/probe-stalwart-20261111-1604-plan.md
+- Work: run the base cyrusprobe script against liveimap-stalwart and update personalities/stalwart.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Stalwart landed
+
+- Approved plan: sandbox/plans/probe-stalwart-20261111-1604-plan.md
+- personalities/stalwart.json lists AUTH=PLAIN after UTF8=ACCEPT on the greeting and pre-login lists, lists STARTTLS at the end of the post-login list, uses flag order Deleted Seen Answered Flagged Draft, and sends MOVE COPYUID untagged. Greeting text, NAMESPACE, and SELECT flags and order already matched. IMAP4rev2, ID, and JMAPACCESS stay off.
+- The normalized diff still has shapes the file cannot express: APPEND sends no untagged EXISTS or RECENT; the ENVELOPE date is Mon, 1 Jan rather than Thu, 01 Jan; BODYSTRUCTURE tokens are lowercase and include a body MD5; FETCH of BODY[TEXT] puts FLAGS after the body; MOVE still sends EXISTS after EXPUNGE; LIST uses empty flags and a quoted name. Reply code was not changed.
+- Remaining diff:
+  remote: T OK [APPENDUID]
+  local:  * EXISTS
+  local:  * RECENT
+  local:  T OK [APPENDUID]
+  remote: ENVELOPE ("Mon, 1 Jan 2024 00:00:00 +0000" ...)
+  local:  ENVELOPE ("Thu, 01 Jan 2024 00:00:00 +0000" ...)
+  remote: BODYSTRUCTURE ("text" "plain" ("charset" "us-ascii") NIL NIL "7bit" 12 1 "6db539cda4f12afaccecaede3c3cc946" NIL NIL NIL)
+  local:  BODYSTRUCTURE ("TEXT" "PLAIN" ("CHARSET" "us-ascii") NIL NIL "7BIT" 12 1 NIL NIL NIL NIL)
+  remote: * SEQ FETCH (BODY[TEXT] {12} ... FLAGS (\Seen))
+  local:  * SEQ FETCH (FLAGS (\Seen) BODY[TEXT] {12} ...)
+  remote: * EXISTS
+  local:  (no EXISTS after MOVE EXPUNGE)
+  remote: * LIST () "/" "MB1"
+  local:  * LIST (\HasNoChildren) "/" MB1
+  remote: * LIST () "/" "MB2"
+  local:  * LIST (\HasNoChildren) "/" MB2
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-stalwart was stopped. The lab password stayed in the gitignored operator file.
