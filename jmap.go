@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	jmapCore    = "urn:ietf:params:jmap:core"
-	jmapMail    = "urn:ietf:params:jmap:mail"
-	jmapAPIPath = "/jmap/"
+	jmapCore       = "urn:ietf:params:jmap:core"
+	jmapMail       = "urn:ietf:params:jmap:mail"
+	jmapSubmission = "urn:ietf:params:jmap:submission"
+	jmapAPIPath    = "/jmap/"
 )
 
 func (s *Server) acceptJMAP() {
@@ -79,8 +80,9 @@ func (s *Server) writeJMAPSession(w http.ResponseWriter, user string) {
 	capObj := func() map[string]any { return map[string]any{} }
 	body := map[string]any{
 		"capabilities": map[string]any{
-			jmapCore: capObj(),
-			jmapMail: capObj(),
+			jmapCore:       capObj(),
+			jmapMail:       capObj(),
+			jmapSubmission: capObj(),
 		},
 		"accounts": map[string]any{
 			user: map[string]any{
@@ -88,14 +90,16 @@ func (s *Server) writeJMAPSession(w http.ResponseWriter, user string) {
 				"isPersonal": true,
 				"isReadOnly": false,
 				"accountCapabilities": map[string]any{
-					jmapCore: capObj(),
-					jmapMail: capObj(),
+					jmapCore:       capObj(),
+					jmapMail:       capObj(),
+					jmapSubmission: capObj(),
 				},
 			},
 		},
 		"primaryAccounts": map[string]any{
-			jmapCore: user,
-			jmapMail: user,
+			jmapCore:       user,
+			jmapMail:       user,
+			jmapSubmission: user,
 		},
 		"username":       user,
 		"apiUrl":         jmapAPIPath,
@@ -142,8 +146,13 @@ func (s *Server) jmapAPI(w http.ResponseWriter, r *http.Request, user string) {
 		jmapProblem(w, http.StatusBadRequest, "urn:ietf:params:jmap:error:notRequest")
 		return
 	}
+	subOK := false
 	for _, u := range using {
-		if u != jmapCore && u != jmapMail {
+		switch u {
+		case jmapCore, jmapMail:
+		case jmapSubmission:
+			subOK = true
+		default:
 			jmapProblem(w, http.StatusBadRequest, "urn:ietf:params:jmap:error:unknownCapability")
 			return
 		}
@@ -184,7 +193,8 @@ func (s *Server) jmapAPI(w http.ResponseWriter, r *http.Request, user string) {
 			prev[call.id] = jmapDone{name: call.name}
 			continue
 		}
-		result, typ := s.jmapCall(user, call.name, args)
+		var extra []any
+		result, typ := s.jmapCall(user, call.name, args, call.id, subOK, &extra)
 		if typ != "" {
 			responses = append(responses, []any{"error", map[string]any{"type": typ}, call.id})
 			prev[call.id] = jmapDone{name: call.name}
@@ -192,6 +202,7 @@ func (s *Server) jmapAPI(w http.ResponseWriter, r *http.Request, user string) {
 		}
 		responses = append(responses, []any{call.name, result, call.id})
 		prev[call.id] = jmapDone{name: call.name, args: result, ok: true}
+		responses = append(responses, extra...)
 	}
 	if responses == nil {
 		responses = []any{}
@@ -289,7 +300,7 @@ func jsonPointer(doc any, path string) (any, bool) {
 	return cur, true
 }
 
-func (s *Server) jmapCall(user, name string, args map[string]any) (map[string]any, string) {
+func (s *Server) jmapCall(user, name string, args map[string]any, callID string, subOK bool, extra *[]any) (map[string]any, string) {
 	switch name {
 	case "Mailbox/get":
 		return s.jmapMailboxGet(user, args)
@@ -305,6 +316,21 @@ func (s *Server) jmapCall(user, name string, args map[string]any) (map[string]an
 		return s.jmapEmailImport(user, args)
 	case "Email/changes":
 		return s.jmapEmailChanges(user, args)
+	case "Identity/get":
+		if !subOK {
+			return nil, "unknownMethod"
+		}
+		return s.jmapIdentityGet(user, args)
+	case "EmailSubmission/set":
+		if !subOK {
+			return nil, "unknownMethod"
+		}
+		return s.jmapSubmissionSet(user, args, callID, extra)
+	case "EmailSubmission/query":
+		if !subOK {
+			return nil, "unknownMethod"
+		}
+		return s.jmapSubmissionQuery(user, args)
 	default:
 		return nil, "unknownMethod"
 	}
@@ -1961,4 +1987,342 @@ func asInt(v any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// jmapSub is one EmailSubmission remembered for EmailSubmission/query.
+type jmapSub struct {
+	id      string
+	emailID string
+}
+
+func jmapIdentityID(user string) string {
+	return "idn-" + user
+}
+
+func (s *Server) submissionState(user string) string {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return strconv.Itoa(len(s.subs[user]))
+}
+
+func (s *Server) addSubmission(user, emailID string) string {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	if s.subs == nil {
+		s.subs = map[string][]jmapSub{}
+	}
+	s.subN++
+	id := "sm" + strconv.FormatUint(s.subN, 10)
+	s.subs[user] = append(s.subs[user], jmapSub{id: id, emailID: emailID})
+	return id
+}
+
+func (s *Server) submissionEmail(user, id string) (string, bool) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for _, sub := range s.subs[user] {
+		if sub.id == id {
+			return sub.emailID, true
+		}
+	}
+	return "", false
+}
+
+func (s *Server) submissionIDs(user string, emailIDs map[string]bool) (string, []string) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	var ids []string
+	for _, sub := range s.subs[user] {
+		if emailIDs != nil && !emailIDs[sub.emailID] {
+			continue
+		}
+		ids = append(ids, sub.id)
+	}
+	return strconv.Itoa(len(s.subs[user])), ids
+}
+
+func (s *Server) jmapIdentityGet(user string, args map[string]any) (map[string]any, string) {
+	if typ := jmapAccount(user, args); typ != "" {
+		return nil, typ
+	}
+	props, typ := propSet(args["properties"])
+	if typ != "" {
+		return nil, typ
+	}
+	id := jmapIdentityID(user)
+	one := identityJSON(id, user, props)
+	var list []any
+	var notFound []string
+	raw, has := args["ids"]
+	if !has || raw == nil {
+		list = []any{one}
+		notFound = []string{}
+	} else {
+		ids, typ := stringList(raw)
+		if typ != "" {
+			return nil, typ
+		}
+		seen := map[string]bool{}
+		for _, want := range ids {
+			if seen[want] {
+				continue
+			}
+			seen[want] = true
+			if want == id {
+				list = append(list, one)
+			} else {
+				notFound = append(notFound, want)
+			}
+		}
+		if list == nil {
+			list = []any{}
+		}
+		if notFound == nil {
+			notFound = []string{}
+		}
+	}
+	return map[string]any{
+		"accountId": user,
+		"state":     "1",
+		"list":      list,
+		"notFound":  notFound,
+	}, ""
+}
+
+func identityJSON(id, email string, props map[string]bool) map[string]any {
+	obj := map[string]any{"id": id}
+	if props == nil || props["email"] {
+		obj["email"] = email
+	}
+	return obj
+}
+
+func (s *Server) jmapSubmissionSet(user string, args map[string]any, callID string, extra *[]any) (map[string]any, string) {
+	if typ := jmapAccount(user, args); typ != "" {
+		return nil, typ
+	}
+	if args["update"] != nil || args["destroy"] != nil {
+		return nil, "invalidArguments"
+	}
+	var creates map[string]any
+	if raw, ok := args["create"]; ok && raw != nil {
+		var good bool
+		creates, good = raw.(map[string]any)
+		if !good {
+			return nil, "invalidArguments"
+		}
+	}
+	refs, typ := submissionDestroyRefs(args["onSuccessDestroyEmail"])
+	if typ != "" {
+		return nil, typ
+	}
+	keys := make([]string, 0, len(creates))
+	for k := range creates {
+		if k == "" {
+			return nil, "invalidArguments"
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	old := s.submissionState(user)
+	created := map[string]any{}
+	notCreated := map[string]any{}
+	okEmail := map[string]string{}
+	ident := jmapIdentityID(user)
+	for _, cid := range keys {
+		emailID, identityID, from, rcpts, problem := parseSubmissionCreate(creates[cid])
+		if problem != "" {
+			notCreated[cid] = map[string]any{"type": problem}
+			continue
+		}
+		if identityID != "" && identityID != ident {
+			notCreated[cid] = map[string]any{"type": "invalidProperties"}
+			continue
+		}
+		if identityID == "" {
+			identityID = ident
+		}
+		_, snaps, missing := s.store.jmapEmailSnaps([]string{emailID}, false)
+		if len(snaps) == 0 || len(missing) > 0 {
+			notCreated[cid] = map[string]any{"type": "notFound"}
+			continue
+		}
+		env := make([]smtpRcpt, len(rcpts))
+		for i, addr := range rcpts {
+			env[i] = smtpRcpt{addr: addr, deliver: s.smtpDelivers(addr)}
+		}
+		if err := s.acceptMail(from, env, snaps[0].raw); err != nil {
+			notCreated[cid] = map[string]any{"type": "serverFail"}
+			continue
+		}
+		subID := s.addSubmission(user, emailID)
+		okEmail[cid] = emailID
+		created[cid] = map[string]any{
+			"id":         subID,
+			"emailId":    emailID,
+			"identityId": identityID,
+			"threadId":   emailID,
+			"undoStatus": "final",
+		}
+	}
+	s.destroySubmitted(user, callID, refs, okEmail, extra)
+	return map[string]any{
+		"accountId":  user,
+		"oldState":   old,
+		"newState":   s.submissionState(user),
+		"created":    created,
+		"notCreated": notCreated,
+	}, ""
+}
+
+// destroySubmitted destroys emails named by onSuccessDestroyEmail after the
+// creates have been accepted. A "#id" is a creation id from this call.
+func (s *Server) destroySubmitted(user, callID string, refs []string, okEmail map[string]string, extra *[]any) {
+	if len(refs) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	var ids []string
+	for _, ref := range refs {
+		var emailID string
+		var ok bool
+		if strings.HasPrefix(ref, "#") {
+			emailID, ok = okEmail[strings.TrimPrefix(ref, "#")]
+		} else {
+			emailID, ok = s.submissionEmail(user, ref)
+		}
+		if !ok || emailID == "" || seen[emailID] {
+			continue
+		}
+		seen[emailID] = true
+		ids = append(ids, emailID)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	old, neu, _, _, destroyed, missing := s.store.applyEmailSet(nil, ids)
+	res := map[string]any{
+		"accountId": user,
+		"oldState":  old,
+		"newState":  neu,
+		"destroyed": destroyed,
+		"notFound":  missing,
+	}
+	if len(missing) > 0 {
+		nd := map[string]any{}
+		for _, id := range missing {
+			nd[id] = map[string]any{"type": "notFound"}
+		}
+		res["notDestroyed"] = nd
+	}
+	*extra = append(*extra, []any{"Email/set", res, callID})
+}
+
+func parseSubmissionCreate(v any) (emailID, identityID, from string, rcpts []string, problem string) {
+	row, ok := v.(map[string]any)
+	if !ok {
+		return "", "", "", nil, "invalidProperties"
+	}
+	emailID, _ = row["emailId"].(string)
+	if emailID == "" {
+		return "", "", "", nil, "invalidProperties"
+	}
+	if raw, ok := row["identityId"]; ok && raw != nil {
+		identityID, ok = raw.(string)
+		if !ok || identityID == "" {
+			return "", "", "", nil, "invalidProperties"
+		}
+	}
+	env, ok := row["envelope"].(map[string]any)
+	if !ok {
+		return "", "", "", nil, "invalidProperties"
+	}
+	mf, ok := env["mailFrom"].(map[string]any)
+	if !ok {
+		return "", "", "", nil, "invalidProperties"
+	}
+	from, _ = mf["email"].(string)
+	if from == "" {
+		return "", "", "", nil, "invalidProperties"
+	}
+	rawRcpt, ok := env["rcptTo"].([]any)
+	if !ok || len(rawRcpt) == 0 {
+		return "", "", "", nil, "invalidProperties"
+	}
+	for _, item := range rawRcpt {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return "", "", "", nil, "invalidProperties"
+		}
+		addr, _ := obj["email"].(string)
+		if addr == "" {
+			return "", "", "", nil, "invalidProperties"
+		}
+		rcpts = append(rcpts, addr)
+	}
+	return emailID, identityID, from, rcpts, ""
+}
+
+func submissionDestroyRefs(v any) ([]string, string) {
+	if v == nil {
+		return nil, ""
+	}
+	switch a := v.(type) {
+	case string:
+		if a == "" {
+			return nil, "invalidArguments"
+		}
+		return []string{a}, ""
+	case []any:
+		out := make([]string, 0, len(a))
+		for _, item := range a {
+			s, ok := item.(string)
+			if !ok || s == "" {
+				return nil, "invalidArguments"
+			}
+			out = append(out, s)
+		}
+		return out, ""
+	default:
+		return nil, "invalidArguments"
+	}
+}
+
+func (s *Server) jmapSubmissionQuery(user string, args map[string]any) (map[string]any, string) {
+	if typ := jmapAccount(user, args); typ != "" {
+		return nil, typ
+	}
+	var want map[string]bool
+	if raw, ok := args["filter"]; ok && raw != nil {
+		filt, ok := raw.(map[string]any)
+		if !ok {
+			return nil, "invalidArguments"
+		}
+		if rawIDs, ok := filt["emailIds"]; ok && rawIDs != nil {
+			ids, typ := stringList(rawIDs)
+			if typ != "" {
+				return nil, typ
+			}
+			want = map[string]bool{}
+			for _, id := range ids {
+				want[id] = true
+			}
+		}
+	}
+	pos, _, typ := optNonNeg(args, "position")
+	if typ != "" {
+		return nil, typ
+	}
+	limit, hasLimit, typ := optNonNeg(args, "limit")
+	if typ != "" {
+		return nil, typ
+	}
+	state, ids := s.submissionIDs(user, want)
+	return map[string]any{
+		"accountId":           user,
+		"queryState":          state,
+		"canCalculateChanges": false,
+		"position":            pos,
+		"ids":                 pageIDs(ids, pos, limit, hasLimit),
+	}, ""
 }

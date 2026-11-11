@@ -55,6 +55,9 @@ type Server struct {
 	smtpLog     []smtpRecord
 	smtpN       int
 	smtpWaiters []*smtpWaiter
+	subMu       sync.Mutex
+	subN        uint64
+	subs        map[string][]jmapSub
 }
 
 func newServer(path string, stdout io.Writer) (*Server, error) {

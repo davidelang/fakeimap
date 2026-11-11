@@ -392,9 +392,19 @@ func (sc *smtpConn) cmdData() error {
 	if tooLong {
 		return sc.reply(500, "5.5.2 line too long")
 	}
-	views := make([]smtpRcptView, len(recips))
+	if err := sc.srv.acceptMail(from, recips, raw); err != nil {
+		return sc.reply(451, "4.3.0 delivery failed")
+	}
+	return sc.reply(250, "2.0.0 OK")
+}
+
+// acceptMail is the SMTP DATA accept path. A dataset recipient appends the
+// message to INBOX once. Any other recipient is accepted and not stored.
+// list-smtp and wait-smtp see the same record either caller produces.
+func (s *Server) acceptMail(from string, rcpts []smtpRcpt, raw []byte) error {
+	views := make([]smtpRcptView, len(rcpts))
 	deliver := false
-	for i, r := range recips {
+	for i, r := range rcpts {
 		result := "discarded"
 		if r.deliver {
 			result = "delivered"
@@ -403,12 +413,12 @@ func (sc *smtpConn) cmdData() error {
 		views[i] = smtpRcptView{Address: r.addr, Result: result}
 	}
 	if deliver {
-		if _, _, err := sc.srv.store.appendMsg(nil, "INBOX", nil, nil, raw, sc.srv.frozenTime()); err != nil {
-			return sc.reply(451, "4.3.0 delivery failed")
+		if _, _, err := s.store.appendMsg(nil, "INBOX", nil, nil, raw, s.frozenTime()); err != nil {
+			return err
 		}
 	}
-	sc.srv.acceptSMTPMsg(smtpRecord{From: from, Recipients: views})
-	return sc.reply(250, "2.0.0 OK")
+	s.acceptSMTPMsg(smtpRecord{From: from, Recipients: views})
+	return nil
 }
 
 func parseSMTPPath(arg, keyword string) (string, bool) {

@@ -64,8 +64,11 @@ func TestJMAPRead(t *testing.T) {
 	if _, ok := caps["urn:ietf:params:jmap:mail"]; !ok {
 		t.Fatal("missing mail")
 	}
-	if _, ok := caps["urn:ietf:params:jmap:submission"]; ok {
-		t.Fatal("submission advertised")
+	if _, ok := caps["urn:ietf:params:jmap:submission"]; !ok {
+		t.Fatal("submission missing")
+	}
+	if objectField(t, session, "primaryAccounts")["urn:ietf:params:jmap:submission"] != "demo" {
+		t.Fatalf("submission account %v", objectField(t, session, "primaryAccounts"))
 	}
 	accounts := objectField(t, session, "accounts")
 	primary := objectField(t, session, "primaryAccounts")
@@ -80,8 +83,8 @@ func TestJMAPRead(t *testing.T) {
 	if _, ok := acc["urn:ietf:params:jmap:mail"]; !ok {
 		t.Fatal("account missing mail")
 	}
-	if _, ok := acc["urn:ietf:params:jmap:submission"]; ok {
-		t.Fatal("account submission")
+	if _, ok := acc["urn:ietf:params:jmap:submission"]; !ok {
+		t.Fatal("account submission missing")
 	}
 	state, _ := session["state"].(string)
 	if state == "" {
@@ -337,7 +340,7 @@ func TestJMAPRead(t *testing.T) {
 		t.Fatalf("sort %+v", badSort)
 	}
 	unknown := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
-		[]any{"EmailSubmission/set", map[string]any{"accountId": accountID}, "d"},
+		[]any{"Identity/set", map[string]any{"accountId": accountID}, "d"},
 		[]any{"Foo/bar", map[string]any{"accountId": accountID}, "e"},
 	})
 	for _, id := range []string{"d", "e"} {
@@ -409,8 +412,8 @@ func TestJMAPRead(t *testing.T) {
 func TestJMAPWrite(t *testing.T) {
 	_, bound := start(t, Config{Listen: "127.0.0.1:0", JmapListen: "127.0.0.1:0"})
 	session := jmapSession(t, bound.Jmap, "demo", "secret")
-	if _, ok := objectField(t, session, "capabilities")["urn:ietf:params:jmap:submission"]; ok {
-		t.Fatal("submission advertised")
+	if _, ok := objectField(t, session, "capabilities")["urn:ietf:params:jmap:submission"]; !ok {
+		t.Fatal("submission missing")
 	}
 	accountID := objectField(t, session, "primaryAccounts")["urn:ietf:params:jmap:mail"].(string)
 	state := session["state"].(string)
@@ -1250,6 +1253,305 @@ func statusNum(t *testing.T, line, item string) int {
 	return n
 }
 
+func TestJMAPSubmission(t *testing.T) {
+	_, bound, cc := startCtrl(t, Config{Listen: "127.0.0.1:0", JmapListen: "127.0.0.1:0"})
+	session := jmapSession(t, bound.Jmap, "demo", "secret")
+	accountID := objectField(t, session, "primaryAccounts")["urn:ietf:params:jmap:mail"].(string)
+	if _, ok := objectField(t, session, "capabilities")["urn:ietf:params:jmap:submission"]; !ok {
+		t.Fatal("submission missing")
+	}
+	acc := objectField(t, session["accounts"].(map[string]any)[accountID].(map[string]any), "accountCapabilities")
+	if _, ok := acc["urn:ietf:params:jmap:submission"]; !ok {
+		t.Fatal("account submission missing")
+	}
+
+	ident := identityRow(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Identity/get", map[string]any{
+			"accountId":  accountID,
+			"properties": []any{"id", "email"},
+		}, "0"},
+	}))
+	if len(ident) != 2 || ident["email"] != "demo" || ident["id"] == "" {
+		t.Fatalf("identity %+v", ident)
+	}
+	again := identityRow(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Identity/get", map[string]any{
+			"accountId":  accountID,
+			"properties": []any{"id", "email"},
+		}, "0"},
+	}))
+	if again["id"] != ident["id"] || again["email"] != "demo" || len(again) != 2 {
+		t.Fatalf("identity changed %+v", again)
+	}
+
+	var inboxID string
+	boxes := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Mailbox/get", map[string]any{"accountId": accountID, "ids": nil}, "0"},
+	})
+	for _, item := range arrayField(t, methodArgs(t, boxes, "Mailbox/get"), "list") {
+		obj := item.(map[string]any)
+		if obj["name"] == "INBOX" {
+			inboxID = obj["id"].(string)
+		}
+	}
+	if inboxID == "" {
+		t.Fatal("no inbox")
+	}
+	importMail := func(raw []byte, cid string) string {
+		t.Helper()
+		res, upBody := jmapDo(t, bound.Jmap, "demo", "secret", http.MethodPost, "/jmap/upload/"+accountID+"/", "message/rfc822", raw)
+		if res.StatusCode != 201 {
+			t.Fatalf("upload %d %s", res.StatusCode, upBody)
+		}
+		blobID, _ := jmapJSON(t, upBody)["blobId"].(string)
+		imported := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+			[]any{"Email/import", map[string]any{
+				"accountId": accountID,
+				"emails": map[string]any{
+					cid: map[string]any{"blobId": blobID, "mailboxIds": map[string]any{inboxID: true}},
+				},
+			}, "0"},
+		})
+		return objectField(t, objectField(t, methodArgs(t, imported, "Email/import"), "created"), cid)["id"].(string)
+	}
+	rawA := []byte("From: a@example.com\r\nTo: demo\r\nSubject: sub-a\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nbody-a\r\n")
+	rawB := []byte("From: a@example.com\r\nTo: demo\r\nSubject: sub-b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nbody-b\r\n")
+	emailA := importMail(rawA, "a")
+	emailB := importMail(rawB, "b")
+	base := inboxCount(t, cc)
+	env := func(from string, rcpts ...string) map[string]any {
+		var to []any
+		for _, rcpt := range rcpts {
+			to = append(to, map[string]any{"email": rcpt})
+		}
+		return map[string]any{
+			"mailFrom": map[string]any{"email": from},
+			"rcptTo":   to,
+		}
+	}
+
+	bad := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/set", map[string]any{
+			"accountId": accountID,
+			"create": map[string]any{
+				"u": map[string]any{"emailId": "no-such-email", "envelope": env("sender@example.com", "demo")},
+				"e": map[string]any{"emailId": emailA, "envelope": map[string]any{
+					"mailFrom": map[string]any{"email": "sender@example.com"},
+					"rcptTo":   []any{},
+				}},
+				"m": map[string]any{"emailId": emailA},
+				"i": map[string]any{"emailId": emailA, "identityId": "other", "envelope": env("sender@example.com", "demo")},
+			},
+			"onSuccessDestroyEmail": []any{"#u"},
+		}, "0"},
+	})
+	badArgs := methodArgs(t, bad, "EmailSubmission/set")
+	badCreated := objectField(t, badArgs, "created")
+	badNot := objectField(t, badArgs, "notCreated")
+	for _, id := range []string{"u", "e", "m", "i"} {
+		if _, ok := badCreated[id]; ok {
+			t.Fatalf("created %s %+v", id, badCreated)
+		}
+		if badNot[id] == nil {
+			t.Fatalf("missing notCreated %s %+v", id, badNot)
+		}
+	}
+	if objectField(t, badNot, "u")["type"] != "notFound" {
+		t.Fatalf("unknown email %+v", badNot["u"])
+	}
+	if objectField(t, badNot, "e")["type"] != "invalidProperties" || objectField(t, badNot, "m")["type"] != "invalidProperties" {
+		t.Fatalf("envelope %+v", badNot)
+	}
+	if len(arrayField(t, bad, "methodResponses")) != 1 {
+		t.Fatalf("failed create destroyed %+v", bad)
+	}
+	if inboxCount(t, cc) != base || len(listSMTP(t, cc).Messages) != 0 {
+		t.Fatal("rejected submission delivered")
+	}
+	if len(emailList(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/get", map[string]any{"accountId": accountID, "ids": []any{emailA}, "properties": []any{"id"}}, "0"},
+	}))) != 1 {
+		t.Fatal("rejected submission destroyed the email")
+	}
+	noneYet := stringArray(t, methodArgs(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/query", map[string]any{
+			"accountId": accountID,
+			"filter":    map[string]any{"emailIds": []any{emailA, emailB}},
+		}, "0"},
+	}), "EmailSubmission/query")["ids"])
+	if len(noneYet) != 0 {
+		t.Fatalf("query before create %+v", noneYet)
+	}
+
+	sentA := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/set", map[string]any{
+			"accountId": accountID,
+			"create": map[string]any{
+				"k1": map[string]any{
+					"emailId":    emailA,
+					"identityId": ident["id"],
+					"envelope":   env("sender@example.com", "demo", "stranger"),
+				},
+			},
+		}, "0"},
+	})
+	subA := objectField(t, objectField(t, methodArgs(t, sentA, "EmailSubmission/set"), "created"), "k1")["id"].(string)
+	if subA == "" {
+		t.Fatalf("created %+v", sentA)
+	}
+	if inboxCount(t, cc) != base+1 {
+		t.Fatalf("inbox %d want %d", inboxCount(t, cc), base+1)
+	}
+	msgs := cc.call(map[string]any{"op": "list-mail", "mailbox": "INBOX"}).ok(t).Messages
+	if !bytes.Equal(fetchRFC822(t, cc, msgs[len(msgs)-1].UID), rawA) {
+		t.Fatal("delivered bytes")
+	}
+	log := listSMTP(t, cc)
+	if len(log.Messages) != 1 || log.Messages[0].From != "sender@example.com" || len(log.Messages[0].Recipients) != 2 {
+		t.Fatalf("list-smtp %+v", log.Messages)
+	}
+	if log.Messages[0].Recipients[0].Address != "demo" || log.Messages[0].Recipients[0].Result != "delivered" {
+		t.Fatalf("dataset rcpt %+v", log.Messages[0].Recipients[0])
+	}
+	if log.Messages[0].Recipients[1].Address != "stranger" || log.Messages[0].Recipients[1].Result != "discarded" {
+		t.Fatalf("other rcpt %+v", log.Messages[0].Recipients[1])
+	}
+
+	cc2 := dialCtrl(t, bound.Control)
+	done := make(chan ctrlReply, 1)
+	go func() {
+		done <- cc2.call(map[string]any{"op": "wait-smtp", "count": 1, "timeout_ms": 3000})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	sentB := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/set", map[string]any{
+			"accountId": accountID,
+			"create": map[string]any{
+				"k1": map[string]any{"emailId": emailB, "envelope": env("b-sender@example.com", "other@example.com")},
+			},
+		}, "0"},
+	})
+	subB := objectField(t, objectField(t, methodArgs(t, sentB, "EmailSubmission/set"), "created"), "k1")["id"].(string)
+	if subB == "" || subB == subA {
+		t.Fatalf("submission b %q", subB)
+	}
+	select {
+	case rp := <-done:
+		if !rp.OK {
+			t.Fatalf("wait-smtp %+v", rp)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("wait-smtp did not count the submission")
+	}
+	if inboxCount(t, cc) != base+1 {
+		t.Fatal("discarded recipient was stored")
+	}
+	log = listSMTP(t, cc)
+	if len(log.Messages) != 2 || log.Messages[1].From != "b-sender@example.com" || log.Messages[1].Recipients[0].Result != "discarded" {
+		t.Fatalf("second log %+v", log.Messages)
+	}
+
+	qA := stringArray(t, methodArgs(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/query", map[string]any{
+			"accountId": accountID,
+			"filter":    map[string]any{"emailIds": []any{emailA}},
+		}, "0"},
+	}), "EmailSubmission/query")["ids"])
+	qB := stringArray(t, methodArgs(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/query", map[string]any{
+			"accountId": accountID,
+			"filter":    map[string]any{"emailIds": []any{emailB}},
+		}, "0"},
+	}), "EmailSubmission/query")["ids"])
+	qBoth := stringArray(t, methodArgs(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/query", map[string]any{
+			"accountId": accountID,
+			"filter":    map[string]any{"emailIds": []any{emailA, emailB}},
+		}, "0"},
+	}), "EmailSubmission/query")["ids"])
+	qMiss := stringArray(t, methodArgs(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/query", map[string]any{
+			"accountId": accountID,
+			"filter":    map[string]any{"emailIds": []any{"no-such-email"}},
+		}, "0"},
+	}), "EmailSubmission/query")["ids"])
+	if strings.Join(qA, ",") != subA || strings.Join(qB, ",") != subB {
+		t.Fatalf("query A %v B %v", qA, qB)
+	}
+	if strings.Join(qBoth, ",") != subA+","+subB || len(qMiss) != 0 {
+		t.Fatalf("query both %v miss %v", qBoth, qMiss)
+	}
+
+	held := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/set", map[string]any{
+			"accountId": accountID,
+			"create": map[string]any{
+				"k1": map[string]any{"emailId": emailB, "envelope": env("b-sender@example.com", "other@example.com")},
+			},
+		}, "s"},
+	})
+	if objectField(t, objectField(t, methodArgs(t, held, "EmailSubmission/set"), "created"), "k1")["id"] == "" {
+		t.Fatalf("hold %+v", held)
+	}
+	if len(emailList(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/get", map[string]any{"accountId": accountID, "ids": []any{emailB}, "properties": []any{"id"}}, "0"},
+	}))) != 1 {
+		t.Fatal("email destroyed without onSuccessDestroyEmail")
+	}
+
+	gone := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/set", map[string]any{
+			"accountId":             accountID,
+			"onSuccessDestroyEmail": []any{"#k1"},
+			"create": map[string]any{
+				"k1": map[string]any{"emailId": emailA, "envelope": env("sender@example.com", "nobody@example.com")},
+			},
+		}, "d"},
+	})
+	var names []string
+	for _, item := range arrayField(t, gone, "methodResponses") {
+		names = append(names, item.([]any)[0].(string))
+	}
+	if strings.Join(names, ",") != "EmailSubmission/set,Email/set" {
+		t.Fatalf("responses %v", names)
+	}
+	if strings.Join(stringArray(t, methodArgs(t, gone, "Email/set")["destroyed"]), ",") != emailA {
+		t.Fatalf("destroyed %+v", methodArgs(t, gone, "Email/set"))
+	}
+	after := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/get", map[string]any{"accountId": accountID, "ids": []any{emailA, emailB}, "properties": []any{"id"}}, "0"},
+	})
+	if len(emailList(t, after)) != 1 || emailList(t, after)[0]["id"] != emailB {
+		t.Fatalf("after destroy %+v", after)
+	}
+	if strings.Join(stringArray(t, methodArgs(t, after, "Email/get")["notFound"]), ",") != emailA {
+		t.Fatalf("notFound %+v", methodArgs(t, after, "Email/get"))
+	}
+	left := stringArray(t, methodArgs(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"EmailSubmission/query", map[string]any{
+			"accountId": accountID,
+			"filter":    map[string]any{"emailIds": []any{emailB}},
+		}, "0"},
+	}), "EmailSubmission/query")["ids"])
+	for _, id := range left {
+		if id == subA {
+			t.Fatalf("query leaked %v", left)
+		}
+	}
+	if len(left) != 2 || left[0] != subB {
+		t.Fatalf("emailB submissions %v", left)
+	}
+}
+
+func identityRow(t *testing.T, root map[string]any) map[string]any {
+	t.Helper()
+	list := arrayField(t, methodArgs(t, root, "Identity/get"), "list")
+	if len(list) != 1 {
+		t.Fatalf("identities %+v", list)
+	}
+	return list[0].(map[string]any)
+}
+
 func jmapSession(t *testing.T, addr, user, pass string) map[string]any {
 	t.Helper()
 	res, raw := jmapHTTP(t, addr, user, pass, http.MethodGet, "/.well-known/jmap", nil)
@@ -1263,7 +1565,7 @@ func jmapCall(t *testing.T, addr string, session map[string]any, user, pass stri
 	t.Helper()
 	api, _ := session["apiUrl"].(string)
 	body, err := json.Marshal(map[string]any{
-		"using":       []string{"urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"},
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail", "urn:ietf:params:jmap:submission"},
 		"methodCalls": calls,
 	})
 	if err != nil {

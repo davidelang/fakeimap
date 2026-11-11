@@ -182,3 +182,7 @@
 ## 2026-11-11 - JMAP copy change records
 
 - An unknown mailboxIds null is invalidProperties and changes nothing. Expunging one copy of a multi-mailbox email is updated while another copy remains.
+
+## 2026-11-11 - JMAP EmailSubmission
+
+- Implementing urn:ietf:params:jmap:submission, Identity/get, EmailSubmission/set, and EmailSubmission/query. Delivery uses the SMTP DATA accept path (jmap-submission-20261111-0700-plan.md).
