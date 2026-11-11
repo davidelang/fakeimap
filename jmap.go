@@ -37,8 +37,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	switch r.URL.Path {
-	case "/.well-known/jmap":
+	path := r.URL.Path
+	switch {
+	case path == "/.well-known/jmap":
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -49,12 +50,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJMAPSession(w, user)
-	case "/jmap", jmapAPIPath:
+	case path == "/jmap" || path == jmapAPIPath:
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 		s.jmapAPI(w, r, user)
+	case strings.HasPrefix(path, "/jmap/upload/"):
+		s.jmapUpload(w, r, user)
+	case strings.HasPrefix(path, "/jmap/download/"):
+		s.jmapDownload(w, r, user)
 	default:
 		http.NotFound(w, r)
 	}
@@ -294,9 +299,387 @@ func (s *Server) jmapCall(user, name string, args map[string]any) (map[string]an
 		return s.jmapEmailQuery(user, args)
 	case "Email/get":
 		return s.jmapEmailGet(user, args)
+	case "Email/set":
+		return s.jmapEmailSet(user, args)
+	case "Email/import":
+		return s.jmapEmailImport(user, args)
+	case "Email/changes":
+		return s.jmapEmailChanges(user, args)
 	default:
 		return nil, "unknownMethod"
 	}
+}
+
+const jmapUploadMax = 32 << 20
+
+func (s *Server) jmapUpload(w http.ResponseWriter, r *http.Request, user string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	account, ok := jmapOneSegment(r.URL.Path, "/jmap/upload/")
+	if !ok || account != user {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, jmapUploadMax+1))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if len(body) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if len(body) > jmapUploadMax {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		return
+	}
+	typ := jmapMediaType(r.Header.Get("Content-Type"))
+	id := s.store.putBlob(user, typ, body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"accountId": user,
+		"blobId":    id,
+		"type":      typ,
+		"size":      len(body),
+	})
+}
+
+func (s *Server) jmapDownload(w http.ResponseWriter, r *http.Request, user string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	account, blobID, ok := jmapDownloadPath(r.URL.Path)
+	if !ok || account != user {
+		http.NotFound(w, r)
+		return
+	}
+	data, typ, ok := s.store.uploadBlob(user, blobID)
+	if !ok {
+		emailID, part, split := splitMailBlob(blobID)
+		if !split {
+			http.NotFound(w, r)
+			return
+		}
+		raw, found := s.store.messageRFC822(emailID)
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
+		if part == "rfc822" {
+			data, typ, ok = raw, "message/rfc822", true
+		} else {
+			data, typ, ok = partBytes(raw, part)
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", typ)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func jmapOneSegment(path, prefix string) (string, bool) {
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	rest := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return "", false
+	}
+	return rest, true
+}
+
+func jmapDownloadPath(path string) (string, string, bool) {
+	const prefix = "/jmap/download/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", "", false
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(path, prefix), "/"), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func jmapMediaType(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "application/octet-stream"
+	}
+	typ, _, err := mime.ParseMediaType(v)
+	if err != nil || typ == "" || !strings.Contains(typ, "/") {
+		return "application/octet-stream"
+	}
+	return typ
+}
+
+func splitMailBlob(id string) (string, string, bool) {
+	emailID, part, ok := strings.Cut(id, "-")
+	if !ok || part == "" || !strings.HasPrefix(emailID, "em") || emailID == "em" {
+		return "", "", false
+	}
+	for _, c := range emailID[2:] {
+		if c < '0' || c > '9' {
+			return "", "", false
+		}
+	}
+	return emailID, part, true
+}
+
+func partBytes(raw []byte, want string) ([]byte, string, bool) {
+	root := parseRoot(raw)
+	seq := 0
+	var found []byte
+	var typ string
+	var ok bool
+	var walk func(*node)
+	walk = func(n *node) {
+		if n == nil || ok {
+			return
+		}
+		if n.multipart {
+			for _, c := range n.children {
+				walk(c)
+			}
+			return
+		}
+		seq++
+		if strconv.Itoa(seq) != want {
+			return
+		}
+		b, err := decodePartBytes(n)
+		if err != nil {
+			b = n.body
+		}
+		if b == nil {
+			b = []byte{}
+		}
+		found = b
+		typ = strings.ToLower(n.typ) + "/" + strings.ToLower(n.sub)
+		ok = true
+	}
+	walk(root)
+	if !ok {
+		return nil, "", false
+	}
+	return found, typ, true
+}
+
+func (s *Server) jmapEmailSet(user string, args map[string]any) (map[string]any, string) {
+	if typ := jmapAccount(user, args); typ != "" {
+		return nil, typ
+	}
+	if args["create"] != nil || args["update"] != nil {
+		return nil, "invalidArguments"
+	}
+	var ids []string
+	if raw := args["destroy"]; raw != nil {
+		var typ string
+		ids, typ = stringList(raw)
+		if typ != "" {
+			return nil, typ
+		}
+		for _, id := range ids {
+			if id == "" {
+				return nil, "invalidArguments"
+			}
+		}
+	}
+	old, neu, destroyed, missing := s.store.destroyJMAP(ids)
+	res := map[string]any{
+		"accountId": user,
+		"oldState":  old,
+		"newState":  neu,
+		"destroyed": destroyed,
+		"notFound":  missing,
+	}
+	if len(missing) > 0 {
+		nd := map[string]any{}
+		for _, id := range missing {
+			nd[id] = map[string]any{"type": "notFound"}
+		}
+		res["notDestroyed"] = nd
+	}
+	return res, ""
+}
+
+func (s *Server) jmapEmailImport(user string, args map[string]any) (map[string]any, string) {
+	if typ := jmapAccount(user, args); typ != "" {
+		return nil, typ
+	}
+	items, typ := parseJMAPImport(args["emails"])
+	if typ != "" {
+		return nil, typ
+	}
+	old, neu, created, typ := s.store.importJMAP(user, items, s.frozenTime())
+	if typ != "" {
+		return nil, typ
+	}
+	return map[string]any{
+		"accountId": user,
+		"oldState":  old,
+		"newState":  neu,
+		"created":   created,
+	}, ""
+}
+
+func parseJMAPImport(v any) ([]jmapImport, string) {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return nil, "invalidArguments"
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []jmapImport
+	for _, cid := range keys {
+		if cid == "" {
+			return nil, "invalidArguments"
+		}
+		row, ok := m[cid].(map[string]any)
+		if !ok {
+			return nil, "invalidArguments"
+		}
+		blobID, _ := row["blobId"].(string)
+		if blobID == "" {
+			return nil, "invalidArguments"
+		}
+		box, typ := oneMailbox(row["mailboxIds"])
+		if typ != "" {
+			return nil, typ
+		}
+		flags, typ := jmapKeywordFlags(row["keywords"])
+		if typ != "" {
+			return nil, typ
+		}
+		when, typ := jmapReceivedAt(row["receivedAt"])
+		if typ != "" {
+			return nil, typ
+		}
+		out = append(out, jmapImport{cid: cid, blobID: blobID, mailbox: box, flags: flags, when: when})
+	}
+	return out, ""
+}
+
+func oneMailbox(v any) (string, string) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return "", "invalidArguments"
+	}
+	var id string
+	n := 0
+	for k, raw := range m {
+		on, ok := raw.(bool)
+		if !ok || k == "" {
+			return "", "invalidArguments"
+		}
+		if !on {
+			continue
+		}
+		n++
+		id = k
+	}
+	if n != 1 {
+		return "", "invalidArguments"
+	}
+	return id, ""
+}
+
+func jmapKeywordFlags(v any) ([]string, string) {
+	if v == nil {
+		return nil, ""
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, "invalidArguments"
+	}
+	var flags []string
+	for k, raw := range m {
+		on, ok := raw.(bool)
+		if !ok {
+			return nil, "invalidArguments"
+		}
+		if !on {
+			continue
+		}
+		switch k {
+		case "$seen":
+			flags = append(flags, `\Seen`)
+		case "$flagged":
+			flags = append(flags, `\Flagged`)
+		case "$answered":
+			flags = append(flags, `\Answered`)
+		case "$draft":
+			flags = append(flags, `\Draft`)
+		default:
+			if _, ok := canonFlag(k); !ok {
+				return nil, "invalidArguments"
+			}
+			flags = append(flags, k)
+		}
+	}
+	return flags, ""
+}
+
+func jmapReceivedAt(v any) (*time.Time, string) {
+	if v == nil {
+		return nil, ""
+	}
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return nil, "invalidArguments"
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil, "invalidArguments"
+	}
+	return &t, ""
+}
+
+func (s *Server) jmapEmailChanges(user string, args map[string]any) (map[string]any, string) {
+	if typ := jmapAccount(user, args); typ != "" {
+		return nil, typ
+	}
+	raw, ok := args["sinceState"].(string)
+	if !ok || raw == "" {
+		return nil, "invalidArguments"
+	}
+	since, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return nil, "cannotCalculateChanges"
+	}
+	max, hasMax, typ := optNonNeg(args, "maxChanges")
+	if typ != "" {
+		return nil, typ
+	}
+	if hasMax && max < 1 {
+		return nil, "invalidArguments"
+	}
+	created, updated, destroyed, neu, more, known := s.store.emailChanges(since, max, hasMax)
+	if !known {
+		return nil, "cannotCalculateChanges"
+	}
+	return map[string]any{
+		"accountId":      user,
+		"oldState":       raw,
+		"newState":       neu,
+		"hasMoreChanges": more,
+		"created":        created,
+		"updated":        updated,
+		"destroyed":      destroyed,
+	}, ""
 }
 
 func jmapAccount(user string, args map[string]any) string {

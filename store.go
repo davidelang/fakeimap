@@ -255,10 +255,36 @@ type Store struct {
 	nextUIDV  uint32
 	nextJmap  uint64
 	jmapState uint64 // changes when the mail store changes
+	changes   []jmapChange
+	blobs     map[string]*jmapBlob
+	nextBlob  uint64
+}
+
+// jmapChange is one email id change at the session state after it happened.
+type jmapChange struct {
+	state uint64
+	kind  string // created, updated, destroyed
+	id    string
+}
+
+type jmapBlob struct {
+	account string
+	typ     string
+	data    []byte
 }
 
 func (st *Store) touch() {
 	st.jmapState++
+}
+
+// noteMail records one email change and advances the session state.
+// Caller holds st.mu.
+func (st *Store) noteMail(kind, id string) {
+	if id == "" {
+		return
+	}
+	st.jmapState++
+	st.changes = append(st.changes, jmapChange{state: st.jmapState, kind: kind, id: id})
 }
 
 func (st *Store) jmapStateText() string {
@@ -784,6 +810,12 @@ func (st *Store) delete(s *session, name string) error {
 	if len(mb.waiters) > 0 {
 		return fmt.Errorf("selected")
 	}
+	for _, m := range mb.msgs {
+		st.noteMail("destroyed", m.jmapID)
+	}
+	if len(mb.msgs) == 0 {
+		st.touch()
+	}
 	delete(st.boxes, cn)
 	order := st.order[:0]
 	for _, n := range st.order {
@@ -792,7 +824,6 @@ func (st *Store) delete(s *session, name string) error {
 		}
 	}
 	st.order = order
-	st.touch()
 	return nil
 }
 
@@ -994,6 +1025,7 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, ch
 		if fetchSetsSeen(expanded) && !s.readonly && !m.has(`\Seen`) {
 			m.addFlag(`\Seen`)
 			mb.bump(m)
+			st.noteMail("updated", m.jmapID)
 			seenEvent = mb.push(mbEvent{
 				kind: "flags", seq: seq, uid: m.uid, modseq: m.modseq,
 				flags: formatFlags(m, s.pers.FlagOrder),
@@ -1151,7 +1183,6 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 	var modified []uint32
 	mb := s.box
 	var last uint64
-	changed := false
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
 		if unchanged != nil && m.modseq > *unchanged {
 			id := seq
@@ -1181,7 +1212,7 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 		formatted := formatFlags(m, s.pers.FlagOrder)
 		if formatted != before {
 			mb.bump(m)
-			changed = true
+			st.noteMail("updated", m.jmapID)
 		}
 		last = mb.push(mbEvent{kind: "flags", seq: seq, uid: m.uid, modseq: m.modseq, flags: formatted})
 		if !silent {
@@ -1190,9 +1221,6 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 	})
 	if last > s.seenID {
 		s.seenID = last
-	}
-	if changed {
-		st.touch()
 	}
 	return snaps, modified, nil
 }
@@ -1437,17 +1465,26 @@ func indexOverlay(m *Message) {
 func (st *Store) appendMsg(s *session, name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, uint32, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
+	uv, m, err := st.appendLocked(name, flags, date, raw, frozen)
 	if err != nil {
 		return 0, 0, err
 	}
+	return uv, m.uid, nil
+}
+
+// appendLocked appends one message. Caller holds st.mu.
+func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, *Message, error) {
+	cn, err := st.canon(name)
+	if err != nil {
+		return 0, nil, err
+	}
 	mb := st.boxes[cn]
 	if mb == nil {
-		return 0, 0, fmt.Errorf("no mailbox")
+		return 0, nil, fmt.Errorf("no mailbox")
 	}
 	for _, f := range flags {
 		if _, ok := canonFlag(f); !ok {
-			return 0, 0, fmt.Errorf("bad flag")
+			return 0, nil, fmt.Errorf("bad flag")
 		}
 	}
 	raw = toCRLF(raw)
@@ -1474,8 +1511,8 @@ func (st *Store) appendMsg(s *session, name string, flags []string, date *time.T
 	mb.uidNext++
 	mb.msgs = append(mb.msgs, m)
 	mb.pushExists()
-	st.touch()
-	return mb.uidValidity, m.uid, nil
+	st.noteMail("created", m.jmapID)
+	return mb.uidValidity, m, nil
 }
 
 func cloneMsg(src *Message, uid uint32) *Message {
@@ -1549,6 +1586,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		for _, m := range src.msgs {
 			if drop[m.uid] {
 				src.noteExpunge(m)
+				st.noteMail("destroyed", m.jmapID)
 				gone = append(gone, m.uid)
 				if !qresync {
 					res.lines = append(res.lines, fmt.Sprintf("* %d EXPUNGE", seq))
@@ -1571,6 +1609,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		}
 	}
 	var dstUIDs []uint32
+	var createdIDs []string
 	for _, m := range picked {
 		nm := cloneMsg(m, dst.uidNext)
 		st.stampMsg(nm)
@@ -1578,11 +1617,14 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		dst.uidNext++
 		dst.msgs = append(dst.msgs, nm)
 		dstUIDs = append(dstUIDs, nm.uid)
+		createdIDs = append(createdIDs, nm.jmapID)
 	}
 	res.dst = dstUIDs
 	if len(picked) > 0 {
 		dst.pushExists()
-		st.touch()
+		for _, id := range createdIDs {
+			st.noteMail("created", id)
+		}
 	}
 	return res, nil
 }
@@ -1611,6 +1653,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
 		}
 		if hit {
 			mb.noteExpunge(m)
+			st.noteMail("destroyed", m.jmapID)
 			gone = append(gone, m.uid)
 			if !qresync {
 				lines = append(lines, fmt.Sprintf("* %d EXPUNGE", seq))
@@ -1627,9 +1670,6 @@ func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
 	mb.msgs = keep
 	if last > s.seenID {
 		s.seenID = last
-	}
-	if len(gone) > 0 {
-		st.touch()
 	}
 	return lines, nil
 }
@@ -1649,6 +1689,7 @@ func (st *Store) closeBox(s *session) error {
 		for _, m := range mb.msgs {
 			if m.has(`\Deleted`) {
 				mb.noteExpunge(m)
+				st.noteMail("destroyed", m.jmapID)
 				mb.push(mbEvent{kind: "expunge", seq: seq, uid: m.uid, modseq: m.modseq})
 				continue
 			}
@@ -1658,7 +1699,6 @@ func (st *Store) closeBox(s *session) error {
 		if len(keep) != len(mb.msgs) {
 			mb.msgs = keep
 			mb.pushExists()
-			st.touch()
 		}
 	}
 	// Skip the events this session must not echo.
@@ -1743,6 +1783,7 @@ func loadStore(dir, delim string) (*Store, error) {
 		boxes:    map[string]*Mailbox{},
 		delim:    delim,
 		usedUIDV: map[uint32]bool{},
+		blobs:    map[string]*jmapBlob{},
 	}
 	for _, a := range df.Accounts {
 		if a.Username == "" {
@@ -1856,6 +1897,9 @@ func (st *Store) become(neu *Store) {
 	st.nextUIDV = neu.nextUIDV
 	st.nextJmap = neu.nextJmap
 	st.jmapState = neu.jmapState
+	st.changes = neu.changes
+	st.blobs = neu.blobs
+	st.nextBlob = neu.nextBlob
 }
 
 func (st *Store) usernames() []string {
@@ -1931,4 +1975,228 @@ func (st *Store) fetchMail(name string, uid uint32) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("no such message")
+}
+
+func (st *Store) putBlob(account, typ string, data []byte) string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.blobs == nil {
+		st.blobs = map[string]*jmapBlob{}
+	}
+	st.nextBlob++
+	id := "b" + strconv.FormatUint(st.nextBlob, 10)
+	st.blobs[id] = &jmapBlob{account: account, typ: typ, data: append([]byte(nil), data...)}
+	return id
+}
+
+func (st *Store) uploadBlob(account, id string) ([]byte, string, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	b := st.blobs[id]
+	if b == nil || b.account != account {
+		return nil, "", false
+	}
+	return append([]byte(nil), b.data...), b.typ, true
+}
+
+func (st *Store) mailboxByJMAP(id string) *Mailbox {
+	for _, name := range st.order {
+		mb := st.boxes[name]
+		if mb != nil && mb.jmapID == id {
+			return mb
+		}
+	}
+	return nil
+}
+
+func (st *Store) messageByJMAP(id string) (*Mailbox, *Message) {
+	for _, name := range st.order {
+		mb := st.boxes[name]
+		if mb == nil {
+			continue
+		}
+		for _, m := range mb.msgs {
+			if m.jmapID == id {
+				return mb, m
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (st *Store) messageRFC822(id string) ([]byte, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	_, m := st.messageByJMAP(id)
+	if m == nil {
+		return nil, false
+	}
+	return append([]byte(nil), m.bytes()...), true
+}
+
+type jmapImport struct {
+	cid     string
+	blobID  string
+	mailbox string
+	flags   []string
+	when    *time.Time
+}
+
+func (st *Store) importJMAP(account string, items []jmapImport, frozen *time.Time) (string, string, map[string]any, string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	old := strconv.FormatUint(st.jmapState, 10)
+	type ready struct {
+		item jmapImport
+		raw  []byte
+		name string
+	}
+	var batch []ready
+	for _, it := range items {
+		b := st.blobs[it.blobID]
+		if b == nil || b.account != account {
+			return "", "", nil, "invalidArguments"
+		}
+		mb := st.mailboxByJMAP(it.mailbox)
+		if mb == nil {
+			return "", "", nil, "invalidArguments"
+		}
+		batch = append(batch, ready{item: it, raw: b.data, name: mb.name})
+	}
+	created := map[string]any{}
+	for _, it := range batch {
+		_, m, err := st.appendLocked(it.name, it.item.flags, it.item.when, it.raw, frozen)
+		if err != nil {
+			return "", "", nil, "invalidArguments"
+		}
+		created[it.item.cid] = map[string]any{
+			"id":       m.jmapID,
+			"blobId":   m.jmapID + "-rfc822",
+			"threadId": m.jmapID,
+			"size":     m.size,
+		}
+	}
+	return old, strconv.FormatUint(st.jmapState, 10), created, ""
+}
+
+func (st *Store) destroyJMAP(ids []string) (string, string, []string, []string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	old := strconv.FormatUint(st.jmapState, 10)
+	seen := map[string]bool{}
+	var destroyed, missing []string
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		mb, m := st.messageByJMAP(id)
+		if m == nil {
+			missing = append(missing, id)
+			continue
+		}
+		var keep []*Message
+		seq := uint32(1)
+		for _, cur := range mb.msgs {
+			if cur == m {
+				mb.noteExpunge(cur)
+				mb.push(mbEvent{kind: "expunge", seq: seq, uid: cur.uid, modseq: cur.modseq})
+				continue
+			}
+			keep = append(keep, cur)
+			seq++
+		}
+		mb.msgs = keep
+		st.noteMail("destroyed", id)
+		destroyed = append(destroyed, id)
+	}
+	if destroyed == nil {
+		destroyed = []string{}
+	}
+	if missing == nil {
+		missing = []string{}
+	}
+	return old, strconv.FormatUint(st.jmapState, 10), destroyed, missing
+}
+
+func (st *Store) emailChanges(since uint64, max int, limited bool) ([]string, []string, []string, string, bool, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if since == 0 || since > st.jmapState {
+		return nil, nil, nil, "", false, false
+	}
+	var picked []jmapChange
+	for _, ch := range st.changes {
+		if ch.state > since {
+			picked = append(picked, ch)
+		}
+	}
+	end := len(picked)
+	more := false
+	if limited {
+		end = 0
+		for n := 1; n <= len(picked); n++ {
+			c, u, d := collapseJMAP(picked[:n])
+			if len(c)+len(u)+len(d) > max {
+				more = true
+				break
+			}
+			end = n
+		}
+	}
+	created, updated, destroyed := collapseJMAP(picked[:end])
+	state := st.jmapState
+	if more && end > 0 {
+		state = picked[end-1].state
+	}
+	if created == nil {
+		created = []string{}
+	}
+	if updated == nil {
+		updated = []string{}
+	}
+	if destroyed == nil {
+		destroyed = []string{}
+	}
+	return created, updated, destroyed, strconv.FormatUint(state, 10), more, true
+}
+
+func collapseJMAP(changes []jmapChange) (created, updated, destroyed []string) {
+	type bits struct{ c, u, d bool }
+	var order []string
+	have := map[string]*bits{}
+	for _, ch := range changes {
+		b := have[ch.id]
+		if b == nil {
+			b = &bits{}
+			have[ch.id] = b
+			order = append(order, ch.id)
+		}
+		switch ch.kind {
+		case "created":
+			b.c, b.u, b.d = true, false, false
+		case "updated":
+			if !b.c && !b.d {
+				b.u = true
+			}
+		case "destroyed":
+			if b.c {
+				b.c, b.u, b.d = false, false, false
+			} else {
+				b.c, b.u, b.d = false, false, true
+			}
+		}
+	}
+	for _, id := range order {
+		b := have[id]
+		switch {
+		case b.c:
+			created = append(created, id)
+		case b.d:
+			destroyed = append(destroyed, id)
+		case b.u:
+			updated = append(updated, id)
+		}
+	}
+	return created, updated, destroyed
 }

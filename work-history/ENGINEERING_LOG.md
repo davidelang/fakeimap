@@ -169,3 +169,8 @@
 
 - Approved plan: sandbox/plans/status-listeners-20261111-0554-plan.md
 - Control status includes smtp and jmap as the bound host:port, or an empty string when that listener is not up. listen, implicit_tls_listen, and control are unchanged.
+
+## 2026-11-11 - JMAP upload import destroy and changes
+
+- Approved plan: sandbox/plans/jmap-write-20261111-0559-plan.md
+- Upload stores a blob and download returns it or an Email/get RFC822 blob. Email/import appends that blob into one mailbox. Email/set destroy expunges. Email/set create or update is invalidArguments and destroys nothing. Email/changes lists IMAP append, flag change, and expunge, plus JMAP import and destroy. EmailSubmission stays unknownMethod.
