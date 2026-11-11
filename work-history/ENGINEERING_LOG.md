@@ -328,3 +328,10 @@
 - Approved plan: sandbox/plans/other-servers-20261111-1335-plan.md
 - Work: personalities for the lab Dovecot, Stalwart, and Zimbra servers from implemented capability tokens. Courier and UW-IMAP stay out.
 - First action per standard-plan-compliance-block.md
+
+## 2026-11-11 - Courier and UW-IMAP personalities
+
+- Approved plan: sandbox/plans/courier-uw-20261111-1345-plan.md
+- Work: personalities for Courier 5.0, Courier 6.0.6, and UW-IMAP. NAMESPACE can list more than one prefix in a group, and an entry delimiter can be NIL. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.

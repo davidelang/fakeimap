@@ -252,3 +252,146 @@ func selectFlagLists(lines []string) (flags, perm string) {
 	}
 	return flags, perm
 }
+
+func TestCourierAndUW(t *testing.T) {
+	caps := "IMAP4rev1 UIDPLUS CHILDREN NAMESPACE THREAD=ORDEREDSUBJECT THREAD=REFERENCES SORT IDLE ENABLE UTF8=ACCEPT"
+	courierNS := `* NAMESPACE (("INBOX." ".")) NIL (("#shared." ".")("shared." "."))`
+	courierFlags := `\Draft \Answered \Flagged \Deleted \Seen \Recent`
+	courierPerm := `\* \Draft \Answered \Flagged \Deleted \Seen`
+	courierOrder := []string{"FLAGS", "PERMANENTFLAGS", "EXISTS", "RECENT", "UIDVALIDITY"}
+	uwCaps := "IMAP4REV1 LITERAL+ IDLE UIDPLUS NAMESPACE CHILDREN BINARY UNSELECT ESEARCH SORT THREAD=REFERENCES THREAD=ORDEREDSUBJECT SASL-IR"
+	uwNS := `* NAMESPACE (("" "/")("#mhinbox" NIL)("#mh/" "/")) (("~" "/")) (("#shared/" "/")("#ftp/" "/")("#news." ".")("#public/" "/"))`
+	uwFlags := `\Answered \Flagged \Deleted \Draft \Seen`
+	uwPerm := `\* \Answered \Flagged \Deleted \Draft \Seen`
+	uwOrder := []string{"EXISTS", "RECENT", "UIDVALIDITY", "UIDNEXT", "FLAGS", "PERMANENTFLAGS", "UNSEEN"}
+	banned := []string{"QUOTA", "ACL", "ACL2=UNION", "I18NLEVEL=1", "LOGIN-REFERRALS"}
+	cases := []struct {
+		file     string
+		greeting string
+		greet    string
+		pre      string
+		post     string
+		delim    string
+		ns       string
+		flags    string
+		perm     string
+		order    []string
+	}{
+		{
+			file:     "personalities/courier-606.json",
+			greeting: "* OK [CAPABILITY " + caps + "] Courier-IMAP ready. Copyright 1998-2022 S. Varshavchik.  See COPYING for distribution information.",
+			greet:    caps,
+			pre:      caps,
+			post:     caps,
+			delim:    ".",
+			ns:       courierNS,
+			flags:    courierFlags,
+			perm:     courierPerm,
+			order:    courierOrder,
+		},
+		{
+			file:     "personalities/courier-50.json",
+			greeting: "* OK [CAPABILITY " + caps + "] Courier-IMAP ready. Copyright 1998-2019 Double Precision, Inc.  See COPYING for distribution information.",
+			greet:    caps,
+			pre:      caps,
+			post:     caps,
+			delim:    ".",
+			ns:       courierNS,
+			flags:    courierFlags,
+			perm:     courierPerm,
+			order:    courierOrder,
+		},
+		{
+			file:     "personalities/uwimap.json",
+			greeting: "* OK [CAPABILITY IMAP4REV1 LITERAL+ SASL-IR] IMAP4rev1 2007e.404",
+			greet:    "IMAP4REV1 LITERAL+ SASL-IR",
+			pre:      uwCaps,
+			post:     uwCaps,
+			delim:    "/",
+			ns:       uwNS,
+			flags:    uwFlags,
+			perm:     uwPerm,
+			order:    uwOrder,
+		},
+	}
+	old := []struct {
+		file string
+		ns   string
+	}{
+		{"personalities/cyrus-3137.json", `* NAMESPACE (("" "/")) (("Other Users/" "/")) (("Shared Folders/" "/"))`},
+		{"personalities/dovecot-245.json", `* NAMESPACE (("" "/")) NIL NIL`},
+	}
+	for _, o := range old {
+		p, err := loadPersonality(o.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.PersonalNS != nil || p.OtherNS != nil || p.SharedNS != nil {
+			t.Fatalf("%s has namespace lists", o.file)
+		}
+		if p.namespaceLine() != o.ns {
+			t.Fatalf("%s namespace %q", o.file, p.namespaceLine())
+		}
+	}
+	for _, c := range cases {
+		t.Run(c.file, func(t *testing.T) {
+			p, err := loadPersonality(c.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Delimiter != c.delim || p.namespaceLine() != c.ns {
+				t.Fatalf("delim %q namespace %q", p.Delimiter, p.namespaceLine())
+			}
+			if !p.LogoutBye || !p.FetchPeekBody || !p.FetchSeenFlags {
+				t.Fatalf("quirks bye %v peek %v seen %v", p.LogoutBye, p.FetchPeekBody, p.FetchSeenFlags)
+			}
+			if strings.Join(p.GreetingCaps, " ") != c.greet || strings.Join(p.PreLogin, " ") != c.pre || strings.Join(p.PostLogin, " ") != c.post {
+				t.Fatalf("caps greet %v pre %v post %v", p.GreetingCaps, p.PreLogin, p.PostLogin)
+			}
+			for _, name := range banned {
+				if listed(p.GreetingCaps, name) || listed(p.PreLogin, name) || listed(p.PostLogin, name) {
+					t.Fatalf("file advertises %s", name)
+				}
+			}
+			_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: c.file})
+			cl := dial(t, bound.Listen)
+			gotGreet := strings.TrimRight(cl.greeting, "\r\n")
+			if gotGreet != c.greeting {
+				t.Fatalf("greeting %q", gotGreet)
+			}
+			pre := cl.cmd("CAPABILITY").mustOK(t)
+			if strings.Join(capsOf(pre.untagged[0]), " ") != c.pre {
+				t.Fatalf("pre-login %v", capsOf(pre.untagged[0]))
+			}
+			login := cl.cmd("LOGIN demo secret").mustOK(t)
+			if strings.Join(capsOf(login.tagLine), " ") != c.post {
+				t.Fatalf("post-login %v", capsOf(login.tagLine))
+			}
+			for _, name := range banned {
+				if listed(capsOf(login.tagLine), name) || listed(capsOf(pre.untagged[0]), name) || listed(capsOf(gotGreet), name) {
+					t.Fatalf("wire advertises %s", name)
+				}
+			}
+			ns := cl.cmd("NAMESPACE").mustOK(t)
+			if len(ns.untagged) != 1 || ns.untagged[0] != c.ns {
+				t.Fatalf("namespace %q", ns.untagged)
+			}
+			root := cl.cmd(`LIST "" ""`).mustOK(t)
+			if len(root.untagged) != 1 || !strings.Contains(root.untagged[0], imapString(c.delim)) {
+				t.Fatalf("list delim %q", root.untagged)
+			}
+			sel := cl.cmd("SELECT INBOX").mustOK(t)
+			if got := selectKinds(sel.untagged); strings.Join(got, " ") != strings.Join(c.order, " ") {
+				t.Fatalf("select %v", got)
+			}
+			flags, perm := selectFlagLists(sel.untagged)
+			if flags != c.flags || perm != c.perm {
+				t.Fatalf("select flags %q perm %q", flags, perm)
+			}
+			out := cl.cmd("LOGOUT")
+			if len(out.untagged) != 1 || out.untagged[0] != "* BYE LOGOUT" {
+				t.Fatalf("logout %q", out.untagged)
+			}
+		})
+	}
+}

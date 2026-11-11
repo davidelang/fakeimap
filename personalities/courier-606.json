@@ -1,0 +1,90 @@
+{
+  "greeting": "Courier-IMAP ready. Copyright 1998-2022 S. Varshavchik.  See COPYING for distribution information.",
+  "delimiter": ".",
+  "greeting_capabilities": [
+    "IMAP4rev1",
+    "UIDPLUS",
+    "CHILDREN",
+    "NAMESPACE",
+    "THREAD=ORDEREDSUBJECT",
+    "THREAD=REFERENCES",
+    "SORT",
+    "IDLE",
+    "ENABLE",
+    "UTF8=ACCEPT"
+  ],
+  "pre_login_capabilities": [
+    "IMAP4rev1",
+    "UIDPLUS",
+    "CHILDREN",
+    "NAMESPACE",
+    "THREAD=ORDEREDSUBJECT",
+    "THREAD=REFERENCES",
+    "SORT",
+    "IDLE",
+    "ENABLE",
+    "UTF8=ACCEPT"
+  ],
+  "post_login_capabilities": [
+    "IMAP4rev1",
+    "UIDPLUS",
+    "CHILDREN",
+    "NAMESPACE",
+    "THREAD=ORDEREDSUBJECT",
+    "THREAD=REFERENCES",
+    "SORT",
+    "IDLE",
+    "ENABLE",
+    "UTF8=ACCEPT"
+  ],
+  "personal_namespaces": [
+    {
+      "prefix": "INBOX.",
+      "delimiter": "."
+    }
+  ],
+  "shared_namespaces": [
+    {
+      "prefix": "#shared.",
+      "delimiter": "."
+    },
+    {
+      "prefix": "shared.",
+      "delimiter": "."
+    }
+  ],
+  "logout_bye": true,
+  "select_flags": "\\Draft \\Answered \\Flagged \\Deleted \\Seen \\Recent",
+  "permanent_flags": "\\* \\Draft \\Answered \\Flagged \\Deleted \\Seen",
+  "select_order": [
+    "FLAGS",
+    "PERMANENTFLAGS",
+    "EXISTS",
+    "RECENT",
+    "UIDVALIDITY"
+  ],
+  "flag_order": [
+    "\\Recent",
+    "\\Answered",
+    "\\Flagged",
+    "\\Draft",
+    "\\Deleted",
+    "\\Seen"
+  ],
+  "fetch_peek_body": true,
+  "fetch_seen_flags": true,
+  "fetch_item_order": [
+    "FLAGS",
+    "UID",
+    "INTERNALDATE",
+    "RFC822.SIZE",
+    "ENVELOPE",
+    "BODY",
+    "BODYSTRUCTURE",
+    "RFC822",
+    "RFC822.HEADER",
+    "RFC822.TEXT",
+    "BODY[]",
+    "BODY.PEEK[]"
+  ]
+}

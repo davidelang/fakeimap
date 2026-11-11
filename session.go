@@ -633,16 +633,7 @@ func (s *session) cmdNamespace(cmd command) error {
 	if len(cmd.args) != 0 {
 		return s.bad(cmd.tag, "NAMESPACE syntax")
 	}
-	d := imapString(s.pers.Delimiter)
-	personal := imapString(s.pers.PersonalPrefix)
-	other, shared := "NIL", "NIL"
-	if s.pers.OtherUsers != "" {
-		other = fmt.Sprintf(`((%s %s))`, imapString(s.pers.OtherUsers), d)
-	}
-	if s.pers.SharedFolders != nil {
-		shared = fmt.Sprintf(`((%s %s))`, imapString(*s.pers.SharedFolders), d)
-	}
-	if err := s.sendLine(fmt.Sprintf(`* NAMESPACE ((%s %s)) %s %s`, personal, d, other, shared)); err != nil {
+	if err := s.sendLine(s.pers.namespaceLine()); err != nil {
 		return err
 	}
 	return s.ok(cmd.tag, "NAMESPACE completed")

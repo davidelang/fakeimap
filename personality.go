@@ -10,24 +10,27 @@ import (
 // Personality is the Cyrus-shaped reply data. A listed capability is
 // advertised only when this server implements it.
 type Personality struct {
-	Greeting             string   `json:"greeting"`
-	Delimiter            string   `json:"delimiter"`
-	GreetingCaps         []string `json:"greeting_capabilities,omitempty"`
-	PreLogin             []string `json:"pre_login_capabilities"`
-	PostLogin            []string `json:"post_login_capabilities"`
-	PersonalPrefix       string   `json:"personal_prefix,omitempty"`
-	OtherUsers           string   `json:"other_users,omitempty"`
-	SharedFolders        *string  `json:"shared_folders,omitempty"`
-	LogoutBye            bool     `json:"logout_bye"`
-	FetchItemOrder       []string `json:"fetch_item_order"`
-	SelectFlags          string   `json:"select_flags,omitempty"`
-	PermanentFlags       string   `json:"permanent_flags,omitempty"`
-	SelectOrder          []string `json:"select_order,omitempty"`
-	FlagOrder            []string `json:"flag_order,omitempty"`
-	FetchPeekBody        bool     `json:"fetch_peek_body,omitempty"`
-	FetchSeenFlags       bool     `json:"fetch_seen_flags,omitempty"`
-	MoveCopyUIDUntagged  bool     `json:"move_copyuid_untagged,omitempty"`
-	SortPartialCountOnly bool     `json:"sort_partial_count_only,omitempty"`
+	Greeting             string    `json:"greeting"`
+	Delimiter            string    `json:"delimiter"`
+	GreetingCaps         []string  `json:"greeting_capabilities,omitempty"`
+	PreLogin             []string  `json:"pre_login_capabilities"`
+	PostLogin            []string  `json:"post_login_capabilities"`
+	PersonalPrefix       string    `json:"personal_prefix,omitempty"`
+	OtherUsers           string    `json:"other_users,omitempty"`
+	SharedFolders        *string   `json:"shared_folders,omitempty"`
+	PersonalNS           []nsEntry `json:"personal_namespaces,omitempty"`
+	OtherNS              []nsEntry `json:"other_namespaces,omitempty"`
+	SharedNS             []nsEntry `json:"shared_namespaces,omitempty"`
+	LogoutBye            bool      `json:"logout_bye"`
+	FetchItemOrder       []string  `json:"fetch_item_order"`
+	SelectFlags          string    `json:"select_flags,omitempty"`
+	PermanentFlags       string    `json:"permanent_flags,omitempty"`
+	SelectOrder          []string  `json:"select_order,omitempty"`
+	FlagOrder            []string  `json:"flag_order,omitempty"`
+	FetchPeekBody        bool      `json:"fetch_peek_body,omitempty"`
+	FetchSeenFlags       bool      `json:"fetch_seen_flags,omitempty"`
+	MoveCopyUIDUntagged  bool      `json:"move_copyuid_untagged,omitempty"`
+	SortPartialCountOnly bool      `json:"sort_partial_count_only,omitempty"`
 	rank                 map[string]int
 }
 
@@ -171,4 +174,60 @@ func (p *Personality) fetchRank(item string) int {
 		return n
 	}
 	return len(p.FetchItemOrder) + 1
+}
+
+// nsEntry is one NAMESPACE prefix. A nil Delimiter is the NIL atom.
+type nsEntry struct {
+	Prefix    string  `json:"prefix"`
+	Delimiter *string `json:"delimiter"`
+}
+
+// namespaceLine is the untagged NAMESPACE response. Absent lists keep
+// the one-entry line personal_prefix, other_users, and shared_folders produce.
+func (p *Personality) namespaceLine() string {
+	if p.PersonalNS == nil && p.OtherNS == nil && p.SharedNS == nil {
+		d := imapString(p.Delimiter)
+		personal := imapString(p.PersonalPrefix)
+		other, shared := "NIL", "NIL"
+		if p.OtherUsers != "" {
+			other = fmt.Sprintf(`((%s %s))`, imapString(p.OtherUsers), d)
+		}
+		if p.SharedFolders != nil {
+			shared = fmt.Sprintf(`((%s %s))`, imapString(*p.SharedFolders), d)
+		}
+		return fmt.Sprintf(`* NAMESPACE ((%s %s)) %s %s`, personal, d, other, shared)
+	}
+	otherOne := (*string)(nil)
+	if p.OtherUsers != "" {
+		s := p.OtherUsers
+		otherOne = &s
+	}
+	personalOne := p.PersonalPrefix
+	return fmt.Sprintf("* NAMESPACE %s %s %s",
+		nsGroup(p.PersonalNS, &personalOne, p.Delimiter),
+		nsGroup(p.OtherNS, otherOne, p.Delimiter),
+		nsGroup(p.SharedNS, p.SharedFolders, p.Delimiter))
+}
+
+func nsGroup(entries []nsEntry, one *string, delim string) string {
+	if entries == nil {
+		if one == nil {
+			return "NIL"
+		}
+		return fmt.Sprintf(`((%s %s))`, imapString(*one), imapString(delim))
+	}
+	if len(entries) == 0 {
+		return "NIL"
+	}
+	var b strings.Builder
+	b.WriteByte('(')
+	for _, e := range entries {
+		atom := "NIL"
+		if e.Delimiter != nil {
+			atom = imapString(*e.Delimiter)
+		}
+		b.WriteString("(" + imapString(e.Prefix) + " " + atom + ")")
+	}
+	b.WriteByte(')')
+	return b.String()
 }

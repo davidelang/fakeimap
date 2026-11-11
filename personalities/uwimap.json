@@ -1,0 +1,113 @@
+{
+  "greeting": "IMAP4rev1 2007e.404",
+  "delimiter": "/",
+  "greeting_capabilities": [
+    "IMAP4REV1",
+    "LITERAL+",
+    "SASL-IR"
+  ],
+  "pre_login_capabilities": [
+    "IMAP4REV1",
+    "LITERAL+",
+    "IDLE",
+    "UIDPLUS",
+    "NAMESPACE",
+    "CHILDREN",
+    "BINARY",
+    "UNSELECT",
+    "ESEARCH",
+    "SORT",
+    "THREAD=REFERENCES",
+    "THREAD=ORDEREDSUBJECT",
+    "SASL-IR"
+  ],
+  "post_login_capabilities": [
+    "IMAP4REV1",
+    "LITERAL+",
+    "IDLE",
+    "UIDPLUS",
+    "NAMESPACE",
+    "CHILDREN",
+    "BINARY",
+    "UNSELECT",
+    "ESEARCH",
+    "SORT",
+    "THREAD=REFERENCES",
+    "THREAD=ORDEREDSUBJECT",
+    "SASL-IR"
+  ],
+  "personal_namespaces": [
+    {
+      "prefix": "",
+      "delimiter": "/"
+    },
+    {
+      "prefix": "#mhinbox",
+      "delimiter": null
+    },
+    {
+      "prefix": "#mh/",
+      "delimiter": "/"
+    }
+  ],
+  "other_namespaces": [
+    {
+      "prefix": "~",
+      "delimiter": "/"
+    }
+  ],
+  "shared_namespaces": [
+    {
+      "prefix": "#shared/",
+      "delimiter": "/"
+    },
+    {
+      "prefix": "#ftp/",
+      "delimiter": "/"
+    },
+    {
+      "prefix": "#news.",
+      "delimiter": "."
+    },
+    {
+      "prefix": "#public/",
+      "delimiter": "/"
+    }
+  ],
+  "logout_bye": true,
+  "select_flags": "\\Answered \\Flagged \\Deleted \\Draft \\Seen",
+  "permanent_flags": "\\* \\Answered \\Flagged \\Deleted \\Draft \\Seen",
+  "select_order": [
+    "EXISTS",
+    "RECENT",
+    "UIDVALIDITY",
+    "UIDNEXT",
+    "FLAGS",
+    "PERMANENTFLAGS",
+    "UNSEEN"
+  ],
+  "flag_order": [
+    "\\Recent",
+    "\\Answered",
+    "\\Flagged",
+    "\\Draft",
+    "\\Deleted",
+    "\\Seen"
+  ],
+  "fetch_peek_body": true,
+  "fetch_seen_flags": true,
+  "fetch_item_order": [
+    "FLAGS",
+    "UID",
+    "INTERNALDATE",
+    "RFC822.SIZE",
+    "ENVELOPE",
+    "BODY",
+    "BODYSTRUCTURE",
+    "RFC822",
+    "RFC822.HEADER",
+    "RFC822.TEXT",
+    "BODY[]",
+    "BODY.PEEK[]"
+  ]
+}
