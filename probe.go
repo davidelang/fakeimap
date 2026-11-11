@@ -1010,6 +1010,10 @@ func kindOf(line string) (string, bool) {
 		return listKind(line), true
 	case strings.HasPrefix(line, "* STATUS "):
 		return statusKind(line), true
+	case strings.HasPrefix(line, "* SEARCH"):
+		return "* SEARCH", true
+	case strings.HasPrefix(line, "* ESEARCH"):
+		return esearchKind(line), true
 	case reExists.MatchString(line):
 		return "* EXISTS", true
 	case reRecent.MatchString(line):
@@ -1117,6 +1121,34 @@ func skipKindValue(s string) (string, string) {
 		}
 		return s[:j], s[j:]
 	}
+}
+
+func esearchKind(line string) string {
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "* ESEARCH"))
+	var b strings.Builder
+	b.WriteString("* ESEARCH")
+	if strings.HasPrefix(rest, "(") {
+		_, rest = skipKindValue(rest)
+		rest = strings.TrimLeft(rest, " ")
+	}
+	if rest == "UID" || strings.HasPrefix(rest, "UID ") {
+		b.WriteString(" UID")
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, "UID"))
+	}
+	for rest != "" {
+		rest = strings.TrimLeft(rest, " ")
+		name := rest
+		if i := strings.IndexByte(rest, ' '); i >= 0 {
+			name = rest[:i]
+			rest = strings.TrimLeft(rest[i+1:], " ")
+		} else {
+			rest = ""
+		}
+		b.WriteByte(' ')
+		b.WriteString(name)
+		_, rest = skipKindValue(rest)
+	}
+	return b.String()
 }
 
 func listKind(line string) string {
@@ -1306,6 +1338,163 @@ func compareList(cfg opConfig) (string, error) {
 		return "", perr
 	}
 	local, lerr := runListScript(host, port, "none", cfg.Username, cfg.Password)
+	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
+	if err != nil && diff == "" {
+		return "", err
+	}
+	if lerr != nil && diff == "" {
+		return "", lerr
+	}
+	return diff, nil
+}
+
+// runEsearchScript is a further probe. It exercises ESEARCH and a positive
+// PARTIAL window. The earlier scripts are unchanged.
+func runEsearchScript(host string, port int, tlsMode, user, pass string) (probeScript, error) {
+	mb, _, err := freshMailboxPair()
+	if err != nil {
+		return probeScript{}, err
+	}
+	out := probeScript{mb1: mb, mb2: mb}
+	talk, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return out, err
+	}
+	defer talk.close()
+	greet, err := talk.readLogical()
+	if err != nil {
+		return out, err
+	}
+	out.lines = append(out.lines, greet)
+	if tlsMode == "starttls" {
+		lines, err := talk.command("e0", "STARTTLS")
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return out, err
+		}
+		if len(lines) == 0 || taggedNo(lines[len(lines)-1], "e0") {
+			return out, fmt.Errorf("STARTTLS failed")
+		}
+		tlsConn := tls.Client(talk.conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.Handshake(); err != nil {
+			return out, err
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+		talk.conn = tlsConn
+		talk.r = bufio.NewReader(tlsConn)
+		talk.w = bufio.NewWriter(tlsConn)
+	}
+	fail := func(err error) (probeScript, error) {
+		_ = deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb)
+		return out, err
+	}
+	step := func(tag, cmd string, allowNo bool) error {
+		lines, err := talk.command(tag, cmd)
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return err
+		}
+		if len(lines) == 0 || (taggedNo(lines[len(lines)-1], tag) && !allowNo) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	appendMsg := func(tag string) error {
+		head := fmt.Sprintf("%s APPEND %s \"01-Jan-2024 00:00:00 +0000\" {%d+}\r\n", tag, quoteIMAP(mb), len(probeMessage))
+		if _, err := io.WriteString(talk.w, head); err != nil {
+			return err
+		}
+		if _, err := talk.w.Write(probeMessage); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(talk.w, "\r\n"); err != nil {
+			return err
+		}
+		if err := talk.w.Flush(); err != nil {
+			return err
+		}
+		var lines []string
+		for {
+			line, err := talk.readLogical()
+			if err != nil {
+				out.lines = append(out.lines, lines...)
+				return err
+			}
+			lines = append(lines, line)
+			if strings.HasPrefix(line, tag+" ") {
+				break
+			}
+		}
+		out.lines = append(out.lines, lines...)
+		if taggedNo(lines[len(lines)-1], tag) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	for _, st := range []struct{ tag, cmd string }{
+		{"e1", "CAPABILITY"},
+		{"e2", "LOGIN " + quoteIMAP(user) + " " + quoteIMAP(pass)},
+		{"e3", "CAPABILITY"},
+		{"e4", "CREATE " + quoteIMAP(mb)},
+		{"e5", "SELECT " + quoteIMAP(mb)},
+	} {
+		if err := step(st.tag, st.cmd, false); err != nil {
+			return fail(err)
+		}
+	}
+	for _, tag := range []string{"e6", "e7", "e8"} {
+		if err := appendMsg(tag); err != nil {
+			return fail(err)
+		}
+	}
+	q := quoteIMAP
+	steps := []struct {
+		tag, cmd string
+		allowNo  bool
+	}{
+		{"e9", "SEARCH ALL", false},
+		{"e10", "UID SEARCH ALL", false},
+		{"e11", "SEARCH RETURN (MIN MAX COUNT ALL) ALL", false},
+		{"e12", "UID SEARCH RETURN (MIN MAX COUNT ALL) ALL", false},
+		{"e13", "SEARCH RETURN (PARTIAL 1:2 COUNT) ALL", false},
+		{"e14", "UID SEARCH RETURN (PARTIAL 1:2 COUNT) ALL", false},
+		{"e15", "SEARCH RETURN (MIN MAX COUNT ALL) FROM " + q("nosuch@example.test"), false},
+		{"e16", "UID SEARCH RETURN (PARTIAL 50:60 COUNT) ALL", false},
+		{"e17", "LOGOUT", true},
+	}
+	for _, st := range steps {
+		if err := step(st.tag, st.cmd, st.allowNo); err != nil {
+			return fail(err)
+		}
+	}
+	if err := deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func compareEsearch(cfg opConfig) (string, error) {
+	remote, err := runEsearchScript(cfg.Host, cfg.Port, cfg.TLS, cfg.Username, cfg.Password)
+	if err != nil && len(remote.lines) == 0 {
+		return "", err
+	}
+	addr, stop, serr := startProbeServer(cfg.Username, cfg.Password, cfg.Personality)
+	if serr != nil {
+		if err != nil {
+			return "", err
+		}
+		return "", serr
+	}
+	defer stop()
+	host, portS, perr := net.SplitHostPort(addr)
+	if perr != nil {
+		return "", perr
+	}
+	port, perr := strconv.Atoi(portS)
+	if perr != nil {
+		return "", perr
+	}
+	local, lerr := runEsearchScript(host, port, "none", cfg.Username, cfg.Password)
 	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
 	if err != nil && diff == "" {
 		return "", err

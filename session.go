@@ -1299,11 +1299,204 @@ func (s *session) flagsFetch(seq uint32, flags string, uid uint32, withUID bool,
 	return b.String()
 }
 
+// searchReturn is a SEARCH RETURN list. An empty list means ALL.
+type searchReturn struct {
+	on      bool
+	min     bool
+	max     bool
+	count   bool
+	all     bool
+	partial bool
+	a, b    int
+	echo    string
+}
+
+func parseSearchReturn(args []Token) (searchReturn, []Token, error) {
+	var r searchReturn
+	if len(args) == 0 || args[0].Kind != "atom" || !strings.EqualFold(args[0].Val, "RETURN") {
+		return r, args, nil
+	}
+	r.on = true
+	if len(args) < 2 || args[1].Kind != "lparen" {
+		return r, nil, fmt.Errorf("bad")
+	}
+	i := 2
+	for {
+		if i >= len(args) {
+			return r, nil, fmt.Errorf("bad")
+		}
+		if args[i].Kind == "rparen" {
+			i++
+			break
+		}
+		if args[i].Kind != "atom" {
+			return r, nil, fmt.Errorf("bad")
+		}
+		switch strings.ToUpper(args[i].Val) {
+		case "MIN":
+			if r.min {
+				return r, nil, fmt.Errorf("bad")
+			}
+			r.min = true
+			i++
+		case "MAX":
+			if r.max {
+				return r, nil, fmt.Errorf("bad")
+			}
+			r.max = true
+			i++
+		case "COUNT":
+			if r.count {
+				return r, nil, fmt.Errorf("bad")
+			}
+			r.count = true
+			i++
+		case "ALL":
+			if r.all || r.partial {
+				return r, nil, fmt.Errorf("bad")
+			}
+			r.all = true
+			i++
+		case "PARTIAL":
+			if r.partial || r.all {
+				return r, nil, fmt.Errorf("bad")
+			}
+			i++
+			if i >= len(args) || args[i].Kind != "atom" {
+				return r, nil, fmt.Errorf("bad")
+			}
+			a, b, err := parsePartialRange(args[i].Val)
+			if err != nil {
+				return r, nil, err
+			}
+			r.partial = true
+			r.a, r.b = a, b
+			r.echo = args[i].Val
+			i++
+		default:
+			return r, nil, fmt.Errorf("bad")
+		}
+	}
+	if !r.min && !r.max && !r.count && !r.all && !r.partial {
+		r.all = true
+	}
+	return r, args[i:], nil
+}
+
+func parseNZ(s string) (int, error) {
+	if s == "" {
+		return 0, fmt.Errorf("bad")
+	}
+	neg := false
+	if s[0] == '-' {
+		neg = true
+		s = s[1:]
+	}
+	if s == "" || s[0] < '1' || s[0] > '9' {
+		return 0, fmt.Errorf("bad")
+	}
+	for _, c := range s[1:] {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("bad")
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 32)
+	if err != nil || n <= 0 {
+		return 0, err
+	}
+	if neg {
+		n = -n
+	}
+	return int(n), nil
+}
+
+func parsePartialRange(s string) (int, int, error) {
+	loS, hiS, ok := strings.Cut(s, ":")
+	if !ok || strings.Contains(hiS, ":") {
+		return 0, 0, fmt.Errorf("bad")
+	}
+	lo, err := parseNZ(loS)
+	if err != nil {
+		return 0, 0, err
+	}
+	hi, err := parseNZ(hiS)
+	if err != nil {
+		return 0, 0, err
+	}
+	if (lo < 0) != (hi < 0) {
+		return 0, 0, fmt.Errorf("bad")
+	}
+	return lo, hi, nil
+}
+
+// partialWindow is the 1-based inclusive slice of ids. A negative bound
+// counts from the end. A window with no overlap is nil.
+func partialWindow(ids []uint32, a, b int) []uint32 {
+	n := len(ids)
+	pos := func(v int) int {
+		if v > 0 {
+			return v
+		}
+		return n + v + 1
+	}
+	lo, hi := pos(a), pos(b)
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if hi < 1 || lo > n {
+		return nil
+	}
+	if lo < 1 {
+		lo = 1
+	}
+	if hi > n {
+		hi = n
+	}
+	return ids[lo-1 : hi]
+}
+
+func formatEsearch(tag string, uid bool, ids []uint32, ret searchReturn) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "* ESEARCH (TAG %s)", imapString(tag))
+	if uid {
+		b.WriteString(" UID")
+	}
+	if ret.count {
+		fmt.Fprintf(&b, " COUNT %d", len(ids))
+	}
+	if len(ids) > 0 {
+		if ret.min {
+			fmt.Fprintf(&b, " MIN %d", ids[0])
+		}
+		if ret.max {
+			fmt.Fprintf(&b, " MAX %d", ids[len(ids)-1])
+		}
+		if ret.all {
+			b.WriteString(" ALL ")
+			b.WriteString(formatUIDSet(ids))
+		}
+	}
+	if ret.partial {
+		fmt.Fprintf(&b, " PARTIAL (%s %s)", ret.echo, formatUIDSet(partialWindow(ids, ret.a, ret.b)))
+	}
+	return b.String()
+}
+
 func (s *session) cmdSearch(cmd command) error {
 	if !s.srv.store.selected(s) {
 		return s.no(cmd.tag, "SEARCH not selected")
 	}
-	keys, err := parseSearch(cmd.args)
+	ret, rest, err := parseSearchReturn(cmd.args)
+	if err != nil {
+		return s.bad(cmd.tag, "SEARCH syntax")
+	}
+	if ret.on && !s.advertiseCap("ESEARCH") {
+		return s.bad(cmd.tag, "SEARCH syntax")
+	}
+	if ret.partial && !s.advertiseCap("PARTIAL") {
+		return s.bad(cmd.tag, "SEARCH syntax")
+	}
+	keys, err := parseSearch(rest)
 	if err != nil {
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
@@ -1311,12 +1504,16 @@ func (s *session) cmdSearch(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, "SEARCH not selected")
 	}
-	var b strings.Builder
-	b.WriteString("* SEARCH")
-	for _, id := range ids {
-		fmt.Fprintf(&b, " %d", id)
+	line := formatEsearch(cmd.tag, cmd.uid, ids, ret)
+	if !ret.on {
+		var b strings.Builder
+		b.WriteString("* SEARCH")
+		for _, id := range ids {
+			fmt.Fprintf(&b, " %d", id)
+		}
+		line = b.String()
 	}
-	if err := s.sendLine(b.String()); err != nil {
+	if err := s.sendLine(line); err != nil {
 		return err
 	}
 	return s.ok(cmd.tag, "SEARCH completed")

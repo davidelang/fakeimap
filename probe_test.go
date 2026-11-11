@@ -51,7 +51,7 @@ func TestProbeScriptEmptyDiff(t *testing.T) {
 
 func TestNormalizeDropsCausedNumbers(t *testing.T) {
 	lines := []string{
-		`* OK [CAPABILITY IMAP4rev1 ESEARCH] deadbeefdead Cyrus ready`,
+		`* OK [CAPABILITY IMAP4rev1 ESORT] deadbeefdead Cyrus ready`,
 		`* 1 EXISTS`,
 		`* 1 FETCH (UID 9 INTERNALDATE "01-Jan-2024 00:00:00 +0000" RFC822.SIZE 4)`,
 		`t7 OK [APPENDUID 42 9] APPEND completed`,
@@ -70,7 +70,7 @@ func TestNormalizeDropsCausedNumbers(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	gaps := collectGaps(lines)
-	if len(gaps.Capabilities) != 1 || gaps.Capabilities[0] != "ESEARCH" {
+	if len(gaps.Capabilities) != 1 || gaps.Capabilities[0] != "ESORT" {
 		t.Fatalf("gaps %+v", gaps)
 	}
 	if gaps.Commands == nil {
@@ -161,6 +161,58 @@ func TestListProbeEmptyDiff(t *testing.T) {
 	}
 	if strings.Count(joined, "* LIST \\Noselect") != 1 {
 		t.Fatalf("noselect count\n%s", joined)
+	}
+}
+
+func TestEsearchProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/esearch.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runEsearchScript(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runEsearchScript(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := normalizeKinds(a.lines, a.mb1, a.mb2)
+	diff := scriptDiff(kinds, normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("kind diff:\n%s\n--- a ---\n%s", diff, strings.Join(kinds, "\n"))
+	}
+	have := map[string]bool{}
+	for _, k := range kinds {
+		have[k] = true
+	}
+	for _, want := range []string{
+		"* SEARCH",
+		"* ESEARCH COUNT MIN MAX ALL",
+		"* ESEARCH UID COUNT MIN MAX ALL",
+		"* ESEARCH COUNT PARTIAL",
+		"* ESEARCH UID COUNT PARTIAL",
+		"* ESEARCH COUNT",
+	} {
+		if !have[want] {
+			t.Fatalf("missing %s in\n%s", want, strings.Join(kinds, "\n"))
+		}
 	}
 }
 

@@ -71,6 +71,8 @@ var implementedCaps = map[string]struct{}{
 	"SPECIAL-USE":             {},
 	"LIST-STATUS":             {},
 	"CREATE-SPECIAL-USE":      {},
+	"ESEARCH":                 {},
+	"PARTIAL":                 {},
 	"SASL-IR":                 {},
 	"AUTH=PLAIN":              {},
 	"AUTH=LOGIN":              {},

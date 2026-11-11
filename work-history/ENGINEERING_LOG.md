@@ -126,3 +126,7 @@
 ## 2026-11-11 - AUTH=LOGIN on fixture personalities landed
 
 - AUTH=LOGIN is beside AUTH=PLAIN on the greeting and pre-login lists in personalities/list.json and personalities/condstore.json, and not on the post-login lists. personalities/cyrus-3137.json and personalities/sasl.json are unchanged. docs/facts/imap-server.md says the probed Cyrus personality advertises AUTH=LOGIN on the greeting and before login.
+
+## 2026-11-11 - ESEARCH and PARTIAL
+
+- SEARCH RETURN answers with one ESEARCH line when the personality lists ESEARCH. PARTIAL slices that result. personalities/esearch.json advertises both. cyrusprobe -esearch compares response kinds. SORT, ESORT, and COMPRESS=DEFLATE are unchanged.

@@ -39,13 +39,13 @@ func TestPersonalityData(t *testing.T) {
 	if p.Delimiter != "/" || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
 		t.Fatalf("personality fields: %+v", p)
 	}
-	want := []string{"IMAP4rev1", "AUTH=PLAIN", "AUTH=LOGIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT", "CONDSTORE", "QRESYNC", "LIST-EXTENDED", "CHILDREN", "SPECIAL-USE", "LIST-STATUS", "CREATE-SPECIAL-USE"}
+	want := []string{"IMAP4rev1", "AUTH=PLAIN", "AUTH=LOGIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT", "CONDSTORE", "QRESYNC", "LIST-EXTENDED", "CHILDREN", "SPECIAL-USE", "LIST-STATUS", "CREATE-SPECIAL-USE", "ESEARCH", "PARTIAL"}
 	if strings.Join(p.PreLogin, " ") != strings.Join(want, " ") {
 		t.Fatalf("pre-login %#v", p.PreLogin)
 	}
 	for _, c := range append(append([]string{}, p.PreLogin...), p.PostLogin...) {
 		u := strings.ToUpper(c)
-		if strings.Contains(u, "SCRAM") || u == "COMPRESS" || u == "ESEARCH" || u == "AUTH=DIGEST-MD5" || u == "STARTTLS" {
+		if strings.Contains(u, "SCRAM") || u == "COMPRESS" || u == "AUTH=DIGEST-MD5" || u == "STARTTLS" {
 			t.Fatalf("personality lists %s", c)
 		}
 	}
@@ -1010,7 +1010,7 @@ func forbidCaps(t *testing.T, got []string) {
 	for _, c := range got {
 		u := strings.ToUpper(c)
 		switch {
-		case u == "COMPRESS" || u == "ESEARCH" || u == "AUTH=DIGEST-MD5":
+		case u == "COMPRESS" || u == "AUTH=DIGEST-MD5":
 			t.Fatalf("forbidden %s", c)
 		case strings.HasPrefix(u, "COMPRESS=") || strings.Contains(u, "SCRAM") || strings.Contains(u, "DIGEST-MD5"):
 			t.Fatalf("forbidden %s", c)

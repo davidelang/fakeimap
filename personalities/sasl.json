@@ -49,7 +49,9 @@
     "CHILDREN",
     "SPECIAL-USE",
     "LIST-STATUS",
-    "CREATE-SPECIAL-USE"
+    "CREATE-SPECIAL-USE",
+    "ESEARCH",
+    "PARTIAL"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",
