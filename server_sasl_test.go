@@ -61,7 +61,8 @@ func TestSaslPersonality(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cyrus.Delimiter != sasl.Delimiter || cyrus.Greeting != sasl.Greeting || cyrus.LogoutBye != sasl.LogoutBye ||
-		cyrus.OtherUsers != sasl.OtherUsers || cyrus.SharedFolders != sasl.SharedFolders ||
+		cyrus.OtherUsers != sasl.OtherUsers || cyrus.PersonalPrefix != sasl.PersonalPrefix ||
+		!sameString(cyrus.SharedFolders, sasl.SharedFolders) ||
 		cyrus.SelectFlags != sasl.SelectFlags || cyrus.PermanentFlags != sasl.PermanentFlags ||
 		cyrus.FetchPeekBody != sasl.FetchPeekBody || cyrus.FetchSeenFlags != sasl.FetchSeenFlags ||
 		cyrus.MoveCopyUIDUntagged != sasl.MoveCopyUIDUntagged ||
@@ -88,6 +89,13 @@ func TestSaslPersonality(t *testing.T) {
 	if sasl.lists("AUTH=DIGEST-MD5") || cyrus.lists("AUTH=DIGEST-MD5") {
 		t.Fatal("DIGEST-MD5 listed")
 	}
+}
+
+func sameString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func TestUnlistedMechanisms(t *testing.T) {

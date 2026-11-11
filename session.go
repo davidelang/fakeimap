@@ -117,11 +117,16 @@ func (s *session) bad(tag, text string) error {
 
 func (s *session) serve() {
 	defer s.srv.store.deselect(s)
-	greetCaps := s.caps()
-	if len(s.pers.GreetingCaps) > 0 {
-		greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.hasCert)
+	var greet string
+	if s.pers.GreetingCaps != nil && len(s.pers.GreetingCaps) == 0 {
+		greet = "* OK " + s.pers.Greeting
+	} else {
+		greetCaps := s.caps()
+		if len(s.pers.GreetingCaps) > 0 {
+			greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.hasCert)
+		}
+		greet = fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(greetCaps, " "), s.pers.Greeting)
 	}
-	greet := fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(greetCaps, " "), s.pers.Greeting)
 	if err := s.sendLine(greet); err != nil {
 		return
 	}
@@ -629,14 +634,15 @@ func (s *session) cmdNamespace(cmd command) error {
 		return s.bad(cmd.tag, "NAMESPACE syntax")
 	}
 	d := imapString(s.pers.Delimiter)
+	personal := imapString(s.pers.PersonalPrefix)
 	other, shared := "NIL", "NIL"
 	if s.pers.OtherUsers != "" {
 		other = fmt.Sprintf(`((%s %s))`, imapString(s.pers.OtherUsers), d)
 	}
-	if s.pers.SharedFolders != "" {
-		shared = fmt.Sprintf(`((%s %s))`, imapString(s.pers.SharedFolders), d)
+	if s.pers.SharedFolders != nil {
+		shared = fmt.Sprintf(`((%s %s))`, imapString(*s.pers.SharedFolders), d)
 	}
-	if err := s.sendLine(fmt.Sprintf(`* NAMESPACE (("" %s)) %s %s`, d, other, shared)); err != nil {
+	if err := s.sendLine(fmt.Sprintf(`* NAMESPACE ((%s %s)) %s %s`, personal, d, other, shared)); err != nil {
 		return err
 	}
 	return s.ok(cmd.tag, "NAMESPACE completed")

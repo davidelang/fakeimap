@@ -15,8 +15,9 @@ type Personality struct {
 	GreetingCaps         []string `json:"greeting_capabilities,omitempty"`
 	PreLogin             []string `json:"pre_login_capabilities"`
 	PostLogin            []string `json:"post_login_capabilities"`
+	PersonalPrefix       string   `json:"personal_prefix,omitempty"`
 	OtherUsers           string   `json:"other_users,omitempty"`
-	SharedFolders        string   `json:"shared_folders,omitempty"`
+	SharedFolders        *string  `json:"shared_folders,omitempty"`
 	LogoutBye            bool     `json:"logout_bye"`
 	FetchItemOrder       []string `json:"fetch_item_order"`
 	SelectFlags          string   `json:"select_flags,omitempty"`

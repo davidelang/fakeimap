@@ -315,3 +315,10 @@
 ## 2026-11-11 - JMAP event source
 
 - GET /jmap/eventsource/ stays open, writes Email state events, and pings while it waits.
+
+## 2026-11-11 - Other Cyrus personalities
+
+- Approved plan: sandbox/plans/cyrus-personalities-20261111-1318-plan.md
+- Work: personalities for cyrus-22, cyrus-24, cyrus-25, cyrus-36, and cyrus-3124 from implemented capability tokens. Greeting with an empty capability list has no capability code. Personal namespace prefix omitted stays empty.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
