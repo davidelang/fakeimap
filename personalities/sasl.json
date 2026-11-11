@@ -33,7 +33,8 @@
     "SASL-IR",
     "UIDPLUS",
     "UNSELECT",
-    "BINARY"
+    "BINARY",
+    "MULTISEARCH"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -60,7 +61,8 @@
     "THREAD=REFERENCES",
     "THREAD=ORDEREDSUBJECT",
     "THREAD=REFS",
-    "BINARY"
+    "BINARY",
+    "MULTISEARCH"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

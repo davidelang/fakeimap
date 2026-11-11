@@ -2574,3 +2574,121 @@ func compareFuzzy(cfg opConfig) (string, error) {
 	}
 	return diff, nil
 }
+
+// runMultisearchScript is a further probe. It sends one ESEARCH IN subtree
+// whose word is in one child of a fresh mailbox. The earlier scripts are unchanged.
+func runMultisearchScript(host string, port int, tlsMode, user, pass string) (probeScript, error) {
+	parent, _, err := freshMailboxPair()
+	if err != nil {
+		return probeScript{}, err
+	}
+	child := parent + "/k"
+	out := probeScript{mb1: parent, mb2: child}
+	talk, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return out, err
+	}
+	defer talk.close()
+	greet, err := talk.readLogical()
+	if err != nil {
+		return out, err
+	}
+	out.lines = append(out.lines, greet)
+	if tlsMode == "starttls" {
+		lines, err := talk.command("m0", "STARTTLS")
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return out, err
+		}
+		if len(lines) == 0 || taggedNo(lines[len(lines)-1], "m0") {
+			return out, fmt.Errorf("STARTTLS failed")
+		}
+		tlsConn := tls.Client(talk.conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.Handshake(); err != nil {
+			return out, err
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+		talk.conn = tlsConn
+		talk.r = bufio.NewReader(tlsConn)
+		talk.w = bufio.NewWriter(tlsConn)
+	}
+	fail := func(err error) (probeScript, error) {
+		_ = deleteProbeMailboxes(host, port, tlsMode, user, pass, parent, child)
+		return out, err
+	}
+	step := func(tag, cmd string, allowNo bool) error {
+		lines, err := talk.command(tag, cmd)
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return err
+		}
+		if len(lines) == 0 || (taggedNo(lines[len(lines)-1], tag) && !allowNo) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	for _, st := range []struct{ tag, cmd string }{
+		{"m1", "CAPABILITY"},
+		{"m2", "LOGIN " + quoteIMAP(user) + " " + quoteIMAP(pass)},
+		{"m3", "CAPABILITY"},
+		{"m4", "CREATE " + quoteIMAP(parent)},
+		{"m5", "CREATE " + quoteIMAP(child)},
+	} {
+		if err := step(st.tag, st.cmd, false); err != nil {
+			return fail(err)
+		}
+	}
+	raw := []byte("From: a@example.test\r\nTo: b@example.test\r\nSubject: probe\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nmultisearchprobe\r\n")
+	appendCmd := fmt.Sprintf("APPEND %s \"01-Jan-2024 00:00:00 +0000\" {%d+}\r\n%s", quoteIMAP(child), len(raw), raw)
+	if err := step("m6", appendCmd, false); err != nil {
+		return fail(err)
+	}
+	search := "ESEARCH IN (subtree " + quoteIMAP(parent) + ") RETURN (ALL) TEXT multisearchprobe"
+	for _, st := range []struct {
+		tag, cmd string
+		allowNo  bool
+	}{
+		{"m7", search, false},
+		{"m8", "LOGOUT", true},
+	} {
+		if err := step(st.tag, st.cmd, st.allowNo); err != nil {
+			return fail(err)
+		}
+	}
+	if err := deleteProbeMailboxes(host, port, tlsMode, user, pass, parent, child); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func compareMultisearch(cfg opConfig) (string, error) {
+	remote, err := runMultisearchScript(cfg.Host, cfg.Port, cfg.TLS, cfg.Username, cfg.Password)
+	if err != nil && len(remote.lines) == 0 {
+		return "", err
+	}
+	addr, stop, serr := startProbeServer(cfg.Username, cfg.Password, cfg.Personality)
+	if serr != nil {
+		if err != nil {
+			return "", err
+		}
+		return "", serr
+	}
+	defer stop()
+	host, portS, perr := net.SplitHostPort(addr)
+	if perr != nil {
+		return "", perr
+	}
+	port, perr := strconv.Atoi(portS)
+	if perr != nil {
+		return "", perr
+	}
+	local, lerr := runMultisearchScript(host, port, "none", cfg.Username, cfg.Password)
+	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
+	if err != nil && diff == "" {
+		return "", err
+	}
+	if lerr != nil && diff == "" {
+		return "", lerr
+	}
+	return diff, nil
+}

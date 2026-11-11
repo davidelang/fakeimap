@@ -1738,6 +1738,69 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCr
 	return ids, nil
 }
 
+type sourceHit struct {
+	name string
+	uidv uint32
+	uids []uint32
+}
+
+// searchSource runs keys against each mailbox in the source. subtree is the
+// named mailbox plus names that start with that name and the delimiter, so
+// INBOX does not include INBOX2. subscribed matches nothing: there is no
+// subscription list. A mailbox with no hits is omitted. Numbers are UIDs.
+func (st *Store) searchSource(source, root string, keys []searchKey) ([]sourceHit, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var names []string
+	switch source {
+	case "SUBSCRIBED":
+		return nil, nil
+	case "PERSONAL":
+		names = append(names, st.order...)
+	case "SUBTREE":
+		cn, err := st.canon(root)
+		if err != nil || st.boxes[cn] == nil {
+			return nil, fmt.Errorf("missing")
+		}
+		pref := cn + st.delim
+		for _, name := range st.order {
+			if name == cn || strings.HasPrefix(name, pref) {
+				names = append(names, name)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("missing")
+	}
+	var out []sourceHit
+	for _, name := range names {
+		mb := st.boxes[name]
+		uids := searchUIDs(mb, keys)
+		if len(uids) == 0 {
+			continue
+		}
+		out = append(out, sourceHit{name: name, uidv: mb.uidValidity, uids: uids})
+	}
+	return out, nil
+}
+
+func searchUIDs(mb *Mailbox, keys []searchKey) []uint32 {
+	maxUID := mb.starMax(true)
+	var ids []uint32
+	for _, m := range mb.msgs {
+		ok := true
+		for _, k := range keys {
+			if !m.matches(k, maxUID) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			ids = append(ids, m.uid)
+		}
+	}
+	return ids
+}
+
 // baseSubject strips leading Re: and Fwd: prefixes. Comparison is case-insensitive.
 func baseSubject(s string) string {
 	s = strings.TrimSpace(s)

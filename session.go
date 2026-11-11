@@ -351,6 +351,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdStore(cmd)
 	case "SEARCH":
 		return s.cmdSearch(cmd)
+	case "ESEARCH":
+		return s.cmdEsearch(cmd)
 	case "SORT":
 		return s.cmdSort(cmd)
 	case "THREAD":
@@ -1606,6 +1608,44 @@ func formatEsearch(tag string, uid bool, ids []uint32, ret searchReturn) string 
 	return b.String()
 }
 
+// formatMultiEsearch is one mailbox of an ESEARCH IN result. The numbers are
+// always UIDs. The caller skips a mailbox with no hits.
+func formatMultiEsearch(tag, mbox string, uidv uint32, ids []uint32, ret searchReturn) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "* ESEARCH (TAG %s MAILBOX %s UIDVALIDITY %d)", imapString(tag), imapString(mbox), uidv)
+	b.WriteString(" UID")
+	if ret.count {
+		fmt.Fprintf(&b, " COUNT %d", len(ids))
+	}
+	if len(ids) > 0 {
+		if ret.min || ret.max {
+			mn, mx := ids[0], ids[0]
+			for _, id := range ids[1:] {
+				if id < mn {
+					mn = id
+				}
+				if id > mx {
+					mx = id
+				}
+			}
+			if ret.min {
+				fmt.Fprintf(&b, " MIN %d", mn)
+			}
+			if ret.max {
+				fmt.Fprintf(&b, " MAX %d", mx)
+			}
+		}
+		if ret.all {
+			b.WriteString(" ALL ")
+			b.WriteString(formatUIDSet(ids))
+		}
+	}
+	if ret.partial {
+		fmt.Fprintf(&b, " PARTIAL (%s %s)", ret.echo, formatUIDSet(partialWindow(ids, ret.a, ret.b)))
+	}
+	return b.String()
+}
+
 func (s *session) cmdSearch(cmd command) error {
 	if !s.srv.store.selected(s) {
 		return s.no(cmd.tag, "SEARCH not selected")
@@ -1648,6 +1688,94 @@ func (s *session) cmdSearch(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, "SEARCH completed")
+}
+
+// parseEsearchIn reads IN (subtree name), IN (personal), or IN (subscribed).
+// mailboxes, selected, and any other source are rejected.
+func parseEsearchIn(args []Token) (string, string, []Token, error) {
+	if len(args) < 3 || args[0].Kind != "atom" || !strings.EqualFold(args[0].Val, "IN") || args[1].Kind != "lparen" {
+		return "", "", nil, fmt.Errorf("bad")
+	}
+	if args[2].Kind != "atom" {
+		return "", "", nil, fmt.Errorf("bad")
+	}
+	source := strings.ToUpper(args[2].Val)
+	i := 3
+	root := ""
+	switch source {
+	case "PERSONAL", "SUBSCRIBED":
+		if i >= len(args) || args[i].Kind != "rparen" {
+			return "", "", nil, fmt.Errorf("bad")
+		}
+		i++
+	case "SUBTREE":
+		if i >= len(args) {
+			return "", "", nil, fmt.Errorf("bad")
+		}
+		name, ok := astring(args[i])
+		if !ok || name == "" {
+			return "", "", nil, fmt.Errorf("bad")
+		}
+		i++
+		if i >= len(args) || args[i].Kind != "rparen" {
+			return "", "", nil, fmt.Errorf("bad")
+		}
+		i++
+		root = name
+	default:
+		return "", "", nil, fmt.Errorf("bad")
+	}
+	return source, root, args[i:], nil
+}
+
+func (s *session) cmdEsearch(cmd command) error {
+	if !s.advertiseCap("MULTISEARCH") {
+		return s.bad(cmd.tag, "ESEARCH unsupported")
+	}
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	source, root, rest, err := parseEsearchIn(cmd.args)
+	if err != nil {
+		return s.bad(cmd.tag, "ESEARCH syntax")
+	}
+	if source == "SUBTREE" {
+		root, err = s.boxIn(root)
+		if err != nil {
+			return s.bad(cmd.tag, "ESEARCH syntax")
+		}
+	}
+	ret, rest, err := parseSearchReturn(rest)
+	if err != nil {
+		return s.bad(cmd.tag, "ESEARCH syntax")
+	}
+	if ret.partial && !s.advertiseCap("PARTIAL") {
+		return s.bad(cmd.tag, "ESEARCH syntax")
+	}
+	hasCS, cs, rest, csErr := charsetPrefix(rest)
+	if csErr != nil {
+		return s.bad(cmd.tag, "ESEARCH syntax")
+	}
+	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
+		return s.bad(cmd.tag, "ESEARCH charset")
+	}
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"))
+	if err != nil {
+		return s.bad(cmd.tag, "ESEARCH bad key")
+	}
+	if !ret.on {
+		ret.all = true
+	}
+	hits, err := s.srv.store.searchSource(source, root, keys)
+	if err != nil {
+		return s.bad(cmd.tag, "ESEARCH syntax")
+	}
+	for _, h := range hits {
+		if err := s.sendLine(formatMultiEsearch(cmd.tag, s.boxOut(h.name), h.uidv, h.uids, ret)); err != nil {
+			return err
+		}
+	}
+	return s.ok(cmd.tag, "ESEARCH completed")
 }
 
 // charsetPrefix reads a leading CHARSET astring. SEARCH uses it. After

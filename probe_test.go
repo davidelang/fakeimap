@@ -561,6 +561,61 @@ func TestFuzzyProbeEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestMultisearchProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/multisearch.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runMultisearchScript(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runMultisearchScript(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := normalizeKinds(a.lines, a.mb1, a.mb2)
+	diff := scriptDiff(kinds, normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("shape diff:\n%s\n--- a ---\n%s", diff, strings.Join(kinds, "\n"))
+	}
+	var raw, kind string
+	n := 0
+	for _, line := range a.lines {
+		if strings.HasPrefix(line, "* ESEARCH") {
+			n++
+			raw = line
+			kind = esearchKind(line)
+		}
+	}
+	if n != 1 || kind != "* ESEARCH UID ALL" {
+		t.Fatalf("esearch kind %q raw %q n %d", kind, raw, n)
+	}
+	if !strings.Contains(raw, "MAILBOX ") || !strings.Contains(raw, "UIDVALIDITY ") || !strings.Contains(raw, " UID ALL ") {
+		t.Fatalf("correlator %q", raw)
+	}
+	all := raw[strings.Index(raw, " UID ALL ")+len(" UID ALL "):]
+	if strings.Contains(all, "*") || strings.Contains(kind, "1") {
+		t.Fatalf("set leaked %q kind %q", raw, kind)
+	}
+}
+
 func splitAddr(addr string) (string, int, error) {
 	host, portS, err := net.SplitHostPort(addr)
 	if err != nil {

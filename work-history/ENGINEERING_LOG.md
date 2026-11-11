@@ -277,3 +277,14 @@
 
 - SEARCH and UID SEARCH accept FUZZY before one key when SEARCH=FUZZY is advertised, including after CHARSET and with RETURN. A text leaf keeps a case-insensitive substring and also matches one insertion, deletion, or substitution against a word when the search string is at least 3 characters. Flag, date, size, and UID leaves stay exact. OR, NOT, and a parenthesized list pass the mark. The reply is the existing SEARCH or ESEARCH line and has no RELEVANCY. Without the capability, FUZZY is BAD. SORT and THREAD still reject FUZZY.
 - personalities/fuzzy.json advertises SEARCH=FUZZY. cyrusprobe -fuzzy does not replace the earlier scripts. liveimap-cyrus-3137 was already running. Its kind diff was not empty: FUZZY TEXT apple on an appended message returned no ESEARCH line and zero hits, while TEXT apple was COUNT 1. personalities/cyrus-3137.json, personalities/sasl.json, and the gaps file were left unchanged. The container was not recreated and was not stopped.
+
+## 2026-11-11 - MULTISEARCH
+
+- Approved plan: sandbox/plans/multisearch-20261111-1000-plan.md
+- Work: ESEARCH IN for subtree, personal, and subscribed when MULTISEARCH is advertised. Each hit mailbox is one ESEARCH line of UIDs. UID SEARCH stays the selected-mailbox path. personalities/multisearch.json advertises MULTISEARCH. cyrusprobe -multisearch is a further script and does not replace the earlier scripts.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - MULTISEARCH landed
+
+- ESEARCH IN answers subtree, personal, and subscribed when MULTISEARCH is advertised. subtree is the named mailbox and descendants separated by the delimiter, so INBOX does not include INBOX2. personal is every mailbox. subscribed returns no lines. Each hit mailbox is one ESEARCH line of UIDs with TAG, MAILBOX, and UIDVALIDITY. A mailbox with no hits is omitted. The command does not need a selected mailbox. Without MULTISEARCH the command is BAD. FUZZY follows SEARCH=FUZZY. UID SEARCH is unchanged.
+- personalities/multisearch.json advertises MULTISEARCH. cyrusprobe -multisearch does not replace the earlier scripts. liveimap-cyrus-3137 was already running. Its kind diff was empty, so MULTISEARCH is on the pre-login and post-login lists of personalities/cyrus-3137.json and personalities/sasl.json, not on the greeting, and gone from the gaps file. The container was not recreated and was not stopped.
