@@ -42,7 +42,9 @@
     "MOVE",
     "NAMESPACE",
     "UIDPLUS",
-    "UNSELECT"
+    "UNSELECT",
+    "CONDSTORE",
+    "QRESYNC"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

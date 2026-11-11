@@ -33,6 +33,7 @@ type Message struct {
 	generated bool
 	genSeed   string
 	genUID    uint32
+	modseq    uint64
 }
 
 func (m *Message) bytes() []byte {
@@ -142,10 +143,17 @@ func formatFlags(m *Message, order []string) string {
 	return "(" + strings.Join(parts, " ") + ")"
 }
 
+type expungedRec struct {
+	uid    uint32
+	modseq uint64
+}
+
 type mbEvent struct {
 	id     uint64
 	kind   string // expunge, exists, flags
 	seq    uint32
+	uid    uint32
+	modseq uint64
 	exists int
 	recent int
 	flags  string
@@ -154,13 +162,28 @@ type mbEvent struct {
 // Mailbox fields are guarded by Store.mu. uidValidity stays for the
 // life of the process.
 type Mailbox struct {
-	name        string
-	uidValidity uint32
-	uidNext     uint32
-	msgs        []*Message
-	events      []mbEvent
-	nextID      uint64
-	waiters     []chan struct{}
+	name          string
+	uidValidity   uint32
+	uidNext       uint32
+	msgs          []*Message
+	events        []mbEvent
+	nextID        uint64
+	waiters       []chan struct{}
+	highestModseq uint64
+	expunged      []expungedRec
+}
+
+func (mb *Mailbox) bump(m *Message) uint64 {
+	mb.highestModseq++
+	if m != nil {
+		m.modseq = mb.highestModseq
+	}
+	return mb.highestModseq
+}
+
+func (mb *Mailbox) noteExpunge(m *Message) {
+	mb.bump(m)
+	mb.expunged = append(mb.expunged, expungedRec{uid: m.uid, modseq: m.modseq})
 }
 
 func (mb *Mailbox) maxUID() uint32 {
@@ -285,16 +308,34 @@ func (st *Store) noteUIDV(v uint32) uint32 {
 	return v
 }
 
+type resyncMsg struct {
+	seq    uint32
+	uid    uint32
+	flags  string
+	modseq uint64
+}
+
+type qresyncSel struct {
+	uidv     uint32
+	modseq   uint64
+	known    *seqSet
+	knownRaw string
+}
+
 type selectInfo struct {
 	exists      int
 	recent      int
 	uidValidity uint32
 	uidNext     uint32
 	unseen      uint32
+	highest     uint64
 	readOnly    bool
+	closed      bool
+	vanished    string
+	changed     []resyncMsg
 }
 
-func (st *Store) selectBox(s *session, name string, readOnly bool) (selectInfo, error) {
+func (st *Store) selectBox(s *session, name string, readOnly bool, qr *qresyncSel) (selectInfo, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	cn, err := st.canon(name)
@@ -305,6 +346,7 @@ func (st *Store) selectBox(s *session, name string, readOnly bool) (selectInfo, 
 	if mb == nil {
 		return selectInfo{}, fmt.Errorf("no mailbox")
 	}
+	closed := s.box != nil
 	st.detachLocked(s)
 	info := selectInfo{
 		exists:      len(mb.msgs),
@@ -312,12 +354,17 @@ func (st *Store) selectBox(s *session, name string, readOnly bool) (selectInfo, 
 		uidValidity: mb.uidValidity,
 		uidNext:     mb.uidNext,
 		unseen:      mb.firstUnseen(),
+		highest:     mb.highestModseq,
 		readOnly:    readOnly,
+		closed:      closed,
 	}
 	if !readOnly {
 		for _, m := range mb.msgs {
 			m.recent = false
 		}
+	}
+	if qr != nil {
+		info.vanished, info.changed = mb.resync(qr, s.pers.FlagOrder)
 	}
 	s.box = mb
 	s.readonly = readOnly
@@ -325,6 +372,43 @@ func (st *Store) selectBox(s *session, name string, readOnly bool) (selectInfo, 
 	s.wake = make(chan struct{}, 1)
 	mb.waiters = append(mb.waiters, s.wake)
 	return info, nil
+}
+
+func (mb *Mailbox) resync(qr *qresyncSel, flagOrder []string) (string, []resyncMsg) {
+	if qr.uidv != mb.uidValidity {
+		if qr.knownRaw == "" {
+			return "", nil
+		}
+		return qr.knownRaw, nil
+	}
+	max := uint32(0)
+	if mb.uidNext > 1 {
+		max = mb.uidNext - 1
+	}
+	var uids []uint32
+	for _, e := range mb.expunged {
+		if e.modseq <= qr.modseq {
+			continue
+		}
+		if qr.known != nil && !qr.known.contains(e.uid, max) {
+			continue
+		}
+		uids = append(uids, e.uid)
+	}
+	var changed []resyncMsg
+	for i, m := range mb.msgs {
+		if m.modseq <= qr.modseq {
+			continue
+		}
+		changed = append(changed, resyncMsg{
+			seq: uint32(i + 1), uid: m.uid, modseq: m.modseq,
+			flags: formatFlags(m, flagOrder),
+		})
+	}
+	if len(uids) == 0 {
+		return "", changed
+	}
+	return formatUIDSet(uids), changed
 }
 
 func (st *Store) detachLocked(s *session) {
@@ -724,6 +808,7 @@ func (mb *Mailbox) each(uidMode bool, set *seqSet, fn func(seq uint32, m *Messag
 type fetchSnap struct {
 	seq       uint32
 	uid       uint32
+	modseq    uint64
 	flags     string
 	internal  time.Time
 	size      int
@@ -731,7 +816,7 @@ type fetchSnap struct {
 	seenEvent uint64
 }
 
-func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([]fetchSnap, []string, error) {
+func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, changedSince *uint64) ([]fetchSnap, []string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
@@ -741,26 +826,36 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([
 	if err != nil {
 		return nil, nil, err
 	}
+	if changedSince != nil && !itemListed(expanded, "MODSEQ") {
+		expanded = append(expanded, "MODSEQ")
+	}
 	var snaps []fetchSnap
 	mb := s.box
 	// FLAGS in this response already include \Seen, so this session
 	// does not also report the queued flags event.
 	swallow := itemListed(expanded, "FLAGS") || s.pers.FetchSeenFlags
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
+		if changedSince != nil && m.modseq <= *changedSince {
+			return
+		}
 		if s.fault != nil && s.fault.do == "mutate" {
 			m.addFlag(`\Flagged`)
 		}
 		var seenEvent uint64
 		if fetchSetsSeen(expanded) && !s.readonly && !m.has(`\Seen`) {
 			m.addFlag(`\Seen`)
-			seenEvent = mb.push(mbEvent{kind: "flags", seq: seq, flags: formatFlags(m, s.pers.FlagOrder)})
+			mb.bump(m)
+			seenEvent = mb.push(mbEvent{
+				kind: "flags", seq: seq, uid: m.uid, modseq: m.modseq,
+				flags: formatFlags(m, s.pers.FlagOrder),
+			})
 			if swallow && seenEvent > s.seenID {
 				s.seenID = seenEvent
 			}
 		}
 		raw := append([]byte(nil), m.bytes()...)
 		snaps = append(snaps, fetchSnap{
-			seq: seq, uid: m.uid, flags: formatFlags(m, s.pers.FlagOrder),
+			seq: seq, uid: m.uid, modseq: m.modseq, flags: formatFlags(m, s.pers.FlagOrder),
 			internal: m.internal, size: m.size, raw: raw,
 			seenEvent: seenEvent,
 		})
@@ -770,7 +865,7 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([
 
 func itemListed(items []string, name string) bool {
 	for _, it := range items {
-		if it == name {
+		if strings.EqualFold(it, name) {
 			return true
 		}
 	}
@@ -830,7 +925,7 @@ func addAll(items []string, add func(string) error) error {
 func knownFetch(u string) bool {
 	switch u {
 	case "FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY", "BODYSTRUCTURE",
-		"RFC822", "RFC822.HEADER", "RFC822.TEXT":
+		"RFC822", "RFC822.HEADER", "RFC822.TEXT", "MODSEQ":
 		return true
 	}
 	if strings.HasPrefix(u, "BODY[") || strings.HasPrefix(u, "BODY.PEEK[") {
@@ -876,19 +971,20 @@ func parseFlagList(toks []Token, i int) (flags []string, next int, err error) {
 }
 
 type storeSnap struct {
-	seq   uint32
-	uid   uint32
-	flags string
+	seq    uint32
+	uid    uint32
+	modseq uint64
+	flags  string
 }
 
-func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, flags []string) ([]storeSnap, bool, error) {
+func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, flags []string, unchanged *uint64) ([]storeSnap, []uint32, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
-		return nil, false, fmt.Errorf("not selected")
+		return nil, nil, fmt.Errorf("not selected")
 	}
 	if s.readonly {
-		return nil, false, fmt.Errorf("read-only")
+		return nil, nil, fmt.Errorf("read-only")
 	}
 	u := strings.ToUpper(item)
 	silent := false
@@ -900,12 +996,22 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 	switch op {
 	case "FLAGS", "+FLAGS", "-FLAGS":
 	default:
-		return nil, false, fmt.Errorf("bad store item")
+		return nil, nil, fmt.Errorf("bad store item")
 	}
 	var snaps []storeSnap
+	var modified []uint32
 	mb := s.box
 	var last uint64
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
+		if unchanged != nil && m.modseq > *unchanged {
+			id := seq
+			if uidMode {
+				id = m.uid
+			}
+			modified = append(modified, id)
+			return
+		}
+		before := formatFlags(m, s.pers.FlagOrder)
 		switch op {
 		case "FLAGS":
 			m.flags = map[string]struct{}{}
@@ -923,15 +1029,27 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 			}
 		}
 		formatted := formatFlags(m, s.pers.FlagOrder)
-		last = mb.push(mbEvent{kind: "flags", seq: seq, flags: formatted})
+		if formatted != before {
+			mb.bump(m)
+		}
+		last = mb.push(mbEvent{kind: "flags", seq: seq, uid: m.uid, modseq: m.modseq, flags: formatted})
 		if !silent {
-			snaps = append(snaps, storeSnap{seq: seq, uid: m.uid, flags: formatted})
+			snaps = append(snaps, storeSnap{seq: seq, uid: m.uid, modseq: m.modseq, flags: formatted})
 		}
 	})
 	if last > s.seenID {
 		s.seenID = last
 	}
-	return snaps, uidMode, nil
+	return snaps, modified, nil
+}
+
+func (st *Store) highestModseq(s *session) (uint64, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return 0, fmt.Errorf("not selected")
+	}
+	return s.box.highestModseq, nil
 }
 
 type searchKey struct {
@@ -1120,6 +1238,7 @@ func (st *Store) appendMsg(s *session, name string, flags []string, date *time.T
 		m.addFlag(f)
 	}
 	indexOverlay(m)
+	mb.bump(m)
 	mb.uidNext++
 	mb.msgs = append(mb.msgs, m)
 	mb.pushExists()
@@ -1190,14 +1309,23 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		var keep []*Message
 		seq := uint32(1)
 		var last uint64
+		var gone []uint32
+		qresync := s.on("QRESYNC")
 		for _, m := range src.msgs {
 			if drop[m.uid] {
-				res.lines = append(res.lines, fmt.Sprintf("* %d EXPUNGE", seq))
-				last = src.push(mbEvent{kind: "expunge", seq: seq})
+				src.noteExpunge(m)
+				gone = append(gone, m.uid)
+				if !qresync {
+					res.lines = append(res.lines, fmt.Sprintf("* %d EXPUNGE", seq))
+				}
+				last = src.push(mbEvent{kind: "expunge", seq: seq, uid: m.uid, modseq: m.modseq})
 				continue
 			}
 			keep = append(keep, m)
 			seq++
+		}
+		if qresync && len(gone) > 0 {
+			res.lines = append(res.lines, "* VANISHED "+formatUIDSet(gone))
 		}
 		src.msgs = keep
 		if last > s.seenID {
@@ -1210,6 +1338,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 	var dstUIDs []uint32
 	for _, m := range picked {
 		nm := cloneMsg(m, dst.uidNext)
+		dst.bump(nm)
 		dst.uidNext++
 		dst.msgs = append(dst.msgs, nm)
 		dstUIDs = append(dstUIDs, nm.uid)
@@ -1234,27 +1363,33 @@ func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
 	maxUID := mb.starMax(true)
 	var keep []*Message
 	var lines []string
+	var gone []uint32
 	seq := uint32(1)
 	var last uint64
+	qresync := s.on("QRESYNC")
 	for _, m := range mb.msgs {
 		hit := m.has(`\Deleted`)
 		if uidSet != nil && !uidSet.contains(m.uid, maxUID) {
 			hit = false
 		}
 		if hit {
-			lines = append(lines, fmt.Sprintf("* %d EXPUNGE", seq))
-			last = mb.push(mbEvent{kind: "expunge", seq: seq})
+			mb.noteExpunge(m)
+			gone = append(gone, m.uid)
+			if !qresync {
+				lines = append(lines, fmt.Sprintf("* %d EXPUNGE", seq))
+			}
+			last = mb.push(mbEvent{kind: "expunge", seq: seq, uid: m.uid, modseq: m.modseq})
 			continue
 		}
 		keep = append(keep, m)
 		seq++
 	}
+	if qresync && len(gone) > 0 {
+		lines = append(lines, "* VANISHED "+formatUIDSet(gone))
+	}
 	mb.msgs = keep
 	if last > s.seenID {
 		s.seenID = last
-	}
-	if len(lines) > 0 {
-		mb.pushExists()
 	}
 	return lines, nil
 }
@@ -1273,7 +1408,8 @@ func (st *Store) closeBox(s *session) error {
 		seq := uint32(1)
 		for _, m := range mb.msgs {
 			if m.has(`\Deleted`) {
-				mb.push(mbEvent{kind: "expunge", seq: seq})
+				mb.noteExpunge(m)
+				mb.push(mbEvent{kind: "expunge", seq: seq, uid: m.uid, modseq: m.modseq})
 				continue
 			}
 			keep = append(keep, m)
@@ -1413,6 +1549,7 @@ func loadStore(dir, delim string) (*Store, error) {
 				}
 			}
 			indexOverlay(m)
+			mb.bump(m)
 			mb.uidNext++
 			mb.msgs = append(mb.msgs, m)
 		}
@@ -1439,6 +1576,7 @@ func loadStore(dir, delim string) (*Store, error) {
 					genUID:    uid,
 				}
 				m.size = len(m.bytes())
+				mb.bump(m)
 				mb.uidNext++
 				mb.msgs = append(mb.msgs, m)
 			}

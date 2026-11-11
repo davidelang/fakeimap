@@ -6,23 +6,51 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 func main() {
 	gapsPath := ""
+	condstore := false
 	args := os.Args[1:]
-	if len(args) >= 2 && args[0] == "-gaps" {
-		gapsPath = args[1]
-		args = args[2:]
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		switch args[0] {
+		case "-gaps":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: cyrusprobe [-gaps gaps.json] [-condstore] operator.json")
+				os.Exit(2)
+			}
+			gapsPath = args[1]
+			args = args[2:]
+		case "-condstore":
+			condstore = true
+			args = args[1:]
+		default:
+			fmt.Fprintln(os.Stderr, "usage: cyrusprobe [-gaps gaps.json] [-condstore] operator.json")
+			os.Exit(2)
+		}
 	}
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: cyrusprobe [-gaps gaps.json] operator.json")
+		fmt.Fprintln(os.Stderr, "usage: cyrusprobe [-gaps gaps.json] [-condstore] operator.json")
 		os.Exit(2)
 	}
 	cfg, err := loadOpConfig(args[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if condstore {
+		diff, err := compareCondstore(cfg)
+		if diff != "" {
+			fmt.Fprint(os.Stdout, diff)
+			os.Exit(1)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "diff empty")
+		return
 	}
 	diff, gaps, err := compareProbe(cfg)
 	if gapsPath != "" {

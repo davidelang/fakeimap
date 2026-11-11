@@ -231,9 +231,6 @@ func (p *proto) readFetchItems() ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := p.finishLine(); err != nil {
-			return nil, err
-		}
 		return []string{item}, nil
 	}
 	var items []string
@@ -257,13 +254,77 @@ func (p *proto) readFetchItems() ([]string, error) {
 		}
 		items = append(items, item)
 	}
-	if err := p.finishLine(); err != nil {
-		return nil, err
-	}
 	if len(items) == 0 {
 		return nil, fmt.Errorf("empty fetch list")
 	}
 	return items, nil
+}
+
+// finishFetch reads an optional CHANGEDSINCE modifier list and the CRLF.
+func (p *proto) finishFetch(items []string) ([]string, *uint64, error) {
+	if err := p.skipSP(); err != nil {
+		return nil, nil, err
+	}
+	c, err := p.br.ReadByte()
+	if err != nil {
+		return nil, nil, err
+	}
+	var since *uint64
+	if c == '(' {
+		since, err = p.readChangedSince()
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := p.expectCRLF(); err != nil {
+			return nil, nil, err
+		}
+		return items, since, nil
+	}
+	if err := p.br.UnreadByte(); err != nil {
+		return nil, nil, err
+	}
+	if err := p.expectCRLF(); err != nil {
+		return nil, nil, err
+	}
+	return items, nil, nil
+}
+
+func (p *proto) readChangedSince() (*uint64, error) {
+	var since *uint64
+	for {
+		if err := p.skipSP(); err != nil {
+			return nil, err
+		}
+		c, err := p.br.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		if c == ')' {
+			return since, nil
+		}
+		if err := p.br.UnreadByte(); err != nil {
+			return nil, err
+		}
+		name, err := p.readAtom()
+		if err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(name, "CHANGEDSINCE") || since != nil {
+			return nil, fmt.Errorf("bad fetch modifier")
+		}
+		if err := p.skipSP(); err != nil {
+			return nil, err
+		}
+		num, err := p.readAtom()
+		if err != nil {
+			return nil, err
+		}
+		n, err := strconv.ParseUint(num, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("bad fetch modifier")
+		}
+		since = &n
+	}
 }
 
 func (p *proto) finishLine() error {

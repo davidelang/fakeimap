@@ -51,7 +51,7 @@ func TestProbeScriptEmptyDiff(t *testing.T) {
 
 func TestNormalizeDropsCausedNumbers(t *testing.T) {
 	lines := []string{
-		`* OK [CAPABILITY IMAP4rev1 CONDSTORE] deadbeefdead Cyrus ready`,
+		`* OK [CAPABILITY IMAP4rev1 ESEARCH] deadbeefdead Cyrus ready`,
 		`* 1 EXISTS`,
 		`* 1 FETCH (UID 9 INTERNALDATE "01-Jan-2024 00:00:00 +0000" RFC822.SIZE 4)`,
 		`t7 OK [APPENDUID 42 9] APPEND completed`,
@@ -70,11 +70,52 @@ func TestNormalizeDropsCausedNumbers(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	gaps := collectGaps(lines)
-	if len(gaps.Capabilities) != 1 || gaps.Capabilities[0] != "CONDSTORE" {
+	if len(gaps.Capabilities) != 1 || gaps.Capabilities[0] != "ESEARCH" {
 		t.Fatalf("gaps %+v", gaps)
 	}
 	if gaps.Commands == nil {
 		t.Fatal("commands must be an empty list, not null")
+	}
+}
+
+func TestCondstoreProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/condstore.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runCondstoreScript(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runCondstoreScript(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff := scriptDiff(normalizeKinds(a.lines, a.mb1, a.mb2), normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("kind diff:\n%s\n--- a ---\n%s", diff, strings.Join(normalizeKinds(a.lines, a.mb1, a.mb2), "\n"))
+	}
+	joined := strings.Join(normalizeKinds(a.lines, a.mb1, a.mb2), "\n")
+	for _, want := range []string{"* ENABLED CONDSTORE", "* VANISHED", "* VANISHED EARLIER", "T OK [MODIFIED]", "T OK [HIGHESTMODSEQ]", "T BAD", "* OK [HIGHESTMODSEQ]"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s in\n%s", want, joined)
+		}
 	}
 }
 

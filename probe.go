@@ -316,7 +316,11 @@ func deleteProbeMailboxes(host string, port int, tlsMode, user, pass, mb1, mb2 s
 	if len(lines) == 0 || taggedNo(lines[len(lines)-1], "d1") {
 		return fmt.Errorf("cleanup login failed")
 	}
-	for i, name := range []string{mb2, mb1} {
+	names := []string{mb2, mb1}
+	if mb1 == mb2 {
+		names = []string{mb1}
+	}
+	for i, name := range names {
 		tag := fmt.Sprintf("d%d", i+2)
 		lines, err = talk.command(tag, "DELETE "+quoteIMAP(name))
 		if err != nil {
@@ -790,4 +794,355 @@ func compareProbe(cfg opConfig) (string, gapsFile, error) {
 		return "", collectGaps(remote.lines), lerr
 	}
 	return diff, collectGaps(remote.lines), nil
+}
+
+var (
+	reUIDValNum = regexp.MustCompile(`\[UIDVALIDITY (\d+)\]`)
+	reModseqNum = regexp.MustCompile(`MODSEQ \((\d+)\)`)
+)
+
+// runCondstoreScript is the second probe. It exercises CONDSTORE and QRESYNC.
+// The first script is unchanged.
+func runCondstoreScript(host string, port int, tlsMode, user, pass string) (probeScript, error) {
+	mb, _, err := freshMailboxPair()
+	if err != nil {
+		return probeScript{}, err
+	}
+	out := probeScript{mb1: mb, mb2: mb}
+	a, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return out, err
+	}
+	defer a.close()
+	greet, err := a.readLogical()
+	if err != nil {
+		return out, err
+	}
+	out.lines = append(out.lines, greet)
+	var uidv, modseq string
+	note := func(lines []string) {
+		for _, ln := range lines {
+			if uidv == "" {
+				if m := reUIDValNum.FindStringSubmatch(ln); m != nil {
+					uidv = m[1]
+				}
+			}
+			if modseq == "" {
+				if m := reModseqNum.FindStringSubmatch(ln); m != nil {
+					modseq = m[1]
+				}
+			}
+		}
+	}
+	step := func(talk *imapTalk, tag, cmd string, allowBad bool) error {
+		lines, err := talk.command(tag, cmd)
+		out.lines = append(out.lines, lines...)
+		note(lines)
+		if err != nil {
+			return err
+		}
+		if len(lines) == 0 || (taggedNo(lines[len(lines)-1], tag) && !allowBad) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	appendMsg := func(tag string) error {
+		head := fmt.Sprintf("%s APPEND %s \"01-Jan-2024 00:00:00 +0000\" {%d+}\r\n", tag, quoteIMAP(mb), len(probeMessage))
+		if _, err := io.WriteString(a.w, head); err != nil {
+			return err
+		}
+		if _, err := a.w.Write(probeMessage); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(a.w, "\r\n"); err != nil {
+			return err
+		}
+		if err := a.w.Flush(); err != nil {
+			return err
+		}
+		var lines []string
+		for {
+			line, err := a.readLogical()
+			if err != nil {
+				out.lines = append(out.lines, lines...)
+				return err
+			}
+			lines = append(lines, line)
+			if strings.HasPrefix(line, tag+" ") {
+				break
+			}
+		}
+		out.lines = append(out.lines, lines...)
+		note(lines)
+		if taggedNo(lines[len(lines)-1], tag) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	fail := func(err error) (probeScript, error) {
+		_ = deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb)
+		return out, err
+	}
+	for _, st := range []struct{ tag, cmd string }{
+		{"a1", "CAPABILITY"},
+		{"a2", "LOGIN " + quoteIMAP(user) + " " + quoteIMAP(pass)},
+		{"a3", "CAPABILITY"},
+		{"a4", "CREATE " + quoteIMAP(mb)},
+		{"a5", "SELECT " + quoteIMAP(mb)},
+	} {
+		if err := step(a, st.tag, st.cmd, false); err != nil {
+			return fail(err)
+		}
+	}
+	if err := appendMsg("a6"); err != nil {
+		return fail(err)
+	}
+	if err := appendMsg("a7"); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a8", "ENABLE CONDSTORE", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a9", "FETCH 1 (MODSEQ)", false); err != nil {
+		return fail(err)
+	}
+	if modseq == "" || uidv == "" {
+		return fail(fmt.Errorf("missing modseq or uidvalidity"))
+	}
+	if err := step(a, "a10", "FETCH 1:* (FLAGS) (CHANGEDSINCE 0)", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a11", "FETCH 1 (FLAGS) (CHANGEDSINCE 9999999999)", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a12", "STORE 1 (UNCHANGEDSINCE "+modseq+") +FLAGS (\\Flagged)", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a13", "STORE 1 (UNCHANGEDSINCE 0) +FLAGS (\\Seen)", false); err != nil {
+		return fail(err)
+	}
+	b, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return fail(err)
+	}
+	defer b.close()
+	greet, err = b.readLogical()
+	if err != nil {
+		return fail(err)
+	}
+	out.lines = append(out.lines, greet)
+	if err := step(b, "b1", "LOGIN "+quoteIMAP(user)+" "+quoteIMAP(pass), false); err != nil {
+		return fail(err)
+	}
+	if err := step(b, "b2", "ENABLE CONDSTORE", false); err != nil {
+		return fail(err)
+	}
+	if err := step(b, "b3", "SELECT "+quoteIMAP(mb), false); err != nil {
+		return fail(err)
+	}
+	if err := step(b, "b4", "SELECT "+quoteIMAP(mb)+" (QRESYNC ("+uidv+" 0 1:2))", true); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a14", "STORE 2 +FLAGS (\\Answered)", false); err != nil {
+		return fail(err)
+	}
+	if err := step(b, "b5", "NOOP", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a15", "ENABLE QRESYNC", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a16", "STORE 1 +FLAGS (\\Deleted)", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a17", "EXPUNGE", false); err != nil {
+		return fail(err)
+	}
+	if err := step(b, "b6", "NOOP", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a18", "SELECT "+quoteIMAP(mb)+" (QRESYNC ("+uidv+" 0 1:2))", false); err != nil {
+		return fail(err)
+	}
+	if err := step(a, "a19", "LOGOUT", true); err != nil {
+		return fail(err)
+	}
+	if err := step(b, "b7", "LOGOUT", true); err != nil {
+		return fail(err)
+	}
+	if err := deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func normalizeKinds(lines []string, mb1, mb2 string) []string {
+	var out []string
+	for _, line := range lines {
+		line = strings.ReplaceAll(line, mb2, "MB2")
+		line = strings.ReplaceAll(line, mb1, "MB1")
+		if k, ok := kindOf(line); ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func kindOf(line string) (string, bool) {
+	switch {
+	case strings.HasPrefix(line, "* CAPABILITY "):
+		return "* CAPABILITY", true
+	case strings.HasPrefix(line, "* FLAGS"):
+		return "* FLAGS", true
+	case strings.HasPrefix(line, "* BYE"):
+		return "* BYE", true
+	case strings.HasPrefix(line, "* ENABLED"):
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "* ENABLED"))
+		if rest == "" {
+			return "* ENABLED", true
+		}
+		return "* ENABLED " + rest, true
+	case strings.HasPrefix(line, "* VANISHED (EARLIER)"):
+		return "* VANISHED EARLIER", true
+	case strings.HasPrefix(line, "* VANISHED"):
+		return "* VANISHED", true
+	case reExists.MatchString(line):
+		return "* EXISTS", true
+	case reRecent.MatchString(line):
+		return "* RECENT", true
+	case reExpunge.MatchString(line):
+		return "* EXPUNGE", true
+	case reSeqFetch.MatchString(line):
+		return fetchKind(line), true
+	case strings.HasPrefix(line, "* OK"):
+		code := bracketCode(line)
+		switch code {
+		case "HIGHESTMODSEQ", "CLOSED", "PERMANENTFLAGS", "UIDVALIDITY", "UIDNEXT", "UNSEEN", "CAPABILITY":
+			return "* OK [" + code + "]", true
+		default:
+			return "", false
+		}
+	}
+	fields := strings.SplitN(line, " ", 3)
+	if len(fields) < 2 || strings.HasPrefix(line, "*") {
+		return "", false
+	}
+	status := fields[1]
+	if status != "OK" && status != "NO" && status != "BAD" {
+		return "", false
+	}
+	if status != "OK" {
+		return "T " + status, true
+	}
+	code := ""
+	if len(fields) == 3 {
+		code = bracketCode(fields[2])
+	}
+	switch code {
+	case "MODIFIED", "HIGHESTMODSEQ", "APPENDUID", "READ-WRITE", "READ-ONLY", "COPYUID":
+		return "T OK [" + code + "]", true
+	default:
+		return "T OK", true
+	}
+}
+
+func fetchKind(line string) string {
+	i := strings.Index(line, "FETCH (")
+	if i < 0 {
+		return "* FETCH"
+	}
+	body := line[i+len("FETCH ("):]
+	if strings.HasSuffix(body, ")") {
+		body = body[:len(body)-1]
+	}
+	var names []string
+	for len(body) > 0 {
+		body = strings.TrimLeft(body, " ")
+		if body == "" {
+			break
+		}
+		j := strings.IndexByte(body, ' ')
+		name := body
+		if j >= 0 {
+			name = body[:j]
+			body = body[j+1:]
+		} else {
+			body = ""
+		}
+		names = append(names, name)
+		body = strings.TrimLeft(body, " ")
+		_, body = skipKindValue(body)
+	}
+	return "* FETCH " + strings.Join(names, " ")
+}
+
+func skipKindValue(s string) (string, string) {
+	if s == "" {
+		return "", ""
+	}
+	switch s[0] {
+	case '(':
+		depth := 0
+		for i := 0; i < len(s); i++ {
+			switch s[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					return s[:i+1], s[i+1:]
+				}
+			}
+		}
+		return s, ""
+	case '"':
+		for i := 1; i < len(s); i++ {
+			if s[i] == '\\' {
+				i++
+				continue
+			}
+			if s[i] == '"' {
+				return s[:i+1], s[i+1:]
+			}
+		}
+		return s, ""
+	default:
+		j := strings.IndexByte(s, ' ')
+		if j < 0 {
+			return s, ""
+		}
+		return s[:j], s[j:]
+	}
+}
+
+func compareCondstore(cfg opConfig) (string, error) {
+	remote, err := runCondstoreScript(cfg.Host, cfg.Port, cfg.TLS, cfg.Username, cfg.Password)
+	if err != nil && len(remote.lines) == 0 {
+		return "", err
+	}
+	addr, stop, serr := startProbeServer(cfg.Username, cfg.Password, cfg.Personality)
+	if serr != nil {
+		if err != nil {
+			return "", err
+		}
+		return "", serr
+	}
+	defer stop()
+	host, portS, perr := net.SplitHostPort(addr)
+	if perr != nil {
+		return "", perr
+	}
+	port, perr := strconv.Atoi(portS)
+	if perr != nil {
+		return "", perr
+	}
+	local, lerr := runCondstoreScript(host, port, "none", cfg.Username, cfg.Password)
+	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
+	if err != nil && diff == "" {
+		return "", err
+	}
+	if lerr != nil && diff == "" {
+		return "", lerr
+	}
+	return diff, nil
 }

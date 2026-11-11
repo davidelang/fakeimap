@@ -39,13 +39,13 @@ func TestPersonalityData(t *testing.T) {
 	if p.Delimiter != "/" || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
 		t.Fatalf("personality fields: %+v", p)
 	}
-	want := []string{"IMAP4rev1", "AUTH=PLAIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT"}
+	want := []string{"IMAP4rev1", "AUTH=PLAIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT", "CONDSTORE", "QRESYNC"}
 	if strings.Join(p.PreLogin, " ") != strings.Join(want, " ") {
 		t.Fatalf("pre-login %#v", p.PreLogin)
 	}
 	for _, c := range append(append([]string{}, p.PreLogin...), p.PostLogin...) {
 		u := strings.ToUpper(c)
-		if strings.Contains(u, "SCRAM") || u == "CONDSTORE" || u == "QRESYNC" || u == "COMPRESS" || u == "ESEARCH" || u == "AUTH=DIGEST-MD5" || u == "STARTTLS" {
+		if strings.Contains(u, "SCRAM") || u == "COMPRESS" || u == "ESEARCH" || u == "AUTH=DIGEST-MD5" || u == "STARTTLS" {
 			t.Fatalf("personality lists %s", c)
 		}
 	}
@@ -465,15 +465,20 @@ func TestMailboxFetchAndStore(t *testing.T) {
 		t.Fatalf("peek order %v", peekKeys)
 	}
 
-	cl.cmd("ENABLE CONDSTORE QRESYNC").ok(t)
-	en := cl.cmd("ENABLE CONDSTORE")
+	en := cl.cmd("ENABLE CONDSTORE QRESYNC")
 	en.ok(t)
-	for _, u := range en.untagged {
+	joinedEn := strings.ToUpper(strings.Join(en.untagged, " "))
+	if !strings.Contains(joinedEn, "ENABLED") || !strings.Contains(joinedEn, "CONDSTORE") || !strings.Contains(joinedEn, "QRESYNC") {
+		t.Fatalf("enable %q", en.untagged)
+	}
+	cl.cmd("ENABLE CONDSTORE").ok(t)
+	plain := cl.cmd("ENABLE IMAP4rev1")
+	plain.ok(t)
+	for _, u := range plain.untagged {
 		if strings.Contains(strings.ToUpper(u), "ENABLED") {
-			t.Fatalf("enabled something: %q", u)
+			t.Fatalf("enabled IMAP4rev1: %q", u)
 		}
 	}
-	cl.cmd("ENABLE IMAP4rev1").ok(t)
 }
 
 func TestExamineFetchDoesNotSetSeen(t *testing.T) {
@@ -1005,7 +1010,7 @@ func forbidCaps(t *testing.T, got []string) {
 	for _, c := range got {
 		u := strings.ToUpper(c)
 		switch {
-		case u == "CONDSTORE" || u == "QRESYNC" || u == "COMPRESS" || u == "ESEARCH" || u == "AUTH=DIGEST-MD5":
+		case u == "COMPRESS" || u == "ESEARCH" || u == "AUTH=DIGEST-MD5":
 			t.Fatalf("forbidden %s", c)
 		case strings.HasPrefix(u, "COMPRESS=") || strings.Contains(u, "SCRAM") || strings.Contains(u, "DIGEST-MD5"):
 			t.Fatalf("forbidden %s", c)

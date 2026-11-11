@@ -42,11 +42,12 @@ type session struct {
 }
 
 type command struct {
-	tag   string
-	name  string
-	uid   bool
-	args  []Token
-	fetch []string
+	tag          string
+	name         string
+	uid          bool
+	args         []Token
+	fetch        []string
+	changedSince *uint64
 }
 
 func (s *session) caps() []string {
@@ -202,7 +203,12 @@ func (s *session) readCommand() (command, error) {
 		if err != nil {
 			return cmd, err
 		}
+		items, changed, err := p.finishFetch(items)
+		if err != nil {
+			return cmd, err
+		}
 		cmd.fetch = items
+		cmd.changedSince = changed
 		return cmd, nil
 	}
 	args, err := p.readTokens()
@@ -221,10 +227,46 @@ func (s *session) readRawLine() (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
+func (s *session) on(name string) bool {
+	if s.enabled == nil {
+		return false
+	}
+	_, ok := s.enabled[strings.ToUpper(name)]
+	return ok
+}
+
+func (s *session) advertiseCap(name string) bool {
+	for _, c := range s.caps() {
+		if strings.EqualFold(c, name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *session) flush() error {
-	for _, e := range s.srv.store.drain(s) {
+	evs := s.srv.store.drain(s)
+	gone := map[uint32]bool{}
+	for _, e := range evs {
+		if e.kind == "expunge" {
+			gone[e.uid] = true
+		}
+	}
+	for i := 0; i < len(evs); {
+		e := evs[i]
 		switch e.kind {
 		case "expunge":
+			if s.on("QRESYNC") {
+				var uids []uint32
+				for i < len(evs) && evs[i].kind == "expunge" {
+					uids = append(uids, evs[i].uid)
+					i++
+				}
+				if err := s.sendLine("* VANISHED " + formatUIDSet(uids)); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := s.sendLine(fmt.Sprintf("* %d EXPUNGE", e.seq)); err != nil {
 				return err
 			}
@@ -236,10 +278,14 @@ func (s *session) flush() error {
 				return err
 			}
 		case "flags":
-			if err := s.sendLine(fmt.Sprintf("* %d FETCH (FLAGS %s)", e.seq, e.flags)); err != nil {
+			if gone[e.uid] {
+				break
+			}
+			if err := s.sendLine(s.flagsFetch(e.seq, e.flags, e.uid, s.on("QRESYNC"), e.modseq, s.on("CONDSTORE"))); err != nil {
 				return err
 			}
 		}
+		i++
 	}
 	return nil
 }
@@ -458,10 +504,61 @@ func (s *session) cmdEnable(cmd command) error {
 			return s.bad(cmd.tag, "ENABLE syntax")
 		}
 	}
-	// No capability in this server is turned on by ENABLE.
-	// Unadvertised names, and advertised names that are not extensions
-	// to enable, enable nothing: there is no ENABLED response.
+	recognized := false
+	var newly []string
+	add := func(name string) {
+		name = strings.ToUpper(name)
+		if !s.advertiseCap(name) {
+			return
+		}
+		recognized = true
+		if s.on(name) {
+			return
+		}
+		if s.enabled == nil {
+			s.enabled = map[string]struct{}{}
+		}
+		s.enabled[name] = struct{}{}
+		newly = append(newly, name)
+	}
+	for _, t := range cmd.args {
+		name, _ := astring(t)
+		switch strings.ToUpper(name) {
+		case "QRESYNC":
+			add("CONDSTORE")
+			add("QRESYNC")
+		case "CONDSTORE":
+			add("CONDSTORE")
+		}
+	}
+	if recognized {
+		line := "* ENABLED"
+		if len(newly) > 0 {
+			line += " " + strings.Join(newly, " ")
+		}
+		if err := s.sendLine(line); err != nil {
+			return err
+		}
+	}
 	return s.ok(cmd.tag, "ENABLE completed")
+}
+
+func (s *session) announceCondstore(how string) error {
+	if s.on("CONDSTORE") || !s.advertiseCap("CONDSTORE") {
+		return nil
+	}
+	hi, err := s.srv.store.highestModseq(s)
+	if err != nil {
+		return err
+	}
+	if err := s.sendLine(fmt.Sprintf("* OK [HIGHESTMODSEQ %d] CONDSTORE enabled by %s", hi, how)); err != nil {
+		return err
+	}
+	if s.enabled == nil {
+		s.enabled = map[string]struct{}{}
+	}
+	s.enabled["CONDSTORE"] = struct{}{}
+	return nil
 }
 
 func (s *session) cmdNamespace(cmd command) error {
@@ -605,25 +702,141 @@ func (s *session) cmdSelect(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
 	}
-	if len(cmd.args) != 1 {
+	name, cond, qr, err := parseSelectArgs(cmd.args)
+	if err != nil {
 		return s.bad(cmd.tag, "syntax")
 	}
-	name, ok := astring(cmd.args[0])
-	if !ok {
+	if cond || qr != nil {
+		if !s.advertiseCap("CONDSTORE") && !s.advertiseCap("QRESYNC") {
+			return s.bad(cmd.tag, "syntax")
+		}
+	}
+	if cond && !s.advertiseCap("CONDSTORE") {
 		return s.bad(cmd.tag, "syntax")
 	}
-	info, err := s.srv.store.selectBox(s, name, cmd.name == "EXAMINE")
+	if qr != nil && !s.advertiseCap("QRESYNC") {
+		return s.bad(cmd.tag, "syntax")
+	}
+	if qr != nil && !s.on("QRESYNC") {
+		return s.bad(cmd.tag, "QRESYNC not enabled")
+	}
+	info, err := s.srv.store.selectBox(s, name, cmd.name == "EXAMINE", qr)
 	if err != nil {
 		return s.no(cmd.tag, cmd.name+" no such mailbox")
 	}
+	if cond {
+		if s.enabled == nil {
+			s.enabled = map[string]struct{}{}
+		}
+		s.enabled["CONDSTORE"] = struct{}{}
+	}
+	if info.closed && s.advertiseCap("QRESYNC") {
+		if err := s.sendLine("* OK [CLOSED] Ok"); err != nil {
+			return err
+		}
+	}
 	if err := s.writeSelect(info); err != nil {
 		return err
+	}
+	if qr != nil && info.vanished != "" {
+		if err := s.sendLine("* VANISHED (EARLIER) " + info.vanished); err != nil {
+			return err
+		}
+	}
+	for _, m := range info.changed {
+		if err := s.sendLine(s.flagsFetch(m.seq, m.flags, m.uid, true, m.modseq, true)); err != nil {
+			return err
+		}
 	}
 	mode := "READ-WRITE"
 	if info.readOnly {
 		mode = "READ-ONLY"
 	}
 	return s.sendLine(fmt.Sprintf("%s OK [%s] %s completed", cmd.tag, mode, cmd.name))
+}
+
+func parseSelectArgs(args []Token) (string, bool, *qresyncSel, error) {
+	if len(args) == 0 {
+		return "", false, nil, fmt.Errorf("bad")
+	}
+	name, ok := astring(args[0])
+	if !ok {
+		return "", false, nil, fmt.Errorf("bad")
+	}
+	if len(args) == 1 {
+		return name, false, nil, nil
+	}
+	if args[1].Kind != "lparen" || args[len(args)-1].Kind != "rparen" {
+		return "", false, nil, fmt.Errorf("bad")
+	}
+	cond := false
+	var qr *qresyncSel
+	i := 2
+	end := len(args) - 1
+	for i < end {
+		if args[i].Kind != "atom" {
+			return "", false, nil, fmt.Errorf("bad")
+		}
+		switch strings.ToUpper(args[i].Val) {
+		case "CONDSTORE":
+			cond = true
+			i++
+		case "QRESYNC":
+			if i+1 >= end || args[i+1].Kind != "lparen" {
+				return "", false, nil, fmt.Errorf("bad")
+			}
+			i += 2
+			if i+1 >= end || args[i].Kind != "atom" || args[i+1].Kind != "atom" {
+				return "", false, nil, fmt.Errorf("bad")
+			}
+			uidv, err := strconv.ParseUint(args[i].Val, 10, 32)
+			if err != nil || uidv == 0 {
+				return "", false, nil, fmt.Errorf("bad")
+			}
+			modseq, err := strconv.ParseUint(args[i+1].Val, 10, 64)
+			if err != nil {
+				return "", false, nil, fmt.Errorf("bad")
+			}
+			i += 2
+			sel := &qresyncSel{uidv: uint32(uidv), modseq: modseq}
+			if i < end && args[i].Kind == "atom" {
+				set, err := parseSeqSet(args[i].Val)
+				if err != nil {
+					return "", false, nil, fmt.Errorf("bad")
+				}
+				sel.known = set
+				sel.knownRaw = args[i].Val
+				i++
+			}
+			if i < end && args[i].Kind == "lparen" {
+				depth := 1
+				i++
+				for i < end && depth > 0 {
+					if args[i].Kind == "lparen" {
+						depth++
+					}
+					if args[i].Kind == "rparen" {
+						depth--
+					}
+					i++
+				}
+				if depth != 0 {
+					return "", false, nil, fmt.Errorf("bad")
+				}
+			}
+			if i >= end || args[i].Kind != "rparen" {
+				return "", false, nil, fmt.Errorf("bad")
+			}
+			i++
+			qr = sel
+		default:
+			return "", false, nil, fmt.Errorf("bad")
+		}
+	}
+	if i != end {
+		return "", false, nil, fmt.Errorf("bad")
+	}
+	return name, cond, qr, nil
 }
 
 func (s *session) writeSelect(info selectInfo) error {
@@ -670,6 +883,11 @@ func (s *session) writeSelect(info selectInfo) error {
 			return err
 		}
 	}
+	if s.advertiseCap("CONDSTORE") {
+		if err := s.sendLine(fmt.Sprintf("* OK [HIGHESTMODSEQ %d] Ok", info.highest)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -684,7 +902,15 @@ func (s *session) cmdFetch(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "FETCH syntax")
 	}
-	snaps, items, err := s.srv.store.fetch(s, cmd.uid, set, cmd.fetch)
+	if cmd.changedSince != nil || itemListed(cmd.fetch, "MODSEQ") {
+		if !s.advertiseCap("CONDSTORE") {
+			return s.bad(cmd.tag, "FETCH bad item")
+		}
+		if err := s.announceCondstore("FETCH MODSEQ"); err != nil {
+			return err
+		}
+	}
+	snaps, items, err := s.srv.store.fetch(s, cmd.uid, set, cmd.fetch, cmd.changedSince)
 	if err != nil {
 		if err.Error() == "not selected" {
 			return s.no(cmd.tag, "FETCH not selected")
@@ -708,7 +934,7 @@ func (s *session) cmdFetch(cmd command) error {
 			if sn.seenEvent == 0 {
 				continue
 			}
-			if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, cmd.uid)); err != nil {
+			if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, cmd.uid || s.on("QRESYNC"), sn.modseq, s.on("CONDSTORE"))); err != nil {
 				return err
 			}
 			if sn.seenEvent > last {
@@ -772,6 +998,8 @@ func (s *session) fetchItemText(item string, sn fetchSnap) string {
 	case "RFC822.TEXT":
 		_, body := splitHB(sn.raw)
 		return "RFC822.TEXT " + literal(body)
+	case "MODSEQ":
+		return fmt.Sprintf("MODSEQ (%d)", sn.modseq)
 	}
 	if strings.HasPrefix(item, "BODY[") || strings.HasPrefix(item, "BODY.PEEK[") {
 		return bodySection(item, sn.raw, s.pers.FetchPeekBody)
@@ -817,14 +1045,46 @@ func (s *session) cmdStore(cmd command) error {
 		return s.bad(cmd.tag, "STORE syntax")
 	}
 	set, err := parseSeqSet(cmd.args[0].Val)
-	if err != nil || cmd.args[1].Kind != "atom" {
+	if err != nil {
 		return s.bad(cmd.tag, "STORE syntax")
 	}
-	flags, next, err := parseFlagList(cmd.args, 2)
+	i := 1
+	var unchanged *uint64
+	if cmd.args[i].Kind == "lparen" {
+		if !s.advertiseCap("CONDSTORE") {
+			return s.bad(cmd.tag, "STORE syntax")
+		}
+		i++
+		if i >= len(cmd.args) || !strings.EqualFold(cmd.args[i].Val, "UNCHANGEDSINCE") {
+			return s.bad(cmd.tag, "STORE syntax")
+		}
+		i++
+		if i >= len(cmd.args) || cmd.args[i].Kind != "atom" {
+			return s.bad(cmd.tag, "STORE syntax")
+		}
+		n, nerr := strconv.ParseUint(cmd.args[i].Val, 10, 64)
+		if nerr != nil {
+			return s.bad(cmd.tag, "STORE syntax")
+		}
+		unchanged = &n
+		i++
+		if i >= len(cmd.args) || cmd.args[i].Kind != "rparen" {
+			return s.bad(cmd.tag, "STORE syntax")
+		}
+		i++
+		if err := s.announceCondstore("STORE UNCHANGEDSINCE"); err != nil {
+			return err
+		}
+	}
+	if i >= len(cmd.args) || cmd.args[i].Kind != "atom" {
+		return s.bad(cmd.tag, "STORE syntax")
+	}
+	item := cmd.args[i].Val
+	flags, next, err := parseFlagList(cmd.args, i+1)
 	if err != nil || next != len(cmd.args) {
 		return s.bad(cmd.tag, "STORE syntax")
 	}
-	snaps, withUID, err := s.srv.store.storeFlags(s, cmd.uid, set, cmd.args[1].Val, flags)
+	snaps, modified, err := s.srv.store.storeFlags(s, cmd.uid, set, item, flags, unchanged)
 	if err != nil {
 		if err.Error() == "read-only" {
 			return s.no(cmd.tag, "STORE read-only")
@@ -834,15 +1094,20 @@ func (s *session) cmdStore(cmd command) error {
 		}
 		return s.bad(cmd.tag, "STORE syntax")
 	}
+	withUID := cmd.uid || s.on("QRESYNC")
+	withMod := s.on("CONDSTORE")
 	for _, sn := range snaps {
-		if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, withUID)); err != nil {
+		if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, withUID, sn.modseq, withMod)); err != nil {
 			return err
 		}
+	}
+	if len(modified) > 0 {
+		return s.sendLine(fmt.Sprintf("%s OK [MODIFIED %s] STORE completed", cmd.tag, formatUIDSet(modified)))
 	}
 	return s.ok(cmd.tag, "STORE completed")
 }
 
-func (s *session) flagsFetch(seq uint32, flags string, uid uint32, withUID bool) string {
+func (s *session) flagsFetch(seq uint32, flags string, uid uint32, withUID bool, modseq uint64, withModseq bool) string {
 	type piece struct {
 		rank int
 		text string
@@ -850,6 +1115,9 @@ func (s *session) flagsFetch(seq uint32, flags string, uid uint32, withUID bool)
 	pieces := []piece{{s.itemRank("FLAGS"), "FLAGS " + flags}}
 	if withUID {
 		pieces = append(pieces, piece{s.itemRank("UID"), fmt.Sprintf("UID %d", uid)})
+	}
+	if withModseq {
+		pieces = append(pieces, piece{s.itemRank("MODSEQ"), fmt.Sprintf("MODSEQ (%d)", modseq)})
 	}
 	sort.SliceStable(pieces, func(a, b int) bool { return pieces[a].rank < pieces[b].rank })
 	var b strings.Builder
@@ -1026,6 +1294,13 @@ func (s *session) cmdExpunge(cmd command) error {
 	}
 	if err := s.flush(); err != nil {
 		return err
+	}
+	if s.on("CONDSTORE") {
+		hi, err := s.srv.store.highestModseq(s)
+		if err != nil {
+			return s.no(cmd.tag, "EXPUNGE not selected")
+		}
+		return s.sendLine(fmt.Sprintf("%s OK [HIGHESTMODSEQ %d] EXPUNGE completed", cmd.tag, hi))
 	}
 	return s.ok(cmd.tag, "EXPUNGE completed")
 }

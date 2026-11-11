@@ -87,3 +87,13 @@
 
 - Approved plan: sandbox/plans/sasl-mechs-20261111-0215-plan.md
 - AUTHENTICATE implements LOGIN, CRAM-MD5, SCRAM-SHA-1, SCRAM-SHA-256, both PLUS forms, and EXTERNAL. DIGEST-MD5 is not implemented. personalities/cyrus-3137.json was not edited.
+
+## 2026-11-11 - CONDSTORE and QRESYNC
+
+- Approved plan: sandbox/plans/condstore-qresync-20261111-0248-plan.md
+- Work: speak CONDSTORE and QRESYNC when a personality advertises them, add a second probe script, and match the running Cyrus lab if it is liveimap-cyrus-3137.
+
+## 2026-11-11 - CONDSTORE and QRESYNC landed
+
+- Personalities that list CONDSTORE and QRESYNC speak HIGHESTMODSEQ, MODSEQ, CHANGEDSINCE, UNCHANGEDSINCE, ENABLE, VANISHED, and SELECT QRESYNC.
+- The second probe kind diff against the already-running liveimap-cyrus-3137 was empty. That container was not recreated and was not stopped. CONDSTORE and QRESYNC are on personalities/cyrus-3137.json and are gone from the gaps file.
