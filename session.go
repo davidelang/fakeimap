@@ -646,6 +646,9 @@ func (s *session) cmdFetch(cmd command) error {
 			return err
 		}
 	}
+	if err := s.flush(); err != nil {
+		return err
+	}
 	return s.ok(cmd.tag, "FETCH completed")
 }
 

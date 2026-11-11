@@ -442,6 +442,44 @@ func TestMailboxFetchAndStore(t *testing.T) {
 	cl.cmd("ENABLE IMAP4rev1").ok(t)
 }
 
+func TestExamineFetchDoesNotSetSeen(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0"})
+	ex := dial(t, bound.Listen)
+	ex.cmd("LOGIN demo secret").ok(t)
+	exam := ex.cmd("EXAMINE INBOX")
+	exam.ok(t)
+	if !strings.Contains(exam.tagLine, "[READ-ONLY]") {
+		t.Fatalf("examine %s", exam.tagLine)
+	}
+	for _, item := range []string{"BODY[TEXT]", "RFC822", "RFC822.TEXT"} {
+		r := ex.cmd("FETCH 2 (" + item + ")")
+		r.ok(t)
+		if strings.Contains(strings.Join(r.untagged, "\n"), "FETCH (FLAGS ") {
+			t.Fatalf("examine %s sent flags: %v", item, r.untagged)
+		}
+	}
+
+	rw := dial(t, bound.Listen)
+	rw.cmd("LOGIN demo secret").ok(t)
+	rw.cmd("SELECT INBOX").ok(t)
+	before := rw.cmd("FETCH 2 (FLAGS)")
+	before.ok(t)
+	if strings.Contains(fetchLine(t, before), `\Seen`) {
+		t.Fatalf("examine stored seen: %s", fetchLine(t, before))
+	}
+	got := rw.cmd("FETCH 2 (RFC822.TEXT)")
+	got.ok(t)
+	reported := false
+	for _, u := range got.untagged {
+		if strings.Contains(u, "FETCH (FLAGS ") && strings.Contains(u, `\Seen`) {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Fatalf("read-write fetch omitted flags: %v", got.untagged)
+	}
+}
+
 func TestExpungeCopyMove(t *testing.T) {
 	_, bound := start(t, Config{Listen: "127.0.0.1:0"})
 	cl := dial(t, bound.Listen)

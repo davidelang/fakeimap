@@ -721,10 +721,9 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([
 	var snaps []fetchSnap
 	mb := s.box
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
-		if fetchSetsSeen(expanded) && !m.has(`\Seen`) {
+		if fetchSetsSeen(expanded) && !s.readonly && !m.has(`\Seen`) {
 			m.addFlag(`\Seen`)
-			id := mb.push(mbEvent{kind: "flags", seq: seq, flags: formatFlags(m)})
-			s.seenID = id
+			mb.push(mbEvent{kind: "flags", seq: seq, flags: formatFlags(m)})
 		}
 		raw := append([]byte(nil), m.bytes()...)
 		snaps = append(snaps, fetchSnap{
