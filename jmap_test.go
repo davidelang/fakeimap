@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"io"
@@ -1714,4 +1716,257 @@ func jsonInt(t *testing.T, v any) int {
 		t.Fatal(err)
 	}
 	return int(i)
+}
+
+func TestJMAPEventSource(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", JmapListen: "127.0.0.1:0"})
+	path := "/jmap/eventsource/?types=Email&closeafter=state&ping=120"
+	res, raw := jmapHTTP(t, bound.Jmap, "", "", http.MethodGet, path, nil)
+	if res.StatusCode != 401 {
+		t.Fatalf("missing auth %d %s", res.StatusCode, raw)
+	}
+	res, raw = jmapHTTP(t, bound.Jmap, "demo", "wrong", http.MethodGet, path, nil)
+	if res.StatusCode != 401 {
+		t.Fatalf("wrong password %d %s", res.StatusCode, raw)
+	}
+
+	session := jmapSession(t, bound.Jmap, "demo", "secret")
+	accountID := objectField(t, session, "primaryAccounts")["urn:ietf:params:jmap:mail"].(string)
+	inboxID := mailboxID(t, bound.Jmap, session, accountID, "INBOX")
+	im := dial(t, bound.Listen)
+	im.cmd("LOGIN demo secret").ok(t)
+	exists, _, _, _ := parseSelect(t, im.cmd("SELECT INBOX").mustOK(t))
+
+	before := jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	stream := openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=state&ping=120")
+	if jmapSession(t, bound.Jmap, "demo", "secret")["state"] != before {
+		t.Fatal("store changed before the event")
+	}
+	msg := []byte("From: a@example.com\r\nTo: b@example.com\r\nSubject: sse\r\n\r\nsse-append\r\n")
+	im.cmd("APPEND INBOX {" + strconv.Itoa(len(msg)) + "+}\r\n" + string(msg)).ok(t)
+	exists++
+	expectClosedEmailState(t, bound.Jmap, session, accountID, before, stream)
+
+	flagSeq := exists + 1
+	im.cmd("APPEND INBOX {4+}\r\nflag").ok(t)
+	before = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Mailbox,Email&closeafter=state&ping=120")
+	im.cmd("STORE " + strconv.Itoa(flagSeq) + " +FLAGS (\\Flagged)").ok(t)
+	expectClosedEmailState(t, bound.Jmap, session, accountID, before, stream)
+
+	expSeq := flagSeq + 1
+	im.cmd("APPEND INBOX {7+}\r\nexpunge").ok(t)
+	im.cmd("STORE " + strconv.Itoa(expSeq) + " +FLAGS (\\Deleted)").ok(t)
+	before = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=state&ping=120")
+	im.cmd("EXPUNGE").ok(t)
+	expectClosedEmailState(t, bound.Jmap, session, accountID, before, stream)
+
+	rawMail := []byte("From: a@example.com\r\nTo: b@example.com\r\nSubject: import\r\n\r\nimported\r\n")
+	res, upBody := jmapDo(t, bound.Jmap, "demo", "secret", http.MethodPost, "/jmap/upload/"+accountID+"/", "message/rfc822", rawMail)
+	if res.StatusCode != 201 {
+		t.Fatalf("upload %d %s", res.StatusCode, upBody)
+	}
+	blobID := jmapJSON(t, upBody)["blobId"].(string)
+	before = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=state&ping=120")
+	imported := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/import", map[string]any{
+			"accountId": accountID,
+			"emails": map[string]any{
+				"k1": map[string]any{"blobId": blobID, "mailboxIds": map[string]any{inboxID: true}},
+			},
+		}, "0"},
+	})
+	emailID := objectField(t, objectField(t, methodArgs(t, imported, "Email/import"), "created"), "k1")["id"].(string)
+	expectClosedEmailState(t, bound.Jmap, session, accountID, before, stream)
+
+	before = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=state&ping=120")
+	emailSet(t, bound.Jmap, session, accountID, map[string]any{
+		emailID: map[string]any{"keywords/$seen": true},
+	}, nil)
+	expectClosedEmailState(t, bound.Jmap, session, accountID, before, stream)
+
+	before = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=state&ping=120")
+	emailSet(t, bound.Jmap, session, accountID, nil, []any{emailID})
+	expectClosedEmailState(t, bound.Jmap, session, accountID, before, stream)
+
+	before = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=state&ping=1")
+	block, eof := stream.next(4 * time.Second)
+	if eof || block != ": ping\n\n" {
+		t.Fatalf("ping %q eof %v", block, eof)
+	}
+	im.cmd("APPEND INBOX {4+}\r\nping").ok(t)
+	for {
+		block, eof = stream.next(3 * time.Second)
+		if strings.HasPrefix(block, "event: state\n") {
+			break
+		}
+		if eof || block != ": ping\n\n" {
+			t.Fatalf("after ping %q eof %v", block, eof)
+		}
+	}
+	if got := stateEventEmail(t, block, accountID); got != emailChangesState(t, bound.Jmap, session, accountID, before) {
+		t.Fatalf("ping stream state %s", got)
+	}
+	if _, eof = stream.next(2 * time.Second); !eof {
+		t.Fatal("closeafter=state left the stream open")
+	}
+
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Mailbox&closeafter=state&ping=1")
+	im.cmd("APPEND INBOX {4+}\r\nnone").ok(t)
+	deadline := time.Now().Add(2500 * time.Millisecond)
+	sawPing := false
+	for time.Now().Before(deadline) {
+		block, eof = stream.next(time.Until(deadline))
+		if eof {
+			t.Fatalf("types without Email closed %q", block)
+		}
+		if block == "" {
+			break
+		}
+		if strings.Contains(block, "event: state") || block != ": ping\n\n" {
+			t.Fatalf("types block %q", block)
+		}
+		sawPing = true
+	}
+	if !sawPing {
+		t.Fatal("no ping while types excluded Email")
+	}
+
+	before = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=no&ping=120")
+	im.cmd("APPEND INBOX {4+}\r\nstay").ok(t)
+	block, eof = stream.next(3 * time.Second)
+	if eof {
+		t.Fatal("closeafter other than state closed before the event")
+	}
+	if got := stateEventEmail(t, block, accountID); got != emailChangesState(t, bound.Jmap, session, accountID, before) {
+		t.Fatalf("open stream state %s", got)
+	}
+	if block, eof = stream.next(300 * time.Millisecond); eof || block != "" {
+		t.Fatalf("closeafter other than state ended the stream %q eof %v", block, eof)
+	}
+}
+
+type sseBlock struct {
+	text string
+	err  error
+}
+
+type sseStream struct {
+	blocks <-chan sseBlock
+}
+
+func openJMAPEvents(t *testing.T, addr, user, pass, query string) *sseStream {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/jmap/eventsource/?"+query, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.SetBasicAuth(user, pass)
+	cl := &http.Client{Transport: &http.Transport{
+		DisableKeepAlives:     true,
+		ResponseHeaderTimeout: 2 * time.Second,
+	}}
+	res, err := cl.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { res.Body.Close() })
+	if res.StatusCode != 200 {
+		t.Fatalf("event source %d", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content-type %q", ct)
+	}
+	blocks := make(chan sseBlock, 8)
+	go readSSE(res.Body, blocks)
+	return &sseStream{blocks: blocks}
+}
+
+func readSSE(body io.Reader, out chan<- sseBlock) {
+	br := bufio.NewReader(body)
+	var b strings.Builder
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			if b.Len() > 0 {
+				out <- sseBlock{text: b.String(), err: err}
+			}
+			out <- sseBlock{err: err}
+			close(out)
+			return
+		}
+		b.WriteString(line)
+		if line == "\n" {
+			out <- sseBlock{text: b.String()}
+			b.Reset()
+		}
+	}
+}
+
+func (s *sseStream) next(wait time.Duration) (string, bool) {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case b, ok := <-s.blocks:
+		if !ok || (b.err != nil && b.text == "") {
+			return "", true
+		}
+		return b.text, false
+	case <-timer.C:
+		return "", false
+	}
+}
+
+func stateEventEmail(t *testing.T, block, accountID string) string {
+	t.Helper()
+	if !strings.HasPrefix(block, "event: state\n") {
+		t.Fatalf("event %q", block)
+	}
+	var data strings.Builder
+	for _, line := range strings.Split(block, "\n") {
+		if rest, ok := strings.CutPrefix(line, "data: "); ok {
+			data.WriteString(rest)
+		}
+	}
+	obj := jmapJSON(t, []byte(data.String()))
+	email, _ := objectField(t, objectField(t, obj, "changed"), accountID)["Email"].(string)
+	if email == "" {
+		t.Fatalf("event email %q", block)
+	}
+	return email
+}
+
+func emailChangesState(t *testing.T, addr string, session map[string]any, accountID, since string) string {
+	t.Helper()
+	ch := methodArgs(t, jmapCall(t, addr, session, "demo", "secret", []any{
+		[]any{"Email/changes", map[string]any{"accountId": accountID, "sinceState": since}, "0"},
+	}), "Email/changes")
+	state, _ := ch["newState"].(string)
+	if state == "" || state == since {
+		t.Fatalf("changes state %+v", ch)
+	}
+	return state
+}
+
+func expectClosedEmailState(t *testing.T, addr string, session map[string]any, accountID, before string, stream *sseStream) {
+	t.Helper()
+	block, eof := stream.next(3 * time.Second)
+	if eof {
+		t.Fatalf("closed before event %q", block)
+	}
+	if got := stateEventEmail(t, block, accountID); got != emailChangesState(t, addr, session, accountID, before) {
+		t.Fatalf("event %s", got)
+	}
+	if _, eof = stream.next(2 * time.Second); !eof {
+		t.Fatal("closeafter=state left the stream open")
+	}
 }

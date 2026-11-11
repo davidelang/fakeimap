@@ -285,6 +285,7 @@ type Store struct {
 	nextUIDV  uint32
 	nextJmap  uint64
 	jmapState uint64 // changes when the mail store changes
+	stateWait []chan struct{}
 	changes   []jmapChange
 	blobs     map[string]*jmapBlob
 	nextBlob  uint64
@@ -306,6 +307,7 @@ type jmapBlob struct {
 
 func (st *Store) touch() {
 	st.jmapState++
+	st.pokeJMAPState()
 }
 
 // noteMail records one email change and advances the session state.
@@ -316,6 +318,38 @@ func (st *Store) noteMail(kind, id string) {
 	}
 	st.jmapState++
 	st.changes = append(st.changes, jmapChange{state: st.jmapState, kind: kind, id: id})
+	st.pokeJMAPState()
+}
+
+// watchJMAPState registers for the next store-state change.
+// The snapshot is the state at registration.
+func (st *Store) watchJMAPState() (string, chan struct{}) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	ch := make(chan struct{}, 1)
+	st.stateWait = append(st.stateWait, ch)
+	return strconv.FormatUint(st.jmapState, 10), ch
+}
+
+func (st *Store) unwatchJMAPState(ch chan struct{}) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for i, w := range st.stateWait {
+		if w == ch {
+			st.stateWait = append(st.stateWait[:i], st.stateWait[i+1:]...)
+			return
+		}
+	}
+}
+
+// pokeJMAPState wakes event-source waiters. Caller holds st.mu.
+func (st *Store) pokeJMAPState() {
+	for _, ch := range st.stateWait {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (st *Store) jmapStateText() string {
@@ -2669,6 +2703,7 @@ func (st *Store) become(neu *Store) {
 	st.blobs = neu.blobs
 	st.nextBlob = neu.nextBlob
 	st.subs = neu.subs
+	st.pokeJMAPState()
 }
 
 func (st *Store) usernames() []string {

@@ -61,8 +61,88 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.jmapUpload(w, r, user)
 	case strings.HasPrefix(path, "/jmap/download/"):
 		s.jmapDownload(w, r, user)
+	case path == "/jmap/eventsource" || path == "/jmap/eventsource/":
+		s.jmapEventSource(w, r, user)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) jmapEventSource(w http.ResponseWriter, r *http.Request, user string) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	q := r.URL.Query()
+	wantEmail := true
+	if _, set := q["types"]; set {
+		wantEmail = false
+		for _, part := range strings.Split(q.Get("types"), ",") {
+			if strings.TrimSpace(part) == "Email" {
+				wantEmail = true
+				break
+			}
+		}
+	}
+	closeAfterState := q.Get("closeafter") == "state"
+	var ping time.Duration
+	if raw := q.Get("ping"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			ping = time.Duration(n) * time.Second
+		}
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	since, watch := s.store.watchJMAPState()
+	defer s.store.unwatchJMAPState(watch)
+	var ticks <-chan time.Time
+	if ping > 0 {
+		ticker := time.NewTicker(ping)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-watch:
+			now := s.store.jmapStateText()
+			if now == since {
+				continue
+			}
+			since = now
+			if !wantEmail {
+				continue
+			}
+			payload, err := json.Marshal(map[string]any{
+				"changed": map[string]any{
+					user: map[string]any{"Email": now},
+				},
+			})
+			if err != nil {
+				return
+			}
+			if _, err := io.WriteString(w, "event: state\ndata: "+string(payload)+"\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+			if closeAfterState {
+				return
+			}
+		}
 	}
 }
 

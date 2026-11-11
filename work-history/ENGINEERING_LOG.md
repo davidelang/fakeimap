@@ -311,3 +311,7 @@
 ## 2026-11-11 - Shared IMAP and JMAP preview
 
 - FETCH PREVIEW and JMAP Email/get preview are one text/plain snippet: charset-decoded like JMAP body text, collapsed, at most 256 characters. A charset problem is empty (IMAP NIL, JMAP "").
+
+## 2026-11-11 - JMAP event source
+
+- GET /jmap/eventsource/ stays open, writes Email state events, and pings while it waits.
