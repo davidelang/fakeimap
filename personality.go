@@ -56,17 +56,42 @@ func loadPersonality(path string) (*Personality, error) {
 
 // implementedCaps are the capabilities this binary actually speaks.
 var implementedCaps = map[string]struct{}{
-	"IMAP4REV1":  {},
-	"LITERAL+":   {},
-	"IDLE":       {},
-	"NAMESPACE":  {},
-	"UIDPLUS":    {},
-	"MOVE":       {},
-	"UNSELECT":   {},
-	"ENABLE":     {},
-	"SASL-IR":    {},
-	"AUTH=PLAIN": {},
-	"STARTTLS":   {},
+	"IMAP4REV1":               {},
+	"LITERAL+":                {},
+	"IDLE":                    {},
+	"NAMESPACE":               {},
+	"UIDPLUS":                 {},
+	"MOVE":                    {},
+	"UNSELECT":                {},
+	"ENABLE":                  {},
+	"SASL-IR":                 {},
+	"AUTH=PLAIN":              {},
+	"AUTH=LOGIN":              {},
+	"AUTH=CRAM-MD5":           {},
+	"AUTH=SCRAM-SHA-1":        {},
+	"AUTH=SCRAM-SHA-256":      {},
+	"AUTH=SCRAM-SHA-1-PLUS":   {},
+	"AUTH=SCRAM-SHA-256-PLUS": {},
+	"AUTH=EXTERNAL":           {},
+	"STARTTLS":                {},
+}
+
+// lists reports whether the greeting or pre-login capability list names it.
+func (p *Personality) lists(name string) bool {
+	if p == nil {
+		return false
+	}
+	for _, c := range p.GreetingCaps {
+		if strings.EqualFold(c, name) {
+			return true
+		}
+	}
+	for _, c := range p.PreLogin {
+		if strings.EqualFold(c, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func capImplemented(name string) bool {

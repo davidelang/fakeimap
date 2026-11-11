@@ -13,6 +13,7 @@ type Config struct {
 	ImplicitTLSListen string `json:"implicit_tls_listen"`
 	CertFile          string `json:"cert_file"`
 	KeyFile           string `json:"key_file"`
+	ClientCAFile      string `json:"client_ca_file,omitempty"`
 	LogPath           string `json:"log_path"`
 	Personality       string `json:"personality"`
 	Dataset           string `json:"dataset"`

@@ -365,6 +365,10 @@ func (s *session) loginOK(tag, cmd string, user, pass string) error {
 	if !s.srv.store.check(user, pass) {
 		return s.no(tag, "[AUTHENTICATIONFAILED] "+cmd+" failed")
 	}
+	return s.authDone(tag, cmd)
+}
+
+func (s *session) authDone(tag, cmd string) error {
 	s.authed = true
 	return s.sendLine(fmt.Sprintf("%s OK [CAPABILITY %s] %s completed", tag, strings.Join(s.caps(), " "), cmd))
 }
@@ -392,37 +396,37 @@ func (s *session) cmdAuth(cmd command) error {
 		return s.bad(cmd.tag, "AUTHENTICATE syntax")
 	}
 	mech, ok := astring(cmd.args[0])
-	if !ok || !strings.EqualFold(mech, "PLAIN") {
+	if !ok || !s.mechAdvertised(mech) {
 		return s.no(cmd.tag, "AUTHENTICATE mechanism not available")
 	}
-	var b64 string
+	var ir string
+	hasIR := false
 	if len(cmd.args) == 2 {
-		b64, ok = astring(cmd.args[1])
+		ir, ok = astring(cmd.args[1])
 		if !ok {
 			return s.bad(cmd.tag, "AUTHENTICATE syntax")
 		}
-	} else {
-		if err := s.sendLine("+"); err != nil {
-			return err
-		}
-		line, err := s.readRawLine()
-		if err != nil {
-			return err
-		}
-		if line == "*" {
-			return s.bad(cmd.tag, "AUTHENTICATE cancelled")
-		}
-		b64 = line
+		hasIR = true
 	}
-	raw, err := decodeB64(b64)
-	if err != nil {
-		return s.no(cmd.tag, "[AUTHENTICATIONFAILED] AUTHENTICATE failed")
+	switch strings.ToUpper(mech) {
+	case "PLAIN":
+		return s.authPlain(cmd.tag, hasIR, ir)
+	case "LOGIN":
+		return s.authLogin(cmd.tag, hasIR, ir)
+	case "CRAM-MD5":
+		return s.authCRAM(cmd.tag, hasIR, ir)
+	case "SCRAM-SHA-1", "SCRAM-SHA-256", "SCRAM-SHA-1-PLUS", "SCRAM-SHA-256-PLUS":
+		return s.authSCRAM(cmd.tag, strings.ToUpper(mech), hasIR, ir)
+	case "EXTERNAL":
+		return s.authExternal(cmd.tag, hasIR, ir)
+	default:
+		return s.no(cmd.tag, "AUTHENTICATE mechanism not available")
 	}
-	user, pass, ok := plainCreds(raw)
-	if !ok {
-		return s.no(cmd.tag, "[AUTHENTICATIONFAILED] AUTHENTICATE failed")
-	}
-	return s.loginOK(cmd.tag, "AUTHENTICATE", user, pass)
+}
+
+func (s *session) mechAdvertised(mech string) bool {
+	want := "AUTH=" + strings.ToUpper(mech)
+	return capImplemented(want) && s.pers.lists(want)
 }
 
 func decodeB64(s string) ([]byte, error) {

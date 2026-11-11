@@ -77,3 +77,13 @@
 - Separate probe matched the already-running liveimap-cyrus-3137 on its published IMAP port. The container was not recreated and was not stopped.
 - Personality fields record the Cyrus reply shapes this binary already implements. Unimplemented capabilities stay in personalities/cyrus-3137.gaps.json and are not advertised.
 - The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - SASL mechanisms execution start
+
+- Approved plan: sandbox/plans/sasl-mechs-20261111-0215-plan.md
+- Work: LOGIN, CRAM-MD5, SCRAM-SHA-1, SCRAM-SHA-256, the PLUS forms, and EXTERNAL against the dataset password. No DIGEST-MD5. personalities/cyrus-3137.json stays unchanged.
+
+## 2026-11-11 - SASL mechanisms landed
+
+- Approved plan: sandbox/plans/sasl-mechs-20261111-0215-plan.md
+- AUTHENTICATE implements LOGIN, CRAM-MD5, SCRAM-SHA-1, SCRAM-SHA-256, both PLUS forms, and EXTERNAL. DIGEST-MD5 is not implemented. personalities/cyrus-3137.json was not edited.

@@ -234,6 +234,13 @@ func (st *Store) check(user, pass string) bool {
 	return ok && p == pass
 }
 
+func (st *Store) secret(user string) (string, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	p, ok := st.accounts[user]
+	return p, ok
+}
+
 func (st *Store) canon(name string) (string, error) {
 	if name == "" || strings.Contains(name, "\r") || strings.Contains(name, "\n") {
 		return "", fmt.Errorf("bad mailbox name")

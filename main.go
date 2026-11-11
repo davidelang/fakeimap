@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -79,6 +81,26 @@ func newServerFrom(cfg Config, stdout io.Writer) (*Server, error) {
 		}
 		srv.hasCert = true
 		srv.tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	}
+	if cfg.ClientCAFile != "" {
+		b, err := os.ReadFile(cfg.ClientCAFile)
+		if err != nil {
+			return nil, err
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(b) {
+			return nil, fmt.Errorf("client_ca_file: no certificates")
+		}
+		if srv.tlsCfg != nil {
+			srv.tlsCfg.ClientCAs = pool
+		}
+	}
+	if srv.tlsCfg != nil && pers.lists("AUTH=EXTERNAL") {
+		if srv.tlsCfg.ClientCAs != nil {
+			srv.tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
+		} else {
+			srv.tlsCfg.ClientAuth = tls.RequestClientCert
+		}
 	}
 	if cfg.LogPath != "" {
 		f, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)

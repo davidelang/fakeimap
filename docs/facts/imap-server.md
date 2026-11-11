@@ -12,6 +12,7 @@ Before accept, the process writes one JSON object to stdout and flushes it. The 
 - `implicit_tls_listen` — `host:port` implicit TLS listener. Empty or omitted: no implicit-TLS listener. Port `0`: ephemeral.
 - `cert_file` — PEM certificate for `STARTTLS` and implicit TLS.
 - `key_file` — PEM private key matching `cert_file`. Not part of the repo; tests generate one.
+- `client_ca_file` — PEM trust anchors for an optional client certificate. Used when the personality lists `AUTH=EXTERNAL` and a server certificate is loaded. Empty or omitted: a client certificate is requested only if `AUTH=EXTERNAL` is listed, and it is not verified. A connection without a client certificate still completes the handshake.
 - `log_path` — file to append. Empty or omitted: no log file is created.
 - `personality` — personality JSON file.
 - `dataset` — dataset directory. The directory contains `dataset.json`.
@@ -33,7 +34,19 @@ File: `personalities/cyrus-3137.json`
 
 Keys: `greeting`, `delimiter`, `greeting_capabilities`, `pre_login_capabilities`, `post_login_capabilities`, `other_users`, `shared_folders`, `logout_bye`, `fetch_item_order`, `select_flags`, `permanent_flags`, `select_order`, `flag_order`, `fetch_peek_body`, `fetch_seen_flags`, `move_copyuid_untagged`.
 
-A capability listed there is advertised only if this binary implements it. `greeting_capabilities`, when set, is the greeting list instead of `pre_login_capabilities`. `fetch_item_order` is the order of items inside one `FETCH` response. `logout_bye` controls whether `LOGOUT` sends `BYE`. `other_users` and `shared_folders` are NAMESPACE prefixes; empty means NIL. `select_order` is the untagged SELECT order. `select_flags` and `permanent_flags` are the flag lists in that response. `flag_order` is the flag order in FETCH and STORE. `fetch_peek_body` answers `BODY.PEEK` with the `BODY` name. `fetch_seen_flags` puts `FLAGS` in the FETCH that sets `\Seen`. `move_copyuid_untagged` sends MOVE's `COPYUID` as an untagged OK before `EXPUNGE`, and does not send `EXISTS`, `RECENT`, or a tagged `COPYUID`.
+A capability listed there is advertised only if this binary implements it. `personalities/sasl.json` is the same mailbox behavior as `cyrus-3137.json`, plus `AUTH=LOGIN`, `AUTH=CRAM-MD5`, `AUTH=SCRAM-SHA-1`, `AUTH=SCRAM-SHA-256`, `AUTH=SCRAM-SHA-1-PLUS`, `AUTH=SCRAM-SHA-256-PLUS`, and `AUTH=EXTERNAL` on the greeting and pre-login lists. It is not the probed Cyrus personality. `greeting_capabilities`, when set, is the greeting list instead of `pre_login_capabilities`. `fetch_item_order` is the order of items inside one `FETCH` response. `logout_bye` controls whether `LOGOUT` sends `BYE`. `other_users` and `shared_folders` are NAMESPACE prefixes; empty means NIL. `select_order` is the untagged SELECT order. `select_flags` and `permanent_flags` are the flag lists in that response. `flag_order` is the flag order in FETCH and STORE. `fetch_peek_body` answers `BODY.PEEK` with the `BODY` name. `fetch_seen_flags` puts `FLAGS` in the FETCH that sets `\Seen`. `move_copyuid_untagged` sends MOVE's `COPYUID` as an untagged OK before `EXPUNGE`, and does not send `EXISTS`, `RECENT`, or a tagged `COPYUID`.
+
+## SASL
+
+`AUTHENTICATE` mechanisms this binary implements: `PLAIN`, `LOGIN`, `CRAM-MD5`, `SCRAM-SHA-1`, `SCRAM-SHA-256`, `SCRAM-SHA-1-PLUS`, `SCRAM-SHA-256-PLUS`, and `EXTERNAL`. A mechanism is advertised only when the personality lists `AUTH=<name>`, and `AUTHENTICATE` of a mechanism that is not listed fails. `DIGEST-MD5` is not implemented and is not advertised.
+
+`LOGIN` asks for the username and then the password. An initial response, when the client sends one, is the username.
+
+`CRAM-MD5` checks HMAC-MD5 of the server challenge against the dataset password.
+
+`SCRAM-SHA-1` and `SCRAM-SHA-256` check the dataset password over the four SCRAM messages. A wrong password or a bad client proof fails. A client `*` cancels. The `-PLUS` forms require TLS and channel binding `tls-unique` or `tls-exporter`, and fail when the binding does not match the connection. Either `-PLUS` mechanism on a cleartext connection fails.
+
+`EXTERNAL` succeeds when the client certificate was verified and an email SAN, a DNS SAN, or the subject CN equals an account username, and the authorization identity is empty or that same username. No client certificate, or a name that matches no account, fails. `PLAIN` still works on a listener that accepts a client certificate.
 
 ## Dataset
 
