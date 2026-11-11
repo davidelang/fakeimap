@@ -153,3 +153,14 @@
 - Approved plan: sandbox/plans/smtp-submit-20261111-0504-plan.md
 - Work: smtp_listen, AUTH/MAIL/RCPT/DATA into INBOX or discard, list-smtp and wait-smtp
 - First action per standard-plan-compliance-block.md
+
+## 2026-11-11 - jmap read execution start
+
+- Approved plan: sandbox/plans/jmap-read-20261111-0525-plan.md
+- Work: jmap_listen, session, Mailbox/get, Email/query, Email/get; unknown methods stay unknownMethod
+- First action per standard-plan-compliance-block.md
+
+## 2026-11-11 - jmap read landed
+
+- Approved plan: sandbox/plans/jmap-read-20261111-0525-plan.md
+- jmap_listen binds a cleartext HTTP listener. GET /.well-known/jmap returns the session. Mailbox/get, Mailbox/query, Email/query, and Email/get read the IMAP store. Email/set, Email/import, Email/changes, and EmailSubmission/set return unknownMethod.

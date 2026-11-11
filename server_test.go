@@ -826,6 +826,13 @@ func start(t *testing.T, cfg Config) (*Server, Bound) {
 				t.Errorf("smtp %s still open", bound.Smtp)
 			}
 		}
+		if bound.Jmap != "" {
+			c, err := net.DialTimeout("tcp", bound.Jmap, 200*time.Millisecond)
+			if err == nil {
+				c.Close()
+				t.Errorf("jmap %s still open", bound.Jmap)
+			}
+		}
 	})
 	return srv, bound
 }

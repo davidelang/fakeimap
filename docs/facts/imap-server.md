@@ -4,7 +4,7 @@ Binary: `fakeimap`, at the checkout root. `make` runs `go test ./...` and then `
 
 Run: `fakeimap <config.json>`. The one argument is the config path. Paths inside the config are relative to the process working directory, not to the config file.
 
-Before accept, the process writes one JSON object to stdout and flushes it. The object has `listen` when a cleartext listener is bound, `implicit_tls_listen` when an implicit-TLS listener is bound, `control` when the control socket is bound, and `smtp` when the submission listener is bound. A configured port of `0` is the bound ephemeral port.
+Before accept, the process writes one JSON object to stdout and flushes it. The object has `listen` when a cleartext listener is bound, `implicit_tls_listen` when an implicit-TLS listener is bound, `control` when the control socket is bound, `smtp` when the submission listener is bound, and `jmap` when the JMAP listener is bound. A configured port of `0` is the bound ephemeral port.
 
 ## Config keys
 
@@ -18,8 +18,21 @@ Before accept, the process writes one JSON object to stdout and flushes it. The 
 - `dataset` — dataset directory. The directory contains `dataset.json`.
 - `control` — filesystem path of the mode-0600 Unix control socket. Empty or omitted: no socket.
 - `smtp_listen` — `host:port` cleartext SMTP submission listener. Empty or omitted: no SMTP listener. Port `0`: ephemeral. The port speaks cleartext. `STARTTLS` is not offered. `AUTH PLAIN` and `AUTH LOGIN` use the same dataset passwords as IMAP. `MAIL FROM` and `RCPT TO` before a successful `AUTH` are rejected. `RCPT TO` a dataset account, as a bare name or `name@domain`, delivers `DATA` to that account's `INBOX`. Any other recipient is accepted and the message is not stored. There is no queue, relay, or DSN.
+- `jmap_listen` — `host:port` cleartext HTTP JMAP listener. Empty or omitted: no JMAP listener. Port `0`: ephemeral. The port speaks cleartext. It does not satisfy the requirement for an IMAP listener.
 
-At least one listener is required. Implicit TLS requires `cert_file` and `key_file`. `STARTTLS` is offered on a cleartext connection only when a certificate is loaded and TLS has not started. `smtp_listen` does not satisfy that requirement.
+At least one listener is required. Implicit TLS requires `cert_file` and `key_file`. `STARTTLS` is offered on a cleartext connection only when a certificate is loaded and TLS has not started. `smtp_listen` and `jmap_listen` do not satisfy that requirement.
+
+## JMAP
+
+`GET /.well-known/jmap` with HTTP Basic for a dataset account returns the session. A missing or wrong password is 401. `capabilities` and that account's `accountCapabilities` are `urn:ietf:params:jmap:core` and `urn:ietf:params:jmap:mail`, and not `urn:ietf:params:jmap:submission`. `primaryAccounts` points the mail capability at that account. `username` is the account name. `apiUrl` is `/jmap/`. `downloadUrl` is `/jmap/download/{accountId}/{blobId}/{name}?accept={type}`. `uploadUrl` is `/jmap/upload/{accountId}/`. `eventSourceUrl` is `/jmap/eventsource/?types={types}&closeafter={closeafter}&ping={ping}`. Those are path-only. `state` is a string and changes when the store changes, including an IMAP append.
+
+One JMAP account per dataset user. The account id is the username. Mailbox ids and email ids are assigned for the life of the process and are not IMAP UIDs. JMAP reads the store and does not write it.
+
+`Mailbox/get` returns `id`, `name`, `parentId`, `role`, `sortOrder`, `totalEmails`, and `unreadEmails`. `INBOX` has role `inbox`. A special-use flag maps to the matching role (`all`, `archive`, `drafts`, `flagged`, `junk`, `sent`, `trash`). `totalEmails` and `unreadEmails` are IMAP `STATUS` `MESSAGES` and `UNSEEN`. `Mailbox/query` accepts a `parentId` filter, including null, and `AND`, `OR`, or `NOT` of those filters. Sort properties are `sortOrder` and `name`.
+
+`Email/query` accepts `filter.inMailbox`, a `receivedAt` sort, `limit`, `position`, and `calculateTotal`. A filter other than `inMailbox`, or a sort other than `receivedAt`, is `invalidArguments`. `Email/get` returns `id`, `blobId`, `threadId`, `mailboxIds`, `keywords`, `size`, `receivedAt`, `sentAt`, `subject`, `from`, `to`, `preview`, `hasAttachment`, `bodyStructure`, `headers`, and `bodyValues`. Keywords are `$seen`, `$flagged`, `$answered`, and `$draft` for those IMAP flags. `headers` are `{name, value}` objects. `bodyValues` follows `fetchAllBodyValues`, `fetchTextBodyValues`, `fetchHTMLBodyValues`, and `maxBodyValueBytes`, and sets `isTruncated` when the value is cut. A method argument whose name starts with `#` is a result reference to an earlier call in the same request.
+
+`Email/set`, `Email/import`, `Email/changes`, `EmailSubmission/set`, and any other method return `unknownMethod`. Blob upload, download, and the event source URL are not served.
 
 ## Log lines
 

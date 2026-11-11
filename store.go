@@ -36,6 +36,7 @@ type Message struct {
 	genSeed   string
 	genUID    uint32
 	modseq    uint64
+	jmapID    string // stable for the process; not the IMAP UID
 }
 
 func (m *Message) bytes() []byte {
@@ -174,6 +175,7 @@ type Mailbox struct {
 	highestModseq uint64
 	expunged      []expungedRec
 	special       []string
+	jmapID        string // stable for the process; not the IMAP UID
 }
 
 func (mb *Mailbox) bump(m *Message) uint64 {
@@ -244,13 +246,41 @@ func (mb *Mailbox) pushExists() uint64 {
 
 // Store is the shared in-memory mailstore.
 type Store struct {
-	mu       sync.Mutex
-	accounts map[string]string
-	boxes    map[string]*Mailbox
-	order    []string
-	delim    string
-	usedUIDV map[uint32]bool
-	nextUIDV uint32
+	mu        sync.Mutex
+	accounts  map[string]string
+	boxes     map[string]*Mailbox
+	order     []string
+	delim     string
+	usedUIDV  map[uint32]bool
+	nextUIDV  uint32
+	nextJmap  uint64
+	jmapState uint64 // changes when the mail store changes
+}
+
+func (st *Store) touch() {
+	st.jmapState++
+}
+
+func (st *Store) jmapStateText() string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return strconv.FormatUint(st.jmapState, 10)
+}
+
+func (st *Store) stampBox(mb *Mailbox) {
+	if mb.jmapID != "" {
+		return
+	}
+	st.nextJmap++
+	mb.jmapID = "mb" + strconv.FormatUint(st.nextJmap, 10)
+}
+
+func (st *Store) stampMsg(m *Message) {
+	if m.jmapID != "" {
+		return
+	}
+	st.nextJmap++
+	m.jmapID = "em" + strconv.FormatUint(st.nextJmap, 10)
 }
 
 func (st *Store) check(user, pass string) bool {
@@ -721,8 +751,10 @@ func (st *Store) create(name string, uses []string) error {
 		}
 	}
 	mb := &Mailbox{name: cn, uidValidity: st.allocUIDV(), uidNext: 1, special: special}
+	st.stampBox(mb)
 	st.boxes[cn] = mb
 	st.order = append(st.order, cn)
+	st.touch()
 	return nil
 }
 
@@ -760,6 +792,7 @@ func (st *Store) delete(s *session, name string) error {
 		}
 	}
 	st.order = order
+	st.touch()
 	return nil
 }
 
@@ -821,6 +854,7 @@ func (st *Store) rename(oldName, newName string) error {
 			st.order[i] = n
 		}
 	}
+	st.touch()
 	return nil
 }
 
@@ -1117,6 +1151,7 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 	var modified []uint32
 	mb := s.box
 	var last uint64
+	changed := false
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
 		if unchanged != nil && m.modseq > *unchanged {
 			id := seq
@@ -1146,6 +1181,7 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 		formatted := formatFlags(m, s.pers.FlagOrder)
 		if formatted != before {
 			mb.bump(m)
+			changed = true
 		}
 		last = mb.push(mbEvent{kind: "flags", seq: seq, uid: m.uid, modseq: m.modseq, flags: formatted})
 		if !silent {
@@ -1154,6 +1190,9 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 	})
 	if last > s.seenID {
 		s.seenID = last
+	}
+	if changed {
+		st.touch()
 	}
 	return snaps, modified, nil
 }
@@ -1430,10 +1469,12 @@ func (st *Store) appendMsg(s *session, name string, flags []string, date *time.T
 		m.addFlag(f)
 	}
 	indexOverlay(m)
+	st.stampMsg(m)
 	mb.bump(m)
 	mb.uidNext++
 	mb.msgs = append(mb.msgs, m)
 	mb.pushExists()
+	st.touch()
 	return mb.uidValidity, m.uid, nil
 }
 
@@ -1532,6 +1573,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 	var dstUIDs []uint32
 	for _, m := range picked {
 		nm := cloneMsg(m, dst.uidNext)
+		st.stampMsg(nm)
 		dst.bump(nm)
 		dst.uidNext++
 		dst.msgs = append(dst.msgs, nm)
@@ -1540,6 +1582,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 	res.dst = dstUIDs
 	if len(picked) > 0 {
 		dst.pushExists()
+		st.touch()
 	}
 	return res, nil
 }
@@ -1585,6 +1628,9 @@ func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
 	if last > s.seenID {
 		s.seenID = last
 	}
+	if len(gone) > 0 {
+		st.touch()
+	}
 	return lines, nil
 }
 
@@ -1612,6 +1658,7 @@ func (st *Store) closeBox(s *session) error {
 		if len(keep) != len(mb.msgs) {
 			mb.msgs = keep
 			mb.pushExists()
+			st.touch()
 		}
 	}
 	// Skip the events this session must not echo.
@@ -1716,6 +1763,7 @@ func loadStore(dir, delim string) (*Store, error) {
 			uidValidity: st.noteUIDV(mbj.UIDValidity),
 			uidNext:     1,
 		}
+		st.stampBox(mb)
 		for _, mj := range mbj.Messages {
 			path := mj.File
 			if !filepath.IsAbs(path) {
@@ -1744,6 +1792,7 @@ func loadStore(dir, delim string) (*Store, error) {
 				}
 			}
 			indexOverlay(m)
+			st.stampMsg(m)
 			mb.bump(m)
 			mb.uidNext++
 			mb.msgs = append(mb.msgs, m)
@@ -1771,6 +1820,7 @@ func loadStore(dir, delim string) (*Store, error) {
 					genUID:    uid,
 				}
 				m.size = len(m.bytes())
+				st.stampMsg(m)
 				mb.bump(m)
 				mb.uidNext++
 				mb.msgs = append(mb.msgs, m)
@@ -1789,6 +1839,7 @@ func loadStore(dir, delim string) (*Store, error) {
 		st.boxes[name] = mb
 		st.order = append(st.order, name)
 	}
+	st.jmapState = 1
 	return st, nil
 }
 
@@ -1803,6 +1854,8 @@ func (st *Store) become(neu *Store) {
 	st.delim = neu.delim
 	st.usedUIDV = neu.usedUIDV
 	st.nextUIDV = neu.nextUIDV
+	st.nextJmap = neu.nextJmap
+	st.jmapState = neu.jmapState
 }
 
 func (st *Store) usernames() []string {

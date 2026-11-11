@@ -20,6 +20,7 @@ type Bound struct {
 	ImplicitTLSListen string `json:"implicit_tls_listen,omitempty"`
 	Control           string `json:"control,omitempty"`
 	Smtp              string `json:"smtp,omitempty"`
+	Jmap              string `json:"jmap,omitempty"`
 }
 
 // Server is the loopback IMAP listener.
@@ -33,6 +34,7 @@ type Server struct {
 	tlsLn       net.Listener
 	ctrlLn      net.Listener
 	smtpLn      net.Listener
+	jmapLn      net.Listener
 	stdout      io.Writer
 	logf        *os.File
 	logMu       sync.Mutex
@@ -198,6 +200,13 @@ func (s *Server) Serve() error {
 			s.acceptSMTP()
 		}()
 	}
+	if s.jmapLn != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.acceptJMAP()
+		}()
+	}
 	wg.Wait()
 	return nil
 }
@@ -231,6 +240,14 @@ func (s *Server) listen() error {
 		}
 		s.smtpLn = ln
 		s.bound.Smtp = ln.Addr().String()
+	}
+	if s.cfg.JmapListen != "" {
+		ln, err := net.Listen("tcp", s.cfg.JmapListen)
+		if err != nil {
+			return err
+		}
+		s.jmapLn = ln
+		s.bound.Jmap = ln.Addr().String()
 	}
 	return nil
 }
@@ -314,6 +331,9 @@ func (s *Server) Close() {
 		}
 		if s.smtpLn != nil {
 			_ = s.smtpLn.Close()
+		}
+		if s.jmapLn != nil {
+			_ = s.jmapLn.Close()
 		}
 		s.mu.Lock()
 		for _, c := range s.imap {
