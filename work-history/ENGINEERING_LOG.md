@@ -288,3 +288,9 @@
 
 - ESEARCH IN answers subtree, personal, and subscribed when MULTISEARCH is advertised. subtree is the named mailbox and descendants separated by the delimiter, so INBOX does not include INBOX2. personal is every mailbox. subscribed returns no lines. Each hit mailbox is one ESEARCH line of UIDs with TAG, MAILBOX, and UIDVALIDITY. A mailbox with no hits is omitted. The command does not need a selected mailbox. Without MULTISEARCH the command is BAD. FUZZY follows SEARCH=FUZZY. UID SEARCH is unchanged.
 - personalities/multisearch.json advertises MULTISEARCH. cyrusprobe -multisearch does not replace the earlier scripts. liveimap-cyrus-3137 was already running. Its kind diff was empty, so MULTISEARCH is on the pre-login and post-login lists of personalities/cyrus-3137.json and personalities/sasl.json, not on the greeting, and gone from the gaps file. The container was not recreated and was not stopped.
+
+## 2026-11-11 - Subscription set
+
+- Approved plan: sandbox/plans/subscribe-20261111-1021-plan.md
+- Work: each account keeps a subscription set. INBOX starts subscribed. SUBSCRIBE adds an existing mailbox and is NO when it is missing. UNSUBSCRIBE removes one and is OK when it was not subscribed. DELETE drops it. RENAME keeps it on the new name. reset and set-dataset leave only INBOX. LIST (SUBSCRIBED) and LSUB return that set. ESEARCH IN (subscribed) searches it.
+- Compliance: standard-plan-compliance-block.md

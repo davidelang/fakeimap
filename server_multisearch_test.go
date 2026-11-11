@@ -110,7 +110,10 @@ func TestMultisearch(t *testing.T) {
 	if _, lines = multiLines(t, cl.cmd("ESEARCH IN (subscribed) RETURN (ALL) TEXT "+word)); len(lines) != 0 {
 		t.Fatalf("subscribed %v", lines)
 	}
-	if _, lines = multiLines(t, cl.cmd("ESEARCH IN (subscribed) RETURN (COUNT) ALL")); len(lines) != 0 {
+	uvIn := statusUIDValidity(t, cl, "INBOX")
+	tag, lines = multiLines(t, cl.cmd("ESEARCH IN (subscribed) RETURN (COUNT) ALL"))
+	wantIn := fmt.Sprintf(`* ESEARCH (TAG "%s" MAILBOX "INBOX" UIDVALIDITY %d) UID COUNT 2`, tag, uvIn)
+	if len(lines) != 1 || lines[0] != wantIn {
 		t.Fatalf("subscribed count %v", lines)
 	}
 	if _, lines = multiLines(t, cl.cmd("ESEARCH IN (personal) RETURN (ALL) TEXT nosuchwordqx")); len(lines) != 0 {

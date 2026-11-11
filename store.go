@@ -288,6 +288,7 @@ type Store struct {
 	changes   []jmapChange
 	blobs     map[string]*jmapBlob
 	nextBlob  uint64
+	subs      map[string]map[string]bool // account -> canonical mailbox names
 }
 
 // jmapChange is one email id change at the session state after it happened.
@@ -556,13 +557,17 @@ type listEntry struct {
 }
 
 // listQuery is the extended LIST this server honors. A two-argument LIST
-// leaves it zero, which keeps the old reply.
+// leaves it zero, which keeps the old reply. subscribedOnly keeps names in
+// that account's set. markSubscribed adds \Subscribed to those flags.
 type listQuery struct {
-	extended    bool
-	specialOnly bool
-	showSpecial bool
-	wantStatus  bool
-	status      []string
+	extended       bool
+	specialOnly    bool
+	showSpecial    bool
+	wantStatus     bool
+	status         []string
+	user           string
+	subscribedOnly bool
+	markSubscribed bool
 }
 
 func canonPattern(pat, delim string) string {
@@ -665,6 +670,9 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 		if q.specialOnly && len(mb.special) == 0 {
 			continue
 		}
+		if q.subscribedOnly && (st.subs[q.user] == nil || !st.subs[q.user][name]) {
+			continue
+		}
 		if !wildMatch(name, full, st.delim) {
 			continue
 		}
@@ -691,9 +699,66 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 				pairs = [][2]string{}
 			}
 		}
-		out = append(out, listEntry{flags: formatListFlags(flags, spec), name: name, status: pairs})
+		flagText := formatListFlags(flags, spec)
+		if q.markSubscribed {
+			flagText = strings.TrimSuffix(flagText, ")") + ` \Subscribed)`
+		}
+		out = append(out, listEntry{flags: flagText, name: name, status: pairs})
 	}
 	return out, st.delim, false, nil
+}
+
+// subscribe adds an existing mailbox to the account's set.
+func (st *Store) subscribe(user, name string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return err
+	}
+	if st.boxes[cn] == nil {
+		return fmt.Errorf("no mailbox")
+	}
+	st.ensureSub(user)
+	st.subs[user][cn] = true
+	return nil
+}
+
+// unsubscribe removes a name. A name that was not subscribed is still success.
+func (st *Store) unsubscribe(user, name string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return err
+	}
+	if st.subs[user] != nil {
+		delete(st.subs[user], cn)
+	}
+	return nil
+}
+
+// ensureSub makes the account's set. Caller holds st.mu.
+func (st *Store) ensureSub(user string) {
+	if st.subs == nil {
+		st.subs = map[string]map[string]bool{}
+	}
+	if st.subs[user] == nil {
+		st.subs[user] = map[string]bool{}
+	}
+}
+
+// seedSubs starts every account with INBOX subscribed. Caller holds no lock
+// during load, and holds st.mu for addAccount.
+func (st *Store) seedSubs() {
+	if st.subs == nil {
+		st.subs = map[string]map[string]bool{}
+	}
+	for user := range st.accounts {
+		if st.subs[user] == nil {
+			st.subs[user] = map[string]bool{"INBOX": true}
+		}
+	}
 }
 
 func (st *Store) status(name string, items []string) (string, [][2]string, error) {
@@ -859,6 +924,9 @@ func (st *Store) delete(s *session, name string) error {
 		}
 	}
 	st.order = order
+	for _, set := range st.subs {
+		delete(set, cn)
+	}
 	return nil
 }
 
@@ -919,6 +987,17 @@ func (st *Store) rename(oldName, newName string) error {
 		if n, ok := rewritten[name]; ok {
 			st.order[i] = n
 		}
+	}
+	for user, set := range st.subs {
+		neu := make(map[string]bool, len(set))
+		for name := range set {
+			if n, ok := rewritten[name]; ok {
+				neu[n] = true
+			} else {
+				neu[name] = true
+			}
+		}
+		st.subs[user] = neu
 	}
 	st.touch()
 	return nil
@@ -1746,15 +1825,20 @@ type sourceHit struct {
 
 // searchSource runs keys against each mailbox in the source. subtree is the
 // named mailbox plus names that start with that name and the delimiter, so
-// INBOX does not include INBOX2. subscribed matches nothing: there is no
-// subscription list. A mailbox with no hits is omitted. Numbers are UIDs.
-func (st *Store) searchSource(source, root string, keys []searchKey) ([]sourceHit, error) {
+// INBOX does not include INBOX2. subscribed is that account's set. A mailbox
+// with no hits is omitted. Numbers are UIDs.
+func (st *Store) searchSource(user, source, root string, keys []searchKey) ([]sourceHit, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var names []string
 	switch source {
 	case "SUBSCRIBED":
-		return nil, nil
+		set := st.subs[user]
+		for _, name := range st.order {
+			if set[name] {
+				names = append(names, name)
+			}
+		}
 	case "PERSONAL":
 		names = append(names, st.order...)
 	case "SUBTREE":
@@ -2561,6 +2645,7 @@ func loadStore(dir, delim string) (*Store, error) {
 		st.boxes[name] = mb
 		st.order = append(st.order, name)
 	}
+	st.seedSubs()
 	st.jmapState = 1
 	return st, nil
 }
@@ -2581,6 +2666,7 @@ func (st *Store) become(neu *Store) {
 	st.changes = neu.changes
 	st.blobs = neu.blobs
 	st.nextBlob = neu.nextBlob
+	st.subs = neu.subs
 }
 
 func (st *Store) usernames() []string {
@@ -2608,6 +2694,7 @@ func (st *Store) addAccount(user, pass string) error {
 		return fmt.Errorf("duplicate username")
 	}
 	st.accounts[user] = pass
+	st.seedSubs()
 	return nil
 }
 

@@ -31,6 +31,7 @@ type session struct {
 	wmu        sync.Mutex
 	id         int
 	authed     bool
+	user       string
 	secure     bool
 	box        *Mailbox
 	readonly   bool
@@ -335,6 +336,12 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdNamespace(cmd)
 	case "LIST":
 		return s.cmdList(cmd)
+	case "LSUB":
+		return s.cmdLsub(cmd)
+	case "SUBSCRIBE":
+		return s.cmdSubscribe(cmd)
+	case "UNSUBSCRIBE":
+		return s.cmdUnsubscribe(cmd)
 	case "STATUS":
 		return s.cmdStatus(cmd)
 	case "CREATE":
@@ -441,6 +448,7 @@ func (s *session) loginOK(tag, cmd string, user, pass string) error {
 	if !s.srv.store.check(user, pass) {
 		return s.no(tag, "[AUTHENTICATIONFAILED] "+cmd+" failed")
 	}
+	s.user = user
 	return s.authDone(tag, cmd)
 }
 
@@ -664,11 +672,14 @@ func (s *session) cmdList(cmd command) error {
 	}
 	parsed.ref, parsed.pat = ref, pat
 	q := listQuery{
-		extended:    parsed.extended,
-		specialOnly: parsed.specialOnly,
-		showSpecial: s.advertiseCap("SPECIAL-USE"),
-		wantStatus:  parsed.hasStatus,
-		status:      parsed.status,
+		extended:       parsed.extended,
+		specialOnly:    parsed.specialOnly,
+		showSpecial:    s.advertiseCap("SPECIAL-USE"),
+		wantStatus:     parsed.hasStatus,
+		status:         parsed.status,
+		user:           s.user,
+		subscribedOnly: parsed.subscribed,
+		markSubscribed: parsed.subscribed,
 	}
 	entries, delim, _, err := s.srv.store.list(parsed.ref, parsed.pat, q)
 	if err != nil {
@@ -691,9 +702,81 @@ func (s *session) cmdList(cmd command) error {
 	return s.ok(cmd.tag, "LIST completed")
 }
 
+func (s *session) cmdLsub(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if len(cmd.args) != 2 {
+		return s.bad(cmd.tag, "LSUB syntax")
+	}
+	ref, ok1 := astring(cmd.args[0])
+	pat, ok2 := astring(cmd.args[1])
+	if !ok1 || !ok2 {
+		return s.bad(cmd.tag, "LSUB syntax")
+	}
+	ref, err := s.boxIn(ref)
+	if err != nil {
+		return s.bad(cmd.tag, "LSUB syntax")
+	}
+	pat, err = s.boxIn(pat)
+	if err != nil {
+		return s.bad(cmd.tag, "LSUB syntax")
+	}
+	entries, delim, _, err := s.srv.store.list(ref, pat, listQuery{user: s.user, subscribedOnly: true})
+	if err != nil {
+		return s.bad(cmd.tag, "LSUB syntax")
+	}
+	for _, e := range entries {
+		if err := s.sendLine(fmt.Sprintf("* LSUB %s %s %s", e.flags, imapString(delim), imapAtom(s.boxOut(e.name)))); err != nil {
+			return err
+		}
+	}
+	return s.ok(cmd.tag, "LSUB completed")
+}
+
+func (s *session) mailboxArg(cmd command) (string, error) {
+	if len(cmd.args) != 1 {
+		return "", fmt.Errorf("bad")
+	}
+	name, ok := astring(cmd.args[0])
+	if !ok {
+		return "", fmt.Errorf("bad")
+	}
+	return s.boxIn(name)
+}
+
+func (s *session) cmdSubscribe(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	name, err := s.mailboxArg(cmd)
+	if err != nil {
+		return s.bad(cmd.tag, "SUBSCRIBE syntax")
+	}
+	if err := s.srv.store.subscribe(s.user, name); err != nil {
+		return s.no(cmd.tag, "SUBSCRIBE failed")
+	}
+	return s.ok(cmd.tag, "SUBSCRIBE completed")
+}
+
+func (s *session) cmdUnsubscribe(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	name, err := s.mailboxArg(cmd)
+	if err != nil {
+		return s.bad(cmd.tag, "UNSUBSCRIBE syntax")
+	}
+	if err := s.srv.store.unsubscribe(s.user, name); err != nil {
+		return s.no(cmd.tag, "UNSUBSCRIBE failed")
+	}
+	return s.ok(cmd.tag, "UNSUBSCRIBE completed")
+}
+
 type parsedList struct {
 	ref, pat    string
 	extended    bool
+	subscribed  bool
 	specialOnly bool
 	children    bool
 	special     bool
@@ -722,6 +805,8 @@ func parseListArgs(args []Token) (parsedList, error) {
 				return p, fmt.Errorf("bad")
 			}
 			switch strings.ToUpper(args[i].Val) {
+			case "SUBSCRIBED":
+				p.subscribed = true
 			case "SPECIAL-USE":
 				p.specialOnly = true
 				p.special = true
@@ -1766,7 +1851,7 @@ func (s *session) cmdEsearch(cmd command) error {
 	if !ret.on {
 		ret.all = true
 	}
-	hits, err := s.srv.store.searchSource(source, root, keys)
+	hits, err := s.srv.store.searchSource(s.user, source, root, keys)
 	if err != nil {
 		return s.bad(cmd.tag, "ESEARCH syntax")
 	}

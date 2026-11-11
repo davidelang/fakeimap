@@ -151,6 +151,7 @@ func (s *session) authCRAM(tag string, hasIR bool, ir string) error {
 	if decErr != nil || !found || !hmac.Equal(sum, want) {
 		return s.authFail(tag)
 	}
+	s.user = user
 	return s.authDone(tag, "AUTHENTICATE")
 }
 
@@ -444,6 +445,7 @@ func (s *session) authSCRAM(tag, mech string, hasIR bool, ir string) error {
 	if ack != "" && ack != "=" {
 		return s.bad(tag, "AUTHENTICATE syntax")
 	}
+	s.user = user
 	return s.authDone(tag, "AUTHENTICATE")
 }
 
@@ -521,6 +523,7 @@ func (s *session) authExternal(tag string, hasIR bool, ir string) error {
 	if authzid != "" {
 		for _, n := range names {
 			if n == authzid && s.srv.store.hasAccount(n) {
+				s.user = n
 				return s.authDone(tag, "AUTHENTICATE")
 			}
 		}
@@ -528,6 +531,7 @@ func (s *session) authExternal(tag string, hasIR bool, ir string) error {
 	}
 	for _, n := range names {
 		if s.srv.store.hasAccount(n) {
+			s.user = n
 			return s.authDone(tag, "AUTHENTICATE")
 		}
 	}
