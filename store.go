@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 var errUnknownCTE = errors.New("unknown-cte")
@@ -1330,16 +1331,17 @@ func (st *Store) highestModseq(s *session) (uint64, error) {
 }
 
 type searchKey struct {
-	op   string
-	arg  string
-	num  int
-	when time.Time
-	set  *seqSet
-	kids []searchKey
+	op    string
+	arg   string
+	num   int
+	when  time.Time
+	set   *seqSet
+	kids  []searchKey
+	fuzzy bool
 }
 
-func parseSearch(toks []Token) ([]searchKey, error) {
-	keys, rest, err := parseSearchSeq(toks, false)
+func parseSearch(toks []Token, allowFuzzy bool) ([]searchKey, error) {
+	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy)
 	if err != nil || len(rest) != 0 || len(keys) == 0 {
 		return nil, fmt.Errorf("bad search")
 	}
@@ -1348,7 +1350,8 @@ func parseSearch(toks []Token) ([]searchKey, error) {
 
 // parseSearchSeq reads keys until the input ends. Inside a parenthesis the
 // closing parenthesis is left unconsumed. An unclosed parenthesis is an error.
-func parseSearchSeq(toks []Token, inside bool) ([]searchKey, []Token, error) {
+// fuzzy marks text leaves parsed from this sequence.
+func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy bool) ([]searchKey, []Token, error) {
 	var keys []searchKey
 	for len(toks) > 0 {
 		if toks[0].Kind == "rparen" {
@@ -1357,7 +1360,7 @@ func parseSearchSeq(toks []Token, inside bool) ([]searchKey, []Token, error) {
 			}
 			return keys, toks, nil
 		}
-		k, rest, err := parseSearchKey(toks)
+		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1370,12 +1373,12 @@ func parseSearchSeq(toks []Token, inside bool) ([]searchKey, []Token, error) {
 	return keys, nil, nil
 }
 
-func parseSearchKey(toks []Token) (searchKey, []Token, error) {
+func parseSearchKey(toks []Token, fuzzy, allowFuzzy bool) (searchKey, []Token, error) {
 	if len(toks) == 0 || toks[0].Kind == "rparen" {
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
 	if toks[0].Kind == "lparen" {
-		inner, rest, err := parseSearchSeq(toks[1:], true)
+		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy)
 		if err != nil || len(inner) == 0 || len(rest) == 0 || rest[0].Kind != "rparen" {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
@@ -1383,18 +1386,23 @@ func parseSearchKey(toks []Token) (searchKey, []Token, error) {
 	}
 	op := strings.ToUpper(toks[0].Val)
 	switch op {
+	case "FUZZY":
+		if !allowFuzzy {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return parseSearchKey(toks[1:], true, allowFuzzy)
 	case "OR":
-		a, rest, err := parseSearchKey(toks[1:])
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
-		b, rest, err := parseSearchKey(rest)
+		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
 		return searchKey{op: "OR", kids: []searchKey{a, b}}, rest, nil
 	case "NOT":
-		a, rest, err := parseSearchKey(toks[1:])
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
@@ -1421,7 +1429,7 @@ func parseSearchKey(toks []Token) (searchKey, []Token, error) {
 		if !ok {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
-		return searchKey{op: op, arg: arg}, toks[2:], nil
+		return searchKey{op: op, arg: arg, fuzzy: fuzzy}, toks[2:], nil
 	case "SINCE", "BEFORE", "ON":
 		if len(toks) < 2 {
 			return searchKey{}, nil, fmt.Errorf("bad search")
@@ -1496,18 +1504,18 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 	case "UNKEYWORD":
 		return !m.hasFold(k.arg)
 	case "FROM":
-		return strings.Contains(strings.ToLower(m.from), strings.ToLower(k.arg))
+		return textHit(m.from, k)
 	case "TO":
-		return strings.Contains(strings.ToLower(m.to), strings.ToLower(k.arg))
+		return textHit(m.to, k)
 	case "SUBJECT":
-		return strings.Contains(strings.ToLower(m.subject), strings.ToLower(k.arg))
+		return textHit(m.subject, k)
 	case "TEXT":
-		return strings.Contains(strings.ToLower(string(m.bytes())), strings.ToLower(k.arg))
+		return textHit(string(m.bytes()), k)
 	case "BODY":
 		_, body := splitHB(m.bytes())
-		return strings.Contains(strings.ToLower(string(body)), strings.ToLower(k.arg))
+		return textHit(string(body), k)
 	case "CC":
-		return strings.Contains(strings.ToLower(m.cc), strings.ToLower(k.arg))
+		return textHit(m.cc, k)
 	case "SINCE":
 		return ymd(m.internal) >= ymd(k.when)
 	case "BEFORE":
@@ -1523,6 +1531,85 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 	default:
 		return false
 	}
+}
+
+// textHit is a case-insensitive substring. A fuzzy text leaf also matches
+// a search string of at least 3 characters that is one insertion, deletion,
+// or substitution from a word. A word is a run of letters and digits.
+func textHit(hay string, k searchKey) bool {
+	h := strings.ToLower(hay)
+	n := strings.ToLower(k.arg)
+	if strings.Contains(h, n) {
+		return true
+	}
+	if !k.fuzzy || len([]rune(n)) < 3 {
+		return false
+	}
+	return fuzzyWord(h, n)
+}
+
+func fuzzyWord(hay, needle string) bool {
+	var word []rune
+	hit := false
+	flush := func() {
+		if hit || len(word) == 0 {
+			word = word[:0]
+			return
+		}
+		if oneEdit(needle, string(word)) {
+			hit = true
+		}
+		word = word[:0]
+	}
+	for _, r := range hay {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			word = append(word, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return hit
+}
+
+// oneEdit reports whether one insertion, deletion, or substitution turns
+// a into b. Equal strings are not one edit.
+func oneEdit(a, b string) bool {
+	ar := []rune(a)
+	br := []rune(b)
+	if len(ar) == len(br) {
+		diff := 0
+		for i := range ar {
+			if ar[i] != br[i] {
+				diff++
+				if diff > 1 {
+					return false
+				}
+			}
+		}
+		return diff == 1
+	}
+	if len(ar) > len(br) {
+		ar, br = br, ar
+	}
+	if len(br)-len(ar) != 1 {
+		return false
+	}
+	i, j := 0, 0
+	skipped := false
+	for i < len(ar) && j < len(br) {
+		if ar[i] == br[j] {
+			i++
+			j++
+			continue
+		}
+		if skipped {
+			return false
+		}
+		skipped = true
+		j++
+	}
+	return true
 }
 
 // sortCrit is one SORT key. REVERSE flips that key only.

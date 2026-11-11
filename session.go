@@ -1627,7 +1627,7 @@ func (s *session) cmdSearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "SEARCH charset")
 	}
-	keys, err := parseSearch(rest)
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"))
 	if err != nil {
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
@@ -1742,11 +1742,11 @@ func (s *session) cmdSort(cmd command) error {
 		return s.bad(cmd.tag, "SORT charset")
 	}
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest)
+		keys, err = parseSearch(rest, false)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "SORT bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:])
+		keys, err = parseSearch(rest[1:], false)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "SORT bad key")
@@ -1810,11 +1810,11 @@ func (s *session) cmdThread(cmd command) error {
 		return s.bad(cmd.tag, "THREAD charset")
 	}
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest)
+		keys, err = parseSearch(rest, false)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "THREAD bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:])
+		keys, err = parseSearch(rest[1:], false)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "THREAD bad key")

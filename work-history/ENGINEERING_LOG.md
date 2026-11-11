@@ -266,3 +266,14 @@
 
 - SEARCH and UID SEARCH accept ANSWERED, UNANSWERED, NEW, KEYWORD, and UNKEYWORD. ANSWERED is \Answered. NEW is \Recent and not \Seen. KEYWORD matches one system flag or keyword, including $Forwarded, case-insensitively. UNKEYWORD is the complement. KEYWORD \Recent uses the session \Recent bit.
 - FUZZY, OLD, RECENT, DRAFT, and any other unknown key stay BAD. KEYWORD or UNKEYWORD without a flag is BAD. Loopback covers NOT, OR, and ESEARCH RETURN (ALL). No personality file changed.
+
+## 2026-11-11 - SEARCH=FUZZY
+
+- Approved plan: sandbox/plans/search-fuzzy-20261111-0941-plan.md
+- Work: SEARCH and UID SEARCH accept FUZZY before one key when SEARCH=FUZZY is advertised. A text leaf keeps an exact hit and also matches one insertion, deletion, or substitution against a word when the search string is at least 3 characters. The reply stays the existing SEARCH or ESEARCH line, with no RELEVANCY. SORT and THREAD still reject FUZZY. personalities/fuzzy.json advertises SEARCH=FUZZY. cyrusprobe -fuzzy is a further script and does not replace the earlier scripts.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - SEARCH=FUZZY landed
+
+- SEARCH and UID SEARCH accept FUZZY before one key when SEARCH=FUZZY is advertised, including after CHARSET and with RETURN. A text leaf keeps a case-insensitive substring and also matches one insertion, deletion, or substitution against a word when the search string is at least 3 characters. Flag, date, size, and UID leaves stay exact. OR, NOT, and a parenthesized list pass the mark. The reply is the existing SEARCH or ESEARCH line and has no RELEVANCY. Without the capability, FUZZY is BAD. SORT and THREAD still reject FUZZY.
+- personalities/fuzzy.json advertises SEARCH=FUZZY. cyrusprobe -fuzzy does not replace the earlier scripts. liveimap-cyrus-3137 was already running. Its kind diff was not empty: FUZZY TEXT apple on an appended message returned no ESEARCH line and zero hits, while TEXT apple was COUNT 1. personalities/cyrus-3137.json, personalities/sasl.json, and the gaps file were left unchanged. The container was not recreated and was not stopped.

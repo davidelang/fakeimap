@@ -509,6 +509,58 @@ func TestBinaryProbeEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestFuzzyProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/fuzzy.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runFuzzyScript(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runFuzzyScript(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := normalizeKinds(a.lines, a.mb1, a.mb2)
+	diff := scriptDiff(kinds, normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("shape diff:\n%s\n--- a ---\n%s", diff, strings.Join(kinds, "\n"))
+	}
+	var raw, kind string
+	for _, line := range a.lines {
+		if strings.HasPrefix(line, "* ESEARCH") {
+			raw = line
+			kind = esearchKind(line)
+		}
+	}
+	if kind != "* ESEARCH UID COUNT" {
+		t.Fatalf("esearch kind %q raw %q", kind, raw)
+	}
+	if !strings.Contains(raw, "COUNT ") || strings.Contains(kind, "0") || strings.Contains(kind, "1") {
+		t.Fatalf("count number leaked into kind %q raw %q", kind, raw)
+	}
+	if strings.Contains(raw, "RELEVANCY") {
+		t.Fatalf("relevancy %q", raw)
+	}
+}
+
 func splitAddr(addr string) (string, int, error) {
 	host, portS, err := net.SplitHostPort(addr)
 	if err != nil {
