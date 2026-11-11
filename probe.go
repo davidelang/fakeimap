@@ -1855,3 +1855,122 @@ func compareCondstore(cfg opConfig) (string, error) {
 	}
 	return diff, nil
 }
+
+// runUtf8Script is a further probe. It creates a modified UTF-7 mailbox
+// and searches with CHARSET UTF-8. The earlier scripts are unchanged.
+func runUtf8Script(host string, port int, tlsMode, user, pass string) (probeScript, error) {
+	id, _, err := freshMailboxPair()
+	if err != nil {
+		return probeScript{}, err
+	}
+	mb := id + "caf&AOk-"
+	out := probeScript{mb1: mb, mb2: mb}
+	talk, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return out, err
+	}
+	defer talk.close()
+	greet, err := talk.readLogical()
+	if err != nil {
+		return out, err
+	}
+	out.lines = append(out.lines, greet)
+	if tlsMode == "starttls" {
+		lines, err := talk.command("u0", "STARTTLS")
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return out, err
+		}
+		if len(lines) == 0 || taggedNo(lines[len(lines)-1], "u0") {
+			return out, fmt.Errorf("STARTTLS failed")
+		}
+		tlsConn := tls.Client(talk.conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.Handshake(); err != nil {
+			return out, err
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+		talk.conn = tlsConn
+		talk.r = bufio.NewReader(tlsConn)
+		talk.w = bufio.NewWriter(tlsConn)
+	}
+	fail := func(err error) (probeScript, error) {
+		_ = deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb)
+		return out, err
+	}
+	step := func(tag, cmd string, allowNo bool) error {
+		lines, err := talk.command(tag, cmd)
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return err
+		}
+		if len(lines) == 0 || (taggedNo(lines[len(lines)-1], tag) && !allowNo) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	raw := []byte("From: a@example.test\r\nTo: b@example.test\r\nSubject: apple\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nx\r\n")
+	for _, st := range []struct{ tag, cmd string }{
+		{"u1", "CAPABILITY"},
+		{"u2", "LOGIN " + quoteIMAP(user) + " " + quoteIMAP(pass)},
+		{"u3", "CAPABILITY"},
+		{"u4", "CREATE " + quoteIMAP(mb)},
+		{"u5", "LIST \"\" " + quoteIMAP(mb)},
+		{"u6", "SELECT " + quoteIMAP(mb)},
+	} {
+		if err := step(st.tag, st.cmd, false); err != nil {
+			return fail(err)
+		}
+	}
+	appendCmd := fmt.Sprintf("APPEND %s \"01-Jan-2024 00:00:00 +0000\" {%d+}\r\n%s", quoteIMAP(mb), len(raw), raw)
+	if err := step("u7", appendCmd, false); err != nil {
+		return fail(err)
+	}
+	for _, st := range []struct {
+		tag, cmd string
+		allowNo  bool
+	}{
+		{"u8", "SEARCH CHARSET UTF-8 SUBJECT apple", false},
+		{"u9", "SORT (SUBJECT) UTF-8 ALL", false},
+		{"u10", "LOGOUT", true},
+	} {
+		if err := step(st.tag, st.cmd, st.allowNo); err != nil {
+			return fail(err)
+		}
+	}
+	if err := deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func compareUtf8(cfg opConfig) (string, error) {
+	remote, err := runUtf8Script(cfg.Host, cfg.Port, cfg.TLS, cfg.Username, cfg.Password)
+	if err != nil && len(remote.lines) == 0 {
+		return "", err
+	}
+	addr, stop, serr := startProbeServer(cfg.Username, cfg.Password, cfg.Personality)
+	if serr != nil {
+		if err != nil {
+			return "", err
+		}
+		return "", serr
+	}
+	defer stop()
+	host, portS, perr := net.SplitHostPort(addr)
+	if perr != nil {
+		return "", perr
+	}
+	port, perr := strconv.Atoi(portS)
+	if perr != nil {
+		return "", perr
+	}
+	local, lerr := runUtf8Script(host, port, "none", cfg.Username, cfg.Password)
+	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
+	if err != nil && diff == "" {
+		return "", err
+	}
+	if lerr != nil && diff == "" {
+		return "", lerr
+	}
+	return diff, nil
+}

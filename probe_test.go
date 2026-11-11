@@ -264,6 +264,55 @@ func TestSortProbeEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestUtf8ProbeEmptyDiff(t *testing.T) {
+	const user, pass = "probe", "probe-secret"
+	pers := "personalities/utf8.json"
+	aAddr, aStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aStop()
+	bAddr, bStop, err := startProbeServer(user, pass, pers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bStop()
+	aHost, aPort, err := splitAddr(aAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHost, bPort, err := splitAddr(bAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := runUtf8Script(aHost, aPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runUtf8Script(bHost, bPort, "none", user, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := normalizeKinds(a.lines, a.mb1, a.mb2)
+	diff := scriptDiff(kinds, normalizeKinds(b.lines, b.mb1, b.mb2))
+	if diff != "" {
+		t.Fatalf("kind diff:\n%s\n--- a ---\n%s", diff, strings.Join(kinds, "\n"))
+	}
+	joined := strings.Join(a.lines, "\n")
+	if !strings.Contains(joined, "caf&AOk-") {
+		t.Fatalf("modified utf-7 name missing\n%s", joined)
+	}
+	have := map[string]bool{}
+	for _, k := range kinds {
+		have[k] = true
+	}
+	for _, want := range []string{"* LIST \\HasNoChildren", "* SEARCH", "* SORT"} {
+		if !have[want] {
+			t.Fatalf("missing %s in\n%s", want, strings.Join(kinds, "\n"))
+		}
+	}
+}
+
 func TestCompressProbeEmptyDiff(t *testing.T) {
 	const user, pass = "probe", "probe-secret"
 	pers := "personalities/compress.json"

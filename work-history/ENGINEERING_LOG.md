@@ -196,3 +196,7 @@
 ## 2026-11-11 - managesieve landed
 
 - sieve_listen binds a ManageSieve listener. Scripts stay in memory per account and are not executed. CHECKSCRIPT accepts a non-empty literal, returns an empty OK, and stores nothing.
+
+## 2026-11-11 - UTF8=ACCEPT
+
+- A personality that lists UTF8=ACCEPT accepts ENABLE UTF8=ACCEPT on that connection. Mailbox names stay Unicode. The wire form is modified UTF-7 until enable, then UTF-8. SEARCH CHARSET and a SORT charset are rejected only after enable. personalities/utf8.json advertises it. cyrusprobe -utf8 compares reply kinds and does not replace the earlier scripts.

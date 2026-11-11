@@ -310,11 +310,14 @@ func TestSearch(t *testing.T) {
 		t.Fatalf("gen UNSEEN %v", got)
 	}
 
-	for _, bad := range []string{"SEARCH TEXT hello", "SEARCH NEW", "SEARCH NOT SEEN", "SEARCH OR SEEN UNSEEN", "SEARCH 1", "SEARCH CHARSET UTF-8 ALL", "SEARCH HEADER FROM x"} {
+	for _, bad := range []string{"SEARCH TEXT hello", "SEARCH NEW", "SEARCH NOT SEEN", "SEARCH OR SEEN UNSEEN", "SEARCH 1", "SEARCH HEADER FROM x"} {
 		rp := cl.cmd(bad)
 		if rp.status != "BAD" {
 			t.Fatalf("%s -> %s", bad, rp.status)
 		}
+	}
+	if got := searchIDs(t, cl.cmd("SEARCH CHARSET UTF-8 ALL")); strings.Join(got, " ") != "1 2 3" {
+		t.Fatalf("CHARSET %v", got)
 	}
 	cl.cmd("NOOP").ok(t)
 }

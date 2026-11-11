@@ -65,6 +65,7 @@ var implementedCaps = map[string]struct{}{
 	"MOVE":                    {},
 	"UNSELECT":                {},
 	"ENABLE":                  {},
+	"UTF8=ACCEPT":             {},
 	"CONDSTORE":               {},
 	"QRESYNC":                 {},
 	"LIST-EXTENDED":           {},

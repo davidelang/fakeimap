@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -554,6 +555,8 @@ func (s *session) cmdEnable(cmd command) error {
 			add("QRESYNC")
 		case "CONDSTORE":
 			add("CONDSTORE")
+		case "UTF8=ACCEPT":
+			add("UTF8=ACCEPT")
 		}
 	}
 	if recognized {
@@ -566,6 +569,26 @@ func (s *session) cmdEnable(cmd command) error {
 		}
 	}
 	return s.ok(cmd.tag, "ENABLE completed")
+}
+
+// boxIn turns a wire mailbox name into the Unicode name the store keeps.
+// Before UTF8=ACCEPT, the wire form is modified UTF-7.
+func (s *session) boxIn(name string) (string, error) {
+	if s.on("UTF8=ACCEPT") {
+		if name != "" && !utf8.ValidString(name) {
+			return "", fmt.Errorf("bad mailbox name")
+		}
+		return name, nil
+	}
+	return decodeMUTF7(name)
+}
+
+// boxOut turns a stored mailbox name into the form this connection speaks.
+func (s *session) boxOut(name string) string {
+	if s.on("UTF8=ACCEPT") {
+		return name
+	}
+	return encodeMUTF7(name)
 }
 
 func (s *session) announceCondstore(how string) error {
@@ -627,6 +650,15 @@ func (s *session) cmdList(cmd command) error {
 	if parsed.hasStatus && !s.advertiseCap("LIST-STATUS") {
 		return s.bad(cmd.tag, "LIST syntax")
 	}
+	ref, err := s.boxIn(parsed.ref)
+	if err != nil {
+		return s.bad(cmd.tag, "LIST syntax")
+	}
+	pat, err := s.boxIn(parsed.pat)
+	if err != nil {
+		return s.bad(cmd.tag, "LIST syntax")
+	}
+	parsed.ref, parsed.pat = ref, pat
 	q := listQuery{
 		extended:    parsed.extended,
 		specialOnly: parsed.specialOnly,
@@ -642,11 +674,12 @@ func (s *session) cmdList(cmd command) error {
 		return s.bad(cmd.tag, "LIST syntax")
 	}
 	for _, e := range entries {
-		if err := s.sendLine(fmt.Sprintf("* LIST %s %s %s", e.flags, imapString(delim), imapAtom(e.name))); err != nil {
+		wn := s.boxOut(e.name)
+		if err := s.sendLine(fmt.Sprintf("* LIST %s %s %s", e.flags, imapString(delim), imapAtom(wn))); err != nil {
 			return err
 		}
 		if e.status != nil {
-			if err := s.sendLine(formatStatus(e.name, e.status)); err != nil {
+			if err := s.sendLine(formatStatus(wn, e.status)); err != nil {
 				return err
 			}
 		}
@@ -789,6 +822,10 @@ func (s *session) cmdStatus(cmd command) error {
 	if !ok {
 		return s.bad(cmd.tag, "STATUS syntax")
 	}
+	name, err := s.boxIn(name)
+	if err != nil {
+		return s.no(cmd.tag, "STATUS no such mailbox")
+	}
 	var items []string
 	for _, t := range cmd.args[2 : len(cmd.args)-1] {
 		if t.Kind != "atom" {
@@ -803,7 +840,7 @@ func (s *session) cmdStatus(cmd command) error {
 		}
 		return s.no(cmd.tag, "STATUS no such mailbox")
 	}
-	if err := s.sendLine(formatStatus(cn, pairs)); err != nil {
+	if err := s.sendLine(formatStatus(s.boxOut(cn), pairs)); err != nil {
 		return err
 	}
 	return s.ok(cmd.tag, "STATUS completed")
@@ -819,6 +856,10 @@ func (s *session) cmdCreate(cmd command) error {
 	name, ok := astring(cmd.args[0])
 	if !ok {
 		return s.bad(cmd.tag, "CREATE syntax")
+	}
+	name, err := s.boxIn(name)
+	if err != nil {
+		return s.no(cmd.tag, "CREATE failed")
 	}
 	var uses []string
 	if len(cmd.args) > 1 {
@@ -866,6 +907,10 @@ func (s *session) cmdDelete(cmd command) error {
 	if !ok {
 		return s.bad(cmd.tag, "DELETE syntax")
 	}
+	name, err := s.boxIn(name)
+	if err != nil {
+		return s.no(cmd.tag, "DELETE failed")
+	}
 	if err := s.srv.store.delete(s, name); err != nil {
 		return s.no(cmd.tag, "DELETE failed")
 	}
@@ -884,6 +929,14 @@ func (s *session) cmdRename(cmd command) error {
 	if !ok1 || !ok2 {
 		return s.bad(cmd.tag, "RENAME syntax")
 	}
+	a, err := s.boxIn(a)
+	if err != nil {
+		return s.no(cmd.tag, "RENAME failed")
+	}
+	b, err = s.boxIn(b)
+	if err != nil {
+		return s.no(cmd.tag, "RENAME failed")
+	}
 	if err := s.srv.store.rename(a, b); err != nil {
 		return s.no(cmd.tag, "RENAME failed")
 	}
@@ -897,6 +950,10 @@ func (s *session) cmdSelect(cmd command) error {
 	name, cond, qr, err := parseSelectArgs(cmd.args)
 	if err != nil {
 		return s.bad(cmd.tag, "syntax")
+	}
+	name, err = s.boxIn(name)
+	if err != nil {
+		return s.no(cmd.tag, cmd.name+" no such mailbox")
 	}
 	if cond || qr != nil {
 		if !s.advertiseCap("CONDSTORE") && !s.advertiseCap("QRESYNC") {
@@ -1532,6 +1589,13 @@ func (s *session) cmdSearch(cmd command) error {
 	if ret.partial && !s.advertiseCap("PARTIAL") {
 		return s.bad(cmd.tag, "SEARCH syntax")
 	}
+	hasCS, cs, rest, csErr := charsetPrefix(rest)
+	if csErr != nil {
+		return s.bad(cmd.tag, "SEARCH syntax")
+	}
+	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
+		return s.bad(cmd.tag, "SEARCH charset")
+	}
 	keys, err := parseSearch(rest)
 	if err != nil {
 		return s.bad(cmd.tag, "SEARCH bad key")
@@ -1553,6 +1617,22 @@ func (s *session) cmdSearch(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, "SEARCH completed")
+}
+
+// charsetPrefix reads a leading CHARSET astring. SEARCH uses it. After
+// UTF8=ACCEPT the caller rejects any charset.
+func charsetPrefix(toks []Token) (bool, string, []Token, error) {
+	if len(toks) == 0 || toks[0].Kind != "atom" || !strings.EqualFold(toks[0].Val, "CHARSET") {
+		return false, "", toks, nil
+	}
+	if len(toks) < 2 {
+		return false, "", nil, fmt.Errorf("syntax")
+	}
+	cs, ok := astring(toks[1])
+	if !ok || cs == "" {
+		return false, "", nil, fmt.Errorf("syntax")
+	}
+	return true, cs, toks[2:], nil
 }
 
 func knownCharset(s string) bool {
@@ -1619,10 +1699,20 @@ func (s *session) cmdSort(cmd command) error {
 		return s.bad(cmd.tag, "SORT syntax")
 	}
 	cs, ok := astring(rest[0])
-	if !ok || !knownCharset(cs) {
-		return s.bad(cmd.tag, "SORT bad charset")
+	if !ok || cs == "" {
+		return s.bad(cmd.tag, "SORT syntax")
 	}
-	keys, err := parseSearch(rest[1:])
+	var keys []searchKey
+	if s.on("UTF8=ACCEPT") && knownCharset(cs) {
+		return s.bad(cmd.tag, "SORT charset")
+	}
+	if s.on("UTF8=ACCEPT") {
+		keys, err = parseSearch(rest)
+	} else if !knownCharset(cs) {
+		return s.bad(cmd.tag, "SORT bad charset")
+	} else {
+		keys, err = parseSearch(rest[1:])
+	}
 	if err != nil {
 		return s.bad(cmd.tag, "SORT bad key")
 	}
@@ -1658,6 +1748,10 @@ func (s *session) cmdAppend(cmd command) error {
 	mbox, flags, date, body, err := parseAppend(cmd.args)
 	if err != nil {
 		return s.bad(cmd.tag, "APPEND syntax")
+	}
+	mbox, err = s.boxIn(mbox)
+	if err != nil {
+		return s.no(cmd.tag, "[TRYCREATE] APPEND no such mailbox")
 	}
 	uv, uid, err := s.srv.store.appendMsg(s, mbox, flags, date, body, s.srv.frozenTime())
 	if err != nil {
@@ -1721,6 +1815,10 @@ func (s *session) cmdCopy(cmd command) error {
 	dest, ok := astring(cmd.args[1])
 	if !ok {
 		return s.bad(cmd.tag, cmd.name+" syntax")
+	}
+	dest, err = s.boxIn(dest)
+	if err != nil {
+		return s.no(cmd.tag, "[TRYCREATE] "+cmd.name+" no such mailbox")
 	}
 	res, err := s.srv.store.copyMsgs(s, cmd.uid, set, dest, cmd.name == "MOVE")
 	if err != nil {
