@@ -29,7 +29,6 @@
     "SAVEDATE",
     "SEARCH=FUZZY",
     "SEARCHRES",
-    "SORT=DISPLAY",
     "SORT=MODSEQ",
     "SORT=UID",
     "STATUS=SIZE",

@@ -1762,6 +1762,126 @@ func runSortScript(host string, port int, tlsMode, user, pass string) (probeScri
 	return out, nil
 }
 
+// runDisplayScript is a further probe. One DISPLAYFROM key uses a display
+// name that sorts differently from the address. The earlier scripts are unchanged.
+func runDisplayScript(host string, port int, tlsMode, user, pass string) (probeScript, error) {
+	mb, _, err := freshMailboxPair()
+	if err != nil {
+		return probeScript{}, err
+	}
+	out := probeScript{mb1: mb, mb2: mb}
+	talk, err := dialProbe(host, port, tlsMode)
+	if err != nil {
+		return out, err
+	}
+	defer talk.close()
+	greet, err := talk.readLogical()
+	if err != nil {
+		return out, err
+	}
+	out.lines = append(out.lines, greet)
+	if tlsMode == "starttls" {
+		lines, err := talk.command("d0", "STARTTLS")
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return out, err
+		}
+		if len(lines) == 0 || taggedNo(lines[len(lines)-1], "d0") {
+			return out, fmt.Errorf("STARTTLS failed")
+		}
+		tlsConn := tls.Client(talk.conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.Handshake(); err != nil {
+			return out, err
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+		talk.conn = tlsConn
+		talk.r = bufio.NewReader(tlsConn)
+		talk.w = bufio.NewWriter(tlsConn)
+	}
+	fail := func(err error) (probeScript, error) {
+		_ = deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb)
+		return out, err
+	}
+	step := func(tag, cmd string, allowNo bool) error {
+		lines, err := talk.command(tag, cmd)
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return err
+		}
+		if len(lines) == 0 || (taggedNo(lines[len(lines)-1], tag) && !allowNo) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	appendRaw := func(tag string, raw []byte) error {
+		head := fmt.Sprintf("%s APPEND %s \"01-Jan-2024 00:00:00 +0000\" {%d+}\r\n", tag, quoteIMAP(mb), len(raw))
+		if _, err := io.WriteString(talk.w, head); err != nil {
+			return err
+		}
+		if _, err := talk.w.Write(raw); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(talk.w, "\r\n"); err != nil {
+			return err
+		}
+		if err := talk.w.Flush(); err != nil {
+			return err
+		}
+		var lines []string
+		for {
+			line, err := talk.readLogical()
+			if err != nil {
+				out.lines = append(out.lines, lines...)
+				return err
+			}
+			lines = append(lines, line)
+			if strings.HasPrefix(line, tag+" ") {
+				break
+			}
+		}
+		out.lines = append(out.lines, lines...)
+		if taggedNo(lines[len(lines)-1], tag) {
+			return fmt.Errorf("%s failed", tag)
+		}
+		return nil
+	}
+	msgs := []string{
+		"From: Zed Person <amy@example.test>\r\nTo: dest@example.test\r\nSubject: one\r\nDate: Tue, 02 Jan 2024 00:00:00 +0000\r\n\r\na",
+		"From: Amy Person <zed@example.test>\r\nTo: dest@example.test\r\nSubject: two\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nb",
+	}
+	for _, st := range []struct{ tag, cmd string }{
+		{"d1", "CAPABILITY"},
+		{"d2", "LOGIN " + quoteIMAP(user) + " " + quoteIMAP(pass)},
+		{"d3", "CAPABILITY"},
+		{"d4", "CREATE " + quoteIMAP(mb)},
+		{"d5", "SELECT " + quoteIMAP(mb)},
+	} {
+		if err := step(st.tag, st.cmd, false); err != nil {
+			return fail(err)
+		}
+	}
+	for i, raw := range msgs {
+		if err := appendRaw(fmt.Sprintf("d%d", i+6), []byte(raw)); err != nil {
+			return fail(err)
+		}
+	}
+	for _, st := range []struct {
+		tag, cmd string
+		allowNo  bool
+	}{
+		{"d8", "UID SORT (DISPLAYFROM) UTF-8 ALL", false},
+		{"d9", "LOGOUT", true},
+	} {
+		if err := step(st.tag, st.cmd, st.allowNo); err != nil {
+			return fail(err)
+		}
+	}
+	if err := deleteProbeMailboxes(host, port, tlsMode, user, pass, mb, mb); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 func threadShape(line string) string {
 	rest := strings.TrimSpace(strings.TrimPrefix(line, "* THREAD"))
 	var b strings.Builder
@@ -1930,6 +2050,38 @@ func compareThread(cfg opConfig) (string, error) {
 		return "", perr
 	}
 	local, lerr := runThreadScript(host, port, "none", cfg.Username, cfg.Password)
+	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
+	if err != nil && diff == "" {
+		return "", err
+	}
+	if lerr != nil && diff == "" {
+		return "", lerr
+	}
+	return diff, nil
+}
+
+func compareDisplay(cfg opConfig) (string, error) {
+	remote, err := runDisplayScript(cfg.Host, cfg.Port, cfg.TLS, cfg.Username, cfg.Password)
+	if err != nil && len(remote.lines) == 0 {
+		return "", err
+	}
+	addr, stop, serr := startProbeServer(cfg.Username, cfg.Password, cfg.Personality)
+	if serr != nil {
+		if err != nil {
+			return "", err
+		}
+		return "", serr
+	}
+	defer stop()
+	host, portS, perr := net.SplitHostPort(addr)
+	if perr != nil {
+		return "", perr
+	}
+	port, perr := strconv.Atoi(portS)
+	if perr != nil {
+		return "", perr
+	}
+	local, lerr := runDisplayScript(host, port, "none", cfg.Username, cfg.Password)
 	diff := scriptDiff(normalizeKinds(remote.lines, remote.mb1, remote.mb2), normalizeKinds(local.lines, local.mb1, local.mb2))
 	if err != nil && diff == "" {
 		return "", err

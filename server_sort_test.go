@@ -18,7 +18,7 @@ func TestSortPersonality(t *testing.T) {
 	if p.SortPartialCountOnly {
 		t.Fatal("sort.json returns no window")
 	}
-	for _, c := range []string{"SORT", "ESORT"} {
+	for _, c := range []string{"SORT", "ESORT", "SORT=DISPLAY"} {
 		if !listed(p.PreLogin, c) || !listed(p.PostLogin, c) {
 			t.Fatalf("sort.json missing %s", c)
 		}
@@ -30,15 +30,18 @@ func TestSortPersonality(t *testing.T) {
 	if !cyrus.SortPartialCountOnly {
 		t.Fatal("cyrus personality should omit the PARTIAL window")
 	}
-	for _, c := range []string{"SORT", "ESORT"} {
+	for _, c := range []string{"SORT", "ESORT", "SORT=DISPLAY"} {
 		if !listed(cyrus.PreLogin, c) || !listed(cyrus.PostLogin, c) {
 			t.Fatalf("cyrus personality missing %s", c)
 		}
 	}
-	for _, c := range []string{"SORT=DISPLAY", "SORT=MODSEQ", "SORT=UID"} {
+	for _, c := range []string{"SORT=MODSEQ", "SORT=UID"} {
 		if listed(cyrus.PreLogin, c) || listed(cyrus.PostLogin, c) || capImplemented(c) {
 			t.Fatalf("%s is implemented or advertised", c)
 		}
+	}
+	if !capImplemented("SORT=DISPLAY") {
+		t.Fatal("SORT=DISPLAY is not implemented")
 	}
 }
 
@@ -48,7 +51,7 @@ func TestSortKeys(t *testing.T) {
 	cl.cmd("LOGIN demo secret").ok(t)
 	caps := cl.cmd("CAPABILITY")
 	caps.ok(t)
-	requireCaps(t, capsOf(caps.untagged[0]), []string{"SORT", "ESORT"})
+	requireCaps(t, capsOf(caps.untagged[0]), []string{"SORT", "ESORT", "SORT=DISPLAY"})
 
 	cl.cmd("CREATE SortBox").ok(t)
 	cl.cmd("SELECT SortBox").ok(t)
@@ -242,6 +245,73 @@ func TestSortRequiresCaps(t *testing.T) {
 	}
 	if got := sortIDs(t, cl.cmd("SORT (ARRIVAL) UTF-8 ALL")); got != "1 2" {
 		t.Fatalf("plain sort without ESORT %q", got)
+	}
+}
+
+func TestSortDisplay(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/sort.json"})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("CREATE DispBox").ok(t)
+	cl.cmd("SELECT DispBox").ok(t)
+	raws := []string{
+		sortMsg("Zed Person <amy@e.com>", "Amy Person <zed@e.com>", "", "a", "Mon, 01 Jan 2020 00:00:00 +0000", "a"),
+		sortMsg("=?utf-8?Q?amy_person?= <zed@e.com>", "zed person <amy@e.com>", "", "b", "Tue, 02 Jan 2020 00:00:00 +0000", "b"),
+		sortMsg("Mid <mid@e.com>", "mid@e.com", "", "c", "Wed, 03 Jan 2020 00:00:00 +0000", "c"),
+		sortMsg("mid <bbb@e.com>", "Mid <aaa@e.com>", "", "d", "Thu, 04 Jan 2020 00:00:00 +0000", "d"),
+	}
+	for i, raw := range raws {
+		cl.cmd(fmt.Sprintf("APPEND DispBox \"0%d-Mar-2020 00:00:00 +0000\" {%d+}\r\n%s", i+1, len(raw), raw)).ok(t)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (FROM) UTF-8 ALL")); got != "1 4 3 2" {
+		t.Fatalf("FROM %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (TO) UTF-8 ALL")); got != "4 2 3 1" {
+		t.Fatalf("TO %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (DISPLAYFROM) UTF-8 ALL")); got != "2 3 4 1" {
+		t.Fatalf("DISPLAYFROM %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (REVERSE DISPLAYFROM) UTF-8 ALL")); got != "1 3 4 2" {
+		t.Fatalf("REVERSE DISPLAYFROM %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (DISPLAYTO) US-ASCII ALL")); got != "1 4 3 2" {
+		t.Fatalf("DISPLAYTO %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (REVERSE DISPLAYTO) UTF-8 ALL")); got != "2 3 4 1" {
+		t.Fatalf("REVERSE DISPLAYTO %q", got)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "no-display.json")
+	p, err := loadPersonality("personalities/sort.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.PreLogin = dropCap(p.PreLogin, "SORT=DISPLAY")
+	p.PostLogin = dropCap(p.PostLogin, "SORT=DISPLAY")
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, bound = start(t, Config{Listen: "127.0.0.1:0", Personality: path})
+	cl = dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("CREATE PlainBox").ok(t)
+	cl.cmd("SELECT PlainBox").ok(t)
+	one := sortMsg("Amy <amy@e.com>", "Zed <zed@e.com>", "", "e", "Mon, 01 Jan 2020 00:00:00 +0000", "e")
+	cl.cmd(fmt.Sprintf("APPEND PlainBox \"05-Mar-2020 00:00:00 +0000\" {%d+}\r\n%s", len(one), one)).ok(t)
+	if cl.cmd("UID SORT (DISPLAYFROM) UTF-8 ALL").status != "BAD" {
+		t.Fatal("DISPLAYFROM was accepted")
+	}
+	if cl.cmd("SORT (REVERSE DISPLAYTO) UTF-8 ALL").status != "BAD" {
+		t.Fatal("DISPLAYTO was accepted")
+	}
+	if got := sortIDs(t, cl.cmd("SORT (FROM) UTF-8 ALL")); got != "1" {
+		t.Fatalf("FROM without SORT=DISPLAY %q", got)
 	}
 }
 

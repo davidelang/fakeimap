@@ -32,7 +32,8 @@
     "PARTIAL",
     "COMPRESS=DEFLATE",
     "SORT",
-    "ESORT"
+    "ESORT",
+    "SORT=DISPLAY"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -54,7 +55,8 @@
     "PARTIAL",
     "COMPRESS=DEFLATE",
     "SORT",
-    "ESORT"
+    "ESORT",
+    "SORT=DISPLAY"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

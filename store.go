@@ -19,21 +19,23 @@ import (
 // genUID is the id baked into the body, so a copy keeps the same bytes
 // without storing them.
 type Message struct {
-	uid        uint32
-	flags      map[string]struct{}
-	keywords   []string
-	recent     bool
-	internal   time.Time
-	raw        []byte
-	from       string
-	to         string
-	cc         string
-	subject    string
-	msgID      string
-	inReplyTo  string
-	references string
-	size       int
-	sent       time.Time
+	uid         uint32
+	flags       map[string]struct{}
+	keywords    []string
+	recent      bool
+	internal    time.Time
+	raw         []byte
+	from        string
+	to          string
+	displayFrom string // phrase of the first From address; empty sorts as the address
+	displayTo   string // phrase of the first To address; empty sorts as the address
+	cc          string
+	subject     string
+	msgID       string
+	inReplyTo   string
+	references  string
+	size        int
+	sent        time.Time
 
 	generated bool
 	genSeed   string
@@ -1376,6 +1378,26 @@ func addrMailbox(h string) string {
 	return h
 }
 
+// addrPhrase is the display name of the first address. Empty when it has none.
+func addrPhrase(h string) string {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return ""
+	}
+	addrs, err := mail.ParseAddressList(h)
+	if err != nil || len(addrs) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(addrs[0].Name)
+}
+
+func displaySortKey(header, phrase string) string {
+	if phrase != "" {
+		return phrase
+	}
+	return addrMailbox(header)
+}
+
 func (m *Message) sortDate() time.Time {
 	if !m.sent.IsZero() {
 		return m.sent
@@ -1403,6 +1425,10 @@ func lessSort(a, b *Message, c *sortCrit) bool {
 		cmp = strings.Compare(strings.ToLower(addrMailbox(a.from)), strings.ToLower(addrMailbox(b.from)))
 	case "TO":
 		cmp = strings.Compare(strings.ToLower(addrMailbox(a.to)), strings.ToLower(addrMailbox(b.to)))
+	case "DISPLAYFROM":
+		cmp = strings.Compare(strings.ToLower(displaySortKey(a.from, a.displayFrom)), strings.ToLower(displaySortKey(b.from, b.displayFrom)))
+	case "DISPLAYTO":
+		cmp = strings.Compare(strings.ToLower(displaySortKey(a.to, a.displayTo)), strings.ToLower(displaySortKey(b.to, b.displayTo)))
 	case "CC":
 		cmp = strings.Compare(strings.ToLower(addrMailbox(a.cc)), strings.ToLower(addrMailbox(b.cc)))
 	case "SUBJECT":
@@ -1779,6 +1805,8 @@ func indexOverlay(m *Message) {
 	}
 	m.from = decodeHdr(msg.Header.Get("From"))
 	m.to = decodeHdr(msg.Header.Get("To"))
+	m.displayFrom = addrPhrase(m.from)
+	m.displayTo = addrPhrase(m.to)
 	m.cc = decodeHdr(msg.Header.Get("Cc"))
 	m.subject = decodeHdr(msg.Header.Get("Subject"))
 	m.msgID = firstMsgID(msg.Header.Get("Message-ID"))
@@ -1845,23 +1873,25 @@ func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw 
 func cloneMsg(src *Message, uid uint32) *Message {
 	flags, kw := copyFlags(src)
 	nm := &Message{
-		uid:        uid,
-		flags:      flags,
-		keywords:   kw,
-		recent:     true,
-		internal:   src.internal,
-		from:       src.from,
-		to:         src.to,
-		cc:         src.cc,
-		subject:    src.subject,
-		msgID:      src.msgID,
-		inReplyTo:  src.inReplyTo,
-		references: src.references,
-		size:       src.size,
-		sent:       src.sent,
-		generated:  src.generated,
-		genSeed:    src.genSeed,
-		genUID:     src.genUID,
+		uid:         uid,
+		flags:       flags,
+		keywords:    kw,
+		recent:      true,
+		internal:    src.internal,
+		from:        src.from,
+		to:          src.to,
+		displayFrom: src.displayFrom,
+		displayTo:   src.displayTo,
+		cc:          src.cc,
+		subject:     src.subject,
+		msgID:       src.msgID,
+		inReplyTo:   src.inReplyTo,
+		references:  src.references,
+		size:        src.size,
+		sent:        src.sent,
+		generated:   src.generated,
+		genSeed:     src.genSeed,
+		genUID:      src.genUID,
 	}
 	if src.generated {
 		nm.raw = nil
@@ -2179,16 +2209,18 @@ func loadStore(dir, delim string) (*Store, error) {
 			for i := 0; i < g.Count; i++ {
 				uid := mb.uidNext
 				m := &Message{
-					uid:       uid,
-					flags:     map[string]struct{}{},
-					recent:    true,
-					internal:  start.Add(time.Duration(int64(i)*int64(g.StepSeconds)) * time.Second),
-					from:      g.From,
-					to:        g.To,
-					subject:   fmt.Sprintf("%s %d", g.Subject, uid),
-					generated: true,
-					genSeed:   g.Seed,
-					genUID:    uid,
+					uid:         uid,
+					flags:       map[string]struct{}{},
+					recent:      true,
+					internal:    start.Add(time.Duration(int64(i)*int64(g.StepSeconds)) * time.Second),
+					from:        g.From,
+					to:          g.To,
+					displayFrom: addrPhrase(g.From),
+					displayTo:   addrPhrase(g.To),
+					subject:     fmt.Sprintf("%s %d", g.Subject, uid),
+					generated:   true,
+					genSeed:     g.Seed,
+					genUID:      uid,
 				}
 				m.size = len(m.bytes())
 				st.stampMsg(m)

@@ -211,3 +211,14 @@
 
 - THREAD and UID THREAD answer REFERENCES, REFS, and ORDEREDSUBJECT. REFS uses the REFERENCES tree. personalities/thread.json advertises the three. After UTF8=ACCEPT a charset argument is BAD.
 - The already-running liveimap-cyrus-3137 thread-shape diff was empty, so those three capabilities are on cyrus-3137.json and gone from the gaps file. UTF8=ACCEPT was not added. The container was not recreated and was not stopped. cyrusprobe -thread does not replace the earlier scripts.
+
+## 2026-11-11 - SORT=DISPLAY
+
+- Approved plan: sandbox/plans/sort-display-20261111-0822-plan.md
+- Work: accept DISPLAYFROM and DISPLAYTO when SORT=DISPLAY is advertised, sorting by the address phrase and falling back to the address. FROM and TO stay address order. personalities/sort.json advertises it. cyrusprobe -display is a further script and does not replace the earlier scripts. SORT=UID and SORT=MODSEQ stay gaps.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - SORT=DISPLAY landed
+
+- DISPLAYFROM and DISPLAYTO sort by the address phrase, case-insensitively, and use the address when the phrase is empty. FROM and TO stay address order. Without SORT=DISPLAY those keys are BAD. personalities/sort.json advertises SORT=DISPLAY.
+- The already-running liveimap-cyrus-3137 display kind diff was empty, so SORT=DISPLAY is on personalities/cyrus-3137.json and gone from the gaps file. SORT=UID and SORT=MODSEQ stay unimplemented. The container was not recreated and was not stopped. cyrusprobe -display does not replace the earlier scripts.

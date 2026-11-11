@@ -16,10 +16,11 @@ func main() {
 	esearch := false
 	compress := false
 	sortProbe := false
+	displayProbe := false
 	utf8Probe := false
 	threadProbe := false
 	args := os.Args[1:]
-	usage := "usage: cyrusprobe [-gaps gaps.json] [-condstore] [-list] [-esearch] [-compress] [-sort] [-utf8] [-thread] operator.json"
+	usage := "usage: cyrusprobe [-gaps gaps.json] [-condstore] [-list] [-esearch] [-compress] [-sort] [-display] [-utf8] [-thread] operator.json"
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "-gaps":
@@ -43,6 +44,9 @@ func main() {
 			args = args[1:]
 		case "-sort":
 			sortProbe = true
+			args = args[1:]
+		case "-display":
+			displayProbe = true
 			args = args[1:]
 		case "-utf8":
 			utf8Probe = true
@@ -69,6 +73,9 @@ func main() {
 		modes++
 	}
 	if sortProbe {
+		modes++
+	}
+	if displayProbe {
 		modes++
 	}
 	if utf8Probe {
@@ -105,6 +112,19 @@ func main() {
 	}
 	if utf8Probe {
 		diff, err := compareUtf8(cfg)
+		if diff != "" {
+			fmt.Fprint(os.Stdout, diff)
+			os.Exit(1)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "diff empty")
+		return
+	}
+	if displayProbe {
+		diff, err := compareDisplay(cfg)
 		if diff != "" {
 			fmt.Fprint(os.Stdout, diff)
 			os.Exit(1)
