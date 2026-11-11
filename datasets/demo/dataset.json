@@ -25,7 +25,7 @@
       ]
     },
     {
-      "name": "INBOX.Generated",
+      "name": "INBOX/Generated",
       "uid_validity": 2,
       "generated": {
         "count": 3,

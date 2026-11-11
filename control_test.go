@@ -393,7 +393,7 @@ func TestControlPersonality(t *testing.T) {
 		t.Fatalf("greeting %q", old.greeting)
 	}
 	old.cmd("LOGIN demo secret").ok(t)
-	old.cmd("SELECT INBOX.Generated").ok(t)
+	old.cmd("SELECT INBOX/Generated").ok(t)
 	before := strings.Join(fetchKeys(t, fetchLine(t, old.cmd("FETCH 1 (RFC822.SIZE UID FLAGS INTERNALDATE)").mustOK(t))), " ")
 	if before != "FLAGS UID INTERNALDATE RFC822.SIZE" {
 		t.Fatalf("order before %s", before)
@@ -422,7 +422,7 @@ func TestControlPersonality(t *testing.T) {
 		t.Fatalf("new greeting %q", neu.greeting)
 	}
 	neu.cmd("LOGIN demo secret").ok(t)
-	neu.cmd("SELECT INBOX.Generated").ok(t)
+	neu.cmd("SELECT INBOX/Generated").ok(t)
 	ord := strings.Join(fetchKeys(t, fetchLine(t, neu.cmd("FETCH 1 (RFC822.SIZE UID FLAGS INTERNALDATE)").mustOK(t))), " ")
 	if ord != "RFC822.SIZE FLAGS UID INTERNALDATE" {
 		t.Fatalf("new order %s", ord)

@@ -41,6 +41,20 @@ func decodeHdr(s string) string {
 	return d
 }
 
+// imapAtom returns an atom when s is one, otherwise a quoted string or literal.
+func imapAtom(s string) string {
+	if s == "" {
+		return `""`
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= 0x20 || c >= 0x7f || strings.ContainsRune("(){%*\"\\]", rune(c)) {
+			return imapString(s)
+		}
+	}
+	return s
+}
+
 func imapString(s string) string {
 	if s == "" {
 		return `""`

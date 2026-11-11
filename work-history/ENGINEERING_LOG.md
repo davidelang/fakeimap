@@ -52,3 +52,28 @@
 
 - Approved plan: sandbox/plans/faults-control-20261111-0048-plan.md
 - Work: mode-0600 Unix control socket (reset, personality, dataset, inject, accounts, clock) and armed reply, reorder, and certificate faults
+
+## 2026-11-11 - cyrus probe execution start
+
+- Approved plan: sandbox/plans/cyrus-probe-20261111-0136-plan.md
+- Work: separate probe command, operator config example, self-test of one script against two local servers, then match Cyrus 3.13.7 reply shapes for commands this binary already implements
+- make stays Docker-free; lab password stays out of the repo and this log
+
+## 2026-11-11 - cyrus probe blocked on a running lab container
+
+- Approved plan: sandbox/plans/cyrus-probe-20261111-0136-plan.md
+- liveimap-cyrus-3137 is already running. It was not stopped and not recreated. The Cyrus probe did not run, and the personality was not invented.
+- Probe command, empty-password example, self-test, and docs are in the working tree and are not committed.
+
+## 2026-11-11 - probe the running Cyrus container
+
+- Approved plan: sandbox/plans/cyrus-probe-running-20261111-0153-plan.md
+- Work: keep the uncommitted probe, run it against the already-running liveimap-cyrus-3137 published IMAP port, and match reply shapes. Do not recreate or stop that container.
+- The lab password stays in the gitignored operator file and out of this log.
+
+## 2026-11-11 - Cyrus session probe landed
+
+- Approved plan: sandbox/plans/cyrus-probe-running-20261111-0153-plan.md
+- Separate probe matched the already-running liveimap-cyrus-3137 on its published IMAP port. The container was not recreated and was not stopped.
+- Personality fields record the Cyrus reply shapes this binary already implements. Unimplemented capabilities stay in personalities/cyrus-3137.gaps.json and are not advertised.
+- The lab password stayed in the gitignored operator file.

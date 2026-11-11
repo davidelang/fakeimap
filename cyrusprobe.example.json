@@ -1,0 +1,8 @@
+{
+  "host": "127.0.0.1",
+  "port": 143,
+  "tls": "none",
+  "username": "user@example.test",
+  "password": "",
+  "personality": "personalities/cyrus-3137.json"
+}

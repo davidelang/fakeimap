@@ -32,3 +32,5 @@ app/src/main/res/values-*/strings.xml
 
 # fakeimap server binary (make)
 /fakeimap
+/cyrusprobe
+cyrusprobe.local.json

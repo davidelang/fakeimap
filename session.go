@@ -113,7 +113,11 @@ func (s *session) bad(tag, text string) error {
 
 func (s *session) serve() {
 	defer s.srv.store.deselect(s)
-	greet := fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(s.caps(), " "), s.pers.Greeting)
+	greetCaps := s.caps()
+	if len(s.pers.GreetingCaps) > 0 {
+		greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.hasCert)
+	}
+	greet := fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(greetCaps, " "), s.pers.Greeting)
 	if err := s.sendLine(greet); err != nil {
 		return
 	}
@@ -464,7 +468,14 @@ func (s *session) cmdNamespace(cmd command) error {
 		return s.bad(cmd.tag, "NAMESPACE syntax")
 	}
 	d := imapString(s.pers.Delimiter)
-	if err := s.sendLine(fmt.Sprintf(`* NAMESPACE (("" %s)) NIL NIL`, d)); err != nil {
+	other, shared := "NIL", "NIL"
+	if s.pers.OtherUsers != "" {
+		other = fmt.Sprintf(`((%s %s))`, imapString(s.pers.OtherUsers), d)
+	}
+	if s.pers.SharedFolders != "" {
+		shared = fmt.Sprintf(`((%s %s))`, imapString(s.pers.SharedFolders), d)
+	}
+	if err := s.sendLine(fmt.Sprintf(`* NAMESPACE (("" %s)) %s %s`, d, other, shared)); err != nil {
 		return err
 	}
 	return s.ok(cmd.tag, "NAMESPACE completed")
@@ -487,7 +498,7 @@ func (s *session) cmdList(cmd command) error {
 		return s.bad(cmd.tag, "LIST syntax")
 	}
 	for _, e := range entries {
-		if err := s.sendLine(fmt.Sprintf("* LIST %s %s %s", e.flags, imapString(delim), imapString(e.name))); err != nil {
+		if err := s.sendLine(fmt.Sprintf("* LIST %s %s %s", e.flags, imapString(delim), imapAtom(e.name))); err != nil {
 			return err
 		}
 	}
@@ -601,33 +612,7 @@ func (s *session) cmdSelect(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, cmd.name+" no such mailbox")
 	}
-	if err := s.sendLine(`* FLAGS (\Answered \Flagged \Deleted \Seen \Draft \Recent)`); err != nil {
-		return err
-	}
-	if info.readOnly {
-		if err := s.sendLine(`* OK [PERMANENTFLAGS ()] Read-only mailbox`); err != nil {
-			return err
-		}
-	} else {
-		if err := s.sendLine(`* OK [PERMANENTFLAGS (\Answered \Flagged \Deleted \Seen \Draft \*)] Permanent flags`); err != nil {
-			return err
-		}
-	}
-	if err := s.sendLine(fmt.Sprintf("* %d EXISTS", info.exists)); err != nil {
-		return err
-	}
-	if err := s.sendLine(fmt.Sprintf("* %d RECENT", info.recent)); err != nil {
-		return err
-	}
-	if info.unseen > 0 {
-		if err := s.sendLine(fmt.Sprintf("* OK [UNSEEN %d] First unseen", info.unseen)); err != nil {
-			return err
-		}
-	}
-	if err := s.sendLine(fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid", info.uidValidity)); err != nil {
-		return err
-	}
-	if err := s.sendLine(fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID", info.uidNext)); err != nil {
+	if err := s.writeSelect(info); err != nil {
 		return err
 	}
 	mode := "READ-WRITE"
@@ -635,6 +620,53 @@ func (s *session) cmdSelect(cmd command) error {
 		mode = "READ-ONLY"
 	}
 	return s.sendLine(fmt.Sprintf("%s OK [%s] %s completed", cmd.tag, mode, cmd.name))
+}
+
+func (s *session) writeSelect(info selectInfo) error {
+	order := s.pers.SelectOrder
+	if len(order) == 0 {
+		order = []string{"FLAGS", "PERMANENTFLAGS", "EXISTS", "RECENT", "UNSEEN", "UIDVALIDITY", "UIDNEXT"}
+	}
+	flags := `\Answered \Flagged \Deleted \Seen \Draft \Recent`
+	if s.pers.SelectFlags != "" {
+		flags = s.pers.SelectFlags
+	}
+	perm := `\Answered \Flagged \Deleted \Seen \Draft \*`
+	if s.pers.PermanentFlags != "" {
+		perm = s.pers.PermanentFlags
+	}
+	for _, item := range order {
+		var line string
+		switch item {
+		case "FLAGS":
+			line = "* FLAGS (" + flags + ")"
+		case "PERMANENTFLAGS":
+			if info.readOnly {
+				line = `* OK [PERMANENTFLAGS ()] Read-only mailbox`
+			} else {
+				line = "* OK [PERMANENTFLAGS (" + perm + ")] Permanent flags"
+			}
+		case "EXISTS":
+			line = fmt.Sprintf("* %d EXISTS", info.exists)
+		case "RECENT":
+			line = fmt.Sprintf("* %d RECENT", info.recent)
+		case "UNSEEN":
+			if info.unseen <= 0 {
+				continue
+			}
+			line = fmt.Sprintf("* OK [UNSEEN %d] First unseen", info.unseen)
+		case "UIDVALIDITY":
+			line = fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid", info.uidValidity)
+		case "UIDNEXT":
+			line = fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID", info.uidNext)
+		default:
+			continue
+		}
+		if err := s.sendLine(line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *session) cmdFetch(cmd command) error {
@@ -656,13 +688,17 @@ func (s *session) cmdFetch(cmd command) error {
 		return s.bad(cmd.tag, "FETCH bad item")
 	}
 	for _, sn := range snaps {
-		if err := s.sendRaw([]byte(s.formatFetch(sn, items))); err != nil {
+		use := items
+		if s.pers.FetchSeenFlags && sn.seenEvent != 0 && !itemListed(items, "FLAGS") {
+			use = append([]string{"FLAGS"}, items...)
+		}
+		if err := s.sendRaw([]byte(s.formatFetch(sn, use))); err != nil {
 			return err
 		}
 	}
 	// FLAGS was not requested. One extra response carries \Seen,
 	// and UID only when this is a UID command.
-	if !itemListed(items, "FLAGS") {
+	if !s.pers.FetchSeenFlags && !itemListed(items, "FLAGS") {
 		var last uint64
 		for _, sn := range snaps {
 			if sn.seenEvent == 0 {
@@ -693,7 +729,7 @@ func (s *session) formatFetch(sn fetchSnap, items []string) string {
 	}
 	var pieces []piece
 	for i, it := range items {
-		pieces = append(pieces, piece{s.itemRank(it), i, fetchItemText(it, sn)})
+		pieces = append(pieces, piece{s.itemRank(it), i, s.fetchItemText(it, sn)})
 	}
 	sort.SliceStable(pieces, func(a, b int) bool { return pieces[a].rank < pieces[b].rank })
 	var b strings.Builder
@@ -708,7 +744,7 @@ func (s *session) formatFetch(sn fetchSnap, items []string) string {
 	return b.String()
 }
 
-func fetchItemText(item string, sn fetchSnap) string {
+func (s *session) fetchItemText(item string, sn fetchSnap) string {
 	switch item {
 	case "FLAGS":
 		return "FLAGS " + sn.flags
@@ -734,12 +770,16 @@ func fetchItemText(item string, sn fetchSnap) string {
 		return "RFC822.TEXT " + literal(body)
 	}
 	if strings.HasPrefix(item, "BODY[") || strings.HasPrefix(item, "BODY.PEEK[") {
-		return bodySection(item, sn.raw)
+		return bodySection(item, sn.raw, s.pers.FetchPeekBody)
 	}
 	return item + " NIL"
 }
 
-func bodySection(item string, raw []byte) string {
+func bodySection(item string, raw []byte, peekAsBody bool) string {
+	respName := item
+	if peekAsBody && strings.HasPrefix(item, "BODY.PEEK") {
+		respName = "BODY" + item[len("BODY.PEEK"):]
+	}
 	specPart := item
 	if strings.HasPrefix(item, "BODY.PEEK") {
 		specPart = "BODY" + item[len("BODY.PEEK"):]
@@ -747,7 +787,7 @@ func bodySection(item string, raw []byte) string {
 	lb := strings.IndexByte(specPart, '[')
 	rb := strings.IndexByte(specPart, ']')
 	if lb < 0 || rb < lb {
-		return item + " NIL"
+		return respName + " NIL"
 	}
 	spec := specPart[lb+1 : rb]
 	partial := ""
@@ -756,13 +796,13 @@ func bodySection(item string, raw []byte) string {
 	}
 	b, ok := sectionBytes(raw, spec)
 	if !ok {
-		return item + " NIL"
+		return respName + " NIL"
 	}
 	b, ok = applyPartial(b, partial)
 	if !ok {
-		return item + " NIL"
+		return respName + " NIL"
 	}
-	return item + " " + literal(b)
+	return respName + " " + literal(b)
 }
 
 func (s *session) cmdStore(cmd command) error {
@@ -923,6 +963,18 @@ func (s *session) cmdCopy(cmd command) error {
 			return s.no(cmd.tag, "[TRYCREATE] "+cmd.name+" no such mailbox")
 		}
 		return s.no(cmd.tag, cmd.name+" failed")
+	}
+	if cmd.name == "MOVE" && s.pers.MoveCopyUIDUntagged && len(res.src) > 0 {
+		if err := s.sendLine(fmt.Sprintf("* OK [COPYUID %d %s %s] %s",
+			res.uidv, formatUIDSet(res.src), formatUIDSet(res.dst), cmd.name)); err != nil {
+			return err
+		}
+		for _, line := range res.lines {
+			if err := s.sendLine(line); err != nil {
+				return err
+			}
+		}
+		return s.ok(cmd.tag, cmd.name+" completed")
 	}
 	for _, line := range res.lines {
 		if err := s.sendLine(line); err != nil {

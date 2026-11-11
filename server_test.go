@@ -36,10 +36,10 @@ func TestPersonalityData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Delimiter != "." || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
+	if p.Delimiter != "/" || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
 		t.Fatalf("personality fields: %+v", p)
 	}
-	want := []string{"IMAP4rev1", "LITERAL+", "IDLE", "NAMESPACE", "UIDPLUS", "MOVE", "UNSELECT", "ENABLE", "SASL-IR", "AUTH=PLAIN"}
+	want := []string{"IMAP4rev1", "AUTH=PLAIN", "ENABLE", "IDLE", "LITERAL+", "MOVE", "NAMESPACE", "SASL-IR", "UIDPLUS", "UNSELECT"}
 	if strings.Join(p.PreLogin, " ") != strings.Join(want, " ") {
 		t.Fatalf("pre-login %#v", p.PreLogin)
 	}
@@ -119,7 +119,12 @@ func TestCleartextAuthAndCaps(t *testing.T) {
 	})
 	cl := dial(t, bound.Listen)
 	pre := capsOf(cl.greeting)
-	requireCaps(t, pre, []string{"IMAP4rev1", "LITERAL+", "IDLE", "NAMESPACE", "UIDPLUS", "MOVE", "UNSELECT", "ENABLE", "SASL-IR", "AUTH=PLAIN", "STARTTLS"})
+	requireCaps(t, pre, []string{"IMAP4rev1", "AUTH=PLAIN", "ENABLE", "LITERAL+", "SASL-IR", "STARTTLS"})
+	for _, c := range pre {
+		if strings.EqualFold(c, "IDLE") || strings.EqualFold(c, "NAMESPACE") {
+			t.Fatalf("greeting cap %s", c)
+		}
+	}
 	forbidCaps(t, pre)
 	capRp := cl.cmd("CAPABILITY")
 	capRp.ok(t)
@@ -132,9 +137,9 @@ func TestCleartextAuthAndCaps(t *testing.T) {
 	good := cl.cmd("LOGIN demo secret")
 	good.ok(t)
 	post := capsOf(good.tagLine)
-	requireCaps(t, post, []string{"IMAP4rev1", "LITERAL+", "IDLE", "NAMESPACE", "UIDPLUS", "MOVE", "UNSELECT", "ENABLE", "SASL-IR"})
+	requireCaps(t, post, []string{"IMAP4rev1", "LITERAL+", "IDLE", "NAMESPACE", "UIDPLUS", "MOVE", "UNSELECT", "ENABLE"})
 	for _, c := range post {
-		if strings.EqualFold(c, "AUTH=PLAIN") || strings.EqualFold(c, "STARTTLS") || strings.Contains(strings.ToUpper(c), "SCRAM") {
+		if strings.EqualFold(c, "AUTH=PLAIN") || strings.EqualFold(c, "STARTTLS") || strings.EqualFold(c, "SASL-IR") || strings.Contains(strings.ToUpper(c), "SCRAM") {
 			t.Fatalf("post-login cap %s in %v", c, post)
 		}
 	}
@@ -281,7 +286,7 @@ func TestSearch(t *testing.T) {
 		t.Fatalf("UNDELETED %v", got)
 	}
 
-	cl.cmd("SELECT INBOX.Generated").ok(t)
+	cl.cmd("SELECT INBOX/Generated").ok(t)
 	if got := searchIDs(t, cl.cmd("SEARCH ON 01-Jan-2020")); strings.Join(got, " ") != "1" {
 		t.Fatalf("gen ON %v", got)
 	}
@@ -320,30 +325,39 @@ func TestMailboxFetchAndStore(t *testing.T) {
 	cl.cmd("LOGIN demo secret").ok(t)
 	ns := cl.cmd("NAMESPACE")
 	ns.ok(t)
-	if len(ns.untagged) != 1 || ns.untagged[0] != `* NAMESPACE (("" ".")) NIL NIL` {
+	if len(ns.untagged) != 1 || ns.untagged[0] != `* NAMESPACE (("" "/")) (("Other Users/" "/")) (("Shared Folders/" "/"))` {
 		t.Fatalf("namespace %q", ns.untagged)
 	}
 	root := cl.cmd(`LIST "" ""`)
 	root.ok(t)
-	if len(root.untagged) != 1 || !strings.Contains(root.untagged[0], `\Noselect`) || !strings.Contains(root.untagged[0], `"."`) {
+	if len(root.untagged) != 1 || !strings.Contains(root.untagged[0], `\Noselect`) || !strings.Contains(root.untagged[0], `"/"`) {
 		t.Fatalf("list root %q", root.untagged)
 	}
 	all := cl.cmd(`LIST "" "*"`)
 	all.ok(t)
 	joined := strings.Join(all.untagged, "\n")
-	if !strings.Contains(joined, `"INBOX"`) || !strings.Contains(joined, `"INBOX.Generated"`) {
+	sawInbox, sawGen := false, false
+	for _, line := range strings.Split(joined, "\n") {
+		if strings.HasSuffix(line, `"/" INBOX`) {
+			sawInbox = true
+		}
+		if strings.HasSuffix(line, `"/" INBOX/Generated`) {
+			sawGen = true
+		}
+	}
+	if !sawInbox || !sawGen {
 		t.Fatalf("list %s", joined)
 	}
 	pct := cl.cmd(`LIST "" "%"`)
 	pct.ok(t)
 	pj := strings.Join(pct.untagged, "\n")
-	if !strings.Contains(pj, `"INBOX"`) || strings.Contains(pj, "Generated") {
+	if !strings.Contains(pj, " INBOX") || strings.Contains(pj, "Generated") {
 		t.Fatalf("list %% %s", pj)
 	}
 	cl.cmd("CREATE INBOX").no(t)
 	cl.cmd("CREATE INBOX.New").ok(t)
 	cl.cmd("CREATE INBOX.New").no(t)
-	if !strings.Contains(strings.Join(cl.cmd(`LIST "" "*"`).untagged, "\n"), `"INBOX.New"`) {
+	if !strings.Contains(strings.Join(cl.cmd(`LIST "" "*"`).untagged, "\n"), "INBOX.New") {
 		t.Fatal("missing created mailbox")
 	}
 	cl.cmd("DELETE INBOX").no(t)
@@ -351,7 +365,7 @@ func TestMailboxFetchAndStore(t *testing.T) {
 	cl.cmd("CREATE INBOX.New").ok(t)
 	cl.cmd("RENAME INBOX.New INBOX.Renamed").ok(t)
 	listed := strings.Join(cl.cmd(`LIST "" "*"`).untagged, "\n")
-	if strings.Contains(listed, `"INBOX.New"`) || !strings.Contains(listed, `"INBOX.Renamed"`) {
+	if strings.Contains(listed, "INBOX.New") || !strings.Contains(listed, "INBOX.Renamed") {
 		t.Fatalf("rename list %s", listed)
 	}
 	cl.cmd("DELETE INBOX.Renamed").ok(t)
@@ -371,7 +385,7 @@ func TestMailboxFetchAndStore(t *testing.T) {
 	if exists != 2 || recent != 2 || uidv != 1 || uidnext != 3 {
 		t.Fatalf("select exists=%d recent=%d uidv=%d next=%d", exists, recent, uidv, uidnext)
 	}
-	ex := cl.cmd("EXAMINE INBOX.Generated")
+	ex := cl.cmd("EXAMINE INBOX/Generated")
 	ex.ok(t)
 	if !strings.Contains(ex.tagLine, "[READ-ONLY]") {
 		t.Fatalf("examine %s", ex.tagLine)
@@ -396,7 +410,7 @@ func TestMailboxFetchAndStore(t *testing.T) {
 	if !strings.Contains(bs2, `"MIXED"`) || !strings.Contains(bs2, `"PLAIN"`) || !strings.Contains(bs2, `"HTML"`) {
 		t.Fatalf("multipart bodystructure %s", bs2)
 	}
-	cl.cmd("SELECT INBOX.Generated").ok(t)
+	cl.cmd("SELECT INBOX/Generated").ok(t)
 	gen := cl.cmd("FETCH 1 (BODYSTRUCTURE)")
 	gen.ok(t)
 	bsg := strings.ToUpper(fetchLine(t, gen))
@@ -598,7 +612,7 @@ func TestExpungeCopyMove(t *testing.T) {
 	}
 	mv := cl.cmd("UID MOVE " + strconv.Itoa(int(srcUID)) + " INBOX.Dest")
 	mv.ok(t)
-	if !strings.Contains(mv.tagLine, "[COPYUID ") {
+	if !strings.Contains(strings.Join(mv.untagged, "\n"), "[COPYUID ") {
 		t.Fatalf("move copyuid %s", mv.tagLine)
 	}
 	if strings.Contains(strings.Join(searchIDs(t, cl.cmd("UID SEARCH ALL")), " "), strconv.Itoa(int(srcUID))) {

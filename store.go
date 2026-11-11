@@ -119,9 +119,12 @@ func copyFlags(src *Message) (map[string]struct{}, []string) {
 	return dst, append([]string(nil), src.keywords...)
 }
 
-func flagNames(m *Message) []string {
+func flagNames(m *Message, order []string) []string {
+	if len(order) == 0 {
+		order = systemFlagOrder
+	}
 	var parts []string
-	for _, f := range systemFlagOrder {
+	for _, f := range order {
 		if m.has(f) {
 			parts = append(parts, f)
 		}
@@ -131,8 +134,8 @@ func flagNames(m *Message) []string {
 	return append(parts, keys...)
 }
 
-func formatFlags(m *Message) string {
-	parts := flagNames(m)
+func formatFlags(m *Message, order []string) string {
+	parts := flagNames(m, order)
 	if len(parts) == 0 {
 		return "()"
 	}
@@ -735,7 +738,7 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([
 	mb := s.box
 	// FLAGS in this response already include \Seen, so this session
 	// does not also report the queued flags event.
-	swallow := itemListed(expanded, "FLAGS")
+	swallow := itemListed(expanded, "FLAGS") || s.pers.FetchSeenFlags
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
 		if s.fault != nil && s.fault.do == "mutate" {
 			m.addFlag(`\Flagged`)
@@ -743,14 +746,14 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([
 		var seenEvent uint64
 		if fetchSetsSeen(expanded) && !s.readonly && !m.has(`\Seen`) {
 			m.addFlag(`\Seen`)
-			seenEvent = mb.push(mbEvent{kind: "flags", seq: seq, flags: formatFlags(m)})
+			seenEvent = mb.push(mbEvent{kind: "flags", seq: seq, flags: formatFlags(m, s.pers.FlagOrder)})
 			if swallow && seenEvent > s.seenID {
 				s.seenID = seenEvent
 			}
 		}
 		raw := append([]byte(nil), m.bytes()...)
 		snaps = append(snaps, fetchSnap{
-			seq: seq, uid: m.uid, flags: formatFlags(m),
+			seq: seq, uid: m.uid, flags: formatFlags(m, s.pers.FlagOrder),
 			internal: m.internal, size: m.size, raw: raw,
 			seenEvent: seenEvent,
 		})
@@ -912,7 +915,7 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 				m.removeFlag(f)
 			}
 		}
-		formatted := formatFlags(m)
+		formatted := formatFlags(m, s.pers.FlagOrder)
 		last = mb.push(mbEvent{kind: "flags", seq: seq, flags: formatted})
 		if !silent {
 			snaps = append(snaps, storeSnap{seq: seq, uid: m.uid, flags: formatted})
@@ -1193,7 +1196,9 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		if last > s.seenID {
 			s.seenID = last
 		}
-		src.pushExists()
+		if s.pers == nil || !s.pers.MoveCopyUIDUntagged {
+			src.pushExists()
+		}
 	}
 	var dstUIDs []uint32
 	for _, m := range picked {
@@ -1497,7 +1502,7 @@ func (st *Store) listMail(name string) ([]mailListItem, error) {
 	}
 	out := make([]mailListItem, 0, len(mb.msgs))
 	for _, m := range mb.msgs {
-		flags := flagNames(m)
+		flags := flagNames(m, nil)
 		if flags == nil {
 			flags = []string{}
 		}
