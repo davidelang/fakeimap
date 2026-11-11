@@ -96,12 +96,11 @@ func (s *Server) jmapEventSource(w http.ResponseWriter, r *http.Request, user st
 			ping = time.Duration(n) * time.Second
 		}
 	}
+	since, watch := s.store.watchJMAPState()
+	defer s.store.unwatchJMAPState(watch)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	since, watch := s.store.watchJMAPState()
-	defer s.store.unwatchJMAPState(watch)
 	var ticks <-chan time.Time
 	if ping > 0 {
 		ticker := time.NewTicker(ping)

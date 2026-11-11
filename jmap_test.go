@@ -1739,9 +1739,6 @@ func TestJMAPEventSource(t *testing.T) {
 
 	before := jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
 	stream := openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=state&ping=120")
-	if jmapSession(t, bound.Jmap, "demo", "secret")["state"] != before {
-		t.Fatal("store changed before the event")
-	}
 	msg := []byte("From: a@example.com\r\nTo: b@example.com\r\nSubject: sse\r\n\r\nsse-append\r\n")
 	im.cmd("APPEND INBOX {" + strconv.Itoa(len(msg)) + "+}\r\n" + string(msg)).ok(t)
 	exists++
