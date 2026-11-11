@@ -1,0 +1,254 @@
+package main
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestOtherServerPersonalities(t *testing.T) {
+	banned := []string{"IMAP4rev2", "ID", "LOGIN-REFERRALS", "JMAPACCESS", "QUOTA"}
+	dovFlags := `\Answered \Flagged \Deleted \Seen \Draft`
+	dovPerm := dovFlags + ` \*`
+	dovOrder := []string{"FLAGS", "PERMANENTFLAGS", "EXISTS", "RECENT", "UNSEEN", "UIDVALIDITY", "UIDNEXT"}
+	devGreet := "IMAP4rev1 ENABLE IDLE SASL-IR LITERAL+"
+	devPost := "IMAP4rev1 SASL-IR ENABLE IDLE SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED CONDSTORE QRESYNC ESEARCH ESORT LIST-STATUS BINARY MOVE PREVIEW SPECIAL-USE COMPRESS=DEFLATE LITERAL+"
+	stalGreet := "IMAP4rev1 ENABLE SASL-IR LITERAL+ UTF8=ACCEPT"
+	stalPost := "IMAP4rev1 ENABLE SASL-IR LITERAL+ UTF8=ACCEPT IDLE NAMESPACE CHILDREN BINARY UNSELECT UIDPLUS ESEARCH SORT THREAD=REFERENCES LIST-EXTENDED LIST-STATUS ESORT SORT=DISPLAY SPECIAL-USE CREATE-SPECIAL-USE MOVE CONDSTORE QRESYNC PREVIEW"
+	stalOrder := []string{"EXISTS", "FLAGS", "RECENT", "PERMANENTFLAGS", "UIDVALIDITY", "UIDNEXT"}
+	stalPerm := `\Deleted \Seen \Answered \Flagged \Draft \*`
+	zimFlags := `\Answered \Deleted \Draft \Flagged \Seen $Forwarded $MDNSent Forwarded $Junk $NotJunk Junk JunkRecorded NonJunk NotJunk`
+	zimPerm := `\Answered \Deleted \Draft \Flagged \Seen $Forwarded $MDNSent Forwarded \*`
+	zimOrder := []string{"EXISTS", "RECENT", "UNSEEN", "UIDVALIDITY", "UIDNEXT", "FLAGS", "PERMANENTFLAGS"}
+	cases := []struct {
+		file     string
+		greeting string
+		greet    string
+		pre      string
+		post     string
+		delim    string
+		ns       string
+		flags    string
+		perm     string
+		order    []string
+		other    string
+	}{
+		{
+			file:     "personalities/dovecot-10.json",
+			greeting: "* OK Dovecot ready.",
+			pre:      "IMAP4rev1 SASL-IR SORT THREAD=REFERENCES UNSELECT LITERAL+ IDLE CHILDREN NAMESPACE",
+			post:     "IMAP4rev1 SASL-IR SORT THREAD=REFERENCES UNSELECT LITERAL+ IDLE CHILDREN NAMESPACE",
+			delim:    ".",
+			ns:       `* NAMESPACE (("" ".")) NIL NIL`,
+			flags:    dovFlags,
+			perm:     dovPerm,
+			order:    dovOrder,
+		},
+		{
+			file:     "personalities/dovecot-12.json",
+			greeting: "* OK [CAPABILITY IMAP4rev1 LITERAL+ SASL-IR ENABLE] Dovecot ready.",
+			greet:    "IMAP4rev1 LITERAL+ SASL-IR ENABLE",
+			pre:      "IMAP4rev1 LITERAL+ SASL-IR ENABLE SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS UNSELECT IDLE CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED CONDSTORE QRESYNC ESEARCH ESORT LIST-STATUS",
+			post:     "IMAP4rev1 LITERAL+ SASL-IR ENABLE SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS UNSELECT IDLE CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED CONDSTORE QRESYNC ESEARCH ESORT LIST-STATUS",
+			delim:    ".",
+			ns:       `* NAMESPACE (("" ".")) NIL NIL`,
+			flags:    dovFlags,
+			perm:     dovPerm,
+			order:    dovOrder,
+		},
+		{
+			file:     "personalities/dovecot-22.json",
+			greeting: "* OK [CAPABILITY IMAP4rev1 LITERAL+ SASL-IR ENABLE IDLE] Dovecot ready.",
+			greet:    "IMAP4rev1 LITERAL+ SASL-IR ENABLE IDLE",
+			pre:      "IMAP4rev1 LITERAL+ SASL-IR ENABLE IDLE",
+			post:     "IMAP4rev1 LITERAL+ SASL-IR ENABLE IDLE SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED CONDSTORE QRESYNC ESEARCH ESORT LIST-STATUS SPECIAL-USE BINARY MOVE",
+			delim:    ".",
+			ns:       `* NAMESPACE (("" ".")) NIL NIL`,
+			flags:    dovFlags,
+			perm:     dovPerm,
+			order:    dovOrder,
+		},
+		{
+			file:     "personalities/dovecot-dev.json",
+			greeting: "* OK [CAPABILITY " + devGreet + "] Dovecot ready.",
+			greet:    devGreet,
+			pre:      devGreet,
+			post:     devPost,
+			delim:    "/",
+			ns:       `* NAMESPACE (("" "/")) NIL NIL`,
+			flags:    dovFlags,
+			perm:     dovPerm,
+			order:    dovOrder,
+		},
+		{
+			file:     "personalities/dovecot-245.json",
+			greeting: "* OK [CAPABILITY " + devGreet + "] Dovecot ready.",
+			greet:    devGreet,
+			pre:      devGreet,
+			post:     devPost + " UTF8=ACCEPT",
+			delim:    "/",
+			ns:       `* NAMESPACE (("" "/")) NIL NIL`,
+			flags:    dovFlags,
+			perm:     dovPerm,
+			order:    dovOrder,
+		},
+	}
+	for _, name := range []string{
+		"personalities/stalwart.json",
+		"personalities/stalwart-01625.json",
+		"personalities/stalwart-dev.json",
+		"personalities/stalwart-0155.json",
+	} {
+		cases = append(cases, struct {
+			file     string
+			greeting string
+			greet    string
+			pre      string
+			post     string
+			delim    string
+			ns       string
+			flags    string
+			perm     string
+			order    []string
+			other    string
+		}{
+			file:     name,
+			greeting: "* OK [CAPABILITY " + stalGreet + "] Stalwart IMAP4rev2 at your service.",
+			greet:    stalGreet,
+			pre:      stalGreet,
+			post:     stalPost,
+			delim:    "/",
+			ns:       `* NAMESPACE (("" "/")) NIL NIL`,
+			flags:    dovFlags,
+			perm:     stalPerm,
+			order:    stalOrder,
+		})
+	}
+	cases = append(cases, struct {
+		file     string
+		greeting string
+		greet    string
+		pre      string
+		post     string
+		delim    string
+		ns       string
+		flags    string
+		perm     string
+		order    []string
+		other    string
+	}{
+		file:     "personalities/zimbra-883.json",
+		greeting: "* OK IMAP4rev1 proxy server ready",
+		pre:      "BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT IDLE IMAP4rev1 LIST-EXTENDED LIST-STATUS LITERAL+ NAMESPACE QRESYNC SASL-IR SORT THREAD=ORDEREDSUBJECT UIDPLUS UNSELECT",
+		post:     "IMAP4rev1 BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT IDLE LIST-EXTENDED LIST-STATUS LITERAL+ NAMESPACE QRESYNC SASL-IR SORT THREAD=ORDEREDSUBJECT UIDPLUS UNSELECT",
+		delim:    "/",
+		ns:       `* NAMESPACE (("" "/")) (("/home/" "/")) NIL`,
+		flags:    zimFlags,
+		perm:     zimPerm,
+		order:    zimOrder,
+		other:    "/home/",
+	})
+	stalBytes, err := os.ReadFile("personalities/stalwart.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"stalwart-01625.json", "stalwart-dev.json", "stalwart-0155.json"} {
+		b, err := os.ReadFile("personalities/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != string(stalBytes) {
+			t.Fatalf("%s differs from stalwart.json", name)
+		}
+	}
+	for _, c := range cases {
+		t.Run(c.file, func(t *testing.T) {
+			p, err := loadPersonality(c.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Delimiter != c.delim || p.PersonalPrefix != "" || p.OtherUsers != c.other || p.SharedFolders != nil {
+				t.Fatalf("namespace fields delim %q prefix %q other %q shared %v", p.Delimiter, p.PersonalPrefix, p.OtherUsers, p.SharedFolders)
+			}
+			if !p.LogoutBye || !p.FetchPeekBody || !p.FetchSeenFlags || p.SortPartialCountOnly {
+				t.Fatalf("quirks bye %v peek %v seen %v partial %v", p.LogoutBye, p.FetchPeekBody, p.FetchSeenFlags, p.SortPartialCountOnly)
+			}
+			if p.SelectFlags != c.flags || p.PermanentFlags != c.perm || strings.Join(p.SelectOrder, " ") != strings.Join(c.order, " ") {
+				t.Fatalf("select fields flags %q perm %q order %v", p.SelectFlags, p.PermanentFlags, p.SelectOrder)
+			}
+			if c.greet == "" {
+				if p.GreetingCaps == nil || len(p.GreetingCaps) != 0 {
+					t.Fatalf("greeting list %#v", p.GreetingCaps)
+				}
+			} else if strings.Join(p.GreetingCaps, " ") != c.greet {
+				t.Fatalf("greeting caps %v", p.GreetingCaps)
+			}
+			if strings.Join(p.PreLogin, " ") != c.pre || strings.Join(p.PostLogin, " ") != c.post {
+				t.Fatalf("file caps pre %v post %v", p.PreLogin, p.PostLogin)
+			}
+			for _, name := range banned {
+				if listed(p.GreetingCaps, name) || listed(p.PreLogin, name) || listed(p.PostLogin, name) {
+					t.Fatalf("file advertises %s", name)
+				}
+			}
+			_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: c.file})
+			cl := dial(t, bound.Listen)
+			gotGreet := strings.TrimRight(cl.greeting, "\r\n")
+			if gotGreet != c.greeting {
+				t.Fatalf("greeting %q", gotGreet)
+			}
+			if c.greet == "" && strings.Contains(gotGreet, "[CAPABILITY") {
+				t.Fatalf("greeting has a capability code: %s", gotGreet)
+			}
+			pre := cl.cmd("CAPABILITY").mustOK(t)
+			if strings.Join(capsOf(pre.untagged[0]), " ") != c.pre {
+				t.Fatalf("pre-login %v", capsOf(pre.untagged[0]))
+			}
+			login := cl.cmd("LOGIN demo secret").mustOK(t)
+			if strings.Join(capsOf(login.tagLine), " ") != c.post {
+				t.Fatalf("post-login %v", capsOf(login.tagLine))
+			}
+			for _, name := range banned {
+				if listed(capsOf(login.tagLine), name) || listed(capsOf(pre.untagged[0]), name) {
+					t.Fatalf("wire advertises %s", name)
+				}
+			}
+			ns := cl.cmd("NAMESPACE").mustOK(t)
+			if len(ns.untagged) != 1 || ns.untagged[0] != c.ns {
+				t.Fatalf("namespace %q", ns.untagged)
+			}
+			sel := cl.cmd("SELECT INBOX").mustOK(t)
+			wantOrder := append([]string{}, c.order...)
+			if listed(strings.Fields(c.post), "CONDSTORE") {
+				wantOrder = append(wantOrder, "HIGHESTMODSEQ")
+			}
+			if got := selectKinds(sel.untagged); strings.Join(got, " ") != strings.Join(wantOrder, " ") {
+				t.Fatalf("select %v", got)
+			}
+			flags, perm := selectFlagLists(sel.untagged)
+			if flags != c.flags || perm != c.perm {
+				t.Fatalf("select flags %q perm %q", flags, perm)
+			}
+			out := cl.cmd("LOGOUT")
+			if len(out.untagged) != 1 || out.untagged[0] != "* BYE LOGOUT" {
+				t.Fatalf("logout %q", out.untagged)
+			}
+		})
+	}
+}
+
+func selectFlagLists(lines []string) (flags, perm string) {
+	for _, u := range lines {
+		if strings.HasPrefix(u, "* FLAGS (") && strings.HasSuffix(u, ")") {
+			flags = strings.TrimSuffix(strings.TrimPrefix(u, "* FLAGS ("), ")")
+		}
+		const mark = "[PERMANENTFLAGS ("
+		if i := strings.Index(u, mark); i >= 0 {
+			rest := u[i+len(mark):]
+			if j := strings.Index(rest, ")]"); j >= 0 {
+				perm = rest[:j]
+			}
+		}
+	}
+	return flags, perm
+}

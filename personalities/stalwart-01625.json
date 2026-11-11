@@ -1,0 +1,79 @@
+{
+  "greeting": "Stalwart IMAP4rev2 at your service.",
+  "delimiter": "/",
+  "greeting_capabilities": [
+    "IMAP4rev1",
+    "ENABLE",
+    "SASL-IR",
+    "LITERAL+",
+    "UTF8=ACCEPT"
+  ],
+  "pre_login_capabilities": [
+    "IMAP4rev1",
+    "ENABLE",
+    "SASL-IR",
+    "LITERAL+",
+    "UTF8=ACCEPT"
+  ],
+  "post_login_capabilities": [
+    "IMAP4rev1",
+    "ENABLE",
+    "SASL-IR",
+    "LITERAL+",
+    "UTF8=ACCEPT",
+    "IDLE",
+    "NAMESPACE",
+    "CHILDREN",
+    "BINARY",
+    "UNSELECT",
+    "UIDPLUS",
+    "ESEARCH",
+    "SORT",
+    "THREAD=REFERENCES",
+    "LIST-EXTENDED",
+    "LIST-STATUS",
+    "ESORT",
+    "SORT=DISPLAY",
+    "SPECIAL-USE",
+    "CREATE-SPECIAL-USE",
+    "MOVE",
+    "CONDSTORE",
+    "QRESYNC",
+    "PREVIEW"
+  ],
+  "logout_bye": true,
+  "select_flags": "\\Answered \\Flagged \\Deleted \\Seen \\Draft",
+  "permanent_flags": "\\Deleted \\Seen \\Answered \\Flagged \\Draft \\*",
+  "select_order": [
+    "EXISTS",
+    "FLAGS",
+    "RECENT",
+    "PERMANENTFLAGS",
+    "UIDVALIDITY",
+    "UIDNEXT"
+  ],
+  "flag_order": [
+    "\\Recent",
+    "\\Answered",
+    "\\Flagged",
+    "\\Draft",
+    "\\Deleted",
+    "\\Seen"
+  ],
+  "fetch_peek_body": true,
+  "fetch_seen_flags": true,
+  "fetch_item_order": [
+    "FLAGS",
+    "UID",
+    "INTERNALDATE",
+    "RFC822.SIZE",
+    "ENVELOPE",
+    "BODY",
+    "BODYSTRUCTURE",
+    "RFC822",
+    "RFC822.HEADER",
+    "RFC822.TEXT",
+    "BODY[]",
+    "BODY.PEEK[]"
+  ]
+}

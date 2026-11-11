@@ -322,3 +322,9 @@
 - Work: personalities for cyrus-22, cyrus-24, cyrus-25, cyrus-36, and cyrus-3124 from implemented capability tokens. Greeting with an empty capability list has no capability code. Personal namespace prefix omitted stays empty.
 - First action per standard-plan-compliance-block.md
 - The lab password stays out of this log.
+
+## 2026-11-11 - Dovecot, Stalwart, and Zimbra personalities
+
+- Approved plan: sandbox/plans/other-servers-20261111-1335-plan.md
+- Work: personalities for the lab Dovecot, Stalwart, and Zimbra servers from implemented capability tokens. Courier and UW-IMAP stay out.
+- First action per standard-plan-compliance-block.md
