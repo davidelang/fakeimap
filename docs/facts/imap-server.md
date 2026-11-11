@@ -4,7 +4,7 @@ Binary: `fakeimap`, at the checkout root. `make` runs `go test ./...` and then `
 
 Run: `fakeimap <config.json>`. The one argument is the config path. Paths inside the config are relative to the process working directory, not to the config file.
 
-Before accept, the process writes one JSON object to stdout and flushes it. The object has `listen` when a cleartext listener is bound, `implicit_tls_listen` when an implicit-TLS listener is bound, and `control` when the control socket is bound. A configured port of `0` is the bound ephemeral port.
+Before accept, the process writes one JSON object to stdout and flushes it. The object has `listen` when a cleartext listener is bound, `implicit_tls_listen` when an implicit-TLS listener is bound, `control` when the control socket is bound, and `smtp` when the submission listener is bound. A configured port of `0` is the bound ephemeral port.
 
 ## Config keys
 
@@ -17,8 +17,9 @@ Before accept, the process writes one JSON object to stdout and flushes it. The 
 - `personality` — personality JSON file.
 - `dataset` — dataset directory. The directory contains `dataset.json`.
 - `control` — filesystem path of the mode-0600 Unix control socket. Empty or omitted: no socket.
+- `smtp_listen` — `host:port` cleartext SMTP submission listener. Empty or omitted: no SMTP listener. Port `0`: ephemeral. The port speaks cleartext. `STARTTLS` is not offered. `AUTH PLAIN` and `AUTH LOGIN` use the same dataset passwords as IMAP. `MAIL FROM` and `RCPT TO` before a successful `AUTH` are rejected. `RCPT TO` a dataset account, as a bare name or `name@domain`, delivers `DATA` to that account's `INBOX`. Any other recipient is accepted and the message is not stored. There is no queue, relay, or DSN.
 
-At least one listener is required. Implicit TLS requires `cert_file` and `key_file`. `STARTTLS` is offered on a cleartext connection only when a certificate is loaded and TLS has not started.
+At least one listener is required. Implicit TLS requires `cert_file` and `key_file`. `STARTTLS` is offered on a cleartext connection only when a certificate is loaded and TLS has not started. `smtp_listen` does not satisfy that requirement.
 
 ## Log lines
 
@@ -80,9 +81,11 @@ An overlaid message is stored from its file. A generated mailbox keeps a header 
 
 One JSON object per line in, one JSON object per line out: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 
-Ops: `status`, `reset`, `set-personality`, `set-dataset`, `disconnect`, `inject`, `list-mail`, `fetch-mail`, `accounts`, `freeze-clock`, `thaw-clock`, `arm-fault`, `clear-faults`.
+Ops: `status`, `reset`, `set-personality`, `set-dataset`, `disconnect`, `inject`, `list-mail`, `fetch-mail`, `accounts`, `freeze-clock`, `thaw-clock`, `arm-fault`, `clear-faults`, `list-smtp`, `wait-smtp`.
 
-Request fields: `path`, `conn`, `mailbox`, `user`, `username`, `password`, `raw`, `uid`, `time`, `id`, `command`, `times`, `do`, `delay_ms`, `bytes`, `text`, `count`, `offset`, `tag`, `order`.
+Request fields: `path`, `conn`, `mailbox`, `user`, `username`, `password`, `raw`, `uid`, `time`, `id`, `command`, `times`, `do`, `delay_ms`, `bytes`, `text`, `count`, `offset`, `tag`, `order`, `timeout_ms`.
+
+`list-smtp` returns `messages`. Each item has `from` and `recipients`. A recipient has `address` and `result` (`delivered` or `discarded`). A delivered recipient was appended to `INBOX`. A discarded recipient was accepted and not stored. `wait-smtp` takes `count`. Zero returns immediately. A positive count also takes `timeout_ms` and waits until that many SMTP messages have been accepted since the call. If `timeout_ms` passes first, the reply is `ok` false.
 
 Fault `do` names: `close`, `rst`, `half_close`, `silent`, `delay`, `drip`, `truncate`, `raw`, `bad_literal`, `flood`, `split`, `coalesce`, `wrong_tag`, `unsolicited`, `reorder`, `mid`, `fetch_order`, `tag_first`, `mutate`, `wrong_name`, `expired`, `self_signed`.
 

@@ -819,6 +819,13 @@ func start(t *testing.T, cfg Config) (*Server, Bound) {
 				t.Errorf("control socket %s still present", bound.Control)
 			}
 		}
+		if bound.Smtp != "" {
+			c, err := net.DialTimeout("tcp", bound.Smtp, 200*time.Millisecond)
+			if err == nil {
+				c.Close()
+				t.Errorf("smtp %s still open", bound.Smtp)
+			}
+		}
 	})
 	return srv, bound
 }

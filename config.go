@@ -18,6 +18,7 @@ type Config struct {
 	Personality       string `json:"personality"`
 	Dataset           string `json:"dataset"`
 	Control           string `json:"control"`
+	SmtpListen        string `json:"smtp_listen"`
 }
 
 func loadConfig(path string) (Config, error) {

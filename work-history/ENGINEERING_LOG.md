@@ -147,3 +147,9 @@
 - SORT and UID SORT return sequence numbers or UIDs for one key, and ESORT reuses ESEARCH with ALL and PARTIAL in that order. personalities/sort.json returns the window.
 - The already-running liveimap-cyrus-3137 omits the PARTIAL window, so personalities/cyrus-3137.json sets sort_partial_count_only and lists SORT and ESORT. Those two are gone from the gaps file. SORT=DISPLAY, SORT=MODSEQ, and SORT=UID stay unimplemented. The container was not recreated and was not stopped. cyrusprobe -sort kind diff was empty.
 - The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - smtp submission execution start
+
+- Approved plan: sandbox/plans/smtp-submit-20261111-0504-plan.md
+- Work: smtp_listen, AUTH/MAIL/RCPT/DATA into INBOX or discard, list-smtp and wait-smtp
+- First action per standard-plan-compliance-block.md

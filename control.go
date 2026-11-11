@@ -62,27 +62,28 @@ func (s *Server) serveControl(c net.Conn) {
 }
 
 type ctrlRequest struct {
-	Op       string   `json:"op"`
-	Path     string   `json:"path"`
-	Conn     *int     `json:"conn"`
-	Mailbox  string   `json:"mailbox"`
-	User     string   `json:"user"`
-	Username string   `json:"username"`
-	Password string   `json:"password"`
-	Raw      string   `json:"raw"`
-	UID      *uint32  `json:"uid"`
-	Time     string   `json:"time"`
-	ID       *int     `json:"id"`
-	Command  string   `json:"command"`
-	Times    *int     `json:"times"`
-	Do       string   `json:"do"`
-	DelayMs  *int     `json:"delay_ms"`
-	Bytes    *int     `json:"bytes"`
-	Text     string   `json:"text"`
-	Count    *int     `json:"count"`
-	Offset   *int     `json:"offset"`
-	Tag      string   `json:"tag"`
-	Order    []string `json:"order"`
+	Op        string   `json:"op"`
+	Path      string   `json:"path"`
+	Conn      *int     `json:"conn"`
+	Mailbox   string   `json:"mailbox"`
+	User      string   `json:"user"`
+	Username  string   `json:"username"`
+	Password  string   `json:"password"`
+	Raw       string   `json:"raw"`
+	UID       *uint32  `json:"uid"`
+	Time      string   `json:"time"`
+	ID        *int     `json:"id"`
+	Command   string   `json:"command"`
+	Times     *int     `json:"times"`
+	Do        string   `json:"do"`
+	DelayMs   *int     `json:"delay_ms"`
+	Bytes     *int     `json:"bytes"`
+	Text      string   `json:"text"`
+	Count     *int     `json:"count"`
+	Offset    *int     `json:"offset"`
+	Tag       string   `json:"tag"`
+	Order     []string `json:"order"`
+	TimeoutMs *int     `json:"timeout_ms"`
 }
 
 func okResp(extra map[string]any) map[string]any {
@@ -198,6 +199,22 @@ func (s *Server) ctrl(req ctrlRequest) any {
 	case "clear-faults":
 		if err := s.clearFaults(req.ID); err != nil {
 			return errResp(err.Error())
+		}
+		return okResp(nil)
+	case "list-smtp":
+		return okResp(map[string]any{"messages": s.listSMTP()})
+	case "wait-smtp":
+		if req.Count == nil || *req.Count < 0 {
+			return errResp("missing field")
+		}
+		if *req.Count == 0 {
+			return okResp(nil)
+		}
+		if req.TimeoutMs == nil || *req.TimeoutMs < 0 {
+			return errResp("missing field")
+		}
+		if !s.waitSMTP(*req.Count, time.Duration(*req.TimeoutMs)*time.Millisecond) {
+			return errResp("timeout")
 		}
 		return okResp(nil)
 	case "":

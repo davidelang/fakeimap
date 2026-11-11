@@ -19,34 +19,40 @@ type Bound struct {
 	Listen            string `json:"listen,omitempty"`
 	ImplicitTLSListen string `json:"implicit_tls_listen,omitempty"`
 	Control           string `json:"control,omitempty"`
+	Smtp              string `json:"smtp,omitempty"`
 }
 
 // Server is the loopback IMAP listener.
 type Server struct {
-	cfg       Config
-	pers      *Personality
-	store     *Store
-	hasCert   bool
-	tlsCfg    *tls.Config
-	ln        net.Listener
-	tlsLn     net.Listener
-	ctrlLn    net.Listener
-	stdout    io.Writer
-	logf      *os.File
-	logMu     sync.Mutex
-	mu        sync.Mutex
-	reloadMu  sync.Mutex
-	imap      map[int]net.Conn
-	pausing   bool
-	faults    []*fault
-	nextFault int
-	frozen    *time.Time
-	ready     chan struct{}
-	quit      chan struct{}
-	startErr  error
-	once      sync.Once
-	connSeq   atomic.Int64
-	bound     Bound
+	cfg         Config
+	pers        *Personality
+	store       *Store
+	hasCert     bool
+	tlsCfg      *tls.Config
+	ln          net.Listener
+	tlsLn       net.Listener
+	ctrlLn      net.Listener
+	smtpLn      net.Listener
+	stdout      io.Writer
+	logf        *os.File
+	logMu       sync.Mutex
+	mu          sync.Mutex
+	reloadMu    sync.Mutex
+	imap        map[int]net.Conn
+	pausing     bool
+	faults      []*fault
+	nextFault   int
+	frozen      *time.Time
+	ready       chan struct{}
+	quit        chan struct{}
+	startErr    error
+	once        sync.Once
+	connSeq     atomic.Int64
+	bound       Bound
+	smtpMu      sync.Mutex
+	smtpLog     []smtpRecord
+	smtpN       int
+	smtpWaiters []*smtpWaiter
 }
 
 func newServer(path string, stdout io.Writer) (*Server, error) {
@@ -185,6 +191,13 @@ func (s *Server) Serve() error {
 			s.acceptControl()
 		}()
 	}
+	if s.smtpLn != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.acceptSMTP()
+		}()
+	}
 	wg.Wait()
 	return nil
 }
@@ -210,6 +223,14 @@ func (s *Server) listen() error {
 		if err := s.listenControl(); err != nil {
 			return err
 		}
+	}
+	if s.cfg.SmtpListen != "" {
+		ln, err := net.Listen("tcp", s.cfg.SmtpListen)
+		if err != nil {
+			return err
+		}
+		s.smtpLn = ln
+		s.bound.Smtp = ln.Addr().String()
 	}
 	return nil
 }
@@ -290,6 +311,9 @@ func (s *Server) Close() {
 		}
 		if s.ctrlLn != nil {
 			_ = s.ctrlLn.Close()
+		}
+		if s.smtpLn != nil {
+			_ = s.smtpLn.Close()
 		}
 		s.mu.Lock()
 		for _, c := range s.imap {
