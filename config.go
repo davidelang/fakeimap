@@ -16,6 +16,7 @@ type Config struct {
 	LogPath           string `json:"log_path"`
 	Personality       string `json:"personality"`
 	Dataset           string `json:"dataset"`
+	Control           string `json:"control"`
 }
 
 func loadConfig(path string) (Config, error) {

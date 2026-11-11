@@ -36,6 +36,9 @@ type session struct {
 	seenID   uint64
 	wake     chan struct{}
 	enabled  map[string]struct{}
+	pers     *Personality
+	fault    *fault
+	capture  *bytes.Buffer
 }
 
 type command struct {
@@ -47,12 +50,23 @@ type command struct {
 }
 
 func (s *session) caps() []string {
-	return s.srv.pers.advertise(s.authed, s.secure, s.srv.hasCert)
+	return s.pers.advertise(s.authed, s.secure, s.srv.hasCert)
 }
 
 func (s *session) sendLine(line string) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
+	if s.capture != nil {
+		if _, err := io.WriteString(s.capture, line); err != nil {
+			return err
+		}
+		if !strings.HasSuffix(line, "\n") {
+			if _, err := io.WriteString(s.capture, "\r\n"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if _, err := io.WriteString(s.bw, line); err != nil {
 		return err
 	}
@@ -71,6 +85,10 @@ func (s *session) sendLine(line string) error {
 func (s *session) sendRaw(b []byte) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
+	if s.capture != nil {
+		_, err := s.capture.Write(b)
+		return err
+	}
 	if _, err := s.bw.Write(b); err != nil {
 		return err
 	}
@@ -95,7 +113,7 @@ func (s *session) bad(tag, text string) error {
 
 func (s *session) serve() {
 	defer s.srv.store.deselect(s)
-	greet := fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(s.caps(), " "), s.srv.pers.Greeting)
+	greet := fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(s.caps(), " "), s.pers.Greeting)
 	if err := s.sendLine(greet); err != nil {
 		return
 	}
@@ -110,11 +128,7 @@ func (s *session) serve() {
 			}
 			return
 		}
-		s.srv.logLine("command", s.id, joinCmd(cmd.tag, cmd.name, cmd.uid, cmd.args, cmd.fetch))
-		if err := s.flush(); err != nil {
-			return
-		}
-		if err := s.dispatch(cmd); err != nil {
+		if err := s.runCommand(cmd); err != nil {
 			return
 		}
 	}
@@ -246,7 +260,7 @@ func (s *session) dispatch(cmd command) error {
 		}
 		return s.ok(cmd.tag, "CHECK completed")
 	case "LOGOUT":
-		if s.srv.pers.LogoutBye {
+		if s.pers.LogoutBye {
 			if err := s.sendLine("* BYE LOGOUT"); err != nil {
 				return err
 			}
@@ -330,7 +344,7 @@ func (s *session) cmdStartTLS(cmd command) error {
 			return err
 		}
 	}
-	tc := s.srv.tlsServer(&prefixConn{Conn: s.conn, pre: pre})
+	tc := s.srv.tlsServerFor(&prefixConn{Conn: s.conn, pre: pre}, s.id, "STARTTLS")
 	if err := tc.Handshake(); err != nil {
 		return err
 	}
@@ -449,7 +463,7 @@ func (s *session) cmdNamespace(cmd command) error {
 	if len(cmd.args) != 0 {
 		return s.bad(cmd.tag, "NAMESPACE syntax")
 	}
-	d := imapString(s.srv.pers.Delimiter)
+	d := imapString(s.pers.Delimiter)
 	if err := s.sendLine(fmt.Sprintf(`* NAMESPACE (("" %s)) NIL NIL`, d)); err != nil {
 		return err
 	}
@@ -679,7 +693,7 @@ func (s *session) formatFetch(sn fetchSnap, items []string) string {
 	}
 	var pieces []piece
 	for i, it := range items {
-		pieces = append(pieces, piece{s.srv.pers.fetchRank(it), i, fetchItemText(it, sn)})
+		pieces = append(pieces, piece{s.itemRank(it), i, fetchItemText(it, sn)})
 	}
 	sort.SliceStable(pieces, func(a, b int) bool { return pieces[a].rank < pieces[b].rank })
 	var b strings.Builder
@@ -789,9 +803,9 @@ func (s *session) flagsFetch(seq uint32, flags string, uid uint32, withUID bool)
 		rank int
 		text string
 	}
-	pieces := []piece{{s.srv.pers.fetchRank("FLAGS"), "FLAGS " + flags}}
+	pieces := []piece{{s.itemRank("FLAGS"), "FLAGS " + flags}}
 	if withUID {
-		pieces = append(pieces, piece{s.srv.pers.fetchRank("UID"), fmt.Sprintf("UID %d", uid)})
+		pieces = append(pieces, piece{s.itemRank("UID"), fmt.Sprintf("UID %d", uid)})
 	}
 	sort.SliceStable(pieces, func(a, b int) bool { return pieces[a].rank < pieces[b].rank })
 	var b strings.Builder
@@ -837,7 +851,7 @@ func (s *session) cmdAppend(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "APPEND syntax")
 	}
-	uv, uid, err := s.srv.store.appendMsg(s, mbox, flags, date, body)
+	uv, uid, err := s.srv.store.appendMsg(s, mbox, flags, date, body, s.srv.frozenTime())
 	if err != nil {
 		if err.Error() == "bad flag" {
 			return s.bad(cmd.tag, "APPEND bad flag")

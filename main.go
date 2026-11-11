@@ -10,34 +10,42 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Bound is the one JSON object written to stdout before accept.
 type Bound struct {
 	Listen            string `json:"listen,omitempty"`
 	ImplicitTLSListen string `json:"implicit_tls_listen,omitempty"`
+	Control           string `json:"control,omitempty"`
 }
 
 // Server is the loopback IMAP listener.
 type Server struct {
-	cfg      Config
-	pers     *Personality
-	store    *Store
-	hasCert  bool
-	tlsCfg   *tls.Config
-	ln       net.Listener
-	tlsLn    net.Listener
-	stdout   io.Writer
-	logf     *os.File
-	logMu    sync.Mutex
-	mu       sync.Mutex
-	conns    []net.Conn
-	ready    chan struct{}
-	quit     chan struct{}
-	startErr error
-	once     sync.Once
-	connSeq  atomic.Int64
-	bound    Bound
+	cfg       Config
+	pers      *Personality
+	store     *Store
+	hasCert   bool
+	tlsCfg    *tls.Config
+	ln        net.Listener
+	tlsLn     net.Listener
+	ctrlLn    net.Listener
+	stdout    io.Writer
+	logf      *os.File
+	logMu     sync.Mutex
+	mu        sync.Mutex
+	reloadMu  sync.Mutex
+	imap      map[int]net.Conn
+	pausing   bool
+	faults    []*fault
+	nextFault int
+	frozen    *time.Time
+	ready     chan struct{}
+	quit      chan struct{}
+	startErr  error
+	once      sync.Once
+	connSeq   atomic.Int64
+	bound     Bound
 }
 
 func newServer(path string, stdout io.Writer) (*Server, error) {
@@ -83,8 +91,14 @@ func newServerFrom(cfg Config, stdout io.Writer) (*Server, error) {
 	return srv, nil
 }
 
-func (s *Server) tlsServer(conn net.Conn) *tls.Conn {
-	return tls.Server(conn, s.tlsCfg)
+func (s *Server) tlsServerFor(conn net.Conn, id int, command string) *tls.Conn {
+	cfg := s.tlsCfg
+	if cert := s.handshakeCert(id, command); cert != nil && cfg != nil {
+		clone := cfg.Clone()
+		clone.Certificates = []tls.Certificate{*cert}
+		cfg = clone
+	}
+	return tls.Server(conn, cfg)
 }
 
 func (s *Server) logLine(kind string, conn int, text string) {
@@ -143,6 +157,13 @@ func (s *Server) Serve() error {
 			s.accept(s.tlsLn, true)
 		}()
 	}
+	if s.ctrlLn != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.acceptControl()
+		}()
+	}
 	wg.Wait()
 	return nil
 }
@@ -164,6 +185,11 @@ func (s *Server) listen() error {
 		s.tlsLn = ln
 		s.bound.ImplicitTLSListen = ln.Addr().String()
 	}
+	if s.cfg.Control != "" {
+		if err := s.listenControl(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -173,24 +199,52 @@ func (s *Server) accept(ln net.Listener, implicit bool) {
 		if err != nil {
 			return
 		}
-		s.mu.Lock()
-		s.conns = append(s.conns, c)
-		s.mu.Unlock()
 		go s.handle(c, implicit)
 	}
 }
 
+func (s *Server) track(id int, conn net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pausing {
+		return false
+	}
+	if s.imap == nil {
+		s.imap = map[int]net.Conn{}
+	}
+	s.imap[id] = conn
+	return true
+}
+
+func (s *Server) untrack(id int) {
+	s.mu.Lock()
+	delete(s.imap, id)
+	s.mu.Unlock()
+}
+
 func (s *Server) handle(conn net.Conn, implicit bool) {
-	defer conn.Close()
 	id := int(s.connSeq.Add(1))
+	if !s.track(id, conn) {
+		_ = conn.Close()
+		return
+	}
+	s.finish(conn, implicit, id)
+}
+
+func (s *Server) finish(conn net.Conn, implicit bool, id int) {
+	defer conn.Close()
+	defer s.untrack(id)
 	c := conn
 	if implicit {
-		tc := tls.Server(conn, s.tlsCfg)
+		tc := s.tlsServerFor(conn, id, "TLS")
 		if err := tc.Handshake(); err != nil {
 			return
 		}
 		c = tc
 	}
+	s.mu.Lock()
+	pers := s.pers
+	s.mu.Unlock()
 	sess := &session{
 		srv:     s,
 		conn:    c,
@@ -199,6 +253,7 @@ func (s *Server) handle(conn net.Conn, implicit bool) {
 		id:      id,
 		secure:  implicit,
 		enabled: map[string]struct{}{},
+		pers:    pers,
 	}
 	sess.serve()
 }
@@ -212,11 +267,17 @@ func (s *Server) Close() {
 		if s.tlsLn != nil {
 			_ = s.tlsLn.Close()
 		}
+		if s.ctrlLn != nil {
+			_ = s.ctrlLn.Close()
+		}
 		s.mu.Lock()
-		for _, c := range s.conns {
+		for _, c := range s.imap {
 			_ = c.Close()
 		}
 		s.mu.Unlock()
+		if s.bound.Control != "" {
+			_ = os.Remove(s.bound.Control)
+		}
 		if s.logf != nil {
 			_ = s.logf.Close()
 		}

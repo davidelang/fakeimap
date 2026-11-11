@@ -795,6 +795,11 @@ func start(t *testing.T, cfg Config) (*Server, Bound) {
 				t.Errorf("implicit tls %s still open", bound.ImplicitTLSListen)
 			}
 		}
+		if bound.Control != "" {
+			if _, err := os.Stat(bound.Control); !os.IsNotExist(err) {
+				t.Errorf("control socket %s still present", bound.Control)
+			}
+		}
 	})
 	return srv, bound
 }

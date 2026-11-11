@@ -119,7 +119,7 @@ func copyFlags(src *Message) (map[string]struct{}, []string) {
 	return dst, append([]string(nil), src.keywords...)
 }
 
-func formatFlags(m *Message) string {
+func flagNames(m *Message) []string {
 	var parts []string
 	for _, f := range systemFlagOrder {
 		if m.has(f) {
@@ -128,7 +128,11 @@ func formatFlags(m *Message) string {
 	}
 	keys := append([]string(nil), m.keywords...)
 	sort.Strings(keys)
-	parts = append(parts, keys...)
+	return append(parts, keys...)
+}
+
+func formatFlags(m *Message) string {
+	parts := flagNames(m)
 	if len(parts) == 0 {
 		return "()"
 	}
@@ -733,6 +737,9 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string) ([
 	// does not also report the queued flags event.
 	swallow := itemListed(expanded, "FLAGS")
 	mb.each(uidMode, set, func(seq uint32, m *Message) {
+		if s.fault != nil && s.fault.do == "mutate" {
+			m.addFlag(`\Flagged`)
+		}
 		var seenEvent uint64
 		if fetchSetsSeen(expanded) && !s.readonly && !m.has(`\Seen`) {
 			m.addFlag(`\Seen`)
@@ -1068,7 +1075,7 @@ func indexOverlay(m *Message) {
 	m.subject = decodeHdr(msg.Header.Get("Subject"))
 }
 
-func (st *Store) appendMsg(s *session, name string, flags []string, date *time.Time, raw []byte) (uint32, uint32, error) {
+func (st *Store) appendMsg(s *session, name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, uint32, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	cn, err := st.canon(name)
@@ -1085,16 +1092,19 @@ func (st *Store) appendMsg(s *session, name string, flags []string, date *time.T
 		}
 	}
 	raw = toCRLF(raw)
+	internal := time.Now()
+	if date != nil {
+		internal = *date
+	} else if frozen != nil {
+		internal = *frozen
+	}
 	m := &Message{
 		uid:      mb.uidNext,
 		flags:    map[string]struct{}{},
 		recent:   true,
-		internal: time.Now(),
+		internal: internal,
 		raw:      raw,
 		size:     len(raw),
-	}
-	if date != nil {
-		m.internal = *date
 	}
 	for _, f := range flags {
 		m.addFlag(f)
@@ -1425,4 +1435,92 @@ func loadStore(dir, delim string) (*Store, error) {
 		st.order = append(st.order, name)
 	}
 	return st, nil
+}
+
+// become replaces the loaded dataset. The Store pointer stays put so
+// sessions keep using it. Callers drop IMAP connections first.
+func (st *Store) become(neu *Store) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.accounts = neu.accounts
+	st.boxes = neu.boxes
+	st.order = neu.order
+	st.delim = neu.delim
+	st.usedUIDV = neu.usedUIDV
+	st.nextUIDV = neu.nextUIDV
+}
+
+func (st *Store) usernames() []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := make([]string, 0, len(st.accounts))
+	for u := range st.accounts {
+		out = append(out, u)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (st *Store) hasAccount(user string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	_, ok := st.accounts[user]
+	return ok
+}
+
+func (st *Store) addAccount(user, pass string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if _, ok := st.accounts[user]; ok {
+		return fmt.Errorf("duplicate username")
+	}
+	st.accounts[user] = pass
+	return nil
+}
+
+type mailListItem struct {
+	UID   uint32   `json:"uid"`
+	Flags []string `json:"flags"`
+	Size  int      `json:"size"`
+}
+
+func (st *Store) listMail(name string) ([]mailListItem, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return nil, err
+	}
+	mb := st.boxes[cn]
+	if mb == nil {
+		return nil, fmt.Errorf("no mailbox")
+	}
+	out := make([]mailListItem, 0, len(mb.msgs))
+	for _, m := range mb.msgs {
+		flags := flagNames(m)
+		if flags == nil {
+			flags = []string{}
+		}
+		out = append(out, mailListItem{UID: m.uid, Flags: flags, Size: m.size})
+	}
+	return out, nil
+}
+
+func (st *Store) fetchMail(name string, uid uint32) ([]byte, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return nil, err
+	}
+	mb := st.boxes[cn]
+	if mb == nil {
+		return nil, fmt.Errorf("no mailbox")
+	}
+	for _, m := range mb.msgs {
+		if m.uid == uid {
+			return append([]byte(nil), m.bytes()...), nil
+		}
+	}
+	return nil, fmt.Errorf("no such message")
 }

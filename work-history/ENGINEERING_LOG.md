@@ -47,3 +47,8 @@
 
 - Approved plan: sandbox/plans/fetch-seen-flags-20261111-0037-plan.md
 - A FETCH that already returns FLAGS, including ALL, FAST, and FULL, does not send a second FLAGS line when it sets \Seen
+
+## 2026-11-11 - control socket and fault injection
+
+- Approved plan: sandbox/plans/faults-control-20261111-0048-plan.md
+- Work: mode-0600 Unix control socket (reset, personality, dataset, inject, accounts, clock) and armed reply, reorder, and certificate faults
