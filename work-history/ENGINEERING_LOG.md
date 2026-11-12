@@ -660,3 +660,11 @@
   local:  T OK
   The rest of the local script has no remote lines because the script stopped on CREATE.
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-courier-606 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe UW-IMAP landed
+
+- Approved plan: sandbox/plans/probe-uwimap-20261111-1824-plan.md
+- personalities/uwimap.json now records the live post-login list, including STARTTLS at the end, flag order \Recent \Seen \Deleted \Flagged \Answered \Draft, fetch_seen_flags false, and BODY[] before FLAGS. NAMESPACE and SELECT order already matched. QUOTA, ACL, ACL2=UNION, I18NLEVEL=1, and LOGIN-REFERRALS stay off the file.
+- CREATE of a top-level mailbox succeeded. The base script then stops because MOVE is unrecognized. Reply code was not changed.
+- The live greeting appends " at " and a timestamp after the host token. The LOGIN tagged OK capability list omits SASL-IR and STARTTLS while the later CAPABILITY command still lists both. The personality file has one post-login list and cannot say that.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-uwimap was stopped. The lab password stayed in the gitignored operator file.
