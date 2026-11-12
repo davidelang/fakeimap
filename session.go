@@ -3754,10 +3754,13 @@ func (s *session) cmdIdle(cmd command) error {
 	}
 }
 
+// shiftedSeq applies expunge notices in order. Each notice is the sequence
+// after earlier expunges in that batch, so it is compared with the cursor,
+// not the original fetch sequence.
 func (s *session) shiftedSeq(seq uint32) uint32 {
 	n := seq
 	for _, e := range s.expungeShifts {
-		if e < seq {
+		if e < n {
 			n--
 		}
 	}

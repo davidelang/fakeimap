@@ -536,6 +536,67 @@ func TestFaultExpungeMid(t *testing.T) {
 	}
 }
 
+// A second connection expunges A, B, and E in one EXPUNGE. The notices are
+// * 1 EXPUNGE, * 1 EXPUNGE, * 3 EXPUNGE. D was sequence 4 and is then 2.
+func TestFaultExpungeSeqCursor(t *testing.T) {
+	srv, bound, _ := startCtrl(t, Config{Listen: "127.0.0.1:0"})
+	a := dial(t, bound.Listen)
+	b := dial(t, bound.Listen)
+	a.cmd("LOGIN demo secret").ok(t)
+	b.cmd("LOGIN demo secret").ok(t)
+	a.cmd("CREATE Seq").ok(t)
+	a.cmd("SELECT Seq").ok(t)
+	b.cmd("SELECT Seq").ok(t)
+	for _, body := range []string{"A", "B", "C", "D", "E"} {
+		a.cmd("APPEND Seq " + imapLit(body)).ok(t)
+	}
+	b.cmd("NOOP").ok(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv.fetchLineHook = func() {
+		once.Do(func() {
+			entered <- struct{}{}
+			<-release
+		})
+	}
+	gotCh := make(chan *reply, 1)
+	go func() {
+		gotCh <- a.cmd("FETCH 1,4 (UID)")
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fetch did not pause between lines")
+	}
+	b.cmd("UID STORE 1,2,5 +FLAGS (\\Deleted)").ok(t)
+	b.cmd("UID EXPUNGE 1,2,5").ok(t)
+	close(release)
+	var gap *reply
+	select {
+	case gap = <-gotCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("fetch did not finish")
+	}
+	gap.ok(t)
+	var exp []string
+	var dLine string
+	for _, line := range gap.untagged {
+		if strings.Contains(line, "EXPUNGE") {
+			exp = append(exp, line)
+		}
+		if strings.Contains(line, "UID 4") {
+			dLine = line
+		}
+	}
+	if strings.Join(exp, "\n") != "* 1 EXPUNGE\n* 1 EXPUNGE\n* 3 EXPUNGE" {
+		t.Fatalf("notices %q all %q", exp, gap.untagged)
+	}
+	if !strings.HasPrefix(dLine, "* 2 FETCH ") {
+		t.Fatalf("D seq %q all %q", dLine, gap.untagged)
+	}
+}
+
 func readClosed(c net.Conn, d time.Duration) ([]byte, error) {
 	deadline := time.Now().Add(d)
 	var buf bytes.Buffer
