@@ -24,7 +24,7 @@ func TestCyrusPersonalities(t *testing.T) {
 	}{
 		{
 			file:     "personalities/cyrus-22.json",
-			greeting: "* OK Cyrus IMAP4 v2.2.13-Debian-2.2.13-14+lenny6 server ready",
+			greeting: "* OK localhost Cyrus IMAP4 v2.2.13-Debian-2.2.13-14+lenny6 server ready",
 			pre:      "IMAP4rev1 LITERAL+ NAMESPACE UIDPLUS UNSELECT CHILDREN BINARY SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES IDLE",
 			post:     "IMAP4rev1 LITERAL+ NAMESPACE UIDPLUS UNSELECT CHILDREN BINARY SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES IDLE",
 			ns:       `* NAMESPACE (("INBOX." ".")) (("user." ".")) (("" "."))`,

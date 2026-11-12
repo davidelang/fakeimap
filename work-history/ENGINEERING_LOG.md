@@ -566,3 +566,23 @@
 ## 2026-11-11 - probe Cyrus 3.13.7 search tests
 
 - SEARCH FUZZY TEXT is no longer tagged BAD on the default personality, because personalities/cyrus-3137.json now lists SEARCH=FUZZY. A missing key is still BAD. The unadvertised case stays on personalities/condstore.json.
+
+## 2026-11-11 - probe Cyrus 2.2 execution start
+
+- Approved plan: sandbox/plans/probe-cyrus-22-20261111-1727-plan.md
+- Work: run the base cyrusprobe script against liveimap-cyrus-22 and update personalities/cyrus-22.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Cyrus 2.2 landed
+
+- Approved plan: sandbox/plans/probe-cyrus-22-20261111-1727-plan.md
+- personalities/cyrus-22.json greets localhost Cyrus IMAP4 v2.2.13-Debian-2.2.13-14+lenny6 server ready. Capability lists, NAMESPACE, and SELECT flags and order already matched. IMAP4, ACL, QUOTA, ID, and STARTTLS stay off the file.
+- The seed user authenticated. The base script did not stop on MOVE. It stopped on CREATE of a top-level mailbox, which the server answers NO Permission denied. LOGIN's tagged OK has no CAPABILITY code. Neither shape is expressible in the personality file. Reply code was not changed.
+- Remaining diff:
+  remote: T OK
+  local:  T OK [CAPABILITY BINARY CHILDREN IDLE IMAP4rev1 LITERAL+ NAMESPACE SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDPLUS UNSELECT]
+  remote: T NO
+  local:  T OK
+  The rest of the local script has no remote lines because the script stopped there.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-cyrus-22 was stopped. The lab password stayed in the gitignored operator file.

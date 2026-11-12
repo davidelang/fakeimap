@@ -1,5 +1,5 @@
 {
-  "greeting": "Cyrus IMAP4 v2.2.13-Debian-2.2.13-14+lenny6 server ready",
+  "greeting": "localhost Cyrus IMAP4 v2.2.13-Debian-2.2.13-14+lenny6 server ready",
   "delimiter": ".",
   "greeting_capabilities": [],
   "pre_login_capabilities": [
