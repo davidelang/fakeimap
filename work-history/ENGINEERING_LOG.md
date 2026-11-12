@@ -668,3 +668,21 @@
 - CREATE of a top-level mailbox succeeded. The base script then stops because MOVE is unrecognized. Reply code was not changed.
 - The live greeting appends " at " and a timestamp after the host token. The LOGIN tagged OK capability list omits SASL-IR and STARTTLS while the later CAPABILITY command still lists both. The personality file has one post-login list and cannot say that.
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-uwimap was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Zimbra 8.8.3 execution start
+
+- Approved plan: sandbox/plans/probe-zimbra-883-20261111-1842-plan.md
+- Work: run the base cyrusprobe script against liveimap-zimbra-883 and update personalities/zimbra-883.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Zimbra 8.8.3 landed
+
+- Approved plan: sandbox/plans/probe-zimbra-883-20261111-1842-plan.md
+- personalities/zimbra-883.json keeps the live greeting, empty greeting list, delimiter /, and other-user prefix /home/. The pre-login list ends with AUTH=PLAIN then STARTTLS. The post-login list already matched the implemented tokens. SELECT flags and order already matched. flag_order is \Answered \Flagged \Deleted \Seen \Draft \Recent. BODY[] ranks before FLAGS. ACL, CATENATE, I18NLEVEL=1, ID, LOGIN-REFERRALS, MULTIAPPEND, QUOTA, RIGHTS=ektx, SEARCHRES, WITHIN, and XLIST stay off the file.
+- CREATE of a top-level mailbox succeeded. The base script then stops because MOVE is BAD. Reply code was not changed.
+- Remaining diff:
+  remote: T BAD
+  local:  * EXPUNGE
+  The rest of the local script has no remote lines because the script stopped on MOVE.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-zimbra-883 was stopped. The lab password stayed in the gitignored operator file.
