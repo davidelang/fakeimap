@@ -13,7 +13,7 @@ func TestOtherServerPersonalities(t *testing.T) {
 	devGreet := "IMAP4rev1 ID ENABLE IDLE SASL-IR LITERAL+"
 	devPost := "IMAP4rev1 SASL-IR ID ENABLE IDLE SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT MULTIAPPEND UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN LIST-STATUS BINARY MOVE PREVIEW SPECIAL-USE STATUS=SIZE SAVEDATE COMPRESS=DEFLATE LITERAL+"
 	stalGreet := "IMAP4rev1 ENABLE SASL-IR LITERAL+ ID UTF8=ACCEPT"
-	stalPost := "IMAP4rev1 ENABLE SASL-IR LITERAL+ ID UTF8=ACCEPT IDLE NAMESPACE CHILDREN MULTIAPPEND BINARY UNSELECT UIDPLUS ESEARCH WITHIN SEARCHRES SORT THREAD=REFERENCES LIST-EXTENDED LIST-STATUS ESORT SORT=DISPLAY SPECIAL-USE CREATE-SPECIAL-USE MOVE CONDSTORE QRESYNC UNAUTHENTICATE STATUS=SIZE PREVIEW QUOTA QUOTA=RES-STORAGE"
+	stalPost := "IMAP4rev1 ENABLE SASL-IR LITERAL+ ID UTF8=ACCEPT JMAPACCESS IDLE NAMESPACE CHILDREN MULTIAPPEND BINARY UNSELECT UIDPLUS ESEARCH WITHIN SEARCHRES SORT THREAD=REFERENCES LIST-EXTENDED LIST-STATUS ESORT SORT=DISPLAY SPECIAL-USE CREATE-SPECIAL-USE MOVE CONDSTORE QRESYNC UNAUTHENTICATE STATUS=SIZE PREVIEW QUOTA QUOTA=RES-STORAGE"
 	stalOrder := []string{"EXISTS", "FLAGS", "RECENT", "PERMANENTFLAGS", "UIDVALIDITY", "UIDNEXT"}
 	stalPerm := `\Deleted \Seen \Answered \Flagged \Draft \*`
 	zimFlags := `\Answered \Deleted \Draft \Flagged \Seen $Forwarded $MDNSent Forwarded $Junk $NotJunk Junk JunkRecorded NonJunk NotJunk`
@@ -100,6 +100,10 @@ func TestOtherServerPersonalities(t *testing.T) {
 		"personalities/stalwart-dev.json",
 		"personalities/stalwart-0155.json",
 	} {
+		greet := liveStalGreet
+		if name == "personalities/stalwart-0155.json" {
+			greet = stalGreet + " JMAPACCESS AUTH=PLAIN"
+		}
 		cases = append(cases, struct {
 			file     string
 			greeting string
@@ -114,9 +118,9 @@ func TestOtherServerPersonalities(t *testing.T) {
 			other    string
 		}{
 			file:     name,
-			greeting: "* OK [CAPABILITY " + liveStalGreet + "] Stalwart IMAP4rev2 at your service.",
-			greet:    liveStalGreet,
-			pre:      liveStalGreet,
+			greeting: "* OK [CAPABILITY " + greet + "] Stalwart IMAP4rev2 at your service.",
+			greet:    greet,
+			pre:      greet,
 			post:     liveStalPost,
 			delim:    "/",
 			ns:       `* NAMESPACE (("" "/")) NIL NIL`,
@@ -175,6 +179,9 @@ func TestOtherServerPersonalities(t *testing.T) {
 				t.Fatalf("file caps pre %v post %v", p.PreLogin, p.PostLogin)
 			}
 			for _, name := range banned {
+				if name == "JMAPACCESS" && strings.Contains(c.file, "stalwart") {
+					continue
+				}
 				if listed(p.GreetingCaps, name) || listed(p.PreLogin, name) || listed(p.PostLogin, name) {
 					t.Fatalf("file advertises %s", name)
 				}
@@ -188,37 +195,20 @@ func TestOtherServerPersonalities(t *testing.T) {
 			_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: c.file})
 			cl := dial(t, bound.Listen)
 			gotGreet := strings.TrimRight(cl.greeting, "\r\n")
-			if gotGreet != c.greeting {
+			wantGreeting := strings.ReplaceAll(c.greeting, " JMAPACCESS", "")
+			if gotGreet != wantGreeting {
 				t.Fatalf("greeting %q", gotGreet)
 			}
 			if c.greet == "" && strings.Contains(gotGreet, "[CAPABILITY") {
 				t.Fatalf("greeting has a capability code: %s", gotGreet)
 			}
 			pre := cl.cmd("CAPABILITY").mustOK(t)
-			wantPre := c.pre
-			if strings.Contains(c.pre, "STARTTLS") {
-				var kept []string
-				for _, tok := range strings.Fields(c.pre) {
-					if tok != "STARTTLS" {
-						kept = append(kept, tok)
-					}
-				}
-				wantPre = strings.Join(kept, " ")
-			}
+			wantPre := dropUnboundCaps(c.pre)
 			if strings.Join(capsOf(pre.untagged[0]), " ") != wantPre {
 				t.Fatalf("pre-login %v", capsOf(pre.untagged[0]))
 			}
 			login := cl.cmd("LOGIN demo secret").mustOK(t)
-			wantPost := c.post
-			if strings.Contains(c.post, "STARTTLS") {
-				var kept []string
-				for _, tok := range strings.Fields(c.post) {
-					if tok != "STARTTLS" {
-						kept = append(kept, tok)
-					}
-				}
-				wantPost = strings.Join(kept, " ")
-			}
+			wantPost := dropUnboundCaps(c.post)
 			if strings.Join(capsOf(login.tagLine), " ") != wantPost {
 				t.Fatalf("post-login %v", capsOf(login.tagLine))
 			}
@@ -252,6 +242,20 @@ func TestOtherServerPersonalities(t *testing.T) {
 			}
 		})
 	}
+}
+
+// dropUnboundCaps removes tokens this test's server cannot advertise.
+// It binds no certificate, so STARTTLS is omitted, and no JMAP listener,
+// so JMAPACCESS is omitted even when the personality file lists it.
+func dropUnboundCaps(list string) string {
+	var kept []string
+	for _, tok := range strings.Fields(list) {
+		if tok == "STARTTLS" || tok == "JMAPACCESS" {
+			continue
+		}
+		kept = append(kept, tok)
+	}
+	return strings.Join(kept, " ")
 }
 
 func selectFlagLists(lines []string) (flags, perm string) {

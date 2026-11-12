@@ -850,3 +850,15 @@
 - Approved plan: sandbox/plans/quota-report-20261112-0034-plan.md
 - GETQUOTA and GETQUOTAROOT report the root ROOT. STORAGE is the shared store's RFC822 size in 1024-octet units, rounded up. MESSAGE is the message count when QUOTA=RES-MESSAGE is listed. A deleted message counts until EXPUNGE. The limits start at 1048576 and 1000000 and live on the store. SETQUOTA changes them when QUOTASET is listed. reset and set-dataset restore both.
 - The tokens are on the lab lists named in the plan. Courier greetings use that same list. Dovecot, UW-IMAP, and the other personalities gain none. QUOTA, QUOTA=RES-STORAGE, QUOTA=RES-MESSAGE, and QUOTASET left the gaps file. QUOTA=RES-ANNOTATION-STORAGE and QUOTA=RES-MAILBOX stay. The facts file and the guide describe the report.
+
+## 2026-11-12 - JMAPACCESS execution start
+
+- Approved plan: sandbox/plans/jmapaccess-20261112-0058-plan.md
+- Work: GETJMAPACCESS returns the absolute JMAP session URL when a listener is bound and the personality lists JMAPACCESS. The four Stalwart files gain the token where the recordings have it. OBJECTID stays unimplemented.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - JMAPACCESS landed
+
+- Approved plan: sandbox/plans/jmapaccess-20261112-0058-plan.md
+- GETJMAPACCESS returns one quoted absolute /.well-known/jmap URL when the personality lists JMAPACCESS and a JMAP listener is bound. TLS wins over cleartext. A wildcard host is written as 127.0.0.1, and an IPv6 host is bracketed. Before login the command is NO. With no listener, or on a personality that does not list the token, it is BAD.
+- stalwart.json, stalwart-01625.json, and stalwart-dev.json list it after UTF8=ACCEPT on the post-login list only. stalwart-0155.json also lists it there on the greeting and the pre-login list, before AUTH=PLAIN. No other lab personality lists it. OBJECTID stays unimplemented and the gaps file is unchanged. The facts file and the guide describe it.

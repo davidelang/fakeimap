@@ -116,7 +116,23 @@ var implementedCaps = map[string]struct{}{
 	"AUTH=SCRAM-SHA-1-PLUS":   {},
 	"AUTH=SCRAM-SHA-256-PLUS": {},
 	"AUTH=EXTERNAL":           {},
+	"JMAPACCESS":              {},
 	"STARTTLS":                {},
+}
+
+// listsCap reports whether any capability list names it.
+func (p *Personality) listsCap(name string) bool {
+	if p == nil {
+		return false
+	}
+	for _, list := range [][]string{p.GreetingCaps, p.PreLogin, p.PostLogin} {
+		for _, c := range list {
+			if strings.EqualFold(c, name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // lists reports whether the greeting or pre-login capability list names it.
@@ -167,15 +183,16 @@ func parseAppendLimit(name string) (uint64, bool) {
 
 // advertise filters the personality list. STARTTLS is added only on a
 // cleartext connection that still has a certificate and has not started TLS.
-func (p *Personality) advertise(postLogin, secure, hasCert bool) []string {
+// JMAPACCESS is kept only when a JMAP listener is bound.
+func (p *Personality) advertise(postLogin, secure, hasCert, jmap bool) []string {
 	src := p.PreLogin
 	if postLogin {
 		src = p.PostLogin
 	}
-	return p.advertiseList(src, postLogin, secure, hasCert)
+	return p.advertiseList(src, postLogin, secure, hasCert, jmap)
 }
 
-func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert bool) []string {
+func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert, jmap bool) []string {
 	out := make([]string, 0, len(src)+1)
 	seen := map[string]bool{}
 	for _, c := range src {
@@ -183,6 +200,9 @@ func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert boo
 			continue
 		}
 		if strings.EqualFold(c, "STARTTLS") && (secure || !hasCert) {
+			continue
+		}
+		if strings.EqualFold(c, "JMAPACCESS") && !jmap {
 			continue
 		}
 		u := strings.ToUpper(c)

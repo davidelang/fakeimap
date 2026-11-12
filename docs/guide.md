@@ -165,6 +165,8 @@ A capability is advertised only when `capImplemented` accepts it. Named tokens a
 
 `UNAUTHENTICATE`, when listed, returns an authenticated connection to the not-authenticated state without expunging the selected mailbox. TLS and `COMPRESS=DEFLATE` stay up. Enabled extensions do not. Which personalities list it, and the reply, are in `docs/facts/imap-server.md`.
 
+`JMAPACCESS` is advertised only when the personality lists it and `jmap_listen` or `jmap_tls_listen` is bound. Otherwise the token is omitted and `GETJMAPACCESS` is tagged `BAD`. When it is offered, the command takes no arguments, is tagged `NO` before login, and does not need a selected mailbox. It returns one line, `* JMAPACCESS` and a quoted absolute `/.well-known/jmap` URL: `https` when the TLS listener is bound, and `http` from the cleartext listener otherwise. A host of `0.0.0.0` or `::` is written as `127.0.0.1`, and an IPv6 host is in brackets. `stalwart.json`, `stalwart-01625.json`, and `stalwart-dev.json` list the token only after login. `stalwart-0155.json` lists it on the greeting and on both capability lists. No other lab personality lists it. `OBJECTID` stays unimplemented. The rules are in `docs/facts/imap-server.md`.
+
 `ID`, when listed, is accepted before and after login. The untagged reply is `* ID ("name" "fakeimap")`. Otherwise the command is tagged `BAD`. The argument rules are in `docs/facts/imap-server.md`.
 
 `APPENDLIMIT=<positive integer>` is the maximum `APPEND` literal on that connection, for every mailbox. The number is the one on the capability list in effect, which after login is the post-login list. A longer literal is tagged `NO` and includes `[TOOBIG]`, and it is not stored. A literal of that length is stored. `STATUS` and `LIST RETURN (STATUS ...)` report the number. Without the token, `STATUS` of `APPENDLIMIT` is tagged `BAD`. A bare `APPENDLIMIT`, `APPENDLIMIT=0`, and a non-numeric suffix are not advertised. Which files list it, and the Cyrus numbers, are in `docs/facts/imap-server.md`.
@@ -268,7 +270,7 @@ The UW greeting appends ` at ` and a timestamp after the fixed text. One post-lo
 
 Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `ACL` and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, `XLIST`, `MULTIAPPEND`, `QUOTA`, `QUOTA=RES-STORAGE`, `QUOTA=RES-MESSAGE`, and `QUOTASET` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA=RES-ANNOTATION-STORAGE`, `QUOTA=RES-MAILBOX`, `REPLACE`, `RIGHTS=kxten`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, and `X-SIEVE-MAILBOX`.
 
-`URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` and `JMAPACCESS` stay off the personality files. `URLAUTH=BINARY` stays in the gaps file.
+`URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` stays off the personality files. `URLAUTH=BINARY` stays in the gaps file. `OBJECTID` stays unimplemented.
 
 ## How to extend
 

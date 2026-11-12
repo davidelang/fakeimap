@@ -54,8 +54,12 @@ type command struct {
 	changedSince *uint64
 }
 
+func (s *session) jmapBound() bool {
+	return s.srv.bound.Jmap != "" || s.srv.bound.JmapTLS != ""
+}
+
 func (s *session) caps() []string {
-	return s.pers.advertise(s.authed, s.secure, s.srv.hasCert)
+	return s.pers.advertise(s.authed, s.secure, s.srv.hasCert, s.jmapBound())
 }
 
 func (s *session) sendLine(line string) error {
@@ -124,7 +128,7 @@ func (s *session) serve() {
 	} else {
 		greetCaps := s.caps()
 		if len(s.pers.GreetingCaps) > 0 {
-			greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.hasCert)
+			greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.hasCert, s.jmapBound())
 		}
 		greet = fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(greetCaps, " "), s.pers.Greeting)
 	}
@@ -411,6 +415,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdUnselect(cmd)
 	case "UNAUTHENTICATE":
 		return s.cmdUnauthenticate(cmd)
+	case "GETJMAPACCESS":
+		return s.cmdGetJMAPAccess(cmd)
 	case "GETQUOTA":
 		return s.cmdGetQuota(cmd)
 	case "GETQUOTAROOT":
@@ -2677,6 +2683,32 @@ func (s *session) cmdUnauthenticate(cmd command) error {
 	s.user = ""
 	s.enabled = map[string]struct{}{}
 	return s.ok(cmd.tag, "UNAUTHENTICATE completed")
+}
+
+// cmdGetJMAPAccess returns the absolute JMAP session URL. The command
+// exists only when this personality lists JMAPACCESS and a listener is
+// bound. It requires authentication and does not require a mailbox.
+func (s *session) cmdGetJMAPAccess(cmd command) error {
+	if !s.jmapBound() || !s.pers.listsCap("JMAPACCESS") {
+		return s.bad(cmd.tag, "GETJMAPACCESS not supported")
+	}
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !s.advertiseCap("JMAPACCESS") {
+		return s.bad(cmd.tag, "GETJMAPACCESS not supported")
+	}
+	if len(cmd.args) != 0 {
+		return s.bad(cmd.tag, "GETJMAPACCESS syntax")
+	}
+	url, ok := s.srv.jmapSessionURL()
+	if !ok {
+		return s.bad(cmd.tag, "GETJMAPACCESS not supported")
+	}
+	if err := s.sendLine("* JMAPACCESS " + imapString(url)); err != nil {
+		return err
+	}
+	return s.ok(cmd.tag, "GETJMAPACCESS completed")
 }
 
 func (s *session) cmdIdle(cmd command) error {

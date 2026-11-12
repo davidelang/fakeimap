@@ -26,6 +26,7 @@
     "LITERAL+",
     "ID",
     "UTF8=ACCEPT",
+    "JMAPACCESS",
     "IDLE",
     "NAMESPACE",
     "CHILDREN",

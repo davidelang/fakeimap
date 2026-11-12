@@ -67,8 +67,8 @@ func TestUnauthenticate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPre := strings.Join(p.advertise(false, false, false), " ")
-	wantPost := strings.Join(p.advertise(true, false, false), " ")
+	wantPre := strings.Join(p.advertise(false, false, false, false), " ")
+	wantPost := strings.Join(p.advertise(true, false, false, false), " ")
 
 	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/stalwart.json"})
 	cl := dial(t, bound.Listen)
@@ -159,11 +159,11 @@ func TestUnauthenticateKeepsTLS(t *testing.T) {
 		t.Fatal("TLS did not stay up")
 	}
 	pre := cl.cmd("CAPABILITY").mustOK(t)
-	if strings.Join(capsOf(pre.untagged[0]), " ") != strings.Join(p.advertise(false, true, true), " ") {
+	if strings.Join(capsOf(pre.untagged[0]), " ") != strings.Join(p.advertise(false, true, true, false), " ") {
 		t.Fatalf("tls pre %v", capsOf(pre.untagged[0]))
 	}
 	login := cl.cmd("LOGIN demo secret").mustOK(t)
-	if strings.Join(capsOf(login.tagLine), " ") != strings.Join(p.advertise(true, true, true), " ") {
+	if strings.Join(capsOf(login.tagLine), " ") != strings.Join(p.advertise(true, true, true, false), " ") {
 		t.Fatalf("tls login %q", login.tagLine)
 	}
 	cl.cmd("NOOP").ok(t)

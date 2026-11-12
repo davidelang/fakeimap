@@ -22,7 +22,33 @@ const (
 	jmapMail       = "urn:ietf:params:jmap:mail"
 	jmapSubmission = "urn:ietf:params:jmap:submission"
 	jmapAPIPath    = "/jmap/"
+	jmapWellKnown  = "/.well-known/jmap"
 )
+
+// jmapSessionURL is the absolute session resource. The TLS listener wins
+// when both are bound. A host of 0.0.0.0 or :: is 127.0.0.1. An IPv6 host
+// is written in brackets. The port is the one that was bound.
+func (s *Server) jmapSessionURL() (string, bool) {
+	addr := s.bound.JmapTLS
+	scheme := "https"
+	if addr == "" {
+		addr = s.bound.Jmap
+		scheme = "http"
+	}
+	if addr == "" {
+		return "", false
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return "", false
+	}
+	if host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	} else if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		host = "[" + host + "]"
+	}
+	return scheme + "://" + host + ":" + port + jmapWellKnown, true
+}
 
 func (s *Server) acceptJMAP(ln net.Listener) {
 	hs := &http.Server{
@@ -41,7 +67,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := r.URL.Path
 	switch {
-	case path == "/.well-known/jmap":
+	case path == jmapWellKnown:
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
