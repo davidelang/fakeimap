@@ -740,3 +740,14 @@
 
 - Approved plan: sandbox/plans/unauthenticate-20261111-2131-plan.md
 - UNAUTHENTICATE returns the connection to the not-authenticated state without expunging. TLS and COMPRESS=DEFLATE stay. The enabled set is cleared. The four Stalwart post-login lists place it between QRESYNC and PREVIEW. The guide names the ID reply and points at the facts file.
+
+## 2026-11-11 - APPENDLIMIT execution start
+
+- Approved plan: sandbox/plans/appendlimit-20261111-2145-plan.md
+- Work: reject an APPEND larger than the connection's APPENDLIMIT and report that number from STATUS
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-11 - APPENDLIMIT landed
+
+- Approved plan: sandbox/plans/appendlimit-20261111-2145-plan.md
+- APPENDLIMIT=<positive integer> is the connection's maximum APPEND literal. A longer literal is NO [TOOBIG] and is not stored. STATUS and LIST RETURN (STATUS) report the number. Cyrus 3.12 and 3.13 advertise 2147483647 after IMAP4rev1. Cyrus 3.6 advertises 4294967295. sasl.json lists the 3.13 value on the post-login list only. The gaps file no longer contains it.

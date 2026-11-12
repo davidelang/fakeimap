@@ -2,7 +2,6 @@
   "capabilities": [
     "ACL",
     "ANNOTATE-EXPERIMENT-1",
-    "APPENDLIMIT=2147483647",
     "CATENATE",
     "DIGEST=SHA1",
     "IMAP4rev2",

@@ -252,6 +252,23 @@ func (s *session) advertiseCap(name string) bool {
 	return false
 }
 
+// appendLimit is the positive integer on this connection's capability
+// list. After login that list is the post-login list. One number applies
+// to every mailbox.
+func (s *session) appendLimit() (uint64, bool) {
+	for _, c := range s.caps() {
+		if n, ok := parseAppendLimit(c); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func (s *session) appendLimitValue() uint64 {
+	n, _ := s.appendLimit()
+	return n
+}
+
 func (s *session) flush() error {
 	evs := s.srv.store.drain(s)
 	gone := map[uint32]bool{}
@@ -734,6 +751,7 @@ func (s *session) cmdList(cmd command) error {
 		showSpecial:    s.advertiseCap("SPECIAL-USE"),
 		wantStatus:     parsed.hasStatus,
 		status:         parsed.status,
+		appendLimit:    s.appendLimitValue(),
 		user:           s.user,
 		subscribedOnly: parsed.subscribed,
 		markSubscribed: parsed.subscribed,
@@ -979,7 +997,7 @@ func (s *session) cmdStatus(cmd command) error {
 		}
 		items = append(items, t.Val)
 	}
-	cn, pairs, err := s.srv.store.status(name, items)
+	cn, pairs, err := s.srv.store.status(name, items, s.appendLimitValue())
 	if err != nil {
 		if err.Error() == "bad status item" {
 			return s.bad(cmd.tag, "STATUS bad item")
@@ -2112,6 +2130,9 @@ func (s *session) cmdAppend(cmd command) error {
 	mbox, err = s.boxIn(mbox)
 	if err != nil {
 		return s.no(cmd.tag, "[TRYCREATE] APPEND no such mailbox")
+	}
+	if lim, ok := s.appendLimit(); ok && uint64(len(body)) > lim {
+		return s.no(cmd.tag, "[TOOBIG] APPEND exceeds limit")
 	}
 	uv, uid, err := s.srv.store.appendMsg(s, mbox, flags, date, body, s.srv.frozenTime())
 	if err != nil {

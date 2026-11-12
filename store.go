@@ -599,6 +599,7 @@ type listQuery struct {
 	showSpecial    bool
 	wantStatus     bool
 	status         []string
+	appendLimit    uint64
 	user           string
 	subscribedOnly bool
 	markSubscribed bool
@@ -678,7 +679,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if q.wantStatus {
-		if _, err := statusPairs(nil, q.status); err != nil {
+		if _, err := statusPairs(nil, q.status, q.appendLimit); err != nil {
 			return nil, "", false, err
 		}
 	}
@@ -725,7 +726,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 		var pairs [][2]string
 		if q.wantStatus {
 			var err error
-			pairs, err = statusPairs(mb, q.status)
+			pairs, err = statusPairs(mb, q.status, q.appendLimit)
 			if err != nil {
 				return nil, "", false, err
 			}
@@ -795,7 +796,7 @@ func (st *Store) seedSubs() {
 	}
 }
 
-func (st *Store) status(name string, items []string) (string, [][2]string, error) {
+func (st *Store) status(name string, items []string, appendLimit uint64) (string, [][2]string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	cn, err := st.canon(name)
@@ -806,7 +807,7 @@ func (st *Store) status(name string, items []string) (string, [][2]string, error
 	if mb == nil {
 		return "", nil, fmt.Errorf("no mailbox")
 	}
-	out, err := statusPairs(mb, items)
+	out, err := statusPairs(mb, items, appendLimit)
 	if err != nil {
 		return "", nil, err
 	}
@@ -814,11 +815,21 @@ func (st *Store) status(name string, items []string) (string, [][2]string, error
 }
 
 // statusPairs reads one mailbox. A nil mailbox only checks the item names.
-func statusPairs(mb *Mailbox, items []string) ([][2]string, error) {
+// appendLimit is the connection's APPENDLIMIT, or 0 when that capability
+// is not on the list in effect. Zero is not a valid limit.
+func statusPairs(mb *Mailbox, items []string, appendLimit uint64) ([][2]string, error) {
 	var out [][2]string
 	for _, it := range items {
+		name := strings.ToUpper(it)
+		if name == "APPENDLIMIT" {
+			if appendLimit == 0 {
+				return nil, fmt.Errorf("bad status item")
+			}
+			out = append(out, [2]string{name, strconv.FormatUint(appendLimit, 10)})
+			continue
+		}
 		var v uint32
-		switch strings.ToUpper(it) {
+		switch name {
 		case "MESSAGES":
 			if mb != nil {
 				v = uint32(len(mb.msgs))
@@ -842,7 +853,7 @@ func statusPairs(mb *Mailbox, items []string) ([][2]string, error) {
 		default:
 			return nil, fmt.Errorf("bad status item")
 		}
-		out = append(out, [2]string{strings.ToUpper(it), strconv.FormatUint(uint64(v), 10)})
+		out = append(out, [2]string{name, strconv.FormatUint(uint64(v), 10)})
 	}
 	return out, nil
 }

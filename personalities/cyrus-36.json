@@ -39,6 +39,7 @@
     "SASL-IR",
     "COMPRESS=DEFLATE",
     "IDLE",
+    "APPENDLIMIT=4294967295",
     "AUTH=PLAIN",
     "AUTH=LOGIN"
   ],
@@ -69,7 +70,8 @@
     "UNSELECT",
     "THREAD=REFS",
     "COMPRESS=DEFLATE",
-    "IDLE"
+    "IDLE",
+    "APPENDLIMIT=4294967295"
   ],
   "personal_prefix": "INBOX/",
   "other_users": "user/",

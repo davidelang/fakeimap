@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -123,8 +124,31 @@ func (p *Personality) lists(name string) bool {
 }
 
 func capImplemented(name string) bool {
+	if _, ok := parseAppendLimit(name); ok {
+		return true
+	}
 	_, ok := implementedCaps[strings.ToUpper(name)]
 	return ok
+}
+
+// parseAppendLimit accepts only APPENDLIMIT=<positive integer>. A bare
+// token, zero, a non-numeric suffix, and a value that does not fit in
+// uint64 are not implemented.
+func parseAppendLimit(name string) (uint64, bool) {
+	rest, ok := strings.CutPrefix(strings.ToUpper(name), "APPENDLIMIT=")
+	if !ok || rest == "" {
+		return 0, false
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(rest, 10, 64)
+	if err != nil || n == 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // advertise filters the personality list. STARTTLS is added only on a
