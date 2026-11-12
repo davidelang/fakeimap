@@ -298,7 +298,7 @@ func TestReloadCert(t *testing.T) {
 	_, bound, cc := startCtrl(t, Config{
 		Listen:            "127.0.0.1:0",
 		ImplicitTLSListen: "127.0.0.1:0",
-		SmtpListen:        "127.0.0.1:0",
+		SmtpListen:        smtpListenList{{Addr: "127.0.0.1:0"}},
 		JmapListen:        "127.0.0.1:0",
 		JmapTLSListen:     "127.0.0.1:0",
 		SieveListen:       "127.0.0.1:0",

@@ -16,13 +16,16 @@ import (
 
 // Bound is the one JSON object written to stdout before accept.
 type Bound struct {
-	Listen            string `json:"listen,omitempty"`
-	ImplicitTLSListen string `json:"implicit_tls_listen,omitempty"`
-	Control           string `json:"control,omitempty"`
-	Smtp              string `json:"smtp,omitempty"`
-	Jmap              string `json:"jmap,omitempty"`
-	JmapTLS           string `json:"jmap_tls,omitempty"`
-	Sieve             string `json:"sieve,omitempty"`
+	Listen            string   `json:"listen,omitempty"`
+	ImplicitTLSListen string   `json:"implicit_tls_listen,omitempty"`
+	Control           string   `json:"control,omitempty"`
+	Smtp              string   `json:"smtp,omitempty"`
+	SmtpListeners     []string `json:"smtp_listeners,omitempty"`
+	SmtpTLS           string   `json:"smtp_tls,omitempty"`
+	SmtpTLSListeners  []string `json:"smtp_tls_listeners,omitempty"`
+	Jmap              string   `json:"jmap,omitempty"`
+	JmapTLS           string   `json:"jmap_tls,omitempty"`
+	Sieve             string   `json:"sieve,omitempty"`
 }
 
 // Server is the loopback IMAP listener.
@@ -38,7 +41,7 @@ type Server struct {
 	ln            net.Listener
 	tlsLn         net.Listener
 	ctrlLn        net.Listener
-	smtpLn        net.Listener
+	smtpLns       []smtpLn
 	jmapLn        net.Listener
 	jmapTLSLn     net.Listener
 	sieveLn       net.Listener
@@ -266,12 +269,12 @@ func (s *Server) Serve() error {
 			s.acceptControl()
 		}()
 	}
-	if s.smtpLn != nil {
+	for _, spec := range s.smtpLns {
 		wg.Add(1)
-		go func() {
+		go func(spec smtpLn) {
 			defer wg.Done()
-			s.acceptSMTP()
-		}()
+			s.acceptSMTP(spec)
+		}(spec)
 	}
 	if s.jmapLn != nil {
 		wg.Add(1)
@@ -320,13 +323,27 @@ func (s *Server) listen() error {
 			return err
 		}
 	}
-	if s.cfg.SmtpListen != "" {
-		ln, err := net.Listen("tcp", s.cfg.SmtpListen)
+	for _, spec := range s.cfg.SmtpListen {
+		ln, err := net.Listen("tcp", spec.Addr)
 		if err != nil {
 			return err
 		}
-		s.smtpLn = ln
-		s.bound.Smtp = ln.Addr().String()
+		s.smtpLns = append(s.smtpLns, smtpLn{ln: ln, dsn: spec.DSN})
+		s.bound.SmtpListeners = append(s.bound.SmtpListeners, ln.Addr().String())
+	}
+	if len(s.bound.SmtpListeners) > 0 {
+		s.bound.Smtp = s.bound.SmtpListeners[0]
+	}
+	for _, spec := range s.cfg.SmtpTLSListen {
+		ln, err := net.Listen("tcp", spec.Addr)
+		if err != nil {
+			return err
+		}
+		s.smtpLns = append(s.smtpLns, smtpLn{ln: ln, dsn: spec.DSN, implicit: true})
+		s.bound.SmtpTLSListeners = append(s.bound.SmtpTLSListeners, ln.Addr().String())
+	}
+	if len(s.bound.SmtpTLSListeners) > 0 {
+		s.bound.SmtpTLS = s.bound.SmtpTLSListeners[0]
 	}
 	if s.cfg.JmapListen != "" {
 		ln, err := net.Listen("tcp", s.cfg.JmapListen)
@@ -448,8 +465,8 @@ func (s *Server) Close() {
 		if s.ctrlLn != nil {
 			_ = s.ctrlLn.Close()
 		}
-		if s.smtpLn != nil {
-			_ = s.smtpLn.Close()
+		for _, spec := range s.smtpLns {
+			_ = spec.ln.Close()
 		}
 		if s.jmapLn != nil {
 			_ = s.jmapLn.Close()

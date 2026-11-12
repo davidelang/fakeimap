@@ -101,6 +101,9 @@ type ctrlRequest struct {
 	LockoutMs    *int            `json:"lockout_ms"`
 	CertFile     string          `json:"cert_file"`
 	KeyFile      string          `json:"key_file"`
+	To           string          `json:"to"`
+	Recipient    string          `json:"recipient"`
+	Envid        string          `json:"envid"`
 }
 
 func okResp(extra map[string]any) map[string]any {
@@ -289,6 +292,8 @@ func (s *Server) ctrl(req ctrlRequest) any {
 			return errResp(err.Error())
 		}
 		return okResp(nil)
+	case "inject-dsn":
+		return s.injectDSN(req)
 	case "list-smtp":
 		return okResp(map[string]any{"messages": s.listSMTP()})
 	case "wait-smtp":
@@ -325,6 +330,9 @@ func (s *Server) ctrlStatus() map[string]any {
 		"implicit_tls_listen": s.bound.ImplicitTLSListen,
 		"control":             s.bound.Control,
 		"smtp":                s.bound.Smtp,
+		"smtp_listeners":      boundList(s.bound.SmtpListeners),
+		"smtp_tls":            s.bound.SmtpTLS,
+		"smtp_tls_listeners":  boundList(s.bound.SmtpTLSListeners),
 		"jmap":                s.bound.Jmap,
 		"jmap_tls":            s.bound.JmapTLS,
 		"sieve":               s.bound.Sieve,
@@ -614,11 +622,63 @@ func canonDo(do string) (string, bool) {
 		"reorder", "mid", "fetch_order", "tag_first", "mutate", "wrong_name",
 		"expired", "self_signed",
 		"reply", "bye", "idle_burst", "drop_literal", "rst_literal", "overquota", "expunge_mid",
-		"inprogress":
+		"inprogress", "drop_after_354", "bounce":
 		return strings.ToLower(do), true
 	default:
 		return "", false
 	}
+}
+
+func smtpDoAllowed(do, proto string) bool {
+	switch do {
+	case "bounce", "drop_after_354":
+		return proto == "smtp"
+	}
+	if proto != "smtp" {
+		return true
+	}
+	switch do {
+	case "close", "rst", "half_close", "silent", "delay", "raw", "reply", "overquota":
+		return true
+	default:
+		return false
+	}
+}
+
+func boundList(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+func (s *Server) injectDSN(req ctrlRequest) map[string]any {
+	action := strings.ToLower(req.Code)
+	if action != "delivered" && action != "failed" {
+		return errResp("missing field")
+	}
+	to := req.To
+	if to == "" {
+		last, ok := s.lastSMTP()
+		if !ok || last.From == "" {
+			return errResp("missing field")
+		}
+		to = last.From
+	}
+	if !s.smtpDelivers(to) {
+		return errResp("no such account")
+	}
+	var raw []byte
+	if req.Raw != "" {
+		raw = []byte(req.Raw)
+	} else {
+		raw = deliveryReport(action, req.Recipient, req.Envid)
+	}
+	_, uid, err := s.store.appendMsg(nil, "INBOX", nil, nil, raw, s.frozenTime())
+	if err != nil {
+		return errResp(err.Error())
+	}
+	return okResp(map[string]any{"uid": uid})
 }
 
 func buildFault(req ctrlRequest) (*fault, error) {
@@ -658,6 +718,9 @@ func buildFault(req ctrlRequest) (*fault, error) {
 		f.command = strings.ToUpper(req.Command)
 	} else if req.Command != "" {
 		f.command = strings.ToUpper(req.Command)
+	}
+	if !smtpDoAllowed(do, faultProto(f)) {
+		return nil, fmt.Errorf("unknown fault")
 	}
 	switch do {
 	case "delay", "drip":
@@ -703,6 +766,15 @@ func buildFault(req ctrlRequest) (*fault, error) {
 		}
 		f.order = append([]string(nil), req.Order...)
 	case "reply":
+		if faultProto(f) == "smtp" {
+			n, err := strconv.Atoi(req.Code)
+			if err != nil || n < 200 || n > 599 {
+				return nil, fmt.Errorf("missing field")
+			}
+			f.code = strconv.Itoa(n)
+			f.text = req.Text
+			break
+		}
 		switch strings.ToUpper(req.Status) {
 		case "OK", "NO", "BAD":
 			f.status = strings.ToUpper(req.Status)
@@ -763,6 +835,20 @@ func buildFault(req ctrlRequest) (*fault, error) {
 		}
 		f.doneText = done
 		f.totalText = total
+	case "drop_after_354":
+		if f.command != "DATA" {
+			return nil, fmt.Errorf("missing field")
+		}
+		if req.Bytes != nil {
+			if *req.Bytes < 0 {
+				return nil, fmt.Errorf("missing field")
+			}
+			f.bytes = *req.Bytes
+		}
+	case "bounce":
+		if f.command != "DATA" {
+			return nil, fmt.Errorf("missing field")
+		}
 	case "expunge_mid":
 		if req.UID == nil {
 			return nil, fmt.Errorf("missing field")

@@ -63,6 +63,9 @@ type ctrlReply struct {
 	ImplicitTLSListen string         `json:"implicit_tls_listen"`
 	Control           string         `json:"control"`
 	Smtp              string         `json:"smtp"`
+	SmtpListeners     []string       `json:"smtp_listeners"`
+	SmtpTLS           string         `json:"smtp_tls"`
+	SmtpTLSListeners  []string       `json:"smtp_tls_listeners"`
 	Jmap              string         `json:"jmap"`
 	JmapTLS           string         `json:"jmap_tls"`
 	Sieve             string         `json:"sieve"`
@@ -157,7 +160,7 @@ func TestControlSocket(t *testing.T) {
 	}
 	_, boundLJ, ccLJ := startCtrl(t, Config{
 		Listen:     "127.0.0.1:0",
-		SmtpListen: "127.0.0.1:0",
+		SmtpListen: smtpListenList{{Addr: "127.0.0.1:0"}},
 		JmapListen: "127.0.0.1:0",
 	})
 	gotLJ := ccLJ.call(map[string]any{"op": "status"}).ok(t)

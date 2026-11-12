@@ -14,7 +14,7 @@ fakeimap <config.json>
 
 The one argument is the config path. Paths inside the config are relative to the process working directory, not to the config file.
 
-Before accept, the process writes one JSON object to stdout and flushes it. The object names the listeners that bound: `listen`, `implicit_tls_listen`, `control`, `smtp`, `jmap`, `jmap_tls`, and `sieve`. A configured port of `0` is the bound ephemeral port.
+Before accept, the process writes one JSON object to stdout and flushes it. The object names the listeners that bound: `listen`, `implicit_tls_listen`, `control`, `smtp`, `smtp_listeners`, `smtp_tls`, `smtp_tls_listeners`, `jmap`, `jmap_tls`, and `sieve`. A configured port of `0` is the bound ephemeral port. `smtp` and `smtp_tls` are the first bind of each kind. The fields are defined in `docs/facts/imap-server.md`.
 
 A short harness reads that object, writes one `arm-fault` line to the mode-0600 control socket, and writes `reset`:
 
@@ -47,12 +47,15 @@ Each key is defined in `docs/facts/imap-server.md`. Summary:
 - `personality` — personality JSON file. Required.
 - `dataset` — dataset directory containing `dataset.json`. Required.
 - `control` — filesystem path of the mode-0600 Unix control socket. Empty or omitted: no socket.
-- `smtp_listen` — `host:port` cleartext SMTP submission. Empty or omitted: not bound. Port `0`: ephemeral.
+- `smtp_listen` — one `host:port`, or an array of `host:port` strings and `{"addr","dsn"}` objects. Empty or omitted: not bound. Port `0`: ephemeral. Optional `smtp_dsn` applies to the string form. See `docs/facts/imap-server.md`.
+- `smtp_tls_listen` — SMTP with TLS from the first byte. A string or an array. Empty or omitted: not bound. Requires `cert_file` and `key_file`.
+- `smtp_auth_required` — default true. False accepts `MAIL`, `RCPT`, and `DATA` with no AUTH and does not deliver them.
+- `smtp_size` — EHLO `SIZE` limit. Omitted means `10000000`.
 - `jmap_listen` — `host:port` cleartext HTTP JMAP. Empty or omitted: not bound. Port `0`: ephemeral. It does not speak TLS.
 - `jmap_tls_listen` — `host:port` JMAP with TLS from the first byte. Empty or omitted: not bound. Port `0`: ephemeral.
 - `sieve_listen` — `host:port` ManageSieve. Empty or omitted: not bound. Port `0`: ephemeral.
 
-At least one IMAP listener is required (`listen` or `implicit_tls_listen`). `smtp_listen`, `jmap_listen`, `jmap_tls_listen`, and `sieve_listen` do not satisfy that. Implicit TLS and `jmap_tls_listen` require `cert_file` and `key_file` together. Setting one of those two files without the other is a config error.
+At least one IMAP listener is required (`listen` or `implicit_tls_listen`). `smtp_listen`, `smtp_tls_listen`, `jmap_listen`, `jmap_tls_listen`, and `sieve_listen` do not satisfy that. Implicit TLS, `jmap_tls_listen`, and `smtp_tls_listen` require `cert_file` and `key_file` together. Setting one of those two files without the other is a config error.
 
 Example, cleartext only, no certificate:
 
@@ -93,10 +96,11 @@ An empty `op` is `missing field`. Any other `op` is `unknown op`.
 | `set-auth-policy` | optional `fail_delay_ms`, `lockout_after`, `lockout_ms` | see `docs/facts/imap-server.md` |
 | `clear-auth-policy` | none | see `docs/facts/imap-server.md` |
 | `reload-cert` | optional `cert_file` and `key_file`, both or neither | see `docs/facts/imap-server.md` |
+| `inject-dsn` | `code` `delivered` or `failed`; optional `to`, `recipient`, `envid`, `raw` | see `docs/facts/imap-server.md` |
 | `list-smtp` | none | accepted SMTP messages |
 | `wait-smtp` | `count` | zero returns immediately. A positive count also needs `timeout_ms`. A timeout is `ok` false |
 
-`status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `jmap`, `jmap_tls`, and `sieve`. `smtp`, `jmap`, `jmap_tls`, and `sieve` are the bound `host:port`, or `""` when that listener is not up.
+`status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `smtp_listeners`, `smtp_tls`, `smtp_tls_listeners`, `jmap`, `jmap_tls`, and `sieve`. `smtp` is the first cleartext SMTP bind. `smtp_tls` is the first implicit SMTP TLS bind. `jmap`, `jmap_tls`, and `sieve` are the bound `host:port`, or `""` when that listener is not up. The lists and the recorded SMTP fields are in `docs/facts/imap-server.md`.
 
 Example:
 
@@ -139,6 +143,7 @@ Reply faults run in `runCommand` before the command handler. The certificate fau
 - `expired` presents a certificate that has already expired.
 - `self_signed` presents a generated localhost certificate.
 - `reply`, `bye`, `idle_burst`, `drop_literal`, `rst_literal`, `overquota`, `expunge_mid`, and `inprogress` are named here. What each one does, and what the `bye` op does, is in `docs/facts/imap-server.md`.
+- `proto` defaults to `imap`. `proto` `smtp` applies `close`, `rst`, `half_close`, `silent`, `delay`, `raw`, `reply`, `drop_after_354`, `bounce`, and `overquota` to the named SMTP verb. An IMAP fault does not match an SMTP command. The SMTP rules are in `docs/facts/imap-server.md`.
 
 An unknown `do` is `unknown fault`. A missing required field is `missing field`.
 
@@ -246,7 +251,7 @@ A matching reply fault runs first. Then the command handler uses the store and t
 
 ## Listeners
 
-SMTP stays cleartext. `EHLO` lists `AUTH PLAIN LOGIN`, `8BITMIME`, and `STARTTLS` only when a certificate is loaded and the connection is not yet TLS. `STARTTLS` with an argument is `501`. `STARTTLS` with no certificate, or a second `STARTTLS`, is `454`. Success is `220` and then TLS, and the next `EHLO` omits `STARTTLS`. `MAIL`, `RCPT`, and `DATA` before `AUTH` are `530`. `AUTH PLAIN` and `AUTH LOGIN` use the same dataset passwords as IMAP. `RCPT TO` of a dataset account, as a bare name or `name@domain`, delivers `DATA` to that account's `INBOX`. Any other recipient is accepted and the message is not stored. There is no queue, relay, or DSN.
+SMTP cleartext listeners and the implicit TLS listener, the EHLO list, the recorded `list-smtp` fields, and the SMTP faults are in `docs/facts/imap-server.md`. `MAIL`, `RCPT`, and `DATA` before `AUTH` are `530` while `smtp_auth_required` is true. A dataset recipient is delivered to `INBOX` only in that mode. Nothing is relayed. A failure report is stored only when `inject-dsn` or a `bounce` fault asks for it.
 
 `jmap_listen` is cleartext HTTP. It does not speak TLS. `jmap_tls_listen` speaks TLS from the first byte on the same routes, reports the bound address as `jmap_tls`, allows port `0`, and leaves session URLs as paths. An empty or omitted address is not bound. Setting it without a certificate is a config error. Method behavior is in `docs/facts/imap-server.md`.
 

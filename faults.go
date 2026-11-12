@@ -172,7 +172,42 @@ func (s *Server) takeLiteralFault(id int, command string) *fault {
 	return nil
 }
 
-// matchProtoFault counts an overquota fault for SMTP or JMAP.
+// matchSMTPFault counts one SMTP fault for this verb. An IMAP fault does not match.
+func (s *Server) matchSMTPFault(id int, command string) *fault {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.faults {
+		if f.spent || faultProto(f) != "smtp" || f.command == "" {
+			continue
+		}
+		if f.conn != 0 && f.conn != id {
+			continue
+		}
+		if !strings.EqualFold(f.command, command) {
+			continue
+		}
+		if !smtpFaultApplies(f.do, command) {
+			continue
+		}
+		return takeHit(f)
+	}
+	return nil
+}
+
+func smtpFaultApplies(do, command string) bool {
+	switch do {
+	case "overquota":
+		return command == "MAIL" || command == "RCPT" || command == "DATA"
+	case "drop_after_354", "bounce":
+		return command == "DATA"
+	case "close", "rst", "half_close", "silent", "delay", "raw", "reply":
+		return true
+	default:
+		return false
+	}
+}
+
+// matchProtoFault counts an overquota fault for JMAP.
 func (s *Server) matchProtoFault(proto string, id int, command string) *fault {
 	if proto == "" || proto == "imap" {
 		return nil

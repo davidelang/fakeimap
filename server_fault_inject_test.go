@@ -177,7 +177,7 @@ func TestFaultReplyByeIdleAndMatch(t *testing.T) {
 func TestFaultLiteralsQuotaAndProtocols(t *testing.T) {
 	_, bound, cc := startCtrl(t, Config{
 		Listen:     "127.0.0.1:0",
-		SmtpListen: "127.0.0.1:0",
+		SmtpListen: smtpListenList{{Addr: "127.0.0.1:0"}},
 		JmapListen: "127.0.0.1:0",
 	})
 	cl := dial(t, bound.Listen)

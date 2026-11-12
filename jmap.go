@@ -2237,7 +2237,7 @@ func (s *Server) jmapSubmissionSet(user string, args map[string]any, callID stri
 		for i, addr := range rcpts {
 			env[i] = smtpRcpt{addr: addr, deliver: s.smtpDelivers(addr)}
 		}
-		if err := s.acceptMail(from, env, snaps[0].raw); err != nil {
+		if err := s.acceptMail(from, env, snaps[0].raw, smtpMeta{}); err != nil {
 			notCreated[cid] = map[string]any{"type": "serverFail"}
 			continue
 		}

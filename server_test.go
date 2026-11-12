@@ -880,7 +880,19 @@ func start(t *testing.T, cfg Config) (*Server, Bound) {
 				t.Errorf("control socket %s still present", bound.Control)
 			}
 		}
-		if bound.Smtp != "" {
+		seenSMTP := map[string]bool{}
+		for _, addr := range append(append([]string{}, bound.SmtpListeners...), bound.SmtpTLSListeners...) {
+			if addr == "" || seenSMTP[addr] {
+				continue
+			}
+			seenSMTP[addr] = true
+			c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+			if err == nil {
+				c.Close()
+				t.Errorf("smtp %s still open", addr)
+			}
+		}
+		if bound.Smtp != "" && !seenSMTP[bound.Smtp] {
 			c, err := net.DialTimeout("tcp", bound.Smtp, 200*time.Millisecond)
 			if err == nil {
 				c.Close()

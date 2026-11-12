@@ -2,27 +2,43 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // RFC 5321 limits, counting the trailing CRLF.
+// smtpSizeDefault is the EHLO SIZE limit when smtp_size is omitted.
 const (
-	smtpCmdMax  = 512
-	smtpDataMax = 1000
+	smtpCmdMax      = 512
+	smtpDataMax     = 1000
+	smtpSizeDefault = 10000000
 )
+
+type smtpLn struct {
+	ln       net.Listener
+	dsn      bool
+	implicit bool
+}
 
 type smtpRcptView struct {
 	Address string `json:"address"`
 	Result  string `json:"result"`
+	Notify  string `json:"notify,omitempty"`
+	Orcpt   string `json:"orcpt,omitempty"`
 }
 
 type smtpRecord struct {
 	From       string         `json:"from"`
+	Ret        string         `json:"ret,omitempty"`
+	Envid      string         `json:"envid,omitempty"`
+	SMTPUTF8   bool           `json:"smtputf8,omitempty"`
+	Size       *int           `json:"size,omitempty"`
 	Recipients []smtpRcptView `json:"recipients"`
 }
 
@@ -32,40 +48,62 @@ type smtpWaiter struct {
 }
 
 type smtpEnv struct {
-	from    string
-	hasFrom bool
-	rcpts   []smtpRcpt
+	from     string
+	hasFrom  bool
+	ret      string
+	envid    string
+	smtputf8 bool
+	size     *int
+	rcpts    []smtpRcpt
 }
 
 type smtpRcpt struct {
 	addr    string
 	deliver bool
+	notify  string
+	orcpt   string
 }
 
 type smtpConn struct {
-	srv    *Server
-	c      net.Conn
-	br     *bufio.Reader
-	bw     *bufio.Writer
-	id     int
-	authed bool
-	secure bool
-	env    smtpEnv
+	srv      *Server
+	c        net.Conn
+	br       *bufio.Reader
+	bw       *bufio.Writer
+	id       int
+	authed   bool
+	secure   bool
+	dsn      bool
+	suppress bool
+	capture  *bytes.Buffer
+	env      smtpEnv
 }
 
-func (s *Server) acceptSMTP() {
+func (s *Server) acceptSMTP(spec smtpLn) {
 	for {
-		c, err := s.smtpLn.Accept()
+		c, err := spec.ln.Accept()
 		if err != nil {
 			return
 		}
-		go s.serveSMTP(c)
+		go s.serveSMTP(c, spec.dsn, spec.implicit)
 	}
 }
 
-func (s *Server) serveSMTP(c net.Conn) {
+func (s *Server) serveSMTP(c net.Conn, dsn, implicit bool) {
 	defer c.Close()
-	sc := &smtpConn{srv: s, c: c, br: bufio.NewReader(c), bw: bufio.NewWriter(c), id: int(s.smtpSeq.Add(1))}
+	sc := &smtpConn{
+		srv: s, c: c, br: bufio.NewReader(c), bw: bufio.NewWriter(c),
+		id: int(s.smtpSeq.Add(1)), dsn: dsn,
+	}
+	if implicit {
+		tc := s.tlsServerFor(c, sc.id, "TLS")
+		if err := tc.Handshake(); err != nil {
+			return
+		}
+		sc.c = tc
+		sc.br = bufio.NewReader(tc)
+		sc.bw = bufio.NewWriter(tc)
+		sc.secure = true
+	}
 	sc.serve()
 }
 
@@ -97,8 +135,27 @@ func (s *Server) listSMTP() []smtpRecord {
 	for i, rec := range s.smtpLog {
 		out[i] = rec
 		out[i].Recipients = append([]smtpRcptView(nil), rec.Recipients...)
+		if rec.Size != nil {
+			n := *rec.Size
+			out[i].Size = &n
+		}
 	}
 	return out
+}
+
+func (s *Server) lastSMTP() (smtpRecord, bool) {
+	s.smtpMu.Lock()
+	defer s.smtpMu.Unlock()
+	if len(s.smtpLog) == 0 {
+		return smtpRecord{}, false
+	}
+	rec := s.smtpLog[len(s.smtpLog)-1]
+	rec.Recipients = append([]smtpRcptView(nil), rec.Recipients...)
+	if rec.Size != nil {
+		n := *rec.Size
+		rec.Size = &n
+	}
+	return rec, true
 }
 
 // waitSMTP waits until count messages have been accepted since the call.
@@ -173,29 +230,36 @@ func (sc *smtpConn) serve() {
 }
 
 func (sc *smtpConn) reply(code int, text string) error {
-	if _, err := fmt.Fprintf(sc.bw, "%d %s\r\n", code, text); err != nil {
-		return err
-	}
-	return sc.bw.Flush()
+	return sc.writeReply(fmt.Sprintf("%d %s\r\n", code, text))
 }
 
 func (sc *smtpConn) replyLines(code int, lines []string) error {
+	var b strings.Builder
 	for i, line := range lines {
 		sep := byte(' ')
 		if i < len(lines)-1 {
 			sep = '-'
 		}
-		if _, err := fmt.Fprintf(sc.bw, "%d%c%s\r\n", code, sep, line); err != nil {
-			return err
-		}
+		fmt.Fprintf(&b, "%d%c%s\r\n", code, sep, line)
 	}
-	return sc.bw.Flush()
+	return sc.writeReply(b.String())
 }
 
 func (sc *smtpConn) cont(b64 string) error {
 	line := "334\r\n"
 	if b64 != "" {
 		line = "334 " + b64 + "\r\n"
+	}
+	return sc.writeReply(line)
+}
+
+func (sc *smtpConn) writeReply(line string) error {
+	if sc.suppress {
+		return nil
+	}
+	if sc.capture != nil {
+		_, err := sc.capture.WriteString(line)
+		return err
 	}
 	if _, err := io.WriteString(sc.bw, line); err != nil {
 		return err
@@ -211,6 +275,18 @@ func (sc *smtpConn) command(line string) error {
 	verb, arg, _ := strings.Cut(line, " ")
 	verb = strings.ToUpper(verb)
 	arg = strings.TrimSpace(arg)
+	if verb == "MAIL" || verb == "RCPT" || verb == "DATA" {
+		if sc.srv.cfg.smtpAuthRequired() && !sc.authed {
+			return sc.reply(530, "5.7.0 authentication required")
+		}
+	}
+	if f := sc.srv.matchSMTPFault(sc.id, verb); f != nil {
+		return sc.applySMTPFault(verb, arg, f)
+	}
+	return sc.dispatch(verb, arg)
+}
+
+func (sc *smtpConn) dispatch(verb, arg string) error {
 	switch verb {
 	case "EHLO":
 		return sc.replyLines(250, sc.ehloLines())
@@ -229,36 +305,90 @@ func (sc *smtpConn) command(line string) error {
 	case "AUTH":
 		return sc.cmdAuth(arg)
 	case "MAIL":
-		if !sc.authed {
-			return sc.reply(530, "5.7.0 authentication required")
-		}
-		if sc.srv.matchProtoFault("smtp", sc.id, "MAIL") != nil {
-			return sc.reply(552, "5.2.2 mailbox full")
-		}
 		return sc.cmdMail(arg)
 	case "RCPT":
-		if !sc.authed {
-			return sc.reply(530, "5.7.0 authentication required")
-		}
-		if sc.srv.matchProtoFault("smtp", sc.id, "RCPT") != nil {
-			return sc.reply(552, "5.2.2 mailbox full")
-		}
 		return sc.cmdRcpt(arg)
 	case "DATA":
-		if !sc.authed {
-			return sc.reply(530, "5.7.0 authentication required")
-		}
-		if sc.srv.matchProtoFault("smtp", sc.id, "DATA") != nil {
-			return sc.reply(552, "5.2.2 mailbox full")
-		}
-		return sc.cmdData()
+		return sc.cmdData(false)
 	default:
 		return sc.reply(502, "5.5.1 command not implemented")
 	}
 }
 
+func (sc *smtpConn) applySMTPFault(verb, arg string, f *fault) error {
+	switch f.do {
+	case "overquota":
+		return sc.reply(552, "5.2.2 mailbox full")
+	case "close":
+		return io.EOF
+	case "rst":
+		if tc := tcpConnOf(sc.c); tc != nil {
+			_ = tc.SetLinger(0)
+		}
+		return io.EOF
+	case "half_close":
+		_ = closeWrite(sc.c)
+		return io.EOF
+	case "reply":
+		code, err := strconv.Atoi(f.code)
+		if err != nil {
+			return sc.reply(550, "5.0.0 fault")
+		}
+		text := f.text
+		if text == "" {
+			text = "fault"
+		}
+		return sc.reply(code, text)
+	case "silent":
+		sc.suppress = true
+		err := sc.dispatch(verb, arg)
+		sc.suppress = false
+		return err
+	case "delay":
+		if f.delayMs > 0 {
+			time.Sleep(time.Duration(f.delayMs) * time.Millisecond)
+		}
+		return sc.dispatch(verb, arg)
+	case "raw":
+		sc.suppress = true
+		err := sc.dispatch(verb, arg)
+		sc.suppress = false
+		if werr := sc.writeReply(string(lineCRLF(f.text))); werr != nil {
+			return werr
+		}
+		return err
+	case "drop_after_354":
+		if err := sc.reply(354, "start mail input"); err != nil {
+			return err
+		}
+		if f.bytes > 0 {
+			buf := make([]byte, f.bytes)
+			if _, err := io.ReadFull(sc.br, buf); err != nil {
+				return err
+			}
+		}
+		return io.EOF
+	case "bounce":
+		return sc.cmdData(true)
+	default:
+		return sc.dispatch(verb, arg)
+	}
+}
+
 func (sc *smtpConn) ehloLines() []string {
-	lines := []string{"fakeimap", "AUTH PLAIN LOGIN", "8BITMIME"}
+	lines := []string{"fakeimap"}
+	if sc.srv.cfg.smtpAuthRequired() {
+		lines = append(lines, "AUTH PLAIN LOGIN")
+	}
+	lines = append(lines,
+		"8BITMIME",
+		"PIPELINING",
+		"SMTPUTF8",
+		fmt.Sprintf("SIZE %d", sc.srv.cfg.smtpSizeLimit()),
+	)
+	if sc.dsn {
+		lines = append(lines, "DSN")
+	}
 	if sc.srv.certLoaded() && !sc.secure {
 		lines = append(lines, "STARTTLS")
 	}
@@ -403,54 +533,196 @@ func (sc *smtpConn) cmdMail(arg string) error {
 	if sc.env.hasFrom {
 		return sc.reply(503, "5.5.1 sender already set")
 	}
-	addr, ok := parseSMTPPath(arg, "FROM:")
+	addr, params, ok := parseSMTPPath(arg, "FROM:")
 	if !ok {
 		return sc.reply(501, "5.5.4 bad sender")
 	}
+	ret, envid, utf8, size, code, text, ok := sc.mailParams(params)
+	if !ok {
+		return sc.reply(code, text)
+	}
 	sc.env.from = addr
 	sc.env.hasFrom = true
+	sc.env.ret = ret
+	sc.env.envid = envid
+	sc.env.smtputf8 = utf8
+	sc.env.size = size
 	return sc.reply(250, "2.1.0 OK")
+}
+
+func (sc *smtpConn) mailParams(params []smtpParam) (string, string, bool, *int, int, string, bool) {
+	seen := map[string]bool{}
+	var ret, envid string
+	var utf8 bool
+	var size *int
+	for _, p := range params {
+		if seen[p.key] {
+			return "", "", false, nil, 501, "5.5.4 bad parameter", false
+		}
+		seen[p.key] = true
+		switch p.key {
+		case "BODY":
+			if !p.hasVal {
+				return "", "", false, nil, 501, "5.5.4 bad parameter", false
+			}
+			switch strings.ToUpper(p.val) {
+			case "7BIT", "8BITMIME", "BINARYMIME":
+			default:
+				return "", "", false, nil, 501, "5.5.4 bad parameter", false
+			}
+		case "SIZE":
+			if !p.hasVal {
+				return "", "", false, nil, 501, "5.5.4 bad parameter", false
+			}
+			n, err := strconv.ParseInt(p.val, 10, 64)
+			if err != nil || n < 0 {
+				return "", "", false, nil, 501, "5.5.4 bad parameter", false
+			}
+			if n > int64(sc.srv.cfg.smtpSizeLimit()) {
+				return "", "", false, nil, 552, "5.3.4 message too big", false
+			}
+			v := int(n)
+			size = &v
+		case "RET":
+			if !p.hasVal {
+				return "", "", false, nil, 501, "5.5.4 bad parameter", false
+			}
+			switch strings.ToUpper(p.val) {
+			case "HDRS", "FULL":
+				ret = strings.ToUpper(p.val)
+			default:
+				return "", "", false, nil, 501, "5.5.4 bad parameter", false
+			}
+		case "ENVID":
+			if !p.hasVal || p.val == "" {
+				return "", "", false, nil, 501, "5.5.4 bad parameter", false
+			}
+			envid = p.val
+		case "SMTPUTF8":
+			if p.hasVal {
+				return "", "", false, nil, 501, "5.5.4 bad parameter", false
+			}
+			utf8 = true
+		default:
+			return "", "", false, nil, 501, "5.5.4 bad parameter", false
+		}
+	}
+	return ret, envid, utf8, size, 0, "", true
 }
 
 func (sc *smtpConn) cmdRcpt(arg string) error {
 	if !sc.env.hasFrom {
 		return sc.reply(503, "5.5.1 need sender")
 	}
-	addr, ok := parseSMTPPath(arg, "TO:")
+	addr, params, ok := parseSMTPPath(arg, "TO:")
 	if !ok {
 		return sc.reply(501, "5.5.4 bad recipient")
 	}
-	sc.env.rcpts = append(sc.env.rcpts, smtpRcpt{addr: addr, deliver: sc.srv.smtpDelivers(addr)})
+	notify, orcpt, code, text, ok := rcptParams(params)
+	if !ok {
+		return sc.reply(code, text)
+	}
+	deliver := sc.srv.cfg.smtpAuthRequired() && sc.srv.smtpDelivers(addr)
+	sc.env.rcpts = append(sc.env.rcpts, smtpRcpt{addr: addr, deliver: deliver, notify: notify, orcpt: orcpt})
 	return sc.reply(250, "2.1.5 OK")
 }
 
-func (sc *smtpConn) cmdData() error {
+func rcptParams(params []smtpParam) (string, string, int, string, bool) {
+	seen := map[string]bool{}
+	var notify, orcpt string
+	for _, p := range params {
+		if seen[p.key] {
+			return "", "", 501, "5.5.4 bad parameter", false
+		}
+		seen[p.key] = true
+		switch p.key {
+		case "NOTIFY":
+			if !p.hasVal || !validNotify(p.val) {
+				return "", "", 501, "5.5.4 bad parameter", false
+			}
+			notify = strings.ToUpper(p.val)
+		case "ORCPT":
+			if !p.hasVal || p.val == "" {
+				return "", "", 501, "5.5.4 bad parameter", false
+			}
+			orcpt = p.val
+		default:
+			return "", "", 501, "5.5.4 bad parameter", false
+		}
+	}
+	return notify, orcpt, 0, "", true
+}
+
+func validNotify(v string) bool {
+	parts := strings.Split(v, ",")
+	if len(parts) == 0 {
+		return false
+	}
+	never := false
+	for _, p := range parts {
+		switch strings.ToUpper(strings.TrimSpace(p)) {
+		case "NEVER":
+			never = true
+		case "SUCCESS", "FAILURE", "DELAY":
+		default:
+			return false
+		}
+	}
+	return !never || len(parts) == 1
+}
+
+func (sc *smtpConn) cmdData(bounce bool) error {
 	if !sc.env.hasFrom || len(sc.env.rcpts) == 0 {
 		return sc.reply(503, "5.5.1 no recipient")
 	}
-	if err := sc.reply(354, "start mail input"); err != nil {
+	if err := sc.replyLive(354, "start mail input"); err != nil {
 		return err
 	}
 	raw, tooLong, err := readSMTPData(sc.br)
 	if err != nil {
 		return err
 	}
-	recips := sc.env.rcpts
+	recips := append([]smtpRcpt(nil), sc.env.rcpts...)
 	from := sc.env.from
+	meta := smtpMeta{ret: sc.env.ret, envid: sc.env.envid, smtputf8: sc.env.smtputf8, size: sc.env.size}
 	sc.env = smtpEnv{}
 	if tooLong {
 		return sc.reply(500, "5.5.2 line too long")
 	}
-	if err := sc.srv.acceptMail(from, recips, raw); err != nil {
+	if err := sc.srv.acceptMail(from, recips, raw, meta); err != nil {
 		return sc.reply(451, "4.3.0 delivery failed")
 	}
+	if bounce {
+		if err := sc.srv.deliverFailureReports(from, meta.envid, recips); err != nil {
+			return sc.reply(451, "4.3.0 delivery failed")
+		}
+	}
 	return sc.reply(250, "2.0.0 OK")
+}
+
+// replyLive writes a reply even while a fault is holding the final reply.
+// DATA's 354 is the prompt the client waits on before the body.
+func (sc *smtpConn) replyLive(code int, text string) error {
+	prevS, prevC := sc.suppress, sc.capture
+	sc.suppress = false
+	sc.capture = nil
+	err := sc.reply(code, text)
+	sc.suppress, sc.capture = prevS, prevC
+	return err
+}
+
+type smtpMeta struct {
+	ret      string
+	envid    string
+	smtputf8 bool
+	size     *int
 }
 
 // acceptMail is the SMTP DATA accept path. A dataset recipient appends the
 // message to INBOX once. Any other recipient is accepted and not stored.
 // list-smtp and wait-smtp see the same record either caller produces.
-func (s *Server) acceptMail(from string, rcpts []smtpRcpt, raw []byte) error {
+// A caller that cleared deliver on every recipient stores nothing.
+func (s *Server) acceptMail(from string, rcpts []smtpRcpt, raw []byte, meta smtpMeta) error {
 	views := make([]smtpRcptView, len(rcpts))
 	deliver := false
 	for i, r := range rcpts {
@@ -459,40 +731,163 @@ func (s *Server) acceptMail(from string, rcpts []smtpRcpt, raw []byte) error {
 			result = "delivered"
 			deliver = true
 		}
-		views[i] = smtpRcptView{Address: r.addr, Result: result}
+		views[i] = smtpRcptView{Address: r.addr, Result: result, Notify: r.notify, Orcpt: r.orcpt}
 	}
 	if deliver {
 		if _, _, err := s.store.appendMsg(nil, "INBOX", nil, nil, raw, s.frozenTime()); err != nil {
 			return err
 		}
 	}
-	s.acceptSMTPMsg(smtpRecord{From: from, Recipients: views})
+	var size *int
+	if meta.size != nil {
+		n := *meta.size
+		size = &n
+	}
+	s.acceptSMTPMsg(smtpRecord{
+		From: from, Ret: meta.ret, Envid: meta.envid, SMTPUTF8: meta.smtputf8,
+		Size: size, Recipients: views,
+	})
 	return nil
 }
 
-func parseSMTPPath(arg, keyword string) (string, bool) {
+// deliverFailureReports stores one failure DSN per recipient that asked for
+// one, in the envelope sender's INBOX when that sender is a dataset account.
+func (s *Server) deliverFailureReports(from, envid string, rcpts []smtpRcpt) error {
+	if !s.smtpDelivers(from) {
+		return nil
+	}
+	for _, r := range rcpts {
+		if !notifyWantsFailure(r.notify) {
+			continue
+		}
+		raw := deliveryReport("failed", r.addr, envid)
+		if _, _, err := s.store.appendMsg(nil, "INBOX", nil, nil, raw, s.frozenTime()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func notifyWantsFailure(notify string) bool {
+	if notify == "" {
+		return true
+	}
+	for _, p := range strings.Split(notify, ",") {
+		if strings.EqualFold(strings.TrimSpace(p), "FAILURE") {
+			return true
+		}
+	}
+	return false
+}
+
+// deliveryReport is a multipart/report whose second part is message/delivery-status.
+func deliveryReport(action, recipient, envid string) []byte {
+	status := "5.0.0"
+	if action == "delivered" {
+		status = "2.0.0"
+	}
+	var b strings.Builder
+	const boundary = "fakeimap-dsn"
+	fmt.Fprintf(&b, "Content-Type: multipart/report; report-type=delivery-status; boundary=%s\r\n", boundary)
+	b.WriteString("MIME-Version: 1.0\r\n")
+	b.WriteString("Subject: Delivery Status Notification\r\n")
+	b.WriteString("\r\n")
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	b.WriteString("Content-Type: text/plain\r\n\r\n")
+	fmt.Fprintf(&b, "%s\r\n\r\n", action)
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	b.WriteString("Content-Type: message/delivery-status\r\n\r\n")
+	b.WriteString("Reporting-MTA: dns; fakeimap\r\n")
+	if envid != "" {
+		fmt.Fprintf(&b, "Original-Envelope-Id: %s\r\n", envid)
+	}
+	b.WriteString("\r\n")
+	if recipient != "" {
+		fmt.Fprintf(&b, "Final-Recipient: rfc822;%s\r\n", recipient)
+	}
+	fmt.Fprintf(&b, "Action: %s\r\n", action)
+	fmt.Fprintf(&b, "Status: %s\r\n", status)
+	fmt.Fprintf(&b, "\r\n--%s--\r\n", boundary)
+	return []byte(b.String())
+}
+
+type smtpParam struct {
+	key    string
+	val    string
+	hasVal bool
+}
+
+func parseSMTPPath(arg, keyword string) (string, []smtpParam, bool) {
 	arg = strings.TrimSpace(arg)
 	if len(arg) < len(keyword) || !strings.EqualFold(arg[:len(keyword)], keyword) {
-		return "", false
+		return "", nil, false
 	}
 	rest := strings.TrimSpace(arg[len(keyword):])
 	if rest == "" {
-		return "", false
+		return "", nil, false
 	}
+	var addr string
 	if rest[0] == '<' {
 		end := strings.IndexByte(rest, '>')
 		if end < 0 {
-			return "", false
+			return "", nil, false
 		}
-		return rest[1:end], true
+		addr = rest[1:end]
+		rest = strings.TrimSpace(rest[end+1:])
+	} else {
+		if i := strings.IndexByte(rest, ' '); i >= 0 {
+			addr = rest[:i]
+			rest = strings.TrimSpace(rest[i+1:])
+		} else {
+			addr = rest
+			rest = ""
+		}
+		if addr == "" {
+			return "", nil, false
+		}
 	}
-	if i := strings.IndexByte(rest, ' '); i >= 0 {
-		rest = rest[:i]
+	params, ok := parseESMTPParams(rest)
+	if !ok {
+		return "", nil, false
 	}
-	if rest == "" {
-		return "", false
+	return addr, params, true
+}
+
+func parseESMTPParams(rest string) ([]smtpParam, bool) {
+	var out []smtpParam
+	rest = strings.TrimSpace(rest)
+	for rest != "" {
+		i := strings.IndexByte(rest, ' ')
+		tok := rest
+		if i >= 0 {
+			tok = rest[:i]
+			rest = strings.TrimSpace(rest[i+1:])
+		} else {
+			rest = ""
+		}
+		if tok == "" {
+			return nil, false
+		}
+		key, val, has := tok, "", false
+		if eq := strings.IndexByte(tok, '='); eq >= 0 {
+			key = tok[:eq]
+			val = tok[eq+1:]
+			has = true
+			if val == "" {
+				return nil, false
+			}
+		}
+		if key == "" {
+			return nil, false
+		}
+		for _, c := range key {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+				return nil, false
+			}
+		}
+		out = append(out, smtpParam{key: strings.ToUpper(key), val: val, hasVal: has})
 	}
-	return rest, true
+	return out, true
 }
 
 func readSMTPLine(r *bufio.Reader, max int) (string, bool, error) {

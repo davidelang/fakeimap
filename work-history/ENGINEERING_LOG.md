@@ -1004,3 +1004,16 @@
 - set-auth-policy delays a failed LOGIN or AUTHENTICATE and locks the username after repeated failures. PRIVACYREQUIRED does not count. freeze-clock sets the lock deadline. reset and set-dataset leave the policy.
 - reload-cert swaps the certificate used for the next handshake and leaves a finished TLS connection on the old one. An expired or self-signed fault still wins.
 - Plan: sandbox/plans/mailbox-auth-cert-20261112-0509-plan.md
+
+## 2026-11-12 - SMTP listeners DSN execution start
+
+- Approved plan: sandbox/plans/smtp-listen-dsn-20261112-0509-plan.md
+- Work: several cleartext SMTP listeners and an implicit TLS listener, sink mode when AUTH is not required, EHLO parameters, DSN records, inject-dsn, and SMTP reply faults.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - SMTP listeners DSN landed
+
+- Cleartext SMTP can bind several listeners, including an object with dsn, and an implicit TLS listener uses the same certificate reload as STARTTLS.
+- smtp_auth_required false is a sink. EHLO lists PIPELINING, SMTPUTF8, SIZE, and DSN when the listener asks. MAIL and RCPT record the DSN parameters.
+- inject-dsn and a bounce fault store delivery-status reports. SMTP faults do not match IMAP faults.
+- Plan: sandbox/plans/smtp-listen-dsn-20261112-0509-plan.md
