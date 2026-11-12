@@ -213,6 +213,8 @@ The fixture files `sasl`, `condstore`, `list`, `esearch`, `compress`, `sort`, `u
 
 `FILTER` and `UID FILTER` check a Sieve filter spec and search criteria. With no mailbox selected, including before login, each is tagged `NO` `FILTER not selected`. With a mailbox selected, valid arguments are tagged `NO` `not implemented`, and no script runs. Invalid arguments are tagged `BAD`. `FILTER=SIEVE` is not advertised. The argument rules are in `docs/facts/imap-server.md`.
 
+`COMPARATOR`, `GENURLAUTH`, `URLFETCH`, and `RESETKEY` are recognized on every personality. `COMPARATOR`, `GENURLAUTH`, and `RESETKEY` require login. A valid `URLFETCH` before login is tagged `NO` `not implemented`. After login, valid arguments are tagged `NO` `not implemented`. Invalid arguments are tagged `BAD`. No URL is minted and collation does not change. `I18NLEVEL=1`, `URLAUTH`, and `URLAUTH=BINARY` are filtered and not advertised. The argument rules are in `docs/facts/imap-server.md`.
+
 ## Dataset
 
 `dataset.json` keys, as `docs/facts/imap-server.md` defines them:
@@ -288,7 +290,7 @@ The UW greeting appends ` at ` and a timestamp after the fixed text. One post-lo
 
 Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `ACL` and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, `XLIST`, `MULTIAPPEND`, `QUOTA`, `QUOTA=RES-STORAGE`, `QUOTA=RES-MESSAGE`, `QUOTASET`, `UIDONLY`, `OBJECTID`, and `REPLACE` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `NO_ATOMIC_RENAME`, `QUOTA=RES-ANNOTATION-STORAGE`, `QUOTA=RES-MAILBOX`, `RIGHTS=kxten`, `UIDBATCHES`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, and `X-SIEVE-MAILBOX`.
 
-`URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` stays off the personality files. `URLAUTH=BINARY` stays in the gaps file.
+`URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` stays off the personality files. `URLAUTH=BINARY` stays in the gaps file. `I18NLEVEL=1`, `URLAUTH`, and `URLAUTH=BINARY` are filtered and not advertised. `URL-PARTIAL` stays unimplemented. Those rules are in `docs/facts/imap-server.md`.
 
 ## How to extend
 

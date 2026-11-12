@@ -968,3 +968,9 @@
 - Approved plan: sandbox/plans/context-search-20261112-0529-plan.md
 - Work: CONTEXT=SEARCH on SEARCH and UID SEARCH, with ADDTO and REMOVEFROM
 - First action per standard-plan-compliance-block.md
+
+## 2026-11-12 - i18n URLAUTH stub execution
+
+- Approved plan: sandbox/plans/i18n-urlauth-stub-20261112-0529-plan.md
+- Work: COMPARATOR, GENURLAUTH, URLFETCH, and RESETKEY answer NO not implemented for valid arguments. I18NLEVEL=1, URLAUTH, and URLAUTH=BINARY are never advertised.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight

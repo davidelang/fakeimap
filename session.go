@@ -649,6 +649,14 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdCancelUpdate(cmd)
 	case "SETACL", "DELETEACL", "GETACL", "LISTRIGHTS", "MYRIGHTS":
 		return s.cmdACL(cmd)
+	case "COMPARATOR":
+		return s.cmdComparator(cmd)
+	case "GENURLAUTH":
+		return s.cmdGenURLAuth(cmd)
+	case "URLFETCH":
+		return s.cmdURLFetch(cmd)
+	case "RESETKEY":
+		return s.cmdResetKey(cmd)
 	default:
 		return s.bad(cmd.tag, "unknown command")
 	}
@@ -717,6 +725,150 @@ func (s *session) cmdACL(cmd command) error {
 		return s.bad(cmd.tag, cmd.name+" syntax")
 	}
 	return s.no(cmd.tag, "valid syntax not implemented")
+}
+
+// cmdComparator recognizes COMPARATOR. A valid argument list is tagged NO.
+// SORT and SEARCH are unchanged. I18NLEVEL=1 is not advertised.
+func (s *session) cmdComparator(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !comparatorArgsOK(cmd.args) {
+		return s.bad(cmd.tag, "COMPARATOR syntax")
+	}
+	return s.no(cmd.tag, "not implemented")
+}
+
+func comparatorArgsOK(args []Token) bool {
+	if len(args) == 1 {
+		_, ok := astring(args[0])
+		return ok
+	}
+	if len(args) < 3 || args[0].Kind != "lparen" || args[len(args)-1].Kind != "rparen" {
+		return false
+	}
+	for _, t := range args[1 : len(args)-1] {
+		if _, ok := astring(t); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// cmdGenURLAuth recognizes GENURLAUTH. A valid pair list is tagged NO.
+// No URL is minted and the mailbox is not looked up.
+func (s *session) cmdGenURLAuth(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !genURLAuthArgsOK(cmd.args) {
+		return s.bad(cmd.tag, "GENURLAUTH syntax")
+	}
+	return s.no(cmd.tag, "not implemented")
+}
+
+func genURLAuthArgsOK(args []Token) bool {
+	if len(args) < 2 || len(args)%2 != 0 {
+		return false
+	}
+	for i := 0; i < len(args); i += 2 {
+		rump, ok := astring(args[i])
+		if !ok || !urlRumpOK(rump) {
+			return false
+		}
+		if args[i+1].Kind != "atom" || !strings.EqualFold(args[i+1].Val, "INTERNAL") {
+			return false
+		}
+	}
+	return true
+}
+
+// cmdURLFetch recognizes URLFETCH before and after login. Valid arguments
+// are tagged NO. No literal and no key are returned.
+func (s *session) cmdURLFetch(cmd command) error {
+	if !urlFetchArgsOK(cmd.args) {
+		return s.bad(cmd.tag, "URLFETCH syntax")
+	}
+	return s.no(cmd.tag, "not implemented")
+}
+
+func urlFetchArgsOK(args []Token) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, t := range args {
+		u, ok := astring(t)
+		if !ok || !urlRumpOK(u) || !urlAuthAtomOK(u) {
+			return false
+		}
+	}
+	return true
+}
+
+// cmdResetKey recognizes RESETKEY. No argument, or one mailbox astring, is
+// tagged NO. The mailbox is not looked up and nothing is stored.
+func (s *session) cmdResetKey(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if len(cmd.args) > 1 {
+		return s.bad(cmd.tag, "RESETKEY syntax")
+	}
+	if len(cmd.args) == 1 {
+		if _, ok := astring(cmd.args[0]); !ok {
+			return s.bad(cmd.tag, "RESETKEY syntax")
+		}
+	}
+	return s.no(cmd.tag, "not implemented")
+}
+
+// urlRumpOK reports a url-rump that contains imap:// and /;UID= followed by
+// a non-zero number. The mailbox name is not interpreted.
+func urlRumpOK(s string) bool {
+	if !strings.Contains(s, "imap://") {
+		return false
+	}
+	const mark = "/;UID="
+	i := strings.Index(s, mark)
+	if i < 0 {
+		return false
+	}
+	rest := s[i+len(mark):]
+	if rest == "" || rest[0] < '0' || rest[0] > '9' {
+		return false
+	}
+	nonzero := false
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			break
+		}
+		if c != '0' {
+			nonzero = true
+		}
+	}
+	return nonzero
+}
+
+// urlAuthAtomOK reports ;URLAUTH= followed by one non-empty atom.
+func urlAuthAtomOK(s string) bool {
+	const mark = ";URLAUTH="
+	i := strings.Index(s, mark)
+	if i < 0 {
+		return false
+	}
+	rest := s[i+len(mark):]
+	return rest != "" && imapAtomChar(rest[0])
+}
+
+func imapAtomChar(c byte) bool {
+	if c < 0x21 || c > 0x7e {
+		return false
+	}
+	switch c {
+	case '(', ')', '{', '%', '*', '"', '\\', ']':
+		return false
+	}
+	return true
 }
 
 func (s *session) cmdCapability(cmd command) error {

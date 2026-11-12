@@ -180,6 +180,18 @@ The spec words are case-insensitive. The spec is one of `SIEVE DELIVERY`, `SIEVE
 
 After the spec, an optional `CHARSET` astring and one or more search keys follow. `CHARSET` and the keys are accepted exactly when `SEARCH` on this connection would accept them, including the capability gates `SEARCH` already applies. A key or charset `SEARCH` would reject is tagged `BAD`. Zero search keys is tagged `BAD`. A `RETURN` parenthesized list is tagged `BAD`.
 
+## COMPARATOR and URLAUTH commands
+
+`COMPARATOR`, `GENURLAUTH`, `URLFETCH`, and `RESETKEY` are recognized on every personality. `I18NLEVEL=1`, `URLAUTH`, and `URLAUTH=BINARY` are not in `implementedCaps`. `advertiseList` drops each by name from the greeting list, the pre-login list, and the post-login list, after the implemented-capability check, so a personality that lists one still omits it. `ENABLE I18NLEVEL=1` and `ENABLE URLAUTH` add nothing to `* ENABLED`. `URL-PARTIAL` stays unimplemented. No personality file lists the three tokens. `personalities/cyrus-3137.gaps.json` keeps `URLAUTH` and `URLAUTH=BINARY`.
+
+`COMPARATOR` before login is tagged `NO` `must authenticate first`, including a command with invalid arguments. After login, one astring, or a parenthesized list of one or more astrings, is tagged `NO` `not implemented`. That text is exact. There is no response code and no untagged `COMPARATOR` line. `SORT` and `SEARCH` keep today's comparison. An empty list, a missing argument, or a parenthesis that does not wrap astrings is tagged `BAD`. That text is not `not implemented`.
+
+`GENURLAUTH` and `RESETKEY` require login. Before login each is tagged `NO` `must authenticate first`, including a command with invalid arguments. `URLFETCH` does not require login. A valid `URLFETCH` before login is tagged `NO` `not implemented`, not `must authenticate first`.
+
+After login, valid `GENURLAUTH` is one or more pairs of a url-rump and the atom `INTERNAL`. A url-rump contains `imap://` and `/;UID=` followed by a non-zero number. The mailbox is not looked up. Any other mechanism, a missing pair, or a rump without those two pieces is tagged `BAD`. Valid `URLFETCH` is one or more urls that each contain those two pieces and `;URLAUTH=` followed by a non-empty atom. A url without `;URLAUTH=` is tagged `BAD`. Valid `RESETKEY` is no argument, or one mailbox astring, including a name that does not exist. A second argument is tagged `BAD`. Invalid arguments are tagged `BAD`. That text is not `not implemented`.
+
+Each valid command is tagged `NO` `not implemented`. That text is exact. There is no response code. There is no untagged `GENURLAUTH` or `URLFETCH` line, no literal, and no key. Messages, flags, and mailboxes stay as they were. `UID` plus any of the four names is tagged `BAD` `syntax error` and does not return the stub phrase.
+
 ## SASL
 
 `AUTHENTICATE` mechanisms this binary implements: `PLAIN`, `LOGIN`, `CRAM-MD5`, `SCRAM-SHA-1`, `SCRAM-SHA-256`, `SCRAM-SHA-1-PLUS`, `SCRAM-SHA-256-PLUS`, and `EXTERNAL`. A mechanism is advertised only when the personality lists `AUTH=<name>`, and `AUTHENTICATE` of a mechanism that is not listed fails. `DIGEST-MD5` is not implemented and is not advertised.
