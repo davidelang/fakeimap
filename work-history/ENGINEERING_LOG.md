@@ -535,3 +535,17 @@
   remote: * LIST () "/" "MB2"
   local:  * LIST (\HasNoChildren) "/" MB2
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-stalwart-0155 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Cyrus 3.12.4 execution start
+
+- Approved plan: sandbox/plans/probe-cyrus-3124-20261111-1705-plan.md
+- Work: run the base cyrusprobe script against liveimap-cyrus-3124 and update personalities/cyrus-3124.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Cyrus 3.12.4 landed
+
+- Approved plan: sandbox/plans/probe-cyrus-3124-20261111-1705-plan.md
+- personalities/cyrus-3124.json greets localhost Cyrus IMAP 3.12.4 server ready. AUTH=PLAIN and AUTH=LOGIN are on the greeting and pre-login lists. THREAD=REFS follows UNSELECT. MOVE sends COPYUID untagged. NAMESPACE, SELECT flags, and SELECT order already matched. FLAGS stay before BODY[TEXT]. IMAP4rev2, ID, and STARTTLS stay off the file.
+- liveimap@localhost.local is refused by this server. The seed user authenticated, and the base script normalized diff was empty.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-cyrus-3124 was stopped. The lab password stayed in the gitignored operator file.

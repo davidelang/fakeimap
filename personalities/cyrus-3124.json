@@ -1,13 +1,18 @@
 {
-  "greeting": "Cyrus IMAP 3.12.4 server ready",
+  "greeting": "localhost Cyrus IMAP 3.12.4 server ready",
   "delimiter": "/",
   "greeting_capabilities": [
     "IMAP4rev1",
+    "AUTH=PLAIN",
+    "AUTH=LOGIN",
     "ENABLE",
     "LITERAL+",
     "SASL-IR"
   ],
   "pre_login_capabilities": [
+    "IMAP4rev1",
+    "AUTH=PLAIN",
+    "AUTH=LOGIN",
     "BINARY",
     "CHILDREN",
     "COMPRESS=DEFLATE",
@@ -17,7 +22,6 @@
     "ESEARCH",
     "ESORT",
     "IDLE",
-    "IMAP4rev1",
     "LIST-EXTENDED",
     "LIST-STATUS",
     "LITERAL+",
@@ -34,11 +38,12 @@
     "SPECIAL-USE",
     "THREAD=ORDEREDSUBJECT",
     "THREAD=REFERENCES",
-    "THREAD=REFS",
     "UIDPLUS",
-    "UNSELECT"
+    "UNSELECT",
+    "THREAD=REFS"
   ],
   "post_login_capabilities": [
+    "IMAP4rev1",
     "BINARY",
     "CHILDREN",
     "COMPRESS=DEFLATE",
@@ -48,7 +53,6 @@
     "ESEARCH",
     "ESORT",
     "IDLE",
-    "IMAP4rev1",
     "LIST-EXTENDED",
     "LIST-STATUS",
     "LITERAL+",
@@ -64,9 +68,9 @@
     "SPECIAL-USE",
     "THREAD=ORDEREDSUBJECT",
     "THREAD=REFERENCES",
-    "THREAD=REFS",
     "UIDPLUS",
-    "UNSELECT"
+    "UNSELECT",
+    "THREAD=REFS"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",
@@ -92,6 +96,7 @@
   ],
   "fetch_peek_body": true,
   "fetch_seen_flags": true,
+  "move_copyuid_untagged": true,
   "fetch_item_order": [
     "FLAGS",
     "UID",
