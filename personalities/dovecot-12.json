@@ -30,6 +30,7 @@
     "QRESYNC",
     "ESEARCH",
     "ESORT",
+    "WITHIN",
     "LIST-STATUS",
     "AUTH=PLAIN",
     "AUTH=LOGIN"
@@ -54,6 +55,7 @@
     "QRESYNC",
     "ESEARCH",
     "ESORT",
+    "WITHIN",
     "LIST-STATUS"
   ],
   "logout_bye": true,

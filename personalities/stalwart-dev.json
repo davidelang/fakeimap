@@ -33,6 +33,7 @@
     "UNSELECT",
     "UIDPLUS",
     "ESEARCH",
+    "WITHIN",
     "SORT",
     "THREAD=REFERENCES",
     "LIST-EXTENDED",

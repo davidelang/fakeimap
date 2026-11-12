@@ -41,6 +41,7 @@
     "QRESYNC",
     "ESEARCH",
     "ESORT",
+    "WITHIN",
     "LIST-STATUS",
     "BINARY",
     "MOVE",

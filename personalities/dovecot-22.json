@@ -40,6 +40,7 @@
     "QRESYNC",
     "ESEARCH",
     "ESORT",
+    "WITHIN",
     "LIST-STATUS",
     "SPECIAL-USE",
     "BINARY",

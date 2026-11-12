@@ -40,6 +40,7 @@
     "THREAD=REFERENCES",
     "UIDPLUS",
     "UNSELECT",
+    "WITHIN",
     "THREAD=REFS",
     "AUTH=PLAIN",
     "AUTH=LOGIN"
@@ -73,6 +74,7 @@
     "THREAD=REFERENCES",
     "UIDPLUS",
     "UNSELECT",
+    "WITHIN",
     "THREAD=REFS"
   ],
   "other_users": "Other Users/",

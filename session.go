@@ -243,6 +243,14 @@ func (s *session) on(name string) bool {
 	return ok
 }
 
+// searchNow is the frozen clock when freeze-clock is set, and the wall clock otherwise.
+func (s *session) searchNow() time.Time {
+	if t := s.srv.frozenTime(); t != nil {
+		return *t
+	}
+	return time.Now()
+}
+
 func (s *session) advertiseCap(name string) bool {
 	for _, c := range s.caps() {
 		if strings.EqualFold(c, name) {
@@ -1845,7 +1853,7 @@ func (s *session) cmdSearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "SEARCH charset")
 	}
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"))
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.searchNow())
 	if err != nil {
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
@@ -1937,7 +1945,7 @@ func (s *session) cmdEsearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "ESEARCH charset")
 	}
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"))
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.searchNow())
 	if err != nil {
 		return s.bad(cmd.tag, "ESEARCH bad key")
 	}
@@ -2047,12 +2055,14 @@ func (s *session) cmdSort(cmd command) error {
 	if s.on("UTF8=ACCEPT") && knownCharset(cs) {
 		return s.bad(cmd.tag, "SORT charset")
 	}
+	within := s.advertiseCap("WITHIN")
+	now := s.searchNow()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false)
+		keys, err = parseSearch(rest, false, within, now)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "SORT bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false)
+		keys, err = parseSearch(rest[1:], false, within, now)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "SORT bad key")
@@ -2115,12 +2125,14 @@ func (s *session) cmdThread(cmd command) error {
 	if s.on("UTF8=ACCEPT") && knownCharset(cs) {
 		return s.bad(cmd.tag, "THREAD charset")
 	}
+	within := s.advertiseCap("WITHIN")
+	now := s.searchNow()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false)
+		keys, err = parseSearch(rest, false, within, now)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "THREAD bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false)
+		keys, err = parseSearch(rest[1:], false, within, now)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "THREAD bad key")

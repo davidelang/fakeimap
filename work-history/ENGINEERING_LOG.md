@@ -757,3 +757,14 @@
 - Approved plan: sandbox/plans/binary-size-20261111-2200-plan.md
 - Work: When BINARY is listed, FETCH and UID FETCH of BINARY.SIZE return the decoded octet count of one section. It is not a capability token. A partial is BAD. A binary APPEND and URLAUTH=BINARY stay unimplemented.
 - Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - WITHIN execution start
+
+- Approved plan: sandbox/plans/within-20261111-2212-plan.md
+- Work: OLDER and YOUNGER when WITHIN is listed, on the shared search parser. Lab personalities that advertise it gain the token. Facts and guide describe the interval, the target, and the frozen clock.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-11 - WITHIN landed
+
+- Approved plan: sandbox/plans/within-20261111-2212-plan.md
+- OLDER and YOUNGER take a non-zero interval in seconds. The target is the current second minus that interval. The frozen clock is that current time when it is set. Both keys include the equal instant. Personalities that record WITHIN advertise it, and the gaps file no longer contains it.

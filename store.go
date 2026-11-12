@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/mail"
 	"os"
 	"path/filepath"
@@ -1482,8 +1483,8 @@ type searchKey struct {
 	fuzzy bool
 }
 
-func parseSearch(toks []Token, allowFuzzy bool) ([]searchKey, error) {
-	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy)
+func parseSearch(toks []Token, allowFuzzy, allowWithin bool, now time.Time) ([]searchKey, error) {
+	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, now)
 	if err != nil || len(rest) != 0 || len(keys) == 0 {
 		return nil, fmt.Errorf("bad search")
 	}
@@ -1493,7 +1494,7 @@ func parseSearch(toks []Token, allowFuzzy bool) ([]searchKey, error) {
 // parseSearchSeq reads keys until the input ends. Inside a parenthesis the
 // closing parenthesis is left unconsumed. An unclosed parenthesis is an error.
 // fuzzy marks text leaves parsed from this sequence.
-func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy bool) ([]searchKey, []Token, error) {
+func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin bool, now time.Time) ([]searchKey, []Token, error) {
 	var keys []searchKey
 	for len(toks) > 0 {
 		if toks[0].Kind == "rparen" {
@@ -1502,7 +1503,7 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy bool) ([]searchKey, 
 			}
 			return keys, toks, nil
 		}
-		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy)
+		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, now)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1515,12 +1516,12 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy bool) ([]searchKey, 
 	return keys, nil, nil
 }
 
-func parseSearchKey(toks []Token, fuzzy, allowFuzzy bool) (searchKey, []Token, error) {
+func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin bool, now time.Time) (searchKey, []Token, error) {
 	if len(toks) == 0 || toks[0].Kind == "rparen" {
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
 	if toks[0].Kind == "lparen" {
-		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy)
+		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, now)
 		if err != nil || len(inner) == 0 || len(rest) == 0 || rest[0].Kind != "rparen" {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
@@ -1532,19 +1533,19 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy bool) (searchKey, []Token, e
 		if !allowFuzzy {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
-		return parseSearchKey(toks[1:], true, allowFuzzy)
+		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, now)
 	case "OR":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
-		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy)
+		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
 		return searchKey{op: "OR", kids: []searchKey{a, b}}, rest, nil
 	case "NOT":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
@@ -1585,6 +1586,17 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy bool) (searchKey, []Token, e
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
 		return searchKey{op: op, when: dt}, toks[2:], nil
+	case "OLDER", "YOUNGER":
+		if !allowWithin || len(toks) < 2 || toks[1].Kind != "atom" {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		n, ok := nzSeconds(toks[1].Val)
+		if !ok {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		// The target is the current second minus the interval. Both keys include that instant.
+		target := now.Truncate(time.Second).Add(-time.Duration(n) * time.Second)
+		return searchKey{op: op, when: target}, toks[2:], nil
 	case "LARGER", "SMALLER":
 		if len(toks) < 2 || toks[1].Kind != "atom" {
 			return searchKey{}, nil, fmt.Errorf("bad search")
@@ -1606,6 +1618,23 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy bool) (searchKey, []Token, e
 	default:
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
+}
+
+// nzSeconds is a non-zero integer of seconds that fits in a time.Duration.
+func nzSeconds(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n <= 0 || n > int64(math.MaxInt64)/int64(time.Second) {
+		return 0, false
+	}
+	return n, true
 }
 
 func (m *Message) matches(k searchKey, maxUID uint32) bool {
@@ -1664,6 +1693,10 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 		return ymd(m.internal) < ymd(k.when)
 	case "ON":
 		return ymd(m.internal) == ymd(k.when)
+	case "OLDER":
+		return !m.internal.Truncate(time.Second).After(k.when)
+	case "YOUNGER":
+		return !m.internal.Truncate(time.Second).Before(k.when)
 	case "LARGER":
 		return m.size > k.num
 	case "SMALLER":
