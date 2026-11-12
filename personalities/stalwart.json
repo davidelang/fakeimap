@@ -53,6 +53,7 @@
     "PREVIEW",
     "QUOTA",
     "QUOTA=RES-STORAGE",
+    "UIDONLY",
     "MESSAGELIMIT=1000000",
     "STARTTLS"
   ],

@@ -198,7 +198,7 @@ func (s *session) readCommand() (command, error) {
 		}
 		cmd.name = strings.ToUpper(name)
 		switch cmd.name {
-		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD", "FILTER":
+		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD", "FILTER", "ESEARCH":
 		default:
 			return cmd, errSyntax
 		}
@@ -246,6 +246,35 @@ func (s *session) on(name string) bool {
 	}
 	_, ok := s.enabled[strings.ToUpper(name)]
 	return ok
+}
+
+func (s *session) uidRequired(tag string) error {
+	return s.bad(tag, "[UIDREQUIRED] Message numbers are not allowed once UIDONLY is enabled")
+}
+
+// seqNumbersBanned is a command that still names messages by sequence
+// number after UIDONLY is enabled.
+func (s *session) seqNumbersBanned(cmd command) bool {
+	if !s.on("UIDONLY") || cmd.uid {
+		return false
+	}
+	switch cmd.name {
+	case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "SORT", "THREAD", "ESEARCH":
+		return true
+	default:
+		return false
+	}
+}
+
+func dropFetchItem(items []string, name string) []string {
+	var out []string
+	for _, it := range items {
+		if strings.EqualFold(it, name) {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // searchNow is the frozen clock when freeze-clock is set, and the wall clock otherwise.
@@ -320,7 +349,7 @@ func (s *session) flush() error {
 		e := evs[i]
 		switch e.kind {
 		case "expunge":
-			if s.on("QRESYNC") {
+			if s.on("QRESYNC") || s.on("UIDONLY") {
 				var uids []uint32
 				for i < len(evs) && evs[i].kind == "expunge" {
 					uids = append(uids, evs[i].uid)
@@ -769,6 +798,8 @@ func (s *session) cmdEnable(cmd command) error {
 			add("CONDSTORE")
 		case "UTF8=ACCEPT":
 			add("UTF8=ACCEPT")
+		case "UIDONLY":
+			add("UIDONLY")
 		}
 	}
 	if recognized {
@@ -1439,9 +1470,12 @@ func (s *session) cmdSelect(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
 	}
-	name, cond, qr, err := parseSelectArgs(cmd.args)
+	name, cond, qr, seqMatch, err := parseSelectArgs(cmd.args)
 	if err != nil {
 		return s.bad(cmd.tag, "syntax")
+	}
+	if seqMatch && s.on("UIDONLY") {
+		return s.uidRequired(cmd.tag)
 	}
 	name, err = s.boxIn(name)
 	if err != nil {
@@ -1509,27 +1543,28 @@ func (s *session) cmdSelect(cmd command) error {
 	return s.sendLine(fmt.Sprintf("%s OK [%s] %s completed", cmd.tag, mode, cmd.name))
 }
 
-func parseSelectArgs(args []Token) (string, bool, *qresyncSel, error) {
+func parseSelectArgs(args []Token) (string, bool, *qresyncSel, bool, error) {
 	if len(args) == 0 {
-		return "", false, nil, fmt.Errorf("bad")
+		return "", false, nil, false, fmt.Errorf("bad")
 	}
 	name, ok := astring(args[0])
 	if !ok {
-		return "", false, nil, fmt.Errorf("bad")
+		return "", false, nil, false, fmt.Errorf("bad")
 	}
 	if len(args) == 1 {
-		return name, false, nil, nil
+		return name, false, nil, false, nil
 	}
 	if args[1].Kind != "lparen" || args[len(args)-1].Kind != "rparen" {
-		return "", false, nil, fmt.Errorf("bad")
+		return "", false, nil, false, fmt.Errorf("bad")
 	}
 	cond := false
+	seqMatch := false
 	var qr *qresyncSel
 	i := 2
 	end := len(args) - 1
 	for i < end {
 		if args[i].Kind != "atom" {
-			return "", false, nil, fmt.Errorf("bad")
+			return "", false, nil, false, fmt.Errorf("bad")
 		}
 		switch strings.ToUpper(args[i].Val) {
 		case "CONDSTORE":
@@ -1537,32 +1572,33 @@ func parseSelectArgs(args []Token) (string, bool, *qresyncSel, error) {
 			i++
 		case "QRESYNC":
 			if i+1 >= end || args[i+1].Kind != "lparen" {
-				return "", false, nil, fmt.Errorf("bad")
+				return "", false, nil, false, fmt.Errorf("bad")
 			}
 			i += 2
 			if i+1 >= end || args[i].Kind != "atom" || args[i+1].Kind != "atom" {
-				return "", false, nil, fmt.Errorf("bad")
+				return "", false, nil, false, fmt.Errorf("bad")
 			}
 			uidv, err := strconv.ParseUint(args[i].Val, 10, 32)
 			if err != nil || uidv == 0 {
-				return "", false, nil, fmt.Errorf("bad")
+				return "", false, nil, false, fmt.Errorf("bad")
 			}
 			modseq, err := strconv.ParseUint(args[i+1].Val, 10, 64)
 			if err != nil {
-				return "", false, nil, fmt.Errorf("bad")
+				return "", false, nil, false, fmt.Errorf("bad")
 			}
 			i += 2
 			sel := &qresyncSel{uidv: uint32(uidv), modseq: modseq}
 			if i < end && args[i].Kind == "atom" {
 				set, err := parseSeqSet(args[i].Val)
 				if err != nil {
-					return "", false, nil, fmt.Errorf("bad")
+					return "", false, nil, false, fmt.Errorf("bad")
 				}
 				sel.known = set
 				sel.knownRaw = args[i].Val
 				i++
 			}
 			if i < end && args[i].Kind == "lparen" {
+				seqMatch = true
 				depth := 1
 				i++
 				for i < end && depth > 0 {
@@ -1575,22 +1611,22 @@ func parseSelectArgs(args []Token) (string, bool, *qresyncSel, error) {
 					i++
 				}
 				if depth != 0 {
-					return "", false, nil, fmt.Errorf("bad")
+					return "", false, nil, false, fmt.Errorf("bad")
 				}
 			}
 			if i >= end || args[i].Kind != "rparen" {
-				return "", false, nil, fmt.Errorf("bad")
+				return "", false, nil, false, fmt.Errorf("bad")
 			}
 			i++
 			qr = sel
 		default:
-			return "", false, nil, fmt.Errorf("bad")
+			return "", false, nil, false, fmt.Errorf("bad")
 		}
 	}
 	if i != end {
-		return "", false, nil, fmt.Errorf("bad")
+		return "", false, nil, false, fmt.Errorf("bad")
 	}
-	return name, cond, qr, nil
+	return name, cond, qr, seqMatch, nil
 }
 
 func (s *session) writeSelect(info selectInfo) error {
@@ -1646,6 +1682,9 @@ func (s *session) writeSelect(info selectInfo) error {
 }
 
 func (s *session) cmdFetch(cmd command) error {
+	if s.seqNumbersBanned(cmd) {
+		return s.uidRequired(cmd.tag)
+	}
 	if !s.srv.store.selected(s) {
 		return s.no(cmd.tag, "FETCH not selected")
 	}
@@ -1655,6 +1694,9 @@ func (s *session) cmdFetch(cmd command) error {
 	set, err := parseSeqSet(cmd.args[0].Val)
 	if err != nil || (set.dollar && !s.advertiseCap("SEARCHRES")) {
 		return s.bad(cmd.tag, "FETCH syntax")
+	}
+	if s.on("UIDONLY") && seqHasStar(set) {
+		return s.uidRequired(cmd.tag)
 	}
 	if cmd.changedSince != nil || itemListed(cmd.fetch, "MODSEQ") {
 		if !s.advertiseCap("CONDSTORE") {
@@ -1678,24 +1720,33 @@ func (s *session) cmdFetch(cmd command) error {
 		}
 		return s.bad(cmd.tag, "FETCH bad item")
 	}
+	show := items
+	if s.on("UIDONLY") && !s.on("QRESYNC") && !itemListed(cmd.fetch, "UID") {
+		show = dropFetchItem(items, "UID")
+	}
 	for _, sn := range snaps {
-		use := items
+		use := show
 		if s.pers.FetchSeenFlags && sn.seenEvent != 0 && !itemListed(items, "FLAGS") {
-			use = append([]string{"FLAGS"}, items...)
+			use = append([]string{"FLAGS"}, show...)
 		}
 		if err := s.sendRaw([]byte(s.formatFetch(sn, use))); err != nil {
 			return err
 		}
 	}
 	// FLAGS was not requested. One extra response carries \Seen,
-	// and UID only when this is a UID command.
+	// and UID only when this is a UID command or QRESYNC forces it.
+	// UIDONLY does not add that inner UID by itself.
+	seenUID := cmd.uid || s.on("QRESYNC")
+	if s.on("UIDONLY") {
+		seenUID = s.on("QRESYNC") || itemListed(cmd.fetch, "UID")
+	}
 	if !s.pers.FetchSeenFlags && !itemListed(items, "FLAGS") {
 		var last uint64
 		for _, sn := range snaps {
 			if sn.seenEvent == 0 {
 				continue
 			}
-			if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, cmd.uid || s.on("QRESYNC"), sn.modseq, s.on("CONDSTORE"))); err != nil {
+			if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, seenUID, sn.modseq, s.on("CONDSTORE"))); err != nil {
 				return err
 			}
 			if sn.seenEvent > last {
@@ -1727,7 +1778,13 @@ func (s *session) formatFetch(sn fetchSnap, items []string) string {
 	}
 	sort.SliceStable(pieces, func(a, b int) bool { return pieces[a].rank < pieces[b].rank })
 	var b strings.Builder
-	fmt.Fprintf(&b, "* %d FETCH (", sn.seq)
+	num := sn.seq
+	word := "FETCH"
+	if s.on("UIDONLY") {
+		num = sn.uid
+		word = "UIDFETCH"
+	}
+	fmt.Fprintf(&b, "* %d %s (", num, word)
 	for i, p := range pieces {
 		if i > 0 {
 			b.WriteByte(' ')
@@ -1848,6 +1905,9 @@ func bodySection(item string, raw []byte, peekAsBody bool) string {
 }
 
 func (s *session) cmdStore(cmd command) error {
+	if s.seqNumbersBanned(cmd) {
+		return s.uidRequired(cmd.tag)
+	}
 	if !s.srv.store.selected(s) {
 		return s.no(cmd.tag, "STORE not selected")
 	}
@@ -1857,6 +1917,9 @@ func (s *session) cmdStore(cmd command) error {
 	set, err := parseSeqSet(cmd.args[0].Val)
 	if err != nil || (set.dollar && !s.advertiseCap("SEARCHRES")) {
 		return s.bad(cmd.tag, "STORE syntax")
+	}
+	if s.on("UIDONLY") && seqHasStar(set) {
+		return s.uidRequired(cmd.tag)
 	}
 	i := 1
 	var unchanged *uint64
@@ -1909,6 +1972,9 @@ func (s *session) cmdStore(cmd command) error {
 		return s.bad(cmd.tag, "STORE syntax")
 	}
 	withUID := cmd.uid || s.on("QRESYNC")
+	if s.on("UIDONLY") {
+		withUID = s.on("QRESYNC")
+	}
 	withMod := s.on("CONDSTORE")
 	for _, sn := range snaps {
 		if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, withUID, sn.modseq, withMod)); err != nil {
@@ -1938,7 +2004,13 @@ func (s *session) flagsFetch(seq uint32, flags string, uid uint32, withUID bool,
 	}
 	sort.SliceStable(pieces, func(a, b int) bool { return pieces[a].rank < pieces[b].rank })
 	var b strings.Builder
-	fmt.Fprintf(&b, "* %d FETCH (", seq)
+	num := seq
+	word := "FETCH"
+	if s.on("UIDONLY") {
+		num = uid
+		word = "UIDFETCH"
+	}
+	fmt.Fprintf(&b, "* %d %s (", num, word)
 	for i, p := range pieces {
 		if i > 0 {
 			b.WriteByte(' ')
@@ -2193,6 +2265,9 @@ func formatMultiEsearch(tag, mbox string, uidv uint32, ids []uint32, ret searchR
 }
 
 func (s *session) cmdSearch(cmd command) error {
+	if s.seqNumbersBanned(cmd) {
+		return s.uidRequired(cmd.tag)
+	}
 	if !s.srv.store.selected(s) {
 		return s.no(cmd.tag, "SEARCH not selected")
 	}
@@ -2217,8 +2292,11 @@ func (s *session) cmdSearch(cmd command) error {
 		return s.bad(cmd.tag, "SEARCH charset")
 	}
 	limit, allowUID := s.messageLimit()
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow())
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY"))
 	if err != nil {
+		if errors.Is(err, errUIDReq) {
+			return s.uidRequired(cmd.tag)
+		}
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
 	ids, uids, lowest, limited, err := s.srv.store.search(s, cmd.uid, keys, nil, limit)
@@ -2307,7 +2385,10 @@ func (s *session) cmdFilter(cmd command) error {
 		return s.bad(cmd.tag, "FILTER charset")
 	}
 	_, allowUID := s.messageLimit()
-	if _, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow()); err != nil {
+	if _, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY")); err != nil {
+		if errors.Is(err, errUIDReq) {
+			return s.uidRequired(cmd.tag)
+		}
 		return s.bad(cmd.tag, "FILTER bad key")
 	}
 	return s.no(cmd.tag, "not implemented")
@@ -2352,6 +2433,9 @@ func parseEsearchIn(args []Token) (string, string, []Token, error) {
 }
 
 func (s *session) cmdEsearch(cmd command) error {
+	if s.seqNumbersBanned(cmd) {
+		return s.uidRequired(cmd.tag)
+	}
 	if !s.advertiseCap("MULTISEARCH") {
 		return s.bad(cmd.tag, "ESEARCH unsupported")
 	}
@@ -2383,8 +2467,11 @@ func (s *session) cmdEsearch(cmd command) error {
 		return s.bad(cmd.tag, "ESEARCH charset")
 	}
 	_, allowUID := s.messageLimit()
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.advertiseCap("SAVEDATE"), allowUID, s.searchNow())
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY"))
 	if err != nil {
+		if errors.Is(err, errUIDReq) {
+			return s.uidRequired(cmd.tag)
+		}
 		return s.bad(cmd.tag, "ESEARCH bad key")
 	}
 	if !ret.on {
@@ -2464,6 +2551,9 @@ func parseSortCrit(args []Token, display, modseq bool) (sortCrit, []Token, error
 }
 
 func (s *session) cmdSort(cmd command) error {
+	if s.seqNumbersBanned(cmd) {
+		return s.uidRequired(cmd.tag)
+	}
 	if !s.advertiseCap("SORT") {
 		return s.bad(cmd.tag, "SORT unsupported")
 	}
@@ -2508,13 +2598,16 @@ func (s *session) cmdSort(cmd command) error {
 	saveDate := s.advertiseCap("SAVEDATE")
 	_, allowUID := s.messageLimit()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, saved, saveDate, allowUID, now)
+		keys, err = parseSearch(rest, false, within, saved, saveDate, allowUID, now, s.on("UIDONLY"))
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "SORT bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, saved, saveDate, allowUID, now)
+		keys, err = parseSearch(rest[1:], false, within, saved, saveDate, allowUID, now, s.on("UIDONLY"))
 	}
 	if err != nil {
+		if errors.Is(err, errUIDReq) {
+			return s.uidRequired(cmd.tag)
+		}
 		return s.bad(cmd.tag, "SORT bad key")
 	}
 	if n, ok := s.messageLimit(); ok {
@@ -2558,6 +2651,9 @@ func (s *session) cmdSort(cmd command) error {
 }
 
 func (s *session) cmdThread(cmd command) error {
+	if s.seqNumbersBanned(cmd) {
+		return s.uidRequired(cmd.tag)
+	}
 	if len(cmd.args) == 0 {
 		return s.bad(cmd.tag, "THREAD syntax")
 	}
@@ -2595,13 +2691,16 @@ func (s *session) cmdThread(cmd command) error {
 	saveDate := s.advertiseCap("SAVEDATE")
 	_, allowUID := s.messageLimit()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, false, saveDate, allowUID, now)
+		keys, err = parseSearch(rest, false, within, false, saveDate, allowUID, now, s.on("UIDONLY"))
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "THREAD bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, false, saveDate, allowUID, now)
+		keys, err = parseSearch(rest[1:], false, within, false, saveDate, allowUID, now, s.on("UIDONLY"))
 	}
 	if err != nil {
+		if errors.Is(err, errUIDReq) {
+			return s.uidRequired(cmd.tag)
+		}
 		return s.bad(cmd.tag, "THREAD bad key")
 	}
 	if n, ok := s.messageLimit(); ok {
@@ -2741,6 +2840,9 @@ func moveCmd(name string) bool {
 }
 
 func (s *session) cmdCopy(cmd command) error {
+	if s.seqNumbersBanned(cmd) {
+		return s.uidRequired(cmd.tag)
+	}
 	if cmd.name == "XMOVE" {
 		if !s.needAuth(cmd.tag) {
 			return nil
@@ -2758,6 +2860,9 @@ func (s *session) cmdCopy(cmd command) error {
 	set, err := parseSeqSet(cmd.args[0].Val)
 	if err != nil || (set.dollar && !s.advertiseCap("SEARCHRES")) {
 		return s.bad(cmd.tag, cmd.name+" syntax")
+	}
+	if s.on("UIDONLY") && seqHasStar(set) {
+		return s.uidRequired(cmd.tag)
 	}
 	dest, ok := astring(cmd.args[1])
 	if !ok {
@@ -2839,6 +2944,9 @@ func (s *session) cmdExpunge(cmd command) error {
 		if err != nil || (parsed.dollar && !s.advertiseCap("SEARCHRES")) {
 			return s.bad(cmd.tag, "UID EXPUNGE syntax")
 		}
+		if s.on("UIDONLY") && seqHasStar(parsed) {
+			return s.uidRequired(cmd.tag)
+		}
 		set = parsed
 	} else if len(cmd.args) != 0 {
 		return s.bad(cmd.tag, "EXPUNGE syntax")
@@ -2881,8 +2989,14 @@ func (s *session) cmdClose(cmd command) error {
 	if len(cmd.args) != 0 {
 		return s.bad(cmd.tag, "CLOSE syntax")
 	}
-	if err := s.srv.store.closeBox(s); err != nil {
+	lines, err := s.srv.store.closeBox(s)
+	if err != nil {
 		return s.no(cmd.tag, "CLOSE not selected")
+	}
+	for _, line := range lines {
+		if err := s.sendLine(line); err != nil {
+			return err
+		}
 	}
 	return s.ok(cmd.tag, "CLOSE completed")
 }

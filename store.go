@@ -19,6 +19,10 @@ import (
 
 var errUnknownCTE = errors.New("unknown-cte")
 
+// errUIDReq is a bare sequence-set search key, or a star in a UID search
+// set, once UIDONLY is enabled. The command handler turns it into UIDREQUIRED.
+var errUIDReq = errors.New("uidrequired")
+
 // Message is one mailbox entry. A generated message keeps the header index
 // only: raw stays nil, and bytes() rebuilds RFC822 from the seed and genUID.
 // genUID is the id baked into the body, so a copy keeps the same bytes
@@ -1605,8 +1609,11 @@ type searchKey struct {
 	fuzzy bool
 }
 
-func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time) ([]searchKey, error) {
-	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
+func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool) ([]searchKey, error) {
+	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+	if errors.Is(err, errUIDReq) {
+		return nil, err
+	}
 	if err != nil || len(rest) != 0 || len(keys) == 0 {
 		return nil, fmt.Errorf("bad search")
 	}
@@ -1616,7 +1623,7 @@ func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDat
 // parseSearchSeq reads keys until the input ends. Inside a parenthesis the
 // closing parenthesis is left unconsumed. An unclosed parenthesis is an error.
 // fuzzy marks text leaves parsed from this sequence.
-func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time) ([]searchKey, []Token, error) {
+func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool) ([]searchKey, []Token, error) {
 	var keys []searchKey
 	for len(toks) > 0 {
 		if toks[0].Kind == "rparen" {
@@ -1625,7 +1632,7 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowS
 			}
 			return keys, toks, nil
 		}
-		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
+		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1638,12 +1645,15 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowS
 	return keys, nil, nil
 }
 
-func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time) (searchKey, []Token, error) {
+func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool) (searchKey, []Token, error) {
 	if len(toks) == 0 || toks[0].Kind == "rparen" {
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
 	if toks[0].Kind == "lparen" {
-		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
+		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+		if errors.Is(err, errUIDReq) {
+			return searchKey{}, nil, err
+		}
 		if err != nil || len(inner) == 0 || len(rest) == 0 || rest[0].Kind != "rparen" {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
@@ -1655,19 +1665,19 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, al
 		if !allowFuzzy {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
-		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
+		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
 	case "OR":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
-		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
+		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
 		return searchKey{op: "OR", kids: []searchKey{a, b}}, rest, nil
 	case "NOT":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
@@ -1748,6 +1758,9 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, al
 		if err != nil || (set.dollar && !allowSaved) {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
+		if banSeq && seqHasStar(set) {
+			return searchKey{}, nil, errUIDReq
+		}
 		return searchKey{op: "UID", set: set}, toks[2:], nil
 	case "$":
 		if !allowSaved {
@@ -1755,8 +1768,25 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, al
 		}
 		return searchKey{op: "$"}, toks[1:], nil
 	default:
+		if banSeq {
+			if set, err := parseSeqSet(toks[0].Val); err == nil && !set.dollar {
+				return searchKey{}, nil, errUIDReq
+			}
+		}
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
+}
+
+func seqHasStar(set *seqSet) bool {
+	if set == nil {
+		return false
+	}
+	for _, sp := range set.spans {
+		if sp.a.star || sp.b.star {
+			return true
+		}
+	}
+	return false
 }
 
 // bindSaved fills "$" keys, and a UID key whose set is "$", from saved UIDs.
@@ -2793,7 +2823,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		}
 		var last uint64
 		var gone []uint32
-		qresync := s.on("QRESYNC")
+		qresync := s.on("QRESYNC") || s.on("UIDONLY")
 		for _, h := range use {
 			src.noteExpunge(h.m)
 			st.noteCopyGone(h.m.jmapID, h.m, nil)
@@ -2830,7 +2860,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		seq := uint32(1)
 		var last uint64
 		var gone []uint32
-		qresync := s.on("QRESYNC")
+		qresync := s.on("QRESYNC") || s.on("UIDONLY")
 		for _, m := range src.msgs {
 			if drop[m.uid] {
 				src.noteExpunge(m)
@@ -2909,7 +2939,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, ui
 			var lines []string
 			var gone []uint32
 			var last uint64
-			qresync := s.on("QRESYNC")
+			qresync := s.on("QRESYNC") || s.on("UIDONLY")
 			for _, h := range kept {
 				mb.noteExpunge(h.m)
 				st.noteCopyGone(h.m.jmapID, h.m, nil)
@@ -2942,7 +2972,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, ui
 	var gone []uint32
 	seq := uint32(1)
 	var last uint64
-	qresync := s.on("QRESYNC")
+	qresync := s.on("QRESYNC") || s.on("UIDONLY")
 	for _, m := range mb.msgs {
 		hit := m.has(`\Deleted`)
 		if uidSet != nil && !uidSet.contains(m.uid, maxUID) {
@@ -2971,15 +3001,17 @@ func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, ui
 	return lines, 0, false, nil
 }
 
-// closeBox expunges on a read-write mailbox without sending EXPUNGE to this
-// session, then deselects. Other sessions still see the events.
-func (st *Store) closeBox(s *session) error {
+// closeBox expunges on a read-write mailbox, then deselects. This session
+// does not see EXPUNGE. When UIDONLY is enabled it does see one VANISHED
+// line. Other sessions still see the events.
+func (st *Store) closeBox(s *session) ([]string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
-		return fmt.Errorf("not selected")
+		return nil, fmt.Errorf("not selected")
 	}
 	mb := s.box
+	var gone []uint32
 	if !s.readonly {
 		var keep []*Message
 		seq := uint32(1)
@@ -2987,6 +3019,7 @@ func (st *Store) closeBox(s *session) error {
 			if m.has(`\Deleted`) {
 				mb.noteExpunge(m)
 				st.noteCopyGone(m.jmapID, m, nil)
+				gone = append(gone, m.uid)
 				mb.push(mbEvent{kind: "expunge", seq: seq, uid: m.uid, modseq: m.modseq})
 				continue
 			}
@@ -2998,10 +3031,14 @@ func (st *Store) closeBox(s *session) error {
 			mb.pushExists()
 		}
 	}
+	var lines []string
+	if s.on("UIDONLY") && len(gone) > 0 {
+		lines = append(lines, "* VANISHED "+formatUIDSet(gone))
+	}
 	// Skip the events this session must not echo.
 	s.seenID = mb.nextID
 	st.detachLocked(s)
-	return nil
+	return lines, nil
 }
 
 func (st *Store) selected(s *session) bool {

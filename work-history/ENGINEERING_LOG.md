@@ -910,3 +910,14 @@
 - Approved plan: sandbox/plans/imap4rev2-filter-20261112-0404-plan.md
 - advertiseList drops IMAP4rev2 by name after the implemented-capability check, so the greeting, pre-login, and post-login lists omit it even if implementedCaps gained the token. A personality that lists it on all three still omits it. ENABLE IMAP4rev2 stays unrecognized and does not appear in * ENABLED.
 - The lab personality lists, the gaps file, the probe fixture, and the four Stalwart greeting sentences are unchanged. The facts file and the guide say the token is never advertised.
+
+## 2026-11-12 - UIDONLY execution start
+
+- Approved plan: sandbox/plans/uidonly-20261112-0414-plan.md
+- Work: when a personality lists UIDONLY and the client has sent ENABLE UIDONLY, that session uses UIDs only. UID FETCH and UID STORE answer UIDFETCH. Expunges are VANISHED. Message numbers are BAD UIDREQUIRED.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - UIDONLY landed
+
+- ENABLE UIDONLY, when the personality lists the token, makes that session reject message numbers with UIDREQUIRED, answer UID FETCH and UID STORE with UIDFETCH, and report expunges as VANISHED.
+- The token is on the Cyrus 3.12 and 3.13 pre-login and post-login lists, the sasl post-login list, and the three newer Stalwart post-login lists. It left the gaps file.

@@ -46,6 +46,7 @@
     "MOVE",
     "MULTIAPPEND",
     "NAMESPACE",
+    "UIDONLY",
     "UIDPLUS",
     "UNSELECT",
     "CONDSTORE",
