@@ -686,3 +686,15 @@
   local:  * EXPUNGE
   The rest of the local script has no remote lines because the script stopped on MOVE.
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-zimbra-883 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - SMTP STARTTLS execution start
+
+- Approved plan: sandbox/plans/smtp-starttls-20261111-1902-plan.md
+- Work: offer STARTTLS on SMTP when the IMAP certificate is loaded, upgrade that connection, and reject it when no certificate is configured
+- First action per standard-plan-compliance-block.md
+
+## 2026-11-11 - SMTP STARTTLS landed
+
+- Approved plan: sandbox/plans/smtp-starttls-20261111-1902-plan.md
+- EHLO lists STARTTLS only when the IMAP certificate is loaded. STARTTLS returns 220 and that connection then speaks TLS. The next EHLO omits STARTTLS. A second STARTTLS, or STARTTLS with no certificate, is rejected. MAIL before AUTH stays 530.
+- No certificate was added. No personality file changed.

@@ -48,6 +48,7 @@ type smtpConn struct {
 	br     *bufio.Reader
 	bw     *bufio.Writer
 	authed bool
+	secure bool
 	env    smtpEnv
 }
 
@@ -211,9 +212,11 @@ func (sc *smtpConn) command(line string) error {
 	arg = strings.TrimSpace(arg)
 	switch verb {
 	case "EHLO":
-		return sc.replyLines(250, []string{"fakeimap", "AUTH PLAIN LOGIN", "8BITMIME"})
+		return sc.replyLines(250, sc.ehloLines())
 	case "HELO":
 		return sc.reply(250, "fakeimap")
+	case "STARTTLS":
+		return sc.cmdStartTLS(arg)
 	case "NOOP":
 		return sc.reply(250, "2.0.0 OK")
 	case "RSET":
@@ -242,6 +245,42 @@ func (sc *smtpConn) command(line string) error {
 	default:
 		return sc.reply(502, "5.5.1 command not implemented")
 	}
+}
+
+func (sc *smtpConn) ehloLines() []string {
+	lines := []string{"fakeimap", "AUTH PLAIN LOGIN", "8BITMIME"}
+	if sc.srv.hasCert && !sc.secure {
+		lines = append(lines, "STARTTLS")
+	}
+	return lines
+}
+
+func (sc *smtpConn) cmdStartTLS(arg string) error {
+	if arg != "" {
+		return sc.reply(501, "5.5.4 syntax error")
+	}
+	if sc.secure || !sc.srv.hasCert {
+		return sc.reply(454, "4.7.0 TLS not available")
+	}
+	if err := sc.reply(220, "2.0.0 Ready to start TLS"); err != nil {
+		return err
+	}
+	var pre []byte
+	if n := sc.br.Buffered(); n > 0 {
+		pre = make([]byte, n)
+		if _, err := io.ReadFull(sc.br, pre); err != nil {
+			return err
+		}
+	}
+	tc := sc.srv.tlsServerFor(&prefixConn{Conn: sc.c, pre: pre}, 0, "STARTTLS")
+	if err := tc.Handshake(); err != nil {
+		return err
+	}
+	sc.c = tc
+	sc.br = bufio.NewReader(tc)
+	sc.bw = bufio.NewWriter(tc)
+	sc.secure = true
+	return nil
 }
 
 func (sc *smtpConn) cmdAuth(arg string) error {

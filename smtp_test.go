@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -36,6 +37,53 @@ func TestSMTPListenReady(t *testing.T) {
 	}
 	if strings.Contains(strings.ToUpper(text), "STARTTLS") {
 		t.Fatalf("starttls advertised %q", text)
+	}
+	if code, _ := cl.cmd("STARTTLS"); code != 454 {
+		t.Fatalf("starttls without a certificate %d", code)
+	}
+}
+
+func TestSMTPStartTLS(t *testing.T) {
+	cert, key := writeCert(t)
+	_, bound := start(t, Config{
+		Listen:     "127.0.0.1:0",
+		SmtpListen: "127.0.0.1:0",
+		CertFile:   cert,
+		KeyFile:    key,
+	})
+	cl := dialSMTP(t, bound.Smtp)
+	_, lines := cl.cmd("EHLO client.example")
+	text := strings.Join(lines, "\n")
+	if !strings.Contains(text, "AUTH PLAIN LOGIN") || !strings.Contains(text, "8BITMIME") || !strings.Contains(text, "STARTTLS") {
+		t.Fatalf("ehlo %q", text)
+	}
+	if code, _ := cl.cmd("MAIL FROM:<a@b>"); code != 530 {
+		t.Fatalf("mail before auth %d", code)
+	}
+	if code, _ := cl.cmd("STARTTLS"); code != 220 {
+		t.Fatalf("starttls %d", code)
+	}
+	tlsConn := tls.Client(cl.c, &tls.Config{InsecureSkipVerify: true, ServerName: "localhost"})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	cl.c = tlsConn
+	cl.r = bufio.NewReader(tlsConn)
+	cl.w = bufio.NewWriter(tlsConn)
+	_, lines = cl.cmd("EHLO client.example")
+	text = strings.Join(lines, "\n")
+	if !strings.Contains(text, "AUTH PLAIN LOGIN") || !strings.Contains(text, "8BITMIME") || strings.Contains(strings.ToUpper(text), "STARTTLS") {
+		t.Fatalf("ehlo after starttls %q", text)
+	}
+	if code, _ := cl.cmd("STARTTLS"); code != 454 {
+		t.Fatalf("second starttls %d", code)
+	}
+	if code, _ := cl.cmd("MAIL FROM:<a@b>"); code != 530 {
+		t.Fatalf("mail before auth after tls %d", code)
+	}
+	cl.authPlain("demo", "secret")
+	if code := cl.mailData("sender@example.com", []string{"nobody@example.com"}, "Subject: x\r\n\r\nn\r\n"); code != 250 {
+		t.Fatalf("mail after tls %d", code)
 	}
 }
 
