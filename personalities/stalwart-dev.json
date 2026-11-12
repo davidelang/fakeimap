@@ -47,6 +47,7 @@
     "CONDSTORE",
     "QRESYNC",
     "UNAUTHENTICATE",
+    "STATUS=SIZE",
     "PREVIEW",
     "STARTTLS"
   ],

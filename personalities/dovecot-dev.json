@@ -46,6 +46,7 @@
     "MOVE",
     "PREVIEW",
     "SPECIAL-USE",
+    "STATUS=SIZE",
     "COMPRESS=DEFLATE",
     "LITERAL+"
   ],

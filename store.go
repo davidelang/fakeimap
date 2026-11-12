@@ -602,6 +602,7 @@ type listQuery struct {
 	wantStatus     bool
 	status         []string
 	appendLimit    uint64
+	statusSize     bool
 	user           string
 	subscribedOnly bool
 	markSubscribed bool
@@ -681,7 +682,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if q.wantStatus {
-		if _, err := statusPairs(nil, q.status, q.appendLimit); err != nil {
+		if _, err := statusPairs(nil, q.status, q.appendLimit, q.statusSize); err != nil {
 			return nil, "", false, err
 		}
 	}
@@ -728,7 +729,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 		var pairs [][2]string
 		if q.wantStatus {
 			var err error
-			pairs, err = statusPairs(mb, q.status, q.appendLimit)
+			pairs, err = statusPairs(mb, q.status, q.appendLimit, q.statusSize)
 			if err != nil {
 				return nil, "", false, err
 			}
@@ -798,7 +799,7 @@ func (st *Store) seedSubs() {
 	}
 }
 
-func (st *Store) status(name string, items []string, appendLimit uint64) (string, [][2]string, error) {
+func (st *Store) status(name string, items []string, appendLimit uint64, statusSize bool) (string, [][2]string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	cn, err := st.canon(name)
@@ -809,7 +810,7 @@ func (st *Store) status(name string, items []string, appendLimit uint64) (string
 	if mb == nil {
 		return "", nil, fmt.Errorf("no mailbox")
 	}
-	out, err := statusPairs(mb, items, appendLimit)
+	out, err := statusPairs(mb, items, appendLimit, statusSize)
 	if err != nil {
 		return "", nil, err
 	}
@@ -818,8 +819,10 @@ func (st *Store) status(name string, items []string, appendLimit uint64) (string
 
 // statusPairs reads one mailbox. A nil mailbox only checks the item names.
 // appendLimit is the connection's APPENDLIMIT, or 0 when that capability
-// is not on the list in effect. Zero is not a valid limit.
-func statusPairs(mb *Mailbox, items []string, appendLimit uint64) ([][2]string, error) {
+// is not on the list in effect. Zero is not a valid limit. statusSize is
+// whether that list includes STATUS=SIZE. SIZE is the sum of RFC822 sizes
+// still in the mailbox, including \Deleted until EXPUNGE.
+func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize bool) ([][2]string, error) {
 	var out [][2]string
 	for _, it := range items {
 		name := strings.ToUpper(it)
@@ -828,6 +831,21 @@ func statusPairs(mb *Mailbox, items []string, appendLimit uint64) ([][2]string, 
 				return nil, fmt.Errorf("bad status item")
 			}
 			out = append(out, [2]string{name, strconv.FormatUint(appendLimit, 10)})
+			continue
+		}
+		if name == "SIZE" {
+			if !statusSize {
+				return nil, fmt.Errorf("bad status item")
+			}
+			var sum uint64
+			if mb != nil {
+				for _, m := range mb.msgs {
+					if m.size > 0 {
+						sum += uint64(m.size)
+					}
+				}
+			}
+			out = append(out, [2]string{name, strconv.FormatUint(sum, 10)})
 			continue
 		}
 		var v uint32

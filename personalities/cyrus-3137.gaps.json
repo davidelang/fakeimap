@@ -25,7 +25,6 @@
     "SAVEDATE",
     "SORT=MODSEQ",
     "SORT=UID",
-    "STATUS=SIZE",
     "UIDBATCHES",
     "UIDONLY",
     "URL-PARTIAL",

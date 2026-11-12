@@ -781,3 +781,15 @@
 - SEARCHRES saves the full match of RETURN (SAVE) as UIDs on SEARCH, UID SEARCH, and SORT. RETURN (SAVE) alone sends no untagged line. SAVE with PARTIAL is BAD. THREAD still does not parse RETURN.
 - $ alone is that saved set. In a UID command the numbers are UIDs. Otherwise they are the current sequence numbers. 1,$ and 1:$ are BAD. SELECT and EXAMINE clear the set. An expunge leaves the saved UIDs in place.
 - The token is on the lab lists named in the plan. Greeting lists are unchanged. cyrus-3137.gaps.json no longer contains SEARCHRES. The facts file and the guide describe it.
+
+## 2026-11-11 - STATUS=SIZE execution start
+
+- Approved plan: sandbox/plans/status-size-20261111-2253-plan.md
+- Work: report the mailbox RFC822 size sum from STATUS and LIST RETURN (STATUS) when STATUS=SIZE is listed
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-11 - STATUS=SIZE landed
+
+- Approved plan: sandbox/plans/status-size-20261111-2253-plan.md
+- STATUS SIZE is the sum of RFC822 sizes still in the mailbox, including \Deleted until EXPUNGE. LIST RETURN (STATUS (SIZE)) returns the same number. Without the capability, STATUS of SIZE is BAD.
+- cyrus-36, cyrus-3124, and cyrus-3137 list STATUS=SIZE immediately after SPECIAL-USE on the pre-login and post-login lists. dovecot-245 and dovecot-dev list it there on the post-login list only. The four Stalwart files list it immediately after UNAUTHENTICATE on the post-login list. sasl.json lists it immediately after SPECIAL-USE on the post-login list only. The gaps file no longer contains it.

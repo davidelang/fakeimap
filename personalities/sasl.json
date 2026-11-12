@@ -52,6 +52,7 @@
     "LIST-EXTENDED",
     "CHILDREN",
     "SPECIAL-USE",
+    "STATUS=SIZE",
     "LIST-STATUS",
     "CREATE-SPECIAL-USE",
     "ESEARCH",

@@ -761,6 +761,7 @@ func (s *session) cmdList(cmd command) error {
 		wantStatus:     parsed.hasStatus,
 		status:         parsed.status,
 		appendLimit:    s.appendLimitValue(),
+		statusSize:     s.advertiseCap("STATUS=SIZE"),
 		user:           s.user,
 		subscribedOnly: parsed.subscribed,
 		markSubscribed: parsed.subscribed,
@@ -1006,7 +1007,7 @@ func (s *session) cmdStatus(cmd command) error {
 		}
 		items = append(items, t.Val)
 	}
-	cn, pairs, err := s.srv.store.status(name, items, s.appendLimitValue())
+	cn, pairs, err := s.srv.store.status(name, items, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE"))
 	if err != nil {
 		if err.Error() == "bad status item" {
 			return s.bad(cmd.tag, "STATUS bad item")
