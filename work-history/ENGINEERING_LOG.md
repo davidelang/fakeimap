@@ -562,3 +562,7 @@
 - Approved plan: sandbox/plans/probe-cyrus-3137-20261111-1716-plan.md
 - personalities/cyrus-3137.json keeps the greeting localhost Cyrus IMAP unknown server ready. SEARCH=FUZZY is on the pre-login and post-login lists, and THREAD=REFS follows UNSELECT. Greeting, NAMESPACE, and SELECT order already matched. IMAP4rev2, ID, and STARTTLS stay off the file.
 - The seed user authenticated. The base script normalized diff was empty. liveimap-cyrus-3137 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Cyrus 3.13.7 search tests
+
+- SEARCH FUZZY TEXT is no longer tagged BAD on the default personality, because personalities/cyrus-3137.json now lists SEARCH=FUZZY. A missing key is still BAD. The unadvertised case stays on personalities/condstore.json.
