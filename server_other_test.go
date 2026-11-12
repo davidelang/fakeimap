@@ -258,6 +258,7 @@ func TestCourierAndUW(t *testing.T) {
 	courierPerm := `\* \Draft \Answered \Flagged \Deleted \Seen`
 	courierOrder := []string{"FLAGS", "PERMANENTFLAGS", "EXISTS", "RECENT", "UIDVALIDITY"}
 	uwCaps := "IMAP4REV1 LITERAL+ IDLE UIDPLUS NAMESPACE CHILDREN BINARY UNSELECT ESEARCH SORT THREAD=REFERENCES THREAD=ORDEREDSUBJECT SASL-IR"
+	uwPost := uwCaps + " STARTTLS"
 	uwNS := `* NAMESPACE (("" "/")("#mhinbox" NIL)("#mh/" "/")) (("~" "/")) (("#shared/" "/")("#ftp/" "/")("#news." ".")("#public/" "/"))`
 	uwFlags := `\Answered \Flagged \Deleted \Draft \Seen`
 	uwPerm := `\* \Answered \Flagged \Deleted \Draft \Seen`
@@ -304,7 +305,7 @@ func TestCourierAndUW(t *testing.T) {
 			greeting: "* OK [CAPABILITY IMAP4REV1 LITERAL+ SASL-IR] IMAP4rev1 2007e.404",
 			greet:    "IMAP4REV1 LITERAL+ SASL-IR",
 			pre:      uwCaps,
-			post:     uwCaps,
+			post:     uwPost,
 			delim:    "/",
 			ns:       uwNS,
 			flags:    uwFlags,
@@ -340,7 +341,8 @@ func TestCourierAndUW(t *testing.T) {
 			if p.Delimiter != c.delim || p.namespaceLine() != c.ns {
 				t.Fatalf("delim %q namespace %q", p.Delimiter, p.namespaceLine())
 			}
-			if !p.LogoutBye || !p.FetchPeekBody || !p.FetchSeenFlags {
+			wantSeen := c.file != "personalities/uwimap.json"
+			if !p.LogoutBye || !p.FetchPeekBody || p.FetchSeenFlags != wantSeen {
 				t.Fatalf("quirks bye %v peek %v seen %v", p.LogoutBye, p.FetchPeekBody, p.FetchSeenFlags)
 			}
 			if strings.Join(p.GreetingCaps, " ") != c.greet || strings.Join(p.PreLogin, " ") != c.pre || strings.Join(p.PostLogin, " ") != c.post {
@@ -362,7 +364,17 @@ func TestCourierAndUW(t *testing.T) {
 				t.Fatalf("pre-login %v", capsOf(pre.untagged[0]))
 			}
 			login := cl.cmd("LOGIN demo secret").mustOK(t)
-			if strings.Join(capsOf(login.tagLine), " ") != c.post {
+			wantPost := c.post
+			if strings.Contains(c.post, "STARTTLS") {
+				var kept []string
+				for _, tok := range strings.Fields(c.post) {
+					if tok != "STARTTLS" {
+						kept = append(kept, tok)
+					}
+				}
+				wantPost = strings.Join(kept, " ")
+			}
+			if strings.Join(capsOf(login.tagLine), " ") != wantPost {
 				t.Fatalf("post-login %v", capsOf(login.tagLine))
 			}
 			for _, name := range banned {

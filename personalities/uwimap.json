@@ -34,7 +34,8 @@
     "SORT",
     "THREAD=REFERENCES",
     "THREAD=ORDEREDSUBJECT",
-    "SASL-IR"
+    "SASL-IR",
+    "STARTTLS"
   ],
   "personal_namespaces": [
     {
@@ -88,15 +89,16 @@
   ],
   "flag_order": [
     "\\Recent",
-    "\\Answered",
-    "\\Flagged",
-    "\\Draft",
+    "\\Seen",
     "\\Deleted",
-    "\\Seen"
+    "\\Flagged",
+    "\\Answered",
+    "\\Draft"
   ],
   "fetch_peek_body": true,
-  "fetch_seen_flags": true,
+  "fetch_seen_flags": false,
   "fetch_item_order": [
+    "BODY[]",
     "FLAGS",
     "UID",
     "INTERNALDATE",
@@ -107,7 +109,6 @@
     "RFC822",
     "RFC822.HEADER",
     "RFC822.TEXT",
-    "BODY[]",
     "BODY.PEEK[]"
   ]
 }
