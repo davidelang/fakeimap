@@ -898,3 +898,15 @@
 - The spec is SIEVE DELIVERY, SIEVE PERSONAL or SIEVE GLOBAL with a non-empty name, or SIEVE SCRIPT with any astring. Names are not looked up and script text is not parsed. CHARSET and the search keys follow the gates SEARCH already applies. A RETURN list is BAD. UID FILTER uses the same NO phrase and does not report UIDs.
 - FILTER=SIEVE stays out of implementedCaps. No personality file lists it. The gaps file is unchanged. RFC 5466 FILTERS is not added. ManageSieve storage is unchanged. The facts file and the guide describe the stub.
 - make exited 0.
+
+## 2026-11-12 - IMAP4rev2 filter execution start
+
+- Approved plan: sandbox/plans/imap4rev2-filter-20261112-0404-plan.md
+- Work: advertiseList drops IMAP4rev2 by name after the implemented-capability check. ENABLE stays unrecognized. Personality lists, the gaps file, and the Stalwart greeting sentence stay.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - IMAP4rev2 filter landed
+
+- Approved plan: sandbox/plans/imap4rev2-filter-20261112-0404-plan.md
+- advertiseList drops IMAP4rev2 by name after the implemented-capability check, so the greeting, pre-login, and post-login lists omit it even if implementedCaps gained the token. A personality that lists it on all three still omits it. ENABLE IMAP4rev2 stays unrecognized and does not appear in * ENABLED.
+- The lab personality lists, the gaps file, the probe fixture, and the four Stalwart greeting sentences are unchanged. The facts file and the guide say the token is never advertised.

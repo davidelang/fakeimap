@@ -274,6 +274,8 @@ The UW greeting appends ` at ` and a timestamp after the fixed text. One post-lo
 
 ## Capabilities that stay off
 
+`IMAP4rev2` is never advertised. A personality that lists the token is filtered, so the greeting, `CAPABILITY` before login, and `CAPABILITY` after login omit it. The gaps file keeps the token. The Stalwart greeting sentence stays `Stalwart IMAP4rev2 at your service.` Those rules are in `docs/facts/imap-server.md`.
+
 Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `ACL` and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, `XLIST`, `MULTIAPPEND`, `QUOTA`, `QUOTA=RES-STORAGE`, `QUOTA=RES-MESSAGE`, and `QUOTASET` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA=RES-ANNOTATION-STORAGE`, `QUOTA=RES-MAILBOX`, `REPLACE`, `RIGHTS=kxten`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, and `X-SIEVE-MAILBOX`.
 
 `URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` stays off the personality files. `URLAUTH=BINARY` stays in the gaps file. `OBJECTID` stays unimplemented.

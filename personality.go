@@ -206,7 +206,8 @@ func parseMessageLimit(name string) (uint64, bool) {
 
 // advertise filters the personality list. STARTTLS is added only on a
 // cleartext connection that still has a certificate and has not started TLS.
-// JMAPACCESS is kept only when a JMAP listener is bound.
+// JMAPACCESS is kept only when a JMAP listener is bound. IMAP4rev2 is
+// dropped by name after the implemented-capability check.
 func (p *Personality) advertise(postLogin, secure, hasCert, jmap bool) []string {
 	src := p.PreLogin
 	if postLogin {
@@ -220,6 +221,10 @@ func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert, jm
 	seen := map[string]bool{}
 	for _, c := range src {
 		if !capImplemented(c) {
+			continue
+		}
+		// Dropped by name so the token stays off even if implementedCaps gains it.
+		if strings.EqualFold(c, "IMAP4rev2") {
 			continue
 		}
 		if strings.EqualFold(c, "STARTTLS") && (secure || !hasCert) {
