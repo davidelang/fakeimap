@@ -228,7 +228,7 @@ func (s *session) readCommand() (command, error) {
 		}
 		cmd.name = strings.ToUpper(name)
 		switch cmd.name {
-		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD", "FILTER", "ESEARCH":
+		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD", "FILTER", "ESEARCH", "REPLACE":
 		default:
 			return cmd, errSyntax
 		}
@@ -289,7 +289,7 @@ func (s *session) seqNumbersBanned(cmd command) bool {
 		return false
 	}
 	switch cmd.name {
-	case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "SORT", "THREAD", "ESEARCH":
+	case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "REPLACE", "SORT", "THREAD", "ESEARCH":
 		return true
 	default:
 		return false
@@ -561,6 +561,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdThread(cmd)
 	case "APPEND":
 		return s.cmdAppend(cmd)
+	case "REPLACE":
+		return s.cmdReplace(cmd)
 	case "COPY", "MOVE", "XMOVE":
 		return s.cmdCopy(cmd)
 	case "EXPUNGE":
@@ -2947,6 +2949,82 @@ func (s *session) cmdAppend(cmd command) error {
 		return err
 	}
 	return s.sendLine(fmt.Sprintf("%s OK [APPENDUID %d %s] APPEND completed", cmd.tag, uv, formatUIDSet(uids)))
+}
+
+func (s *session) cmdReplace(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !s.advertiseCap("REPLACE") {
+		return s.bad(cmd.tag, "REPLACE unsupported")
+	}
+	if s.seqNumbersBanned(cmd) {
+		return s.uidRequired(cmd.tag)
+	}
+	if !s.srv.store.selected(s) {
+		return s.no(cmd.tag, "REPLACE not selected")
+	}
+	num, star, mbox, part, err := parseReplace(cmd.args)
+	if err != nil {
+		return s.bad(cmd.tag, "REPLACE syntax")
+	}
+	mbox, err = s.boxIn(mbox)
+	if err != nil || !s.srv.store.hasMailbox(mbox) {
+		return s.no(cmd.tag, "[TRYCREATE] REPLACE no such mailbox")
+	}
+	for _, f := range part.flags {
+		if _, ok := canonFlag(f); !ok {
+			return s.bad(cmd.tag, "REPLACE bad flag")
+		}
+	}
+	if lim, ok := s.appendLimit(); ok && uint64(len(part.raw)) > lim {
+		return s.no(cmd.tag, "[TOOBIG] REPLACE exceeds limit")
+	}
+	uv, uid, err := s.srv.store.replaceMsg(s, cmd.uid, num, star, mbox, part.flags, part.date, part.raw, s.srv.frozenTime())
+	if err != nil {
+		switch err.Error() {
+		case "bad flag":
+			return s.bad(cmd.tag, "REPLACE bad flag")
+		case "no mailbox":
+			return s.no(cmd.tag, "[TRYCREATE] REPLACE no such mailbox")
+		case "read-only":
+			return s.no(cmd.tag, "REPLACE read-only")
+		case "no message":
+			return s.no(cmd.tag, "REPLACE no such message")
+		default:
+			return s.no(cmd.tag, "REPLACE not selected")
+		}
+	}
+	if err := s.flush(); err != nil {
+		return err
+	}
+	return s.sendLine(fmt.Sprintf("%s OK [APPENDUID %d %d] REPLACE completed", cmd.tag, uv, uid))
+}
+
+// parseReplace reads one message number, one mailbox, and one APPEND message.
+// A set, a range, or a second literal is rejected and the caller stores nothing.
+func parseReplace(args []Token) (uint32, bool, string, appendPart, error) {
+	if len(args) < 3 || args[0].Kind != "atom" {
+		return 0, false, "", appendPart{}, fmt.Errorf("bad")
+	}
+	id := args[0].Val
+	if strings.ContainsAny(id, ":,$") {
+		return 0, false, "", appendPart{}, fmt.Errorf("bad")
+	}
+	star := id == "*"
+	var num uint32
+	if !star {
+		n, err := strconv.ParseUint(id, 10, 32)
+		if err != nil || n == 0 {
+			return 0, false, "", appendPart{}, fmt.Errorf("bad")
+		}
+		num = uint32(n)
+	}
+	mbox, parts, err := parseAppend(args[1:], false)
+	if err != nil || len(parts) != 1 {
+		return 0, false, "", appendPart{}, fmt.Errorf("bad")
+	}
+	return num, star, mbox, parts[0], nil
 }
 
 // parseAppend reads one mailbox and one or more messages. Without multi,

@@ -950,3 +950,15 @@
 - Expunging the last copies of one EMAILID in one EXPUNGE or CLOSE records JMAP destroyed. A copy that remains is updated.
 - RENAME INBOX INBOX stays NO for every personality.
 - On OBJECTID+, STORE .SILENT applies a shared flag to the other copies and does not flush those FETCH lines later.
+
+## 2026-11-12 - REPLACE execution start
+
+- Approved plan: sandbox/plans/replace-20261112-0529-plan.md
+- Work: REPLACE and UID REPLACE append a new message and expunge the addressed one, or do neither. The new message gets a new EMAILID. Lab personalities that advertise the token gain it. Facts and guide describe it.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - REPLACE landed
+
+- Approved plan: sandbox/plans/replace-20261112-0529-plan.md
+- REPLACE and UID REPLACE append one new message and expunge the addressed one, or do neither. The new message gets a new UID, EMAILID, and THREADID. A failed destination, flag, date, or literal stores nothing and expunges nothing.
+- The token is on the Cyrus 3.12 and 3.13 pre-login and post-login lists, the sasl post-login list, and the dovecot 2.4.5 and dovecot-dev post-login lists. It left the gaps file. The facts file and the guide describe it.

@@ -47,6 +47,7 @@
     "LIST-STATUS",
     "BINARY",
     "MOVE",
+    "REPLACE",
     "PREVIEW",
     "SPECIAL-USE",
     "STATUS=SIZE",

@@ -56,6 +56,7 @@
     "QUOTA=RES-STORAGE",
     "QUOTA=RES-MESSAGE",
     "QUOTASET",
+    "REPLACE",
     "SAVEDATE",
     "LIST-EXTENDED",
     "CHILDREN",

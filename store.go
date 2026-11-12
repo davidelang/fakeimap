@@ -3030,6 +3030,66 @@ func (st *Store) appendMsgs(s *session, name string, parts []appendPart, frozen 
 	return uv, uids, nil
 }
 
+// replaceMsg expunges one selected message and appends the literal.
+// Checks that fail return before either change. The new message is an append.
+func (st *Store) replaceMsg(s *session, uidMode bool, num uint32, star bool, dest string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, uint32, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return 0, 0, fmt.Errorf("not selected")
+	}
+	cn, err := st.canon(dest)
+	if err != nil {
+		return 0, 0, err
+	}
+	if st.boxes[cn] == nil {
+		return 0, 0, fmt.Errorf("no mailbox")
+	}
+	for _, f := range flags {
+		if _, ok := canonFlag(f); !ok {
+			return 0, 0, fmt.Errorf("bad flag")
+		}
+	}
+	hit := replaceHit(s.box, uidMode, num, star)
+	if hit == nil {
+		return 0, 0, fmt.Errorf("no message")
+	}
+	if s.readonly {
+		return 0, 0, fmt.Errorf("read-only")
+	}
+	goneID := hit.jmapID
+	st.expungeLocked(s.box, hit)
+	uv, m, err := st.appendLocked(dest, flags, date, raw, frozen)
+	if err != nil {
+		return 0, 0, err
+	}
+	st.noteExpungedIDs([]string{goneID})
+	return uv, m.uid, nil
+}
+
+// replaceHit is the one addressed message. * is the last message.
+// An empty mailbox has no last message.
+func replaceHit(mb *Mailbox, uidMode bool, num uint32, star bool) *Message {
+	if len(mb.msgs) == 0 {
+		return nil
+	}
+	if star {
+		return mb.msgs[len(mb.msgs)-1]
+	}
+	if uidMode {
+		for _, m := range mb.msgs {
+			if m.uid == num {
+				return m
+			}
+		}
+		return nil
+	}
+	if int(num) > len(mb.msgs) {
+		return nil
+	}
+	return mb.msgs[num-1]
+}
+
 // saveClock is the frozen clock when freeze-clock is set, and the wall clock otherwise.
 func saveClock(frozen *time.Time) time.Time {
 	if frozen != nil {
