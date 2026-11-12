@@ -622,3 +622,21 @@
   local:  T OK
   The rest of the local script has no remote lines because the script stopped there.
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-cyrus-25 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Cyrus 3.6 execution start
+
+- Approved plan: sandbox/plans/probe-cyrus-36-20261111-1801-plan.md
+- Work: run the base cyrusprobe script against liveimap-cyrus-36 and update personalities/cyrus-36.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Cyrus 3.6 landed
+
+- Approved plan: sandbox/plans/probe-cyrus-36-20261111-1801-plan.md
+- personalities/cyrus-36.json greets localhost Cyrus IMAP 3.6.1-Debian-3.6.1-4+deb12u5 server ready. AUTH=PLAIN and AUTH=LOGIN are on the greeting and the pre-login list, in the live order. The post-login list follows that server's CAPABILITY line. ID, ACL, QUOTA, and STARTTLS stay off the file. NAMESPACE already matched. SELECT was not reached. FLAGS stay before BODY[TEXT] in the file.
+- The seed user authenticated. The base script did not stop on MOVE. It stopped on CREATE of a top-level mailbox, which the server answers NO Permission denied. Reply code was not changed.
+- Remaining diff:
+  remote: T NO
+  local:  T OK
+  The rest of the local script has no remote lines because the script stopped there.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-cyrus-36 was stopped. The lab password stayed in the gitignored operator file.
