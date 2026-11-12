@@ -112,6 +112,38 @@ func TestCreateMailboxRaw(t *testing.T) {
 	}
 }
 
+func TestRawNameClearedOnReload(t *testing.T) {
+	_, bound, cc := startCtrl(t, Config{Listen: "127.0.0.1:0"})
+	unicode := "Entwürfe"
+	wire := encodeMUTF7(unicode)
+	cc.call(map[string]any{"op": "create-mailbox", "name": unicode}).ok(t)
+	before := dial(t, bound.Listen)
+	before.cmd("LOGIN demo secret").mustOK(t)
+	rawList := strings.Join(before.cmd(`LIST "" "*"`).mustOK(t).untagged, "\n")
+	if !strings.Contains(rawList, unicode) || strings.Contains(rawList, wire) {
+		t.Fatalf("raw name before reset %q", rawList)
+	}
+	cc.call(map[string]any{"op": "reset"}).ok(t)
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").mustOK(t)
+	cl.cmd("CREATE " + wire).mustOK(t)
+	got := strings.Join(cl.cmd(`LIST "" "*"`).mustOK(t).untagged, "\n")
+	if !strings.Contains(got, " "+wire) || strings.Contains(got, unicode) {
+		t.Fatalf("reset left the raw name %q", got)
+	}
+
+	marked := "A&B"
+	cc.call(map[string]any{"op": "create-mailbox", "name": marked}).ok(t)
+	cc.call(map[string]any{"op": "set-dataset", "path": "datasets/demo"}).ok(t)
+	cl = dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").mustOK(t)
+	cl.cmd("CREATE " + encodeMUTF7(marked)).mustOK(t)
+	got = strings.Join(cl.cmd(`LIST "" "*"`).mustOK(t).untagged, "\n")
+	if !strings.Contains(got, " "+encodeMUTF7(marked)) || strings.Contains(got, " "+marked) {
+		t.Fatalf("set-dataset left the raw name %q", got)
+	}
+}
+
 func TestAuthPolicy(t *testing.T) {
 	_, bound, cc := startCtrl(t, Config{Listen: "127.0.0.1:0"})
 	if cc.call(map[string]any{"op": "set-auth-policy", "fail_delay_ms": -1}).Error != "missing field" {

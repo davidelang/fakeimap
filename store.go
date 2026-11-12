@@ -3769,6 +3769,7 @@ func (st *Store) become(neu *Store) {
 	st.subs = neu.subs
 	st.quotaStorage = neu.quotaStorage
 	st.quotaMessage = neu.quotaMessage
+	st.rawNames.Clear()
 	st.pokeJMAPState()
 }
 
