@@ -640,3 +640,23 @@
   local:  T OK
   The rest of the local script has no remote lines because the script stopped there.
 - start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-cyrus-36 was stopped. The lab password stayed in the gitignored operator file.
+
+## 2026-11-11 - probe Courier 6.0.6 execution start
+
+- Approved plan: sandbox/plans/probe-courier-606-20261111-1810-plan.md
+- Work: run the base cyrusprobe script against liveimap-courier-606 and update personalities/courier-606.json until the normalized diff is empty, or record a shape the file cannot express. No new capability.
+- First action per standard-plan-compliance-block.md
+- The lab password stays out of this log.
+
+## 2026-11-11 - probe Courier 6.0.6 landed
+
+- Approved plan: sandbox/plans/probe-courier-606-20261111-1810-plan.md
+- personalities/courier-606.json already matched the live greeting, the implemented capability order, and NAMESPACE. QUOTA, ACL, and ACL2=UNION stay off the file. STARTTLS stays off the file. SELECT was not reached, so flag strings and select order were left as recorded. No personality edit, so no commit and no make.
+- The seed user authenticated. The base script stopped on CREATE of a mailbox outside the personal prefix INBOX. The server answers NO Invalid mailbox name. Reply code was not changed. The LOGIN tagged OK has no CAPABILITY code; the personality file cannot say that.
+- Remaining diff:
+  remote: T OK
+  local:  T OK [CAPABILITY CHILDREN ENABLE IDLE IMAP4rev1 NAMESPACE SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDPLUS UTF8=ACCEPT]
+  remote: T NO
+  local:  T OK
+  The rest of the local script has no remote lines because the script stopped on CREATE.
+- start.sh could not rewrite lab-ports.tsv.new, so the missing container was created with -p 20000:143 -p 20002:993 -p 20003:4190 -p 20004:443 -p 20001:587 and then started. liveimap-courier-606 was stopped. The lab password stayed in the gitignored operator file.
