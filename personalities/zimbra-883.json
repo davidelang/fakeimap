@@ -20,7 +20,9 @@
     "SORT",
     "THREAD=ORDEREDSUBJECT",
     "UIDPLUS",
-    "UNSELECT"
+    "UNSELECT",
+    "AUTH=PLAIN",
+    "STARTTLS"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -56,27 +58,27 @@
     "PERMANENTFLAGS"
   ],
   "flag_order": [
-    "\\Recent",
     "\\Answered",
     "\\Flagged",
-    "\\Draft",
     "\\Deleted",
-    "\\Seen"
+    "\\Seen",
+    "\\Draft",
+    "\\Recent"
   ],
   "fetch_peek_body": true,
   "fetch_seen_flags": true,
   "fetch_item_order": [
-    "FLAGS",
     "UID",
     "INTERNALDATE",
     "RFC822.SIZE",
-    "ENVELOPE",
     "BODY",
     "BODYSTRUCTURE",
+    "ENVELOPE",
     "RFC822",
     "RFC822.HEADER",
     "RFC822.TEXT",
     "BODY[]",
-    "BODY.PEEK[]"
+    "BODY.PEEK[]",
+    "FLAGS"
   ]
 }
