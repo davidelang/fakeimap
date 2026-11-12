@@ -21,8 +21,8 @@ var (
 	errLogout = errors.New("logout")
 )
 
-// session is one IMAP connection. box, readonly, seenID, and wake are
-// guarded by Store.mu.
+// session is one IMAP connection. box, readonly, seenID, wake, notify,
+// and notifyQ are guarded by Store.mu.
 type session struct {
 	srv        *Server
 	conn       net.Conn
@@ -37,6 +37,9 @@ type session struct {
 	readonly   bool
 	seenID     uint64
 	wake       chan struct{}
+	notify     *notifyReg
+	notifyQ    []notifyNote
+	notifyCh   chan struct{}
 	enabled    map[string]struct{}
 	savedUIDs  []uint32 // SEARCHRES result. UIDs, including ones later expunged.
 	pers       *Personality
@@ -122,6 +125,7 @@ func (s *session) bad(tag, text string) error {
 
 func (s *session) serve() {
 	defer s.srv.store.deselect(s)
+	defer s.srv.store.setNotify(s, nil)
 	var greet string
 	if s.pers.GreetingCaps != nil && len(s.pers.GreetingCaps) == 0 {
 		greet = "* OK " + s.pers.Greeting
@@ -136,7 +140,7 @@ func (s *session) serve() {
 		return
 	}
 	for {
-		cmd, err := s.readCommand()
+		cmd, err := s.readCommandWake()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return
@@ -148,6 +152,32 @@ func (s *session) serve() {
 		}
 		if err := s.runCommand(cmd); err != nil {
 			return
+		}
+	}
+}
+
+// readCommandWake reads the next command and, while that read is blocked,
+// pushes NOTIFY lines. A session with no registration is not woken.
+func (s *session) readCommandWake() (command, error) {
+	type got struct {
+		cmd command
+		err error
+	}
+	ch := make(chan got, 1)
+	go func() {
+		cmd, err := s.readCommand()
+		ch <- got{cmd, err}
+	}()
+	for {
+		select {
+		case res := <-ch:
+			return res.cmd, res.err
+		case <-s.notifyCh:
+			if err := s.flush(); err != nil {
+				return command{}, err
+			}
+		case <-s.srv.quit:
+			return command{}, io.EOF
 		}
 	}
 }
@@ -339,6 +369,13 @@ func reverseU32(ids []uint32) []uint32 {
 
 func (s *session) flush() error {
 	evs := s.srv.store.drain(s)
+	var newItems []string
+	for _, e := range evs {
+		if e.kind == "exists" && len(e.newUIDs) > 0 {
+			newItems = s.srv.store.selectedNewItems(s)
+			break
+		}
+	}
 	gone := map[uint32]bool{}
 	for _, e := range evs {
 		if e.kind == "expunge" {
@@ -370,6 +407,11 @@ func (s *session) flush() error {
 			if err := s.sendLine(fmt.Sprintf("* %d RECENT", e.recent)); err != nil {
 				return err
 			}
+			if len(e.newUIDs) > 0 && len(newItems) > 0 {
+				if err := s.sendNewFetch(e.newUIDs, newItems); err != nil {
+					return err
+				}
+			}
 		case "flags":
 			if gone[e.uid] {
 				break
@@ -380,7 +422,7 @@ func (s *session) flush() error {
 		}
 		i++
 	}
-	return nil
+	return s.flushNotify()
 }
 
 func (s *session) needAuth(tag string) bool {
@@ -482,6 +524,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdSetQuota(cmd)
 	case "IDLE":
 		return s.cmdIdle(cmd)
+	case "NOTIFY":
+		return s.cmdNotify(cmd)
 	case "SETACL", "DELETEACL", "GETACL", "LISTRIGHTS", "MYRIGHTS":
 		return s.cmdACL(cmd)
 	default:
@@ -1710,7 +1754,7 @@ func (s *session) cmdFetch(cmd command) error {
 	if n, ok := s.messageLimit(); ok {
 		limit = n
 	}
-	snaps, items, lowest, limited, err := s.srv.store.fetch(s, cmd.uid, set, cmd.fetch, cmd.changedSince, limit)
+	snaps, items, lowest, limited, err := s.srv.store.fetch(s, cmd.uid, cmd.uid, set, cmd.fetch, cmd.changedSince, limit)
 	if err != nil {
 		if err.Error() == "not selected" {
 			return s.no(cmd.tag, "FETCH not selected")
@@ -3024,9 +3068,7 @@ func (s *session) cmdUnauthenticate(cmd command) error {
 	if len(cmd.args) != 0 {
 		return s.bad(cmd.tag, "UNAUTHENTICATE syntax")
 	}
-	s.srv.store.deselect(s)
-	s.authed = false
-	s.user = ""
+	s.srv.store.unauthenticate(s)
 	s.enabled = map[string]struct{}{}
 	return s.ok(cmd.tag, "UNAUTHENTICATE completed")
 }
@@ -3089,6 +3131,7 @@ func (s *session) cmdIdle(cmd command) error {
 		}
 		select {
 		case <-s.wake:
+		case <-s.notifyCh:
 		case err := <-done:
 			if err != nil {
 				return err

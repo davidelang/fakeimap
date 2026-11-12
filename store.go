@@ -188,14 +188,15 @@ type expungedRec struct {
 }
 
 type mbEvent struct {
-	id     uint64
-	kind   string // expunge, exists, flags
-	seq    uint32
-	uid    uint32
-	modseq uint64
-	exists int
-	recent int
-	flags  string
+	id      uint64
+	kind    string // expunge, exists, flags
+	seq     uint32
+	uid     uint32
+	modseq  uint64
+	exists  int
+	recent  int
+	flags   string
+	newUIDs []uint32 // set on exists when those messages were just added
 }
 
 // Mailbox fields are guarded by Store.mu. uidValidity stays for the
@@ -212,6 +213,7 @@ type Mailbox struct {
 	expunged      []expungedRec
 	special       []string
 	jmapID        string // stable for the process; not the IMAP UID
+	st            *Store
 }
 
 func (mb *Mailbox) bump(m *Message) uint64 {
@@ -273,6 +275,9 @@ func (mb *Mailbox) push(e mbEvent) uint64 {
 		default:
 		}
 	}
+	if mb.st != nil {
+		mb.st.fanNotify(mb, e)
+	}
 	return e.id
 }
 
@@ -298,6 +303,7 @@ type Store struct {
 	subs         map[string]map[string]bool // account -> canonical mailbox names
 	quotaStorage uint64                     // STORAGE limit, units of 1024 octets
 	quotaMessage uint64                     // MESSAGE limit
+	watchers     []*session                 // sessions with a NOTIFY registration
 }
 
 const (
@@ -780,6 +786,7 @@ func (st *Store) subscribe(user, name string) error {
 	}
 	st.ensureSub(user)
 	st.subs[user][cn] = true
+	st.fanBox("sub", cn, user)
 	return nil
 }
 
@@ -791,10 +798,107 @@ func (st *Store) unsubscribe(user, name string) error {
 	if err != nil {
 		return err
 	}
+	st.fanBox("unsub", cn, user)
 	if st.subs[user] != nil {
 		delete(st.subs[user], cn)
 	}
 	return nil
+}
+
+// fanBox queues a mailbox or subscription event for NOTIFY sessions.
+// onlyUser limits subscribe and unsubscribe to that account. Caller holds st.mu.
+func (st *Store) fanBox(kind, name, onlyUser string) {
+	for _, s := range st.watchers {
+		if s.notify == nil {
+			continue
+		}
+		if onlyUser != "" && s.user != onlyUser {
+			continue
+		}
+		s.notifyQ = append(s.notifyQ, notifyNote{kind: kind, name: name, subAt: st.subAt(s, name)})
+		poke(s.notifyCh)
+	}
+}
+
+// fanNotify queues a message event. exists with no new UID is the count
+// after an expunge; the expunge note already covers it. Caller holds st.mu.
+func (st *Store) fanNotify(mb *Mailbox, e mbEvent) {
+	kind := ""
+	switch e.kind {
+	case "exists":
+		if len(e.newUIDs) == 0 {
+			return
+		}
+		kind = "new"
+	case "expunge":
+		kind = "expunge"
+	case "flags":
+		kind = "flags"
+	default:
+		return
+	}
+	for _, s := range st.watchers {
+		if s.notify == nil {
+			continue
+		}
+		s.notifyQ = append(s.notifyQ, notifyNote{kind: kind, name: mb.name, subAt: st.subAt(s, mb.name)})
+		poke(s.notifyCh)
+	}
+}
+
+func (st *Store) subAt(s *session, name string) bool {
+	return st.subs[s.user] != nil && st.subs[s.user][name]
+}
+
+func (st *Store) addWatcherLocked(s *session) {
+	for _, w := range st.watchers {
+		if w == s {
+			return
+		}
+	}
+	st.watchers = append(st.watchers, s)
+}
+
+func (st *Store) removeWatcherLocked(s *session) {
+	out := st.watchers[:0]
+	for _, w := range st.watchers {
+		if w != s {
+			out = append(out, w)
+		}
+	}
+	st.watchers = out
+}
+
+// unauthenticate drops NOTIFY, the selected mailbox, and the account name.
+// The name is cleared under st.mu, which is what reads it.
+func (st *Store) unauthenticate(s *session) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	s.notify = nil
+	s.notifyQ = nil
+	st.removeWatcherLocked(s)
+	st.detachLocked(s)
+	s.authed = false
+	s.user = ""
+}
+
+// setNotify replaces this session's registration. A nil registration clears it.
+func (st *Store) setNotify(s *session, reg *notifyReg) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	s.notify = reg
+	s.notifyQ = nil
+	if reg == nil {
+		st.removeWatcherLocked(s)
+		return
+	}
+	st.addWatcherLocked(s)
+}
+
+func (st *Store) canonName(name string) (string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.canon(name)
 }
 
 // ensureSub makes the account's set. Caller holds st.mu.
@@ -957,11 +1061,12 @@ func (st *Store) create(name string, uses []string) error {
 			return fmt.Errorf("use conflict")
 		}
 	}
-	mb := &Mailbox{name: cn, uidValidity: st.allocUIDV(), uidNext: 1, special: special}
+	mb := &Mailbox{name: cn, uidValidity: st.allocUIDV(), uidNext: 1, special: special, st: st}
 	st.stampBox(mb)
 	st.boxes[cn] = mb
 	st.order = append(st.order, cn)
 	st.touch()
+	st.fanBox("create", cn, "")
 	return nil
 }
 
@@ -1010,6 +1115,7 @@ func (st *Store) delete(s *session, name string) error {
 		}
 	}
 	st.order = order
+	st.fanBox("delete", cn, "")
 	for _, set := range st.subs {
 		delete(set, cn)
 	}
@@ -1074,6 +1180,9 @@ func (st *Store) rename(oldName, newName string) error {
 			st.order[i] = n
 		}
 	}
+	for _, mv := range moves {
+		st.fanBox("rename-old", mv.old, "")
+	}
 	for user, set := range st.subs {
 		neu := make(map[string]bool, len(set))
 		for name := range set {
@@ -1084,6 +1193,9 @@ func (st *Store) rename(oldName, newName string) error {
 			}
 		}
 		st.subs[user] = neu
+	}
+	for _, mv := range moves {
+		st.fanBox("rename-new", mv.neu, "")
 	}
 	st.touch()
 	return nil
@@ -1270,13 +1382,13 @@ type fetchSnap struct {
 	seenEvent uint64
 }
 
-func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, changedSince *uint64, limit uint64) ([]fetchSnap, []string, uint32, bool, error) {
+func (st *Store) fetch(s *session, uidMode bool, addUID bool, set *seqSet, items []string, changedSince *uint64, limit uint64) ([]fetchSnap, []string, uint32, bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
 		return nil, nil, 0, false, fmt.Errorf("not selected")
 	}
-	expanded, err := expandFetch(items, uidMode, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"))
+	expanded, err := expandFetch(items, addUID, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"))
 	if err != nil {
 		return nil, nil, 0, false, err
 	}
@@ -2731,7 +2843,7 @@ func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw 
 	mb.bump(m)
 	mb.uidNext++
 	mb.msgs = append(mb.msgs, m)
-	mb.pushExists()
+	mb.push(mbEvent{kind: "exists", exists: len(mb.msgs), recent: mb.recentCount(), newUIDs: []uint32{m.uid}})
 	st.noteMail("created", m.jmapID)
 	return mb.uidValidity, m, nil
 }
@@ -2900,7 +3012,7 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 	}
 	res.dst = dstUIDs
 	if len(picked) > 0 {
-		dst.pushExists()
+		dst.push(mbEvent{kind: "exists", exists: len(dst.msgs), recent: dst.recentCount(), newUIDs: append([]uint32(nil), dstUIDs...)})
 		for _, id := range createdIDs {
 			st.noteMail("created", id)
 		}
@@ -3148,6 +3260,7 @@ func loadStore(dir, delim string) (*Store, error) {
 			name:        name,
 			uidValidity: st.noteUIDV(mbj.UIDValidity),
 			uidNext:     1,
+			st:          st,
 		}
 		st.stampBox(mb)
 		for _, mj := range mbj.Messages {
@@ -3517,7 +3630,7 @@ func (st *Store) appendCopyLocked(dst *Mailbox, src *Message, saved time.Time) {
 	dst.bump(nm)
 	dst.uidNext++
 	dst.msgs = append(dst.msgs, nm)
-	dst.pushExists()
+	dst.push(mbEvent{kind: "exists", exists: len(dst.msgs), recent: dst.recentCount(), newUIDs: []uint32{nm.uid}})
 }
 
 // expungeLocked removes one message and pushes EXPUNGE. It does not record a

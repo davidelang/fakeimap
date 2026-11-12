@@ -921,3 +921,14 @@
 
 - ENABLE UIDONLY, when the personality lists the token, makes that session reject message numbers with UIDREQUIRED, answer UID FETCH and UID STORE with UIDFETCH, and report expunges as VANISHED.
 - The token is on the Cyrus 3.12 and 3.13 pre-login and post-login lists, the sasl post-login list, and the three newer Stalwart post-login lists. It left the gaps file.
+
+## 2026-11-12 - NOTIFY execution start
+
+- Approved plan: sandbox/plans/notify-20261112-0447-plan.md
+- Work: NOTIFY registers which mailbox events a session wants, and matching changes are pushed
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - NOTIFY landed
+
+- NOTIFY SET registers event groups for one session. Dovecot 2.4.5 and dovecot-dev advertise it after COMPRESS=DEFLATE and before LITERAL+. A matched mailbox that is not selected is pushed as STATUS, and mailbox or subscription changes are pushed as LIST, including while IDLE or waiting for the next command.
+- make exits 0. The gaps file is unchanged.

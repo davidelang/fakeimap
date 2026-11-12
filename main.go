@@ -345,14 +345,15 @@ func (s *Server) finish(conn net.Conn, implicit bool, id int) {
 	pers := s.pers
 	s.mu.Unlock()
 	sess := &session{
-		srv:     s,
-		conn:    c,
-		br:      bufio.NewReader(c),
-		bw:      bufio.NewWriter(c),
-		id:      id,
-		secure:  implicit,
-		enabled: map[string]struct{}{},
-		pers:    pers,
+		srv:      s,
+		conn:     c,
+		br:       bufio.NewReader(c),
+		bw:       bufio.NewWriter(c),
+		id:       id,
+		secure:   implicit,
+		notifyCh: make(chan struct{}, 1),
+		enabled:  map[string]struct{}{},
+		pers:     pers,
 	}
 	sess.serve()
 }

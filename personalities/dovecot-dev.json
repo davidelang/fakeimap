@@ -50,6 +50,7 @@
     "STATUS=SIZE",
     "SAVEDATE",
     "COMPRESS=DEFLATE",
+    "NOTIFY",
     "LITERAL+"
   ],
   "logout_bye": true,
