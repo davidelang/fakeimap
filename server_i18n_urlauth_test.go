@@ -153,9 +153,9 @@ func TestI18NURLAUTHStub(t *testing.T) {
 	greetSrc := append([]string{}, base.GreetingCaps...)
 	preSrc := append([]string{}, base.PreLogin...)
 	postSrc := append([]string{}, base.PostLogin...)
-	wantGreet := strings.Join(base.advertiseList(greetSrc, false, false, false, false), " ")
-	wantPre := strings.Join(base.advertiseList(preSrc, false, false, false, false), " ")
-	wantPost := strings.Join(base.advertiseList(postSrc, true, false, false, false), " ")
+	wantGreet := strings.Join(base.advertiseList(greetSrc, false, false, false, false, nil), " ")
+	wantPre := strings.Join(base.advertiseList(preSrc, false, false, false, false, nil), " ")
+	wantPost := strings.Join(base.advertiseList(postSrc, true, false, false, false, nil), " ")
 	base.GreetingCaps = append(append([]string{}, greetSrc...), "I18NLEVEL=1", "URLAUTH", "URLAUTH=BINARY", "URL-PARTIAL")
 	base.PreLogin = append(append([]string{}, preSrc...), "i18nlevel=1", "urlauth", "URLAUTH=BINARY")
 	base.PostLogin = append(append([]string{}, postSrc...), "I18NLEVEL=1", "URLAUTH", "Urlauth=Binary", "URL-PARTIAL")
@@ -168,7 +168,7 @@ func TestI18NURLAUTHStub(t *testing.T) {
 		{base.PreLogin, false, wantPre},
 		{base.PostLogin, true, wantPost},
 	} {
-		got := base.advertiseList(spec.src, spec.postLogin, false, false, false)
+		got := base.advertiseList(spec.src, spec.postLogin, false, false, false, nil)
 		assertNoURLAuthTokens(t, got, "advertiseList")
 		if strings.Join(got, " ") != spec.want {
 			t.Fatalf("advertiseList %v -> %v want %s", spec.src, got, spec.want)

@@ -978,3 +978,16 @@
 ## 2026-11-12 - IMAP test faults
 
 - Add reply, bye, idle_burst, drop_literal, rst_literal, overquota, and expunge_mid faults, plus the bye control op. Quota reports stay the same. Plan: sandbox/plans/imap-test-faults-20261112-0509-plan.md
+
+## 2026-11-12 - INPROGRESS and LOGINDISABLED execution start
+
+- Approved plan: sandbox/plans/inprogress-logindisabled-20261112-0509-plan.md
+- Work: advertise INPROGRESS and LOGINDISABLED on the lab personalities that should speak them. An inprogress fault sends progress lines on SEARCH, ESEARCH, and SORT. LOGINDISABLED stays on cleartext only when a certificate is loaded, unless set-login-disabled forces it, and then LOGIN is refused.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - INPROGRESS and LOGINDISABLED landed
+
+- Advertise INPROGRESS on cyrus-3124 and cyrus-3137 pre-login and post-login, and on dovecot-245 and dovecot-dev post-login. Progress lines come only from an armed inprogress fault.
+- Advertise LOGINDISABLED on the cyrus-3137 greeting and pre-login list. Cleartext LOGIN is refused only while that token is on the wire. set-login-disabled forces it on or off.
+- The probe script STARTTLS-upgrades before LOGIN when the greeting advertises LOGINDISABLED.
+- Plan: sandbox/plans/inprogress-logindisabled-20261112-0509-plan.md

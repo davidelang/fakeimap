@@ -20,30 +20,32 @@ import (
 // fault is one armed control-socket fault. hits and spent move only
 // while Server.mu is held. A session keeps the pointer for one command.
 type fault struct {
-	id       int
-	conn     int
-	command  string
-	times    int
-	do       string
-	delayMs  int
-	bytes    int
-	text     string
-	count    int
-	offset   int
-	tag      string
-	order    []string
-	status   string
-	code     string
-	proto    string
-	uid      uint32
-	after    int
-	afterSet bool
-	size     int
-	sizeSet  bool
-	hits     int
-	spent    bool
-	certOnce sync.Once
-	cert     *tls.Certificate
+	id        int
+	conn      int
+	command   string
+	times     int
+	do        string
+	delayMs   int
+	bytes     int
+	text      string
+	count     int
+	offset    int
+	tag       string
+	order     []string
+	status    string
+	code      string
+	proto     string
+	uid       uint32
+	after     int
+	afterSet  bool
+	size      int
+	sizeSet   bool
+	doneText  string
+	totalText string
+	hits      int
+	spent     bool
+	certOnce  sync.Once
+	cert      *tls.Certificate
 }
 
 type faultView struct {
@@ -65,6 +67,8 @@ type faultView struct {
 	UID     uint32   `json:"uid,omitempty"`
 	After   *int     `json:"after,omitempty"`
 	Size    *int     `json:"size,omitempty"`
+	Done    string   `json:"done,omitempty"`
+	Total   string   `json:"total,omitempty"`
 	Spent   bool     `json:"spent,omitempty"`
 }
 
@@ -74,6 +78,7 @@ func (f *fault) view() faultView {
 		DelayMs: f.delayMs, Bytes: f.bytes, Text: f.text, Count: f.count,
 		Offset: f.offset, Tag: f.tag, Order: f.order, Spent: f.spent,
 		Status: f.status, Code: f.code, Proto: f.proto, UID: f.uid,
+		Done: f.doneText, Total: f.totalText,
 	}
 	if f.afterSet {
 		n := f.after
@@ -298,7 +303,7 @@ func (s *session) applyFault(cmd command, f *fault) error {
 			}
 		}
 		return s.dispatch(cmd)
-	case "idle_burst":
+	case "idle_burst", "inprogress":
 		return s.dispatch(cmd)
 	case "reorder":
 		return s.applyReorder(cmd)

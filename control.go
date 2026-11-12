@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -62,33 +63,36 @@ func (s *Server) serveControl(c net.Conn) {
 }
 
 type ctrlRequest struct {
-	Op        string   `json:"op"`
-	Path      string   `json:"path"`
-	Conn      *int     `json:"conn"`
-	Mailbox   string   `json:"mailbox"`
-	User      string   `json:"user"`
-	Username  string   `json:"username"`
-	Password  string   `json:"password"`
-	Raw       string   `json:"raw"`
-	UID       *uint32  `json:"uid"`
-	Time      string   `json:"time"`
-	ID        *int     `json:"id"`
-	Command   string   `json:"command"`
-	Times     *int     `json:"times"`
-	Do        string   `json:"do"`
-	DelayMs   *int     `json:"delay_ms"`
-	Bytes     *int     `json:"bytes"`
-	Text      string   `json:"text"`
-	Count     *int     `json:"count"`
-	Offset    *int     `json:"offset"`
-	Tag       string   `json:"tag"`
-	Order     []string `json:"order"`
-	TimeoutMs *int     `json:"timeout_ms"`
-	Status    string   `json:"status"`
-	Code      string   `json:"code"`
-	Proto     string   `json:"proto"`
-	Size      *int     `json:"size"`
-	After     *int     `json:"after"`
+	Op        string          `json:"op"`
+	Path      string          `json:"path"`
+	Conn      *int            `json:"conn"`
+	Mailbox   string          `json:"mailbox"`
+	User      string          `json:"user"`
+	Username  string          `json:"username"`
+	Password  string          `json:"password"`
+	Raw       string          `json:"raw"`
+	UID       *uint32         `json:"uid"`
+	Time      string          `json:"time"`
+	ID        *int            `json:"id"`
+	Command   string          `json:"command"`
+	Times     *int            `json:"times"`
+	Do        string          `json:"do"`
+	DelayMs   *int            `json:"delay_ms"`
+	Bytes     *int            `json:"bytes"`
+	Text      string          `json:"text"`
+	Count     *int            `json:"count"`
+	Offset    *int            `json:"offset"`
+	Tag       string          `json:"tag"`
+	Order     []string        `json:"order"`
+	TimeoutMs *int            `json:"timeout_ms"`
+	Status    string          `json:"status"`
+	Code      string          `json:"code"`
+	Proto     string          `json:"proto"`
+	Size      *int            `json:"size"`
+	After     *int            `json:"after"`
+	Value     json.RawMessage `json:"value"`
+	Done      json.RawMessage `json:"done"`
+	Total     json.RawMessage `json:"total"`
 }
 
 func okResp(extra map[string]any) map[string]any {
@@ -202,6 +206,16 @@ func (s *Server) ctrl(req ctrlRequest) any {
 		if err := s.byeConns(req.Conn, text); err != nil {
 			return errResp(err.Error())
 		}
+		return okResp(nil)
+	case "set-login-disabled":
+		if len(bytes.TrimSpace(req.Value)) == 0 || string(req.Value) == "null" {
+			return errResp("missing field")
+		}
+		var v bool
+		if err := json.Unmarshal(req.Value, &v); err != nil {
+			return errResp("missing field")
+		}
+		s.setLoginDisabled(v)
 		return okResp(nil)
 	case "arm-fault":
 		f, err := buildFault(req)
@@ -381,6 +395,35 @@ func (s *Server) armFault(f *fault) int {
 	return f.id
 }
 
+func (s *Server) setLoginDisabled(v bool) {
+	s.mu.Lock()
+	s.loginDisabled = &v
+	s.mu.Unlock()
+}
+
+// loginDisabledOverride is the set-login-disabled value. Nil means the
+// personality list and the certificate filter decide.
+func (s *Server) loginDisabledOverride() *bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loginDisabled == nil {
+		return nil
+	}
+	v := *s.loginDisabled
+	return &v
+}
+
+func optNumber(raw json.RawMessage) (string, error) {
+	if len(bytes.TrimSpace(raw)) == 0 || string(raw) == "null" {
+		return "NIL", nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err != nil || n.String() == "" {
+		return "", fmt.Errorf("missing field")
+	}
+	return n.String(), nil
+}
+
 func (s *Server) clearFaults(id *int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -403,7 +446,8 @@ func canonDo(do string) (string, bool) {
 		"bad_literal", "flood", "split", "coalesce", "wrong_tag", "unsolicited",
 		"reorder", "mid", "fetch_order", "tag_first", "mutate", "wrong_name",
 		"expired", "self_signed",
-		"reply", "bye", "idle_burst", "drop_literal", "rst_literal", "overquota", "expunge_mid":
+		"reply", "bye", "idle_burst", "drop_literal", "rst_literal", "overquota", "expunge_mid",
+		"inprogress":
 		return strings.ToLower(do), true
 	default:
 		return "", false
@@ -523,6 +567,35 @@ func buildFault(req ctrlRequest) (*fault, error) {
 			f.size = *req.Size
 			f.sizeSet = true
 		}
+	case "inprogress":
+		switch f.command {
+		case "SEARCH", "ESEARCH", "SORT":
+		default:
+			return nil, fmt.Errorf("missing field")
+		}
+		f.count = 2
+		if req.Count != nil {
+			if *req.Count < 0 {
+				return nil, fmt.Errorf("missing field")
+			}
+			f.count = *req.Count
+		}
+		if req.DelayMs != nil {
+			if *req.DelayMs < 0 {
+				return nil, fmt.Errorf("missing field")
+			}
+			f.delayMs = *req.DelayMs
+		}
+		done, err := optNumber(req.Done)
+		if err != nil {
+			return nil, err
+		}
+		total, err := optNumber(req.Total)
+		if err != nil {
+			return nil, err
+		}
+		f.doneText = done
+		f.totalText = total
 	case "expunge_mid":
 		if req.UID == nil {
 			return nil, fmt.Errorf("missing field")

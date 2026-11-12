@@ -65,6 +65,7 @@ var implementedCaps = map[string]struct{}{
 	"IMAP4REV1":               {},
 	"LITERAL+":                {},
 	"IDLE":                    {},
+	"INPROGRESS":              {},
 	"ID":                      {},
 	"NAMESPACE":               {},
 	"OBJECTID":                {},
@@ -123,6 +124,7 @@ var implementedCaps = map[string]struct{}{
 	"AUTH=SCRAM-SHA-256-PLUS": {},
 	"AUTH=EXTERNAL":           {},
 	"JMAPACCESS":              {},
+	"LOGINDISABLED":           {},
 	"STARTTLS":                {},
 }
 
@@ -212,18 +214,39 @@ func parseMessageLimit(name string) (uint64, bool) {
 
 // advertise filters the personality list. STARTTLS is added only on a
 // cleartext connection that still has a certificate and has not started TLS.
-// JMAPACCESS is kept only when a JMAP listener is bound. IMAP4rev2,
-// I18NLEVEL=1, URLAUTH, and URLAUTH=BINARY are dropped by name after the
-// implemented-capability check.
+// JMAPACCESS is kept only when a JMAP listener is bound. LOGINDISABLED is
+// kept only on cleartext when a certificate is loaded, unless loginDisabled
+// forces it. IMAP4rev2, I18NLEVEL=1, URLAUTH, and URLAUTH=BINARY are dropped
+// by name after the implemented-capability check.
 func (p *Personality) advertise(postLogin, secure, hasCert, jmap bool) []string {
+	return p.advertiseLogin(postLogin, secure, hasCert, jmap, nil)
+}
+
+// advertiseLogin is advertise with the set-login-disabled override.
+// A nil override leaves the personality list and the certificate filter
+// in charge. True forces the token onto a cleartext pre-login list.
+// False forces it off.
+func (p *Personality) advertiseLogin(postLogin, secure, hasCert, jmap bool, loginDisabled *bool) []string {
 	src := p.PreLogin
 	if postLogin {
 		src = p.PostLogin
 	}
-	return p.advertiseList(src, postLogin, secure, hasCert, jmap)
+	return p.advertiseList(src, postLogin, secure, hasCert, jmap, loginDisabled)
 }
 
-func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert, jmap bool) []string {
+// keepLoginDisabled reports whether a listed LOGINDISABLED token stays.
+// Secure connections always drop it. An override replaces the certificate rule.
+func keepLoginDisabled(secure, hasCert bool, loginDisabled *bool) bool {
+	if secure {
+		return false
+	}
+	if loginDisabled != nil {
+		return *loginDisabled
+	}
+	return hasCert
+}
+
+func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert, jmap bool, loginDisabled *bool) []string {
 	out := make([]string, 0, len(src)+1)
 	seen := map[string]bool{}
 	for _, c := range src {
@@ -232,6 +255,9 @@ func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert, jm
 		}
 		// Dropped by name so the token stays off even if implementedCaps gains it.
 		if strings.EqualFold(c, "IMAP4rev2") || strings.EqualFold(c, "I18NLEVEL=1") || strings.EqualFold(c, "URLAUTH") || strings.EqualFold(c, "URLAUTH=BINARY") {
+			continue
+		}
+		if strings.EqualFold(c, "LOGINDISABLED") && !keepLoginDisabled(secure, hasCert, loginDisabled) {
 			continue
 		}
 		if strings.EqualFold(c, "STARTTLS") && (secure || !hasCert) {
@@ -246,6 +272,10 @@ func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert, jm
 		}
 		seen[u] = true
 		out = append(out, c)
+	}
+	if loginDisabled != nil && *loginDisabled && !secure && !postLogin && !seen["LOGINDISABLED"] {
+		out = append(out, "LOGINDISABLED")
+		seen["LOGINDISABLED"] = true
 	}
 	if !postLogin && !secure && hasCert && !seen["STARTTLS"] {
 		out = append(out, "STARTTLS")

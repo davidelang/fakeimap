@@ -8,7 +8,8 @@
     "LITERAL+",
     "SASL-IR",
     "AUTH=PLAIN",
-    "AUTH=LOGIN"
+    "AUTH=LOGIN",
+    "LOGINDISABLED"
   ],
   "pre_login_capabilities": [
     "IMAP4rev1",
@@ -23,6 +24,7 @@
     "ESORT",
     "ID",
     "IDLE",
+    "INPROGRESS",
     "LIST-EXTENDED",
     "LIST-STATUS",
     "LITERAL+",
@@ -57,7 +59,8 @@
     "THREAD=REFS",
     "XLIST",
     "AUTH=PLAIN",
-    "AUTH=LOGIN"
+    "AUTH=LOGIN",
+    "LOGINDISABLED"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -72,6 +75,7 @@
     "ESORT",
     "ID",
     "IDLE",
+    "INPROGRESS",
     "LIST-EXTENDED",
     "LIST-STATUS",
     "LITERAL+",

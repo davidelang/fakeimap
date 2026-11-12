@@ -72,7 +72,7 @@ func (s *session) jmapBound() bool {
 }
 
 func (s *session) caps() []string {
-	return s.pers.advertise(s.authed, s.secure, s.srv.hasCert, s.jmapBound())
+	return s.pers.advertiseLogin(s.authed, s.secure, s.srv.hasCert, s.jmapBound(), s.srv.loginDisabledOverride())
 }
 
 func (s *session) sendLine(line string) error {
@@ -144,7 +144,7 @@ func (s *session) serve() {
 	} else {
 		greetCaps := s.caps()
 		if len(s.pers.GreetingCaps) > 0 {
-			greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.hasCert, s.jmapBound())
+			greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.hasCert, s.jmapBound(), s.srv.loginDisabledOverride())
 		}
 		greet = fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(greetCaps, " "), s.pers.Greeting)
 	}
@@ -1080,6 +1080,9 @@ func (s *session) cmdLogin(cmd command) error {
 	pass, ok2 := astring(cmd.args[1])
 	if !ok1 || !ok2 {
 		return s.bad(cmd.tag, "LOGIN syntax")
+	}
+	if s.advertiseCap("LOGINDISABLED") {
+		return s.no(cmd.tag, "[PRIVACYREQUIRED] LOGIN disabled")
 	}
 	return s.loginOK(cmd.tag, "LOGIN", user, pass)
 }
@@ -2819,6 +2822,32 @@ func (s *session) cmdCancelUpdate(cmd command) error {
 	return s.ok(cmd.tag, "CANCELUPDATE completed")
 }
 
+// emitInProgress sends the armed inprogress lines before a successful
+// SEARCH, ESEARCH, or SORT result. A connection that does not advertise
+// the token sends none. delay_ms waits between those lines.
+func (s *session) emitInProgress(tag string) error {
+	f := s.fault
+	if f == nil || f.do != "inprogress" || !s.advertiseCap("INPROGRESS") {
+		return nil
+	}
+	done, total := f.doneText, f.totalText
+	if done == "" {
+		done = "NIL"
+	}
+	if total == "" {
+		total = "NIL"
+	}
+	for i := 0; i < f.count; i++ {
+		if i > 0 && f.delayMs > 0 {
+			time.Sleep(time.Duration(f.delayMs) * time.Millisecond)
+		}
+		if err := s.sendLine(fmt.Sprintf("* OK [INPROGRESS (%s %s %s)]", tag, done, total)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *session) cmdSearch(cmd command) error {
 	if s.seqNumbersBanned(cmd) {
 		return s.uidRequired(cmd.tag)
@@ -2873,6 +2902,9 @@ func (s *session) cmdSearch(cmd command) error {
 	}
 	if ret.save {
 		s.savedUIDs = append([]uint32(nil), uids...)
+	}
+	if err := s.emitInProgress(cmd.tag); err != nil {
+		return err
 	}
 	done := "SEARCH completed"
 	if limited {
@@ -3049,6 +3081,9 @@ func (s *session) cmdEsearch(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "ESEARCH syntax")
 	}
+	if err := s.emitInProgress(cmd.tag); err != nil {
+		return err
+	}
 	for _, h := range hits {
 		if err := s.sendLine(formatMultiEsearch(cmd.tag, s.boxOut(h.name), h.uidv, h.uids, ret)); err != nil {
 			return err
@@ -3193,6 +3228,9 @@ func (s *session) cmdSort(cmd command) error {
 	}
 	if ret.save {
 		s.savedUIDs = append([]uint32(nil), uids...)
+	}
+	if err := s.emitInProgress(cmd.tag); err != nil {
+		return err
 	}
 	if ret.saveOnly() {
 		return s.ok(cmd.tag, "SORT completed")

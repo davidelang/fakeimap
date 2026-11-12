@@ -27,36 +27,37 @@ type Bound struct {
 
 // Server is the loopback IMAP listener.
 type Server struct {
-	cfg       Config
-	pers      *Personality
-	store     *Store
-	hasCert   bool
-	tlsCfg    *tls.Config
-	ln        net.Listener
-	tlsLn     net.Listener
-	ctrlLn    net.Listener
-	smtpLn    net.Listener
-	jmapLn    net.Listener
-	jmapTLSLn net.Listener
-	sieveLn   net.Listener
-	stdout    io.Writer
-	logf      *os.File
-	logMu     sync.Mutex
-	mu        sync.Mutex
-	reloadMu  sync.Mutex
-	imap      map[int]net.Conn
-	sessions  map[int]*session
-	pausing   bool
-	faults    []*fault
-	nextFault int
-	frozen    *time.Time
-	ready     chan struct{}
-	quit      chan struct{}
-	startErr  error
-	once      sync.Once
-	connSeq   atomic.Int64
-	smtpSeq   atomic.Int64
-	jmapSeq   atomic.Int64
+	cfg           Config
+	pers          *Personality
+	store         *Store
+	hasCert       bool
+	tlsCfg        *tls.Config
+	ln            net.Listener
+	tlsLn         net.Listener
+	ctrlLn        net.Listener
+	smtpLn        net.Listener
+	jmapLn        net.Listener
+	jmapTLSLn     net.Listener
+	sieveLn       net.Listener
+	stdout        io.Writer
+	logf          *os.File
+	logMu         sync.Mutex
+	mu            sync.Mutex
+	reloadMu      sync.Mutex
+	imap          map[int]net.Conn
+	sessions      map[int]*session
+	pausing       bool
+	faults        []*fault
+	nextFault     int
+	loginDisabled *bool
+	frozen        *time.Time
+	ready         chan struct{}
+	quit          chan struct{}
+	startErr      error
+	once          sync.Once
+	connSeq       atomic.Int64
+	smtpSeq       atomic.Int64
+	jmapSeq       atomic.Int64
 	// fetchLineHook runs after each FETCH response line and before that
 	// line's pending-event flush. Tests expunge from another session there.
 	fetchLineHook func()

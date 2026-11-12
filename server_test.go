@@ -39,15 +39,15 @@ func TestPersonalityData(t *testing.T) {
 	if p.Delimiter != "/" || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
 		t.Fatalf("personality fields: %+v", p)
 	}
-	want := strings.Fields("IMAP4rev1 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SASL-IR SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST AUTH=PLAIN AUTH=LOGIN")
+	want := strings.Fields("IMAP4rev1 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE INPROGRESS LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SASL-IR SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST AUTH=PLAIN AUTH=LOGIN LOGINDISABLED")
 	if strings.Join(p.PreLogin, " ") != strings.Join(want, " ") {
 		t.Fatalf("pre-login %#v", p.PreLogin)
 	}
-	post := strings.Fields("IMAP4rev1 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST")
+	post := strings.Fields("IMAP4rev1 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE INPROGRESS LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST")
 	if strings.Join(p.PostLogin, " ") != strings.Join(post, " ") {
 		t.Fatalf("post-login %#v", p.PostLogin)
 	}
-	greet := "IMAP4rev1 ENABLE ID LITERAL+ SASL-IR AUTH=PLAIN AUTH=LOGIN"
+	greet := "IMAP4rev1 ENABLE ID LITERAL+ SASL-IR AUTH=PLAIN AUTH=LOGIN LOGINDISABLED"
 	if strings.Join(p.GreetingCaps, " ") != greet || listed(p.GreetingCaps, "SEARCH=FUZZY") || listed(p.GreetingCaps, "IMAP4rev2") {
 		t.Fatalf("greeting caps %#v", p.GreetingCaps)
 	}
@@ -175,7 +175,7 @@ func TestCleartextAuthAndCaps(t *testing.T) {
 	})
 	cl := dial(t, bound.Listen)
 	pre := capsOf(cl.greeting)
-	requireCaps(t, pre, []string{"IMAP4rev1", "AUTH=PLAIN", "ENABLE", "LITERAL+", "SASL-IR", "STARTTLS"})
+	requireCaps(t, pre, []string{"IMAP4rev1", "AUTH=PLAIN", "ENABLE", "LITERAL+", "SASL-IR", "STARTTLS", "LOGINDISABLED"})
 	for _, c := range pre {
 		if strings.EqualFold(c, "IDLE") || strings.EqualFold(c, "NAMESPACE") {
 			t.Fatalf("greeting cap %s", c)
@@ -184,25 +184,27 @@ func TestCleartextAuthAndCaps(t *testing.T) {
 	forbidCaps(t, pre)
 	capRp := cl.cmd("CAPABILITY")
 	capRp.ok(t)
-	requireCaps(t, capsOf(capRp.untagged[0]), []string{"STARTTLS", "AUTH=PLAIN"})
+	requireCaps(t, capsOf(capRp.untagged[0]), []string{"STARTTLS", "AUTH=PLAIN", "LOGINDISABLED"})
 
 	bad := cl.cmd("LOGIN demo wrong")
-	if bad.status != "NO" || !strings.Contains(bad.tagLine, "AUTHENTICATIONFAILED") {
-		t.Fatalf("bad login: %+v", bad)
+	if bad.status != "NO" || !strings.Contains(bad.tagLine, "PRIVACYREQUIRED") || strings.Contains(bad.tagLine, "AUTHENTICATIONFAILED") {
+		t.Fatalf("cleartext LOGIN: %+v", bad)
 	}
-	good := cl.cmd("LOGIN demo secret")
+	if rp := cl.cmd("SELECT INBOX"); rp.status != "NO" {
+		t.Fatalf("LOGIN authenticated: %+v", rp)
+	}
+
+	cl2 := dial(t, bound.Listen)
+	good := cl2.cmd("AUTHENTICATE PLAIN " + plainToken("demo", "secret"))
 	good.ok(t)
 	post := capsOf(good.tagLine)
-	requireCaps(t, post, []string{"IMAP4rev1", "LITERAL+", "IDLE", "NAMESPACE", "UIDPLUS", "MOVE", "UNSELECT", "ENABLE"})
+	requireCaps(t, post, []string{"IMAP4rev1", "LITERAL+", "IDLE", "NAMESPACE", "UIDPLUS", "MOVE", "UNSELECT", "ENABLE", "INPROGRESS"})
 	for _, c := range post {
-		if strings.EqualFold(c, "AUTH=PLAIN") || strings.EqualFold(c, "STARTTLS") || strings.EqualFold(c, "SASL-IR") || strings.Contains(strings.ToUpper(c), "SCRAM") {
+		if strings.EqualFold(c, "AUTH=PLAIN") || strings.EqualFold(c, "STARTTLS") || strings.EqualFold(c, "SASL-IR") || strings.EqualFold(c, "LOGINDISABLED") || strings.Contains(strings.ToUpper(c), "SCRAM") {
 			t.Fatalf("post-login cap %s in %v", c, post)
 		}
 	}
 	forbidCaps(t, post)
-
-	cl2 := dial(t, bound.Listen)
-	cl2.cmd("AUTHENTICATE PLAIN " + plainToken("demo", "secret")).ok(t)
 	cl3 := dial(t, bound.Listen)
 	cl3.send("b1 AUTHENTICATE PLAIN\r\n")
 	cont := cl3.readRec()

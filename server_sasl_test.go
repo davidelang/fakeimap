@@ -69,7 +69,7 @@ func TestSaslPersonality(t *testing.T) {
 		strings.Join(cyrus.SelectOrder, " ") != strings.Join(sasl.SelectOrder, " ") ||
 		strings.Join(cyrus.FlagOrder, " ") != strings.Join(sasl.FlagOrder, " ") ||
 		strings.Join(cyrus.FetchItemOrder, " ") != strings.Join(sasl.FetchItemOrder, " ") ||
-		!sameCapSet(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), sasl.PostLogin) {
+		!sameCapSet(dropCap(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), sasl.PostLogin) {
 		t.Fatalf("mailbox behavior drifted")
 	}
 	want := []string{"AUTH=LOGIN", "AUTH=CRAM-MD5", "AUTH=SCRAM-SHA-1", "AUTH=SCRAM-SHA-256", "AUTH=SCRAM-SHA-1-PLUS", "AUTH=SCRAM-SHA-256-PLUS", "AUTH=EXTERNAL"}

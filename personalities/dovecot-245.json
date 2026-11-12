@@ -54,6 +54,7 @@
     "STATUS=SIZE",
     "SAVEDATE",
     "COMPRESS=DEFLATE",
+    "INPROGRESS",
     "NOTIFY",
     "LITERAL+",
     "UTF8=ACCEPT"

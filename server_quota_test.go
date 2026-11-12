@@ -294,7 +294,7 @@ func TestQuotaLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameCapSet(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), sasl.PostLogin) {
+	if !sameCapSet(dropCap(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), sasl.PostLogin) {
 		t.Fatal("sasl post-login set drifted from cyrus-3137")
 	}
 	matches, err := filepath.Glob("personalities/*.json")

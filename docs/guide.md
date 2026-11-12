@@ -88,6 +88,7 @@ An empty `op` is `missing field`. Any other `op` is `unknown op`.
 | `arm-fault` | see below | returns `id` |
 | `clear-faults` | optional `id` | a missing `id` clears every fault |
 | `bye` | optional `conn` and `text` | `* BYE` and close; see `docs/facts/imap-server.md` |
+| `set-login-disabled` | `value` true or false | forces `LOGINDISABLED` on or off; see `docs/facts/imap-server.md` |
 | `list-smtp` | none | accepted SMTP messages |
 | `wait-smtp` | `count` | zero returns immediately. A positive count also needs `timeout_ms`. A timeout is `ok` false |
 
@@ -133,7 +134,7 @@ Reply faults run in `runCommand` before the command handler. The certificate fau
 - `wrong_name` presents a certificate for `wrong.example`.
 - `expired` presents a certificate that has already expired.
 - `self_signed` presents a generated localhost certificate.
-- `reply`, `bye`, `idle_burst`, `drop_literal`, `rst_literal`, `overquota`, and `expunge_mid` are named here. What each one does, and what the `bye` op does, is in `docs/facts/imap-server.md`.
+- `reply`, `bye`, `idle_burst`, `drop_literal`, `rst_literal`, `overquota`, `expunge_mid`, and `inprogress` are named here. What each one does, and what the `bye` op does, is in `docs/facts/imap-server.md`.
 
 An unknown `do` is `unknown fault`. A missing required field is `missing field`.
 
@@ -168,6 +169,10 @@ A capability is advertised only when `capImplemented` accepts it. Named tokens a
 `UNAUTHENTICATE`, when listed, returns an authenticated connection to the not-authenticated state without expunging the selected mailbox. TLS and `COMPRESS=DEFLATE` stay up. Enabled extensions do not. Which personalities list it, and the reply, are in `docs/facts/imap-server.md`.
 
 `NOTIFY`, when listed, registers which mailbox events this session wants. A later change in a matched mailbox is pushed with no further command from this session, including while it is in `IDLE` on a different mailbox. `dovecot-245.json` and `dovecot-dev.json` advertise the token after login. The command shape and the lines that are pushed are in `docs/facts/imap-server.md`.
+
+`INPROGRESS`, when listed, stays quiet until an `inprogress` fault is armed. `SEARCH`, `ESEARCH`, and `SORT`, including the `UID` forms, then send the progress lines and the same result. Which files list the token, and the fault fields, are in `docs/facts/imap-server.md`.
+
+`LOGINDISABLED`, while it is on the wire, refuses cleartext `LOGIN`. A listed `AUTHENTICATE` mechanism still succeeds. `advertiseList` keeps the token only on cleartext with a certificate, unless `set-login-disabled` forces it. The filter, the refusal, and which file lists the token are in `docs/facts/imap-server.md`.
 
 `JMAPACCESS` is advertised only when the personality lists it and `jmap_listen` or `jmap_tls_listen` is bound. Otherwise the token is omitted and `GETJMAPACCESS` is tagged `BAD`. When it is offered, the command takes no arguments, is tagged `NO` before login, and does not need a selected mailbox. It returns one line, `* JMAPACCESS` and a quoted absolute `/.well-known/jmap` URL: `https` when the TLS listener is bound, and `http` from the cleartext listener otherwise. A host of `0.0.0.0` or `::` is written as `127.0.0.1`, and an IPv6 host is in brackets. `stalwart.json`, `stalwart-01625.json`, and `stalwart-dev.json` list the token only after login. `stalwart-0155.json` lists it on the greeting and on both capability lists. No other lab personality lists it. The rules are in `docs/facts/imap-server.md`.
 
@@ -290,7 +295,7 @@ The UW greeting appends ` at ` and a timestamp after the fixed text. One post-lo
 
 `IMAP4rev2` is never advertised. A personality that lists the token is filtered, so the greeting, `CAPABILITY` before login, and `CAPABILITY` after login omit it. The gaps file keeps the token. The Stalwart greeting sentence stays `Stalwart IMAP4rev2 at your service.` Those rules are in `docs/facts/imap-server.md`.
 
-Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `ACL` and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, `XLIST`, `MULTIAPPEND`, `QUOTA`, `QUOTA=RES-STORAGE`, `QUOTA=RES-MESSAGE`, `QUOTASET`, `UIDONLY`, `OBJECTID`, and `REPLACE` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `NO_ATOMIC_RENAME`, `QUOTA=RES-ANNOTATION-STORAGE`, `QUOTA=RES-MAILBOX`, `RIGHTS=kxten`, `UIDBATCHES`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, and `X-SIEVE-MAILBOX`.
+Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `ACL` and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, `XLIST`, `MULTIAPPEND`, `QUOTA`, `QUOTA=RES-STORAGE`, `QUOTA=RES-MESSAGE`, `QUOTASET`, `UIDONLY`, `OBJECTID`, `REPLACE`, `INPROGRESS`, and `LOGINDISABLED` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `LIST-METADATA`, `LIST-MYRIGHTS`, `MAILBOX-REFERRALS`, `METADATA`, `NO_ATOMIC_RENAME`, `QUOTA=RES-ANNOTATION-STORAGE`, `QUOTA=RES-MAILBOX`, `RIGHTS=kxten`, `UIDBATCHES`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, and `X-SIEVE-MAILBOX`.
 
 `URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` stays off the personality files. `URLAUTH=BINARY` stays in the gaps file. `I18NLEVEL=1`, `URLAUTH`, and `URLAUTH=BINARY` are filtered and not advertised. `URL-PARTIAL` stays unimplemented. Those rules are in `docs/facts/imap-server.md`.
 

@@ -247,7 +247,7 @@ func TestSavedateLists(t *testing.T) {
 	after("personalities/sasl.json", "pre-login", saslPers.PreLogin, "QRESYNC", false)
 	after("personalities/sasl.json", "post-login", saslPers.PostLogin, "REPLACE", true)
 
-	if !sameCapSet(dropCap(c3137.PostLogin, "SEARCH=FUZZY"), saslPers.PostLogin) {
+	if !sameCapSet(dropCap(dropCap(c3137.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), saslPers.PostLogin) {
 		t.Fatal("sasl post-login set drifted from cyrus-3137")
 	}
 

@@ -42,9 +42,10 @@ func TestNotifyPersonalities(t *testing.T) {
 			t.Fatalf("%s lists NOTIFY before login", e.Name())
 		}
 		c := indexCap(p.PostLogin, "COMPRESS=DEFLATE")
+		ip := indexCap(p.PostLogin, "INPROGRESS")
 		n := indexCap(p.PostLogin, "NOTIFY")
 		l := indexCap(p.PostLogin, "LITERAL+")
-		if c < 0 || n != c+1 || l != n+1 {
+		if c < 0 || ip != c+1 || n != ip+1 || l != n+1 {
 			t.Fatalf("%s post list %v", e.Name(), p.PostLogin)
 		}
 	}

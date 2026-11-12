@@ -123,7 +123,7 @@ func TestIMAP4rev2NeverAdvertised(t *testing.T) {
 		{base.PreLogin, false, "IMAP4rev1 AUTH=PLAIN ENABLE"},
 		{base.PostLogin, true, "IMAP4rev1 ENABLE CONDSTORE"},
 	} {
-		got := base.advertiseList(spec.src, spec.postLogin, false, false, false)
+		got := base.advertiseList(spec.src, spec.postLogin, false, false, false, nil)
 		if listed(got, "IMAP4rev2") || strings.Join(got, " ") != spec.want {
 			t.Fatalf("advertiseList %v -> %v", spec.src, got)
 		}

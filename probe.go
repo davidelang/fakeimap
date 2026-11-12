@@ -210,6 +210,29 @@ func taggedNo(line, tag string) bool {
 	return strings.HasPrefix(rest, "NO ") || strings.HasPrefix(rest, "BAD ")
 }
 
+func greetingDisablesLogin(greet string) bool {
+	return strings.Contains(greet, "LOGINDISABLED")
+}
+
+func (c *imapTalk) upgradeSTARTTLS(tag string) ([]string, error) {
+	lines, err := c.command(tag, "STARTTLS")
+	if err != nil {
+		return lines, err
+	}
+	if len(lines) == 0 || taggedNo(lines[len(lines)-1], tag) {
+		return lines, fmt.Errorf("STARTTLS failed")
+	}
+	tlsConn := tls.Client(c.conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+	if err := tlsConn.Handshake(); err != nil {
+		return lines, err
+	}
+	_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+	c.conn = tlsConn
+	c.r = bufio.NewReader(tlsConn)
+	c.w = bufio.NewWriter(tlsConn)
+	return lines, nil
+}
+
 // runProbeScript runs the fixed script and then deletes the mailboxes it created.
 func runProbeScript(host string, port int, tlsMode, user, pass string) (probeScript, error) {
 	mb1, mb2, err := freshMailboxPair()
@@ -245,6 +268,12 @@ func runProbeScript(host string, port int, tlsMode, user, pass string) (probeScr
 		talk.conn = tlsConn
 		talk.r = bufio.NewReader(tlsConn)
 		talk.w = bufio.NewWriter(tlsConn)
+	} else if tlsMode != "implicit" && greetingDisablesLogin(greet) {
+		lines, err := talk.upgradeSTARTTLS("t0")
+		out.lines = append(out.lines, lines...)
+		if err != nil {
+			return out, err
+		}
 	}
 	steps := []struct {
 		tag string
@@ -321,7 +350,8 @@ func deleteProbeMailboxes(host string, port int, tlsMode, user, pass, mb1, mb2 s
 		return err
 	}
 	defer talk.close()
-	if _, err := talk.readLogical(); err != nil {
+	greet, err := talk.readLogical()
+	if err != nil {
 		return err
 	}
 	if tlsMode == "starttls" {
@@ -335,6 +365,10 @@ func deleteProbeMailboxes(host string, port int, tlsMode, user, pass, mb1, mb2 s
 		talk.conn = tlsConn
 		talk.r = bufio.NewReader(tlsConn)
 		talk.w = bufio.NewWriter(tlsConn)
+	} else if tlsMode != "implicit" && greetingDisablesLogin(greet) {
+		if _, err := talk.upgradeSTARTTLS("d0"); err != nil {
+			return err
+		}
 	}
 	lines, err := talk.command("d1", "LOGIN "+quoteIMAP(user)+" "+quoteIMAP(pass))
 	if err != nil {
@@ -1306,7 +1340,8 @@ func deleteListMailboxes(host string, port int, tlsMode, user, pass, child, mb1,
 		return err
 	}
 	defer talk.close()
-	if _, err := talk.readLogical(); err != nil {
+	greet, err := talk.readLogical()
+	if err != nil {
 		return err
 	}
 	if tlsMode == "starttls" {
@@ -1320,6 +1355,10 @@ func deleteListMailboxes(host string, port int, tlsMode, user, pass, child, mb1,
 		talk.conn = tlsConn
 		talk.r = bufio.NewReader(tlsConn)
 		talk.w = bufio.NewWriter(tlsConn)
+	} else if tlsMode != "implicit" && greetingDisablesLogin(greet) {
+		if _, err := talk.upgradeSTARTTLS("d0"); err != nil {
+			return err
+		}
 	}
 	lines, err := talk.command("d1", "LOGIN "+quoteIMAP(user)+" "+quoteIMAP(pass))
 	if err != nil {
