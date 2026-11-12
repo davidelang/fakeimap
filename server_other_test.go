@@ -95,37 +95,10 @@ func TestOtherServerPersonalities(t *testing.T) {
 	liveStalGreet := stalGreet + " AUTH=PLAIN"
 	liveStalPost := stalPost + " STARTTLS"
 	for _, name := range []string{
-		"personalities/stalwart-0155.json",
-	} {
-		cases = append(cases, struct {
-			file     string
-			greeting string
-			greet    string
-			pre      string
-			post     string
-			delim    string
-			ns       string
-			flags    string
-			perm     string
-			order    []string
-			other    string
-		}{
-			file:     name,
-			greeting: "* OK [CAPABILITY " + stalGreet + "] Stalwart IMAP4rev2 at your service.",
-			greet:    stalGreet,
-			pre:      stalGreet,
-			post:     stalPost,
-			delim:    "/",
-			ns:       `* NAMESPACE (("" "/")) NIL NIL`,
-			flags:    dovFlags,
-			perm:     stalPerm,
-			order:    stalOrder,
-		})
-	}
-	for _, name := range []string{
 		"personalities/stalwart.json",
 		"personalities/stalwart-01625.json",
 		"personalities/stalwart-dev.json",
+		"personalities/stalwart-0155.json",
 	} {
 		cases = append(cases, struct {
 			file     string
