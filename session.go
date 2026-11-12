@@ -1422,10 +1422,26 @@ func (s *session) fetchItemText(item string, sn fetchSnap) string {
 	if strings.HasPrefix(item, "BODY[") || strings.HasPrefix(item, "BODY.PEEK[") {
 		return bodySection(item, sn.raw, s.pers.FetchPeekBody)
 	}
+	if isBinarySize(item) {
+		return binarySizeText(item, sn.raw)
+	}
 	if isBinaryFetch(item) {
 		return binarySectionText(item, sn.raw)
 	}
 	return item + " NIL"
+}
+
+func binarySizeText(item string, raw []byte) string {
+	section, ok := binaryItemSection(item)
+	if !ok {
+		return "BINARY.SIZE NIL"
+	}
+	name := "BINARY.SIZE[" + section + "]"
+	b, st := decodeBinaryPart(raw, section)
+	if st != binaryReady {
+		return name + " NIL"
+	}
+	return fmt.Sprintf("%s %d", name, len(b))
 }
 
 func binarySectionText(item string, raw []byte) string {

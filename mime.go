@@ -552,13 +552,15 @@ const (
 	binaryBadCTE
 )
 
-// binarySpec parses a BINARY or BINARY.PEEK fetch item. The section is one
-// numeric part. partial is empty or <offset.length>.
+// binarySpec parses a BINARY, BINARY.PEEK, or BINARY.SIZE fetch item. The
+// section is one numeric part. partial is empty or <offset.length>.
 func binarySpec(item string) (section, partial string, ok bool) {
 	rest := item
 	switch {
 	case strings.HasPrefix(item, "BINARY.PEEK["):
 		rest = item[len("BINARY.PEEK"):]
+	case strings.HasPrefix(item, "BINARY.SIZE["):
+		rest = item[len("BINARY.SIZE"):]
 	case strings.HasPrefix(item, "BINARY["):
 		rest = item[len("BINARY"):]
 	default:

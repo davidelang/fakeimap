@@ -751,3 +751,9 @@
 
 - Approved plan: sandbox/plans/appendlimit-20261111-2145-plan.md
 - APPENDLIMIT=<positive integer> is the connection's maximum APPEND literal. A longer literal is NO [TOOBIG] and is not stored. STATUS and LIST RETURN (STATUS) report the number. Cyrus 3.12 and 3.13 advertise 2147483647 after IMAP4rev1. Cyrus 3.6 advertises 4294967295. sasl.json lists the 3.13 value on the post-login list only. The gaps file no longer contains it.
+
+## 2026-11-11 - BINARY.SIZE
+
+- Approved plan: sandbox/plans/binary-size-20261111-2200-plan.md
+- Work: When BINARY is listed, FETCH and UID FETCH of BINARY.SIZE return the decoded octet count of one section. It is not a capability token. A partial is BAD. A binary APPEND and URLAUTH=BINARY stay unimplemented.
+- Compliance: standard-plan-compliance-block.md

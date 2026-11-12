@@ -137,7 +137,7 @@ func TestBinaryFetch(t *testing.T) {
 		t.Fatalf("missing part %s", nilLine)
 	}
 
-	for _, item := range []string{"BINARY.PEEK[]", "BINARY.PEEK[HEADER]", "BINARY.PEEK[TEXT]", "BINARY.PEEK[MIME]", "BINARY.PEEK[1.MIME]", "BINARY.SIZE[1]"} {
+	for _, item := range []string{"BINARY.PEEK[]", "BINARY.PEEK[HEADER]", "BINARY.PEEK[TEXT]", "BINARY.PEEK[MIME]", "BINARY.PEEK[1.MIME]"} {
 		rp := cl.cmd("FETCH 1 (" + item + ")")
 		if rp.status != "BAD" || len(rp.untagged) != 0 {
 			t.Fatalf("%s -> %s %v", item, rp.status, rp.untagged)
@@ -242,7 +242,7 @@ func TestBinaryRequiresCap(t *testing.T) {
 	cl.cmd("SELECT BinOff").ok(t)
 	raw := textPart("base64", base64.StdEncoding.EncodeToString([]byte("HelloBinary"))+"\r\n")
 	cl.cmd("APPEND BinOff \"01-Jan-2024 00:00:00 +0000\" {" + strconv.Itoa(len(raw)) + "+}\r\n" + raw).ok(t)
-	for _, item := range []string{"BINARY.PEEK[1]", "BINARY[1]"} {
+	for _, item := range []string{"BINARY.PEEK[1]", "BINARY[1]", "BINARY.SIZE[1]"} {
 		rp := cl.cmd("FETCH 1 (" + item + ")")
 		if rp.status != "BAD" {
 			t.Fatalf("%s -> %s", item, rp.status)
@@ -251,6 +251,82 @@ func TestBinaryRequiresCap(t *testing.T) {
 	body := fetchLiteral(t, fetchLine(t, cl.cmd("FETCH 1 (BODY.PEEK[1])").mustOK(t)))
 	if !strings.Contains(string(body), "SGVsbG9CaW5hcnk=") {
 		t.Fatalf("encoded %q", body)
+	}
+}
+
+func TestBinarySize(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/binary.json"})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("CREATE BinSize").ok(t)
+	cl.cmd("SELECT BinSize").ok(t)
+
+	b64 := base64.StdEncoding.EncodeToString([]byte("HelloBinary"))
+	msgs := []string{
+		textPart("base64", b64+"\r\n"),
+		textPart("quoted-printable", "Hello=20QP\r\n"),
+		nestedMultipart(),
+		textPart("base64", "!!!!\r\n"),
+		textPart("quoted-printable", "bad\x01\r\n"),
+		textPart("x-uuencode", "abc\r\n"),
+	}
+	for _, raw := range msgs {
+		cl.cmd("APPEND BinSize \"01-Jan-2024 00:00:00 +0000\" {" + strconv.Itoa(len(raw)) + "+}\r\n" + raw).ok(t)
+	}
+
+	line := fetchLine(t, cl.cmd("FETCH 1 (BINARY.SIZE[1])").mustOK(t))
+	key, num := sizeItem(t, line)
+	_, peeked := binaryItem(t, fetchLine(t, cl.cmd("FETCH 1 (BINARY.PEEK[1])").mustOK(t)))
+	if key != "BINARY.SIZE[1]" || num != "11" || num != strconv.Itoa(len(peeked)) || strings.Contains(line, "BINARY[1]") || strings.Contains(line, `\Seen`) {
+		t.Fatalf("size %s %s %s", key, num, line)
+	}
+	uidLine := fetchLine(t, cl.cmd("UID FETCH 1 (BINARY.SIZE[1])").mustOK(t))
+	ukey, unum := sizeItem(t, uidLine)
+	if ukey != "BINARY.SIZE[1]" || unum != "11" || !strings.Contains(uidLine, "UID 1") || strings.Contains(uidLine, "BINARY[1]") {
+		t.Fatalf("uid size %s %s %s", ukey, unum, uidLine)
+	}
+	if strings.Contains(fetchLine(t, cl.cmd("FETCH 1 (FLAGS)").mustOK(t)), `\Seen`) {
+		t.Fatal("BINARY.SIZE stored \\Seen")
+	}
+
+	qpLine := fetchLine(t, cl.cmd("FETCH 2 (BINARY.SIZE[1])").mustOK(t))
+	qpKey, qpNum := sizeItem(t, qpLine)
+	_, qpBody := binaryItem(t, fetchLine(t, cl.cmd("FETCH 2 (BINARY.PEEK[1])").mustOK(t)))
+	if qpKey != "BINARY.SIZE[1]" || qpNum != strconv.Itoa(len("Hello QP\r\n")) || qpNum != strconv.Itoa(len(qpBody)) {
+		t.Fatalf("qp size %s %s len %d body %q", qpKey, qpNum, len(qpBody), qpBody)
+	}
+
+	leafLine := fetchLine(t, cl.cmd("FETCH 3 (BINARY.SIZE[1.1])").mustOK(t))
+	leafKey, leafNum := sizeItem(t, leafLine)
+	_, leafBody := binaryItem(t, fetchLine(t, cl.cmd("FETCH 3 (BINARY.PEEK[1.1])").mustOK(t)))
+	if leafKey != "BINARY.SIZE[1.1]" || leafNum != "4" || leafNum != strconv.Itoa(len(leafBody)) {
+		t.Fatalf("leaf size %s %s len %d", leafKey, leafNum, len(leafBody))
+	}
+
+	for _, item := range []string{"BINARY.SIZE[1]<0.5>", "BINARY.SIZE[]", "BINARY.SIZE[HEADER]", "BINARY.SIZE[TEXT]", "BINARY.SIZE[MIME]", "BINARY.SIZE[1.MIME]"} {
+		rp := cl.cmd("FETCH 1 (" + item + ")")
+		if rp.status != "BAD" || len(rp.untagged) != 0 {
+			t.Fatalf("%s -> %s %v", item, rp.status, rp.untagged)
+		}
+	}
+	mp := cl.cmd("FETCH 3 (BINARY.SIZE[1])")
+	if mp.status != "BAD" || len(mp.untagged) != 0 {
+		t.Fatalf("multipart %s %v", mp.status, mp.untagged)
+	}
+	nilLine := fetchLine(t, cl.cmd("FETCH 3 (BINARY.SIZE[3])").mustOK(t))
+	if !strings.Contains(nilLine, "BINARY.SIZE[3] NIL") {
+		t.Fatalf("missing part %s", nilLine)
+	}
+	for _, seq := range []string{"4", "5", "6"} {
+		rp := cl.cmd("FETCH " + seq + " (BINARY.SIZE[1])")
+		if rp.status != "NO" || !strings.Contains(rp.tagLine, "[UNKNOWN-CTE]") || len(rp.untagged) != 0 {
+			t.Fatalf("msg %s -> %s %q %v", seq, rp.status, rp.tagLine, rp.untagged)
+		}
+	}
+	flags := cl.cmd("FETCH 4 (FLAGS)")
+	flags.ok(t)
+	if strings.Contains(fetchLine(t, flags), `\Seen`) {
+		t.Fatal("failed size set \\Seen")
 	}
 }
 
@@ -304,4 +380,19 @@ func binaryItem(t *testing.T, line string) (string, []byte) {
 	}
 	t.Fatalf("no BINARY in %s", line)
 	return "", nil
+}
+
+func sizeItem(t *testing.T, line string) (string, string) {
+	t.Helper()
+	for _, it := range parseFetchItems(line) {
+		if !strings.HasPrefix(it[0], "BINARY.SIZE") {
+			continue
+		}
+		if strings.HasPrefix(it[1], "{") || strings.HasPrefix(it[1], "\"") {
+			t.Fatalf("not a number %q in %s", it[1], line)
+		}
+		return it[0], it[1]
+	}
+	t.Fatalf("no BINARY.SIZE in %s", line)
+	return "", ""
 }

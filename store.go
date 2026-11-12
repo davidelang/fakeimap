@@ -1225,12 +1225,28 @@ func isBinaryFetch(u string) bool {
 	return strings.HasPrefix(u, "BINARY.PEEK[") || strings.HasPrefix(u, "BINARY[")
 }
 
+func isBinarySize(u string) bool {
+	return strings.HasPrefix(u, "BINARY.SIZE[")
+}
+
+// binaryItemSection is the numeric section. BINARY.SIZE rejects a partial.
+func binaryItemSection(it string) (string, bool) {
+	if !isBinaryFetch(it) && !isBinarySize(it) {
+		return "", false
+	}
+	section, partial, ok := binarySpec(it)
+	if !ok || (isBinarySize(it) && partial != "") {
+		return "", false
+	}
+	return section, true
+}
+
 func binarySpecsOK(items []string) error {
 	for _, it := range items {
-		if !isBinaryFetch(it) {
+		if !isBinaryFetch(it) && !isBinarySize(it) {
 			continue
 		}
-		if _, _, ok := binarySpec(it); !ok {
+		if _, ok := binaryItemSection(it); !ok {
 			return fmt.Errorf("bad fetch item")
 		}
 	}
@@ -1240,10 +1256,10 @@ func binarySpecsOK(items []string) error {
 func binaryMessageOK(items []string, raw []byte) error {
 	cte := false
 	for _, it := range items {
-		if !isBinaryFetch(it) {
+		if !isBinaryFetch(it) && !isBinarySize(it) {
 			continue
 		}
-		section, _, ok := binarySpec(it)
+		section, ok := binaryItemSection(it)
 		if !ok {
 			return fmt.Errorf("bad fetch item")
 		}
@@ -1331,7 +1347,7 @@ func knownFetch(u string, binary, preview bool) bool {
 	if strings.HasPrefix(u, "BODY[") || strings.HasPrefix(u, "BODY.PEEK[") {
 		return strings.Contains(u, "]")
 	}
-	if isBinaryFetch(u) {
+	if isBinaryFetch(u) || isBinarySize(u) {
 		return binary && strings.Contains(u, "]")
 	}
 	return false
@@ -1341,7 +1357,7 @@ func fetchSetsSeen(items []string) bool {
 	for _, it := range items {
 		u := strings.ToUpper(it)
 		switch {
-		case strings.HasPrefix(u, "BODY.PEEK"), strings.HasPrefix(u, "BINARY.PEEK"):
+		case strings.HasPrefix(u, "BODY.PEEK"), strings.HasPrefix(u, "BINARY.PEEK"), strings.HasPrefix(u, "BINARY.SIZE"):
 			continue
 		case strings.HasPrefix(u, "BODY["), strings.HasPrefix(u, "BINARY["):
 			return true
