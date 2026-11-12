@@ -275,7 +275,7 @@ func TestSavedateLists(t *testing.T) {
 	if strings.Contains(string(gaps), "SAVEDATE") {
 		t.Fatal("gaps still lists SAVEDATE")
 	}
-	for _, tok := range []string{"ACL", "QUOTA", "SORT=MODSEQ", "SORT=UID", "URLAUTH", "XLIST"} {
+	for _, tok := range []string{"ACL", "QUOTA", "URLAUTH", "XLIST"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

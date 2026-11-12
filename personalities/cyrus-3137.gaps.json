@@ -22,8 +22,6 @@
     "QUOTASET",
     "REPLACE",
     "RIGHTS=kxten",
-    "SORT=MODSEQ",
-    "SORT=UID",
     "UIDBATCHES",
     "UIDONLY",
     "URL-PARTIAL",

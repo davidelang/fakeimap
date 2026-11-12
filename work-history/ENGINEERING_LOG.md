@@ -798,3 +798,14 @@
 
 - Approved plan: sandbox/plans/savedate-20261111-2306-plan.md
 - Work: save time separate from INTERNALDATE, SAVEDATE fetch and search, lab capability lists, facts and guide
+
+## 2026-11-11 - SORT=MODSEQ and SORT=UID
+
+- Approved plan: sandbox/plans/sort-uid-modseq-20261111-2324-plan.md
+- Work: accept MODSEQ as one sort key when SORT=MODSEQ is listed, and break equal keys by ascending UID when SORT=UID is listed. REVERSE flips only the named key. The Cyrus personalities that advertise each token gain it. SORT=UID is not a client sort key.
+- Compliance: standard-plan-compliance-block.md
+
+## 2026-11-11 - SORT=MODSEQ and SORT=UID landed
+
+- Approved plan: sandbox/plans/sort-uid-modseq-20261111-2324-plan.md
+- MODSEQ is one sort key when SORT=MODSEQ is listed: ascending mod-sequence, and REVERSE MODSEQ is descending. SORT=UID breaks equal keys by ascending UID and REVERSE does not flip that tie. A second key, and SORT (UID), stay BAD. cyrus-24 lists SORT=MODSEQ. cyrus-25, cyrus-36, cyrus-3124, and cyrus-3137 list both. sasl.json lists both on the post-login list only. Both tokens left the gaps file.

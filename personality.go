@@ -91,6 +91,8 @@ var implementedCaps = map[string]struct{}{
 	"PARTIAL":                 {},
 	"SORT":                    {},
 	"SORT=DISPLAY":            {},
+	"SORT=MODSEQ":             {},
+	"SORT=UID":                {},
 	"THREAD=REFERENCES":       {},
 	"THREAD=ORDEREDSUBJECT":   {},
 	"THREAD=REFS":             {},

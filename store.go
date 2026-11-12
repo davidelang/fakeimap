@@ -1897,9 +1897,11 @@ func oneEdit(a, b string) bool {
 }
 
 // sortCrit is one SORT key. REVERSE flips that key only.
+// uidTie is the SORT=UID final break, and REVERSE does not flip it.
 type sortCrit struct {
-	key string
-	rev bool
+	key    string
+	rev    bool
+	uidTie bool
 }
 
 func addrMailbox(h string) string {
@@ -1946,7 +1948,8 @@ func (m *Message) sortDate() time.Time {
 }
 
 // lessSort orders one key. Equal keys return false so a stable sort
-// keeps mailbox order, which is ascending UID, including under REVERSE.
+// keeps ascending sequence order, including under REVERSE.
+// uidTie breaks those ties by ascending UID, and REVERSE does not flip it.
 func lessSort(a, b *Message, c *sortCrit) bool {
 	cmp := 0
 	switch c.key {
@@ -1973,9 +1976,19 @@ func lessSort(a, b *Message, c *sortCrit) bool {
 		cmp = strings.Compare(strings.ToLower(addrMailbox(a.cc)), strings.ToLower(addrMailbox(b.cc)))
 	case "SUBJECT":
 		cmp = strings.Compare(strings.ToLower(a.subject), strings.ToLower(b.subject))
+	case "MODSEQ":
+		switch {
+		case a.modseq < b.modseq:
+			cmp = -1
+		case a.modseq > b.modseq:
+			cmp = 1
+		}
 	}
 	if c.rev {
 		cmp = -cmp
+	}
+	if cmp == 0 && c.uidTie {
+		return a.uid < b.uid
 	}
 	return cmp < 0
 }

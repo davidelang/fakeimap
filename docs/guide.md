@@ -175,6 +175,8 @@ A capability is advertised only when `capImplemented` accepts it. Named tokens a
 
 `WITHIN`, when listed, answers `OLDER` and `YOUNGER`. The interval is one non-zero number of seconds. The target is the current time minus that interval, to one second, and the frozen clock is that current time when it is set. `OLDER` includes an internal date at or before the target. `YOUNGER` includes one at or after it, so the equal instant matches both. The rules are in `docs/facts/imap-server.md`.
 
+`SORT=MODSEQ`, when listed, accepts `MODSEQ` as the one sort key. The order is the message mod-sequence, ascending, and `REVERSE MODSEQ` is descending. `SORT=UID`, when listed, is the final tie-break, ascending UID, and `REVERSE` does not flip it. It is not a key the client writes. Without that token, equal keys stay in ascending sequence order. Which files list each token is in `docs/facts/imap-server.md`.
+
 `BINARY.SIZE` is a `FETCH` item when `BINARY` is listed. It is not its own capability. The reply is the decoded size of one section as a number, using the same section as `BINARY.PEEK`, and it does not set `\Seen`. The item, including the `BAD` and `NO` cases, is in `docs/facts/imap-server.md`.
 
 Lab files are `personalities/<server>.json` for each lab server: Cyrus `cyrus-3137`, `cyrus-22`, `cyrus-24`, `cyrus-25`, `cyrus-36`, `cyrus-3124`; Dovecot `dovecot-245`, `dovecot-dev`, `dovecot-10`, `dovecot-12`, `dovecot-22`; Stalwart `stalwart`, `stalwart-01625`, `stalwart-dev`, `stalwart-0155`; Zimbra `zimbra-883`; Courier `courier-50`, `courier-606`; UW-IMAP `uwimap`. `sasl.json` is the Cyrus mailbox behavior plus the extra `AUTH=` tokens. It is not the probed Cyrus personality.
@@ -256,9 +258,9 @@ The UW greeting appends ` at ` and a timestamp after the fixed text. One post-lo
 
 ## Capabilities that stay off
 
-Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `QUOTA`, `ACL`, and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, and `SAVEDATE` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `MULTIAPPEND`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA` and its `QUOTA=RES-*` forms, `QUOTASET`, `REPLACE`, `RIGHTS=kxten`, `SORT=MODSEQ`, `SORT=UID`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, `X-SIEVE-MAILBOX`, and `XLIST`.
+Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `QUOTA`, `ACL`, and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, and `SORT=UID` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `MULTIAPPEND`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA` and its `QUOTA=RES-*` forms, `QUOTASET`, `REPLACE`, `RIGHTS=kxten`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, `X-SIEVE-MAILBOX`, and `XLIST`.
 
-`URLAUTH`, `URLAUTH=BINARY`, `SORT=MODSEQ`, and `SORT=UID` stay unimplemented. `LOGIN-REFERRALS` and `JMAPACCESS` stay off the personality files. `URLAUTH=BINARY` stays in the gaps file.
+`URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` and `JMAPACCESS` stay off the personality files. `URLAUTH=BINARY` stays in the gaps file.
 
 ## How to extend
 

@@ -88,7 +88,7 @@ func TestSearchResLists(t *testing.T) {
 	if strings.Contains(string(gaps), "SEARCHRES") {
 		t.Fatal("gaps still lists SEARCHRES")
 	}
-	for _, tok := range []string{"ACL", "QUOTA", "SORT=MODSEQ", "URLAUTH=BINARY", "XLIST"} {
+	for _, tok := range []string{"ACL", "QUOTA", "URLAUTH=BINARY", "XLIST"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

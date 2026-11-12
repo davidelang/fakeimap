@@ -2027,7 +2027,8 @@ func knownCharset(s string) bool {
 }
 
 // parseSortCrit reads one parenthesized key. A second key is syntax, not a sort.
-func parseSortCrit(args []Token, display bool) (sortCrit, []Token, error) {
+// MODSEQ is that one key only when SORT=MODSEQ is listed. UID is never a key.
+func parseSortCrit(args []Token, display, modseq bool) (sortCrit, []Token, error) {
 	if len(args) == 0 || args[0].Kind != "lparen" {
 		return sortCrit{}, nil, fmt.Errorf("syntax")
 	}
@@ -2045,6 +2046,10 @@ func parseSortCrit(args []Token, display bool) (sortCrit, []Token, error) {
 	case "ARRIVAL", "CC", "DATE", "FROM", "SIZE", "SUBJECT", "TO":
 	case "DISPLAYFROM", "DISPLAYTO":
 		if !display {
+			return sortCrit{}, nil, fmt.Errorf("key")
+		}
+	case "MODSEQ":
+		if !modseq {
 			return sortCrit{}, nil, fmt.Errorf("key")
 		}
 	default:
@@ -2077,13 +2082,14 @@ func (s *session) cmdSort(cmd command) error {
 	if ret.partial && !s.advertiseCap("PARTIAL") {
 		return s.bad(cmd.tag, "SORT syntax")
 	}
-	crit, rest, err := parseSortCrit(rest, s.advertiseCap("SORT=DISPLAY"))
+	crit, rest, err := parseSortCrit(rest, s.advertiseCap("SORT=DISPLAY"), s.advertiseCap("SORT=MODSEQ"))
 	if err != nil {
 		if err.Error() == "key" {
 			return s.bad(cmd.tag, "SORT bad key")
 		}
 		return s.bad(cmd.tag, "SORT syntax")
 	}
+	crit.uidTie = s.advertiseCap("SORT=UID")
 	if len(rest) == 0 {
 		return s.bad(cmd.tag, "SORT syntax")
 	}

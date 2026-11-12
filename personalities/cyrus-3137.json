@@ -44,6 +44,8 @@
     "UIDPLUS",
     "UNSELECT",
     "WITHIN",
+    "SORT=MODSEQ",
+    "SORT=UID",
     "THREAD=REFS",
     "AUTH=PLAIN",
     "AUTH=LOGIN"
@@ -81,6 +83,8 @@
     "UIDPLUS",
     "UNSELECT",
     "WITHIN",
+    "SORT=MODSEQ",
+    "SORT=UID",
     "THREAD=REFS"
   ],
   "other_users": "Other Users/",

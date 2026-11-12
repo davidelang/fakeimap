@@ -30,18 +30,15 @@ func TestSortPersonality(t *testing.T) {
 	if !cyrus.SortPartialCountOnly {
 		t.Fatal("cyrus personality should omit the PARTIAL window")
 	}
-	for _, c := range []string{"SORT", "ESORT", "SORT=DISPLAY"} {
+	for _, c := range []string{"SORT", "ESORT", "SORT=DISPLAY", "SORT=MODSEQ", "SORT=UID"} {
 		if !listed(cyrus.PreLogin, c) || !listed(cyrus.PostLogin, c) {
 			t.Fatalf("cyrus personality missing %s", c)
 		}
 	}
-	for _, c := range []string{"SORT=MODSEQ", "SORT=UID"} {
-		if listed(cyrus.PreLogin, c) || listed(cyrus.PostLogin, c) || capImplemented(c) {
-			t.Fatalf("%s is implemented or advertised", c)
+	for _, c := range []string{"SORT=DISPLAY", "SORT=MODSEQ", "SORT=UID"} {
+		if !capImplemented(c) {
+			t.Fatalf("%s is not implemented", c)
 		}
-	}
-	if !capImplemented("SORT=DISPLAY") {
-		t.Fatal("SORT=DISPLAY is not implemented")
 	}
 }
 
@@ -312,6 +309,173 @@ func TestSortDisplay(t *testing.T) {
 	}
 	if got := sortIDs(t, cl.cmd("SORT (FROM) UTF-8 ALL")); got != "1" {
 		t.Fatalf("FROM without SORT=DISPLAY %q", got)
+	}
+}
+
+func TestSortModseq(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/sort.json"})
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("SELECT INBOX").ok(t)
+	if cl.cmd("SORT (MODSEQ) UTF-8 ALL").status != "BAD" {
+		t.Fatal("MODSEQ was accepted")
+	}
+	if cl.cmd("UID SORT (REVERSE MODSEQ) UTF-8 ALL").status != "BAD" {
+		t.Fatal("UID MODSEQ was accepted")
+	}
+
+	_, bound = start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/cyrus-3137.json"})
+	cl = dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").ok(t)
+	cl.cmd("CREATE ModBox").ok(t)
+	cl.cmd("SELECT ModBox").ok(t)
+	raw := sortMsg("a@e.com", "b@e.com", "", "m", "Mon, 01 Jan 2020 00:00:00 +0000", "x")
+	cl.cmd(fmt.Sprintf("APPEND ModBox \"01-Jan-2020 00:00:00 +0000\" {%d+}\r\n%s", len(raw), raw)).ok(t)
+	cl.cmd(fmt.Sprintf("APPEND ModBox \"02-Jan-2020 00:00:00 +0000\" {%d+}\r\n%s", len(raw), raw)).ok(t)
+	cl.cmd(`STORE 1 +FLAGS (\Deleted)`).ok(t)
+	cl.cmd("EXPUNGE").ok(t)
+	cl.cmd(fmt.Sprintf("APPEND ModBox \"03-Jan-2020 00:00:00 +0000\" {%d+}\r\n%s", len(raw), raw)).ok(t)
+	if got := sortIDs(t, cl.cmd("SORT (MODSEQ) UTF-8 ALL")); got != "1 2" {
+		t.Fatalf("before store %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (MODSEQ) UTF-8 ALL")); got != "2 3" {
+		t.Fatalf("uid before store %q", got)
+	}
+	cl.cmd(`STORE 1 +FLAGS (\Seen)`).ok(t)
+	if got := sortIDs(t, cl.cmd("SORT (MODSEQ) UTF-8 ALL")); got != "2 1" {
+		t.Fatalf("after store %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("SORT (REVERSE MODSEQ) UTF-8 ALL")); got != "1 2" {
+		t.Fatalf("reverse %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (MODSEQ) UTF-8 ALL")); got != "3 2" {
+		t.Fatalf("uid after store %q", got)
+	}
+	if got := sortIDs(t, cl.cmd("UID SORT (REVERSE MODSEQ) UTF-8 ALL")); got != "2 3" {
+		t.Fatalf("uid reverse %q", got)
+	}
+	for _, line := range []string{
+		"SORT (MODSEQ FROM) UTF-8 ALL",
+		"SORT (UID) UTF-8 ALL",
+		"SORT (REVERSE UID) UTF-8 ALL",
+	} {
+		if cl.cmd(line).status != "BAD" {
+			t.Fatalf("%s was accepted", line)
+		}
+	}
+}
+
+func TestSortUIDTie(t *testing.T) {
+	check := func(pers, box string) {
+		t.Helper()
+		_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: pers})
+		cl := dial(t, bound.Listen)
+		cl.cmd("LOGIN demo secret").ok(t)
+		cl.cmd("CREATE " + box).ok(t)
+		cl.cmd("SELECT " + box).ok(t)
+		raw := sortMsg("a@e.com", "b@e.com", "", "m", "Mon, 01 Jan 2020 00:00:00 +0000", "x")
+		for i := 0; i < 2; i++ {
+			cl.cmd(fmt.Sprintf("APPEND %s \"01-Jan-2020 00:00:00 +0000\" {%d+}\r\n%s", box, len(raw), raw)).ok(t)
+		}
+		if got := sortIDs(t, cl.cmd("SORT (ARRIVAL) UTF-8 ALL")); got != "1 2" {
+			t.Fatalf("%s arrival %q", pers, got)
+		}
+		if got := sortIDs(t, cl.cmd("SORT (REVERSE ARRIVAL) UTF-8 ALL")); got != "1 2" {
+			t.Fatalf("%s reverse arrival %q", pers, got)
+		}
+		if got := sortIDs(t, cl.cmd("UID SORT (REVERSE ARRIVAL) UTF-8 ALL")); got != "1 2" {
+			t.Fatalf("%s uid reverse %q", pers, got)
+		}
+	}
+	check("personalities/sort.json", "PlainArr")
+	check("personalities/cyrus-3137.json", "UidArr")
+}
+
+func TestSortExtensionFiles(t *testing.T) {
+	both := func(file, modAfter, uidAfter string) {
+		t.Helper()
+		p, err := loadPersonality(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listed(p.GreetingCaps, "SORT=MODSEQ") || listed(p.GreetingCaps, "SORT=UID") {
+			t.Fatalf("%s greeting lists a sort extension", file)
+		}
+		for _, list := range [][]string{p.PreLogin, p.PostLogin} {
+			if capAt(list, "SORT=MODSEQ") != capAt(list, modAfter)+1 {
+				t.Fatalf("%s SORT=MODSEQ not after %s", file, modAfter)
+			}
+			if uidAfter == "" {
+				if listed(list, "SORT=UID") {
+					t.Fatalf("%s lists SORT=UID", file)
+				}
+				continue
+			}
+			if capAt(list, "SORT=UID") != capAt(list, uidAfter)+1 {
+				t.Fatalf("%s SORT=UID not after %s", file, uidAfter)
+			}
+		}
+	}
+	both("personalities/cyrus-24.json", "SORT", "")
+	both("personalities/cyrus-25.json", "SORT", "SORT=DISPLAY")
+	for _, file := range []string{
+		"personalities/cyrus-36.json",
+		"personalities/cyrus-3124.json",
+		"personalities/cyrus-3137.json",
+	} {
+		both(file, "WITHIN", "SORT=MODSEQ")
+	}
+	sasl, err := loadPersonality("personalities/sasl.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed(sasl.GreetingCaps, "SORT=MODSEQ") || listed(sasl.GreetingCaps, "SORT=UID") ||
+		listed(sasl.PreLogin, "SORT=MODSEQ") || listed(sasl.PreLogin, "SORT=UID") {
+		t.Fatal("sasl lists a sort extension before login")
+	}
+	if capAt(sasl.PostLogin, "SORT=UID") != capAt(sasl.PostLogin, "SORT=MODSEQ")+1 {
+		t.Fatal("sasl post-login order")
+	}
+	cyrus, err := loadPersonality("personalities/cyrus-3137.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameCapSet(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), sasl.PostLogin) {
+		t.Fatal("sasl post-login set drifted from cyrus-3137")
+	}
+	allow := map[string]bool{
+		"cyrus-24.json": true, "cyrus-25.json": true, "cyrus-36.json": true,
+		"cyrus-3124.json": true, "cyrus-3137.json": true, "sasl.json": true,
+	}
+	matches, err := filepath.Glob("personalities/*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range matches {
+		base := filepath.Base(f)
+		if strings.HasSuffix(base, ".gaps.json") || allow[base] {
+			continue
+		}
+		p, err := loadPersonality(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listed(p.GreetingCaps, "SORT=MODSEQ") || listed(p.PreLogin, "SORT=MODSEQ") || listed(p.PostLogin, "SORT=MODSEQ") ||
+			listed(p.GreetingCaps, "SORT=UID") || listed(p.PreLogin, "SORT=UID") || listed(p.PostLogin, "SORT=UID") {
+			t.Fatalf("%s gained a sort extension", base)
+		}
+	}
+	gaps, err := os.ReadFile("personalities/cyrus-3137.gaps.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(gaps), "SORT=MODSEQ") || strings.Contains(string(gaps), "SORT=UID") {
+		t.Fatal("gaps still lists a sort extension")
+	}
+	for _, tok := range []string{"ACL", "QUOTA", "URLAUTH", "URLAUTH=BINARY", "XLIST", "IMAP4rev2"} {
+		if !strings.Contains(string(gaps), `"`+tok+`"`) {
+			t.Fatalf("gaps dropped %s", tok)
+		}
 	}
 }
 
