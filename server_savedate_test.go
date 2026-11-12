@@ -234,10 +234,10 @@ func TestSavedateLists(t *testing.T) {
 	before("personalities/cyrus-36.json", "post-login", c36.PostLogin, "SEARCH=FUZZY")
 	c3124 := note("personalities/cyrus-3124.json")
 	after("personalities/cyrus-3124.json", "pre-login", c3124.PreLogin, "SASL-IR", true)
-	after("personalities/cyrus-3124.json", "post-login", c3124.PostLogin, "QRESYNC", true)
+	after("personalities/cyrus-3124.json", "post-login", c3124.PostLogin, "QUOTASET", true)
 	c3137 := note("personalities/cyrus-3137.json")
 	after("personalities/cyrus-3137.json", "pre-login", c3137.PreLogin, "SASL-IR", true)
-	after("personalities/cyrus-3137.json", "post-login", c3137.PostLogin, "QRESYNC", true)
+	after("personalities/cyrus-3137.json", "post-login", c3137.PostLogin, "QUOTASET", true)
 	for _, file := range []string{"personalities/dovecot-245.json", "personalities/dovecot-dev.json"} {
 		p := note(file)
 		after(file, "pre-login", p.PreLogin, "STATUS=SIZE", false)
@@ -245,7 +245,7 @@ func TestSavedateLists(t *testing.T) {
 	}
 	saslPers := note("personalities/sasl.json")
 	after("personalities/sasl.json", "pre-login", saslPers.PreLogin, "QRESYNC", false)
-	after("personalities/sasl.json", "post-login", saslPers.PostLogin, "QRESYNC", true)
+	after("personalities/sasl.json", "post-login", saslPers.PostLogin, "QUOTASET", true)
 
 	if !sameCapSet(dropCap(c3137.PostLogin, "SEARCH=FUZZY"), saslPers.PostLogin) {
 		t.Fatal("sasl post-login set drifted from cyrus-3137")
@@ -275,7 +275,7 @@ func TestSavedateLists(t *testing.T) {
 	if strings.Contains(string(gaps), "SAVEDATE") {
 		t.Fatal("gaps still lists SAVEDATE")
 	}
-	for _, tok := range []string{"ACL", "QUOTA", "URLAUTH"} {
+	for _, tok := range []string{"ACL", "URLAUTH"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

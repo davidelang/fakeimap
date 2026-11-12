@@ -9,6 +9,7 @@
     "THREAD=ORDEREDSUBJECT",
     "THREAD=REFERENCES",
     "SORT",
+    "QUOTA",
     "IDLE",
     "ENABLE",
     "UTF8=ACCEPT"
@@ -21,6 +22,7 @@
     "THREAD=ORDEREDSUBJECT",
     "THREAD=REFERENCES",
     "SORT",
+    "QUOTA",
     "IDLE",
     "ENABLE",
     "UTF8=ACCEPT"
@@ -33,6 +35,7 @@
     "THREAD=ORDEREDSUBJECT",
     "THREAD=REFERENCES",
     "SORT",
+    "QUOTA",
     "IDLE",
     "ENABLE",
     "UTF8=ACCEPT"

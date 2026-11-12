@@ -6,14 +6,14 @@ import (
 )
 
 func TestOtherServerPersonalities(t *testing.T) {
-	banned := []string{"IMAP4rev2", "LOGIN-REFERRALS", "JMAPACCESS", "QUOTA"}
+	banned := []string{"IMAP4rev2", "LOGIN-REFERRALS", "JMAPACCESS"}
 	dovFlags := `\Answered \Flagged \Deleted \Seen \Draft`
 	dovPerm := dovFlags + ` \*`
 	dovOrder := []string{"FLAGS", "PERMANENTFLAGS", "EXISTS", "RECENT", "UNSEEN", "UIDVALIDITY", "UIDNEXT"}
 	devGreet := "IMAP4rev1 ID ENABLE IDLE SASL-IR LITERAL+"
 	devPost := "IMAP4rev1 SASL-IR ID ENABLE IDLE SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT MULTIAPPEND UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN LIST-STATUS BINARY MOVE PREVIEW SPECIAL-USE STATUS=SIZE SAVEDATE COMPRESS=DEFLATE LITERAL+"
 	stalGreet := "IMAP4rev1 ENABLE SASL-IR LITERAL+ ID UTF8=ACCEPT"
-	stalPost := "IMAP4rev1 ENABLE SASL-IR LITERAL+ ID UTF8=ACCEPT IDLE NAMESPACE CHILDREN MULTIAPPEND BINARY UNSELECT UIDPLUS ESEARCH WITHIN SEARCHRES SORT THREAD=REFERENCES LIST-EXTENDED LIST-STATUS ESORT SORT=DISPLAY SPECIAL-USE CREATE-SPECIAL-USE MOVE CONDSTORE QRESYNC UNAUTHENTICATE STATUS=SIZE PREVIEW"
+	stalPost := "IMAP4rev1 ENABLE SASL-IR LITERAL+ ID UTF8=ACCEPT IDLE NAMESPACE CHILDREN MULTIAPPEND BINARY UNSELECT UIDPLUS ESEARCH WITHIN SEARCHRES SORT THREAD=REFERENCES LIST-EXTENDED LIST-STATUS ESORT SORT=DISPLAY SPECIAL-USE CREATE-SPECIAL-USE MOVE CONDSTORE QRESYNC UNAUTHENTICATE STATUS=SIZE PREVIEW QUOTA QUOTA=RES-STORAGE"
 	stalOrder := []string{"EXISTS", "FLAGS", "RECENT", "PERMANENTFLAGS", "UIDVALIDITY", "UIDNEXT"}
 	stalPerm := `\Deleted \Seen \Answered \Flagged \Draft \*`
 	zimFlags := `\Answered \Deleted \Draft \Flagged \Seen $Forwarded $MDNSent Forwarded $Junk $NotJunk Junk JunkRecorded NonJunk NotJunk`
@@ -140,8 +140,8 @@ func TestOtherServerPersonalities(t *testing.T) {
 	}{
 		file:     "personalities/zimbra-883.json",
 		greeting: "* OK IMAP4rev1 proxy server ready",
-		pre:      "BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT ID IDLE IMAP4rev1 LIST-EXTENDED LIST-STATUS LITERAL+ MULTIAPPEND NAMESPACE QRESYNC SASL-IR SEARCHRES SORT THREAD=ORDEREDSUBJECT UIDPLUS UNSELECT WITHIN XLIST AUTH=PLAIN STARTTLS",
-		post:     "IMAP4rev1 BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT ID IDLE LIST-EXTENDED LIST-STATUS LITERAL+ MULTIAPPEND NAMESPACE QRESYNC SASL-IR SEARCHRES SORT THREAD=ORDEREDSUBJECT UIDPLUS UNSELECT WITHIN XLIST",
+		pre:      "BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT ID IDLE IMAP4rev1 LIST-EXTENDED LIST-STATUS LITERAL+ MULTIAPPEND NAMESPACE QRESYNC QUOTA SASL-IR SEARCHRES SORT THREAD=ORDEREDSUBJECT UIDPLUS UNSELECT WITHIN XLIST AUTH=PLAIN STARTTLS",
+		post:     "IMAP4rev1 BINARY CHILDREN CONDSTORE ENABLE ESEARCH ESORT ID IDLE LIST-EXTENDED LIST-STATUS LITERAL+ MULTIAPPEND NAMESPACE QRESYNC QUOTA SASL-IR SEARCHRES SORT THREAD=ORDEREDSUBJECT UIDPLUS UNSELECT WITHIN XLIST",
 		delim:    "/",
 		ns:       `* NAMESPACE (("" "/")) (("/home/" "/")) NIL`,
 		flags:    zimFlags,
@@ -178,6 +178,9 @@ func TestOtherServerPersonalities(t *testing.T) {
 				if listed(p.GreetingCaps, name) || listed(p.PreLogin, name) || listed(p.PostLogin, name) {
 					t.Fatalf("file advertises %s", name)
 				}
+			}
+			if strings.Contains(c.file, "dovecot") && (listed(p.GreetingCaps, "QUOTA") || listed(p.PreLogin, "QUOTA") || listed(p.PostLogin, "QUOTA")) {
+				t.Fatal("file advertises QUOTA")
 			}
 			if c.file == "personalities/dovecot-10.json" && (listed(p.GreetingCaps, "ID") || listed(p.PreLogin, "ID") || listed(p.PostLogin, "ID")) {
 				t.Fatal("dovecot-10 lists ID")
@@ -224,6 +227,9 @@ func TestOtherServerPersonalities(t *testing.T) {
 					t.Fatalf("wire advertises %s", name)
 				}
 			}
+			if strings.Contains(c.file, "dovecot") && (listed(capsOf(login.tagLine), "QUOTA") || listed(capsOf(pre.untagged[0]), "QUOTA") || listed(capsOf(gotGreet), "QUOTA")) {
+				t.Fatal("wire advertises QUOTA")
+			}
 			ns := cl.cmd("NAMESPACE").mustOK(t)
 			if len(ns.untagged) != 1 || ns.untagged[0] != c.ns {
 				t.Fatalf("namespace %q", ns.untagged)
@@ -265,7 +271,7 @@ func selectFlagLists(lines []string) (flags, perm string) {
 }
 
 func TestCourierAndUW(t *testing.T) {
-	caps := "IMAP4rev1 UIDPLUS CHILDREN NAMESPACE THREAD=ORDEREDSUBJECT THREAD=REFERENCES SORT IDLE ENABLE UTF8=ACCEPT"
+	caps := "IMAP4rev1 UIDPLUS CHILDREN NAMESPACE THREAD=ORDEREDSUBJECT THREAD=REFERENCES SORT QUOTA IDLE ENABLE UTF8=ACCEPT"
 	courierNS := `* NAMESPACE (("INBOX." ".")) NIL (("#shared." ".")("shared." "."))`
 	courierFlags := `\Draft \Answered \Flagged \Deleted \Seen \Recent`
 	courierPerm := `\* \Draft \Answered \Flagged \Deleted \Seen`
@@ -276,7 +282,7 @@ func TestCourierAndUW(t *testing.T) {
 	uwFlags := `\Answered \Flagged \Deleted \Draft \Seen`
 	uwPerm := `\* \Answered \Flagged \Deleted \Draft \Seen`
 	uwOrder := []string{"EXISTS", "RECENT", "UIDVALIDITY", "UIDNEXT", "FLAGS", "PERMANENTFLAGS", "UNSEEN"}
-	banned := []string{"QUOTA", "ACL", "ACL2=UNION", "I18NLEVEL=1", "LOGIN-REFERRALS", "ID"}
+	banned := []string{"ACL", "ACL2=UNION", "I18NLEVEL=1", "LOGIN-REFERRALS", "ID"}
 	cases := []struct {
 		file     string
 		greeting string
@@ -366,6 +372,9 @@ func TestCourierAndUW(t *testing.T) {
 					t.Fatalf("file advertises %s", name)
 				}
 			}
+			if c.file == "personalities/uwimap.json" && (listed(p.GreetingCaps, "QUOTA") || listed(p.PreLogin, "QUOTA") || listed(p.PostLogin, "QUOTA")) {
+				t.Fatal("file advertises QUOTA")
+			}
 			_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: c.file})
 			cl := dial(t, bound.Listen)
 			gotGreet := strings.TrimRight(cl.greeting, "\r\n")
@@ -394,6 +403,9 @@ func TestCourierAndUW(t *testing.T) {
 				if listed(capsOf(login.tagLine), name) || listed(capsOf(pre.untagged[0]), name) || listed(capsOf(gotGreet), name) {
 					t.Fatalf("wire advertises %s", name)
 				}
+			}
+			if c.file == "personalities/uwimap.json" && (listed(capsOf(login.tagLine), "QUOTA") || listed(capsOf(pre.untagged[0]), "QUOTA") || listed(capsOf(gotGreet), "QUOTA")) {
+				t.Fatal("wire advertises QUOTA")
 			}
 			ns := cl.cmd("NAMESPACE").mustOK(t)
 			if len(ns.untagged) != 1 || ns.untagged[0] != c.ns {

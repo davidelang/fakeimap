@@ -50,6 +50,8 @@
     "UNAUTHENTICATE",
     "STATUS=SIZE",
     "PREVIEW",
+    "QUOTA",
+    "QUOTA=RES-STORAGE",
     "STARTTLS"
   ],
   "logout_bye": true,

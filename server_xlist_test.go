@@ -347,7 +347,7 @@ func TestXListXMoveAdvertised(t *testing.T) {
 	if strings.Contains(string(gaps), `"XLIST"`) || strings.Contains(string(gaps), `"XMOVE"`) {
 		t.Fatal("gaps lists XLIST or XMOVE")
 	}
-	for _, tok := range []string{"ACL", "QUOTA", "URLAUTH=BINARY", "IMAP4rev2"} {
+	for _, tok := range []string{"ACL", "URLAUTH=BINARY", "IMAP4rev2"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

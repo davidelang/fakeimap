@@ -278,20 +278,36 @@ func (mb *Mailbox) pushExists() uint64 {
 
 // Store is the shared in-memory mailstore.
 type Store struct {
-	mu        sync.Mutex
-	accounts  map[string]string
-	boxes     map[string]*Mailbox
-	order     []string
-	delim     string
-	usedUIDV  map[uint32]bool
-	nextUIDV  uint32
-	nextJmap  uint64
-	jmapState uint64 // changes when the mail store changes
-	stateWait []chan struct{}
-	changes   []jmapChange
-	blobs     map[string]*jmapBlob
-	nextBlob  uint64
-	subs      map[string]map[string]bool // account -> canonical mailbox names
+	mu           sync.Mutex
+	accounts     map[string]string
+	boxes        map[string]*Mailbox
+	order        []string
+	delim        string
+	usedUIDV     map[uint32]bool
+	nextUIDV     uint32
+	nextJmap     uint64
+	jmapState    uint64 // changes when the mail store changes
+	stateWait    []chan struct{}
+	changes      []jmapChange
+	blobs        map[string]*jmapBlob
+	nextBlob     uint64
+	subs         map[string]map[string]bool // account -> canonical mailbox names
+	quotaStorage uint64                     // STORAGE limit, units of 1024 octets
+	quotaMessage uint64                     // MESSAGE limit
+}
+
+const (
+	quotaStorageStart = 1048576
+	quotaMessageStart = 1000000
+)
+
+// quotaSnap is one * QUOTA report. STORAGE usage is the RFC822 total
+// rounded up to units of 1024 octets. A deleted message still counts.
+type quotaSnap struct {
+	storageUse uint64
+	messageUse uint64
+	storageLim uint64
+	messageLim uint64
 }
 
 // jmapChange is one email id change at the session state after it happened.
@@ -2830,11 +2846,13 @@ func loadStore(dir, delim string) (*Store, error) {
 		return nil, fmt.Errorf("dataset %s: no accounts", dir)
 	}
 	st := &Store{
-		accounts: map[string]string{},
-		boxes:    map[string]*Mailbox{},
-		delim:    delim,
-		usedUIDV: map[uint32]bool{},
-		blobs:    map[string]*jmapBlob{},
+		accounts:     map[string]string{},
+		boxes:        map[string]*Mailbox{},
+		delim:        delim,
+		usedUIDV:     map[uint32]bool{},
+		blobs:        map[string]*jmapBlob{},
+		quotaStorage: quotaStorageStart,
+		quotaMessage: quotaMessageStart,
 	}
 	for _, a := range df.Accounts {
 		if a.Username == "" {
@@ -2958,7 +2976,60 @@ func (st *Store) become(neu *Store) {
 	st.blobs = neu.blobs
 	st.nextBlob = neu.nextBlob
 	st.subs = neu.subs
+	st.quotaStorage = neu.quotaStorage
+	st.quotaMessage = neu.quotaMessage
 	st.pokeJMAPState()
+}
+
+// canonicalBox returns the stored mailbox name. A missing or illegal
+// name is not a mailbox.
+func (st *Store) canonicalBox(name string) (string, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil || st.boxes[cn] == nil {
+		return "", false
+	}
+	return cn, true
+}
+
+func (st *Store) quotaNow() quotaSnap {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.quotaSnapLocked()
+}
+
+// applyQuota changes the limits whose set flag is true. Caller has already
+// rejected a bad resource list, so a false flag leaves that limit alone.
+func (st *Store) applyQuota(setStorage bool, storage uint64, setMessage bool, message uint64) quotaSnap {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if setStorage {
+		st.quotaStorage = storage
+	}
+	if setMessage {
+		st.quotaMessage = message
+	}
+	return st.quotaSnapLocked()
+}
+
+// quotaSnapLocked sums every message in the store, including \Deleted.
+// Caller holds st.mu.
+func (st *Store) quotaSnapLocked() quotaSnap {
+	var bytes int64
+	var n uint64
+	for _, mb := range st.boxes {
+		for _, m := range mb.msgs {
+			bytes += int64(m.size)
+			n++
+		}
+	}
+	return quotaSnap{
+		storageUse: uint64((bytes + 1023) / 1024),
+		messageUse: n,
+		storageLim: st.quotaStorage,
+		messageLim: st.quotaMessage,
+	}
 }
 
 func (st *Store) usernames() []string {

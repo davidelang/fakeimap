@@ -838,3 +838,15 @@
 - One APPEND stores every message or none when MULTIAPPEND is listed. Each message keeps its own flags, internal date, and literal. The save time follows the frozen clock or the wall clock, the same as one APPEND. The tagged OK lists every new UID, and a consecutive run is a range.
 - A second message without the token is BAD and stores nothing. A missing mailbox is NO with TRYCREATE, a bad flag is BAD, and a literal past APPENDLIMIT is NO with TOOBIG. None of those store a message. CATENATE and UID APPEND stay rejected.
 - The token is on the lab lists named in the plan. Greeting lists are unchanged. courier-50.json and courier-606.json do not list it. cyrus-3137.gaps.json no longer contains MULTIAPPEND. The facts file and the guide describe it.
+
+## 2026-11-12 - QUOTA report execution start
+
+- Approved plan: sandbox/plans/quota-report-20261112-0034-plan.md
+- Work: GETQUOTA and GETQUOTAROOT report one shared root, ROOT. STORAGE is the store RFC822 size in 1024-octet units, rounded up. MESSAGE is the message count when QUOTA=RES-MESSAGE is listed. SETQUOTA changes the limits when QUOTASET is listed. The lab personalities named in the plan gain each token.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - QUOTA report landed
+
+- Approved plan: sandbox/plans/quota-report-20261112-0034-plan.md
+- GETQUOTA and GETQUOTAROOT report the root ROOT. STORAGE is the shared store's RFC822 size in 1024-octet units, rounded up. MESSAGE is the message count when QUOTA=RES-MESSAGE is listed. A deleted message counts until EXPUNGE. The limits start at 1048576 and 1000000 and live on the store. SETQUOTA changes them when QUOTASET is listed. reset and set-dataset restore both.
+- The tokens are on the lab lists named in the plan. Courier greetings use that same list. Dovecot, UW-IMAP, and the other personalities gain none. QUOTA, QUOTA=RES-STORAGE, QUOTA=RES-MESSAGE, and QUOTASET left the gaps file. QUOTA=RES-ANNOTATION-STORAGE and QUOTA=RES-MAILBOX stay. The facts file and the guide describe the report.

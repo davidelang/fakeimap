@@ -135,7 +135,7 @@ func TestStatusSizeLists(t *testing.T) {
 	if strings.Contains(string(gaps), "STATUS=SIZE") {
 		t.Fatal("gaps still lists STATUS=SIZE")
 	}
-	for _, tok := range []string{"ACL", "QUOTA", "URLAUTH"} {
+	for _, tok := range []string{"ACL", "URLAUTH"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

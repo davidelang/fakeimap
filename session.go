@@ -411,6 +411,12 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdUnselect(cmd)
 	case "UNAUTHENTICATE":
 		return s.cmdUnauthenticate(cmd)
+	case "GETQUOTA":
+		return s.cmdGetQuota(cmd)
+	case "GETQUOTAROOT":
+		return s.cmdGetQuotaRoot(cmd)
+	case "SETQUOTA":
+		return s.cmdSetQuota(cmd)
 	case "IDLE":
 		return s.cmdIdle(cmd)
 	default:
@@ -725,6 +731,153 @@ func (s *session) cmdNamespace(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, "NAMESPACE completed")
+}
+
+// quotaLine is the * QUOTA report. STORAGE is always present. MESSAGE is
+// present only when QUOTA=RES-MESSAGE is listed.
+func (s *session) quotaLine() string {
+	return s.quotaLineFrom(s.srv.store.quotaNow())
+}
+
+func (s *session) quotaLineFrom(q quotaSnap) string {
+	line := fmt.Sprintf("* QUOTA ROOT (STORAGE %d %d", q.storageUse, q.storageLim)
+	if s.advertiseCap("QUOTA=RES-MESSAGE") {
+		line += fmt.Sprintf(" MESSAGE %d %d", q.messageUse, q.messageLim)
+	}
+	return line + ")"
+}
+
+func (s *session) cmdGetQuota(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !s.advertiseCap("QUOTA") {
+		return s.bad(cmd.tag, "GETQUOTA not supported")
+	}
+	if len(cmd.args) != 1 {
+		return s.bad(cmd.tag, "GETQUOTA syntax")
+	}
+	root, ok := astring(cmd.args[0])
+	if !ok {
+		return s.bad(cmd.tag, "GETQUOTA syntax")
+	}
+	if !strings.EqualFold(root, "ROOT") {
+		return s.no(cmd.tag, "GETQUOTA no such root")
+	}
+	if err := s.sendLine(s.quotaLine()); err != nil {
+		return err
+	}
+	return s.ok(cmd.tag, "GETQUOTA completed")
+}
+
+func (s *session) cmdGetQuotaRoot(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !s.advertiseCap("QUOTA") {
+		return s.bad(cmd.tag, "GETQUOTAROOT not supported")
+	}
+	if len(cmd.args) != 1 {
+		return s.bad(cmd.tag, "GETQUOTAROOT syntax")
+	}
+	name, ok := astring(cmd.args[0])
+	if !ok {
+		return s.bad(cmd.tag, "GETQUOTAROOT syntax")
+	}
+	name, err := s.boxIn(name)
+	if err != nil {
+		return s.bad(cmd.tag, "GETQUOTAROOT syntax")
+	}
+	cn, found := s.srv.store.canonicalBox(name)
+	if !found {
+		return s.no(cmd.tag, "GETQUOTAROOT no such mailbox")
+	}
+	if err := s.sendLine("* QUOTAROOT " + imapAtom(s.boxOut(cn)) + " ROOT"); err != nil {
+		return err
+	}
+	if err := s.sendLine(s.quotaLine()); err != nil {
+		return err
+	}
+	return s.ok(cmd.tag, "GETQUOTAROOT completed")
+}
+
+type quotaPair struct {
+	name  string
+	limit uint64
+}
+
+// parseQuotaSet accepts ROOT plus one parenthesized list of resource and
+// number pairs. An empty list is not a list of pairs.
+func parseQuotaSet(args []Token) (string, []quotaPair, error) {
+	if len(args) < 3 {
+		return "", nil, errSyntax
+	}
+	root, ok := astring(args[0])
+	if !ok || args[1].Kind != "lparen" {
+		return "", nil, errSyntax
+	}
+	var pairs []quotaPair
+	i := 2
+	for i < len(args) {
+		if args[i].Kind == "rparen" {
+			if i != len(args)-1 || len(pairs) == 0 {
+				return "", nil, errSyntax
+			}
+			return root, pairs, nil
+		}
+		name, ok := astring(args[i])
+		if !ok || i+1 >= len(args) {
+			return "", nil, errSyntax
+		}
+		raw, ok := astring(args[i+1])
+		if !ok || raw == "" {
+			return "", nil, errSyntax
+		}
+		n, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return "", nil, errSyntax
+		}
+		pairs = append(pairs, quotaPair{name: name, limit: n})
+		i += 2
+	}
+	return "", nil, errSyntax
+}
+
+func (s *session) cmdSetQuota(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !s.advertiseCap("QUOTASET") {
+		return s.bad(cmd.tag, "SETQUOTA not supported")
+	}
+	root, pairs, err := parseQuotaSet(cmd.args)
+	if err != nil {
+		return s.bad(cmd.tag, "SETQUOTA syntax")
+	}
+	if !strings.EqualFold(root, "ROOT") {
+		return s.no(cmd.tag, "SETQUOTA no such root")
+	}
+	var storage, message uint64
+	var setStorage, setMessage bool
+	for _, p := range pairs {
+		switch strings.ToUpper(p.name) {
+		case "STORAGE":
+			storage = p.limit
+			setStorage = true
+		case "MESSAGE":
+			if !s.advertiseCap("QUOTA=RES-MESSAGE") {
+				return s.bad(cmd.tag, "SETQUOTA syntax")
+			}
+			message = p.limit
+			setMessage = true
+		default:
+			return s.bad(cmd.tag, "SETQUOTA syntax")
+		}
+	}
+	if err := s.sendLine(s.quotaLineFrom(s.srv.store.applyQuota(setStorage, storage, setMessage, message))); err != nil {
+		return err
+	}
+	return s.ok(cmd.tag, "SETQUOTA completed")
 }
 
 func (s *session) cmdList(cmd command) error {

@@ -193,6 +193,8 @@ The fixture files `sasl`, `condstore`, `list`, `esearch`, `compress`, `sort`, `u
 
 `SEARCHRES`, when listed, saves the full match of `RETURN (SAVE)` as UIDs and lets `$` stand for that set. `SELECT` and `EXAMINE` make `$` empty, and an empty `$` is a valid `FETCH` that sends no `FETCH` line. The `SAVE` rules and the files that list the token are in `docs/facts/imap-server.md`.
 
+`GETQUOTA` and `GETQUOTAROOT` report one shared root, `ROOT`. `STORAGE` is the store's RFC822 size in 1024-octet units, rounded up, and `MESSAGE` is the message count when `QUOTA=RES-MESSAGE` is listed. The limits start at 1048576 and 1000000. `SETQUOTA` changes them when `QUOTASET` is listed. Which files list each token, and the reply rules, are in `docs/facts/imap-server.md`.
+
 ## Dataset
 
 `dataset.json` keys, as `docs/facts/imap-server.md` defines them:
@@ -264,7 +266,7 @@ The UW greeting appends ` at ` and a timestamp after the fixed text. One post-lo
 
 ## Capabilities that stay off
 
-Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `QUOTA`, `ACL`, and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, `XLIST`, and `MULTIAPPEND` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA` and its `QUOTA=RES-*` forms, `QUOTASET`, `REPLACE`, `RIGHTS=kxten`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, and `X-SIEVE-MAILBOX`.
+Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `ACL` and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, `XLIST`, `MULTIAPPEND`, `QUOTA`, `QUOTA=RES-STORAGE`, `QUOTA=RES-MESSAGE`, and `QUOTASET` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA=RES-ANNOTATION-STORAGE`, `QUOTA=RES-MAILBOX`, `REPLACE`, `RIGHTS=kxten`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, and `X-SIEVE-MAILBOX`.
 
 `URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` and `JMAPACCESS` stay off the personality files. `URLAUTH=BINARY` stays in the gaps file.
 
