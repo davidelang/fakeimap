@@ -2988,6 +2988,58 @@ func indexOverlay(m *Message) {
 	}
 }
 
+func (st *Store) hasUID(uid uint32) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, mb := range st.boxes {
+		if mb == nil {
+			continue
+		}
+		for _, m := range mb.msgs {
+			if m.uid == uid {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// expungeUID removes one UID from the selected mailbox the way EXPUNGE
+// removes a message, including the JMAP record. The caller flushes the
+// notice. A missing UID or a mailbox that is not selected changes nothing.
+func (st *Store) expungeUID(s *session, uid uint32) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s == nil || s.box == nil || s.readonly {
+		return false
+	}
+	mb := s.box
+	var hit *Message
+	seq := uint32(0)
+	for i, m := range mb.msgs {
+		if m.uid == uid {
+			hit = m
+			seq = uint32(i + 1)
+			break
+		}
+	}
+	if hit == nil {
+		return false
+	}
+	var keep []*Message
+	for _, m := range mb.msgs {
+		if m == hit {
+			mb.noteExpunge(m)
+			mb.push(mbEvent{kind: "expunge", seq: seq, uid: m.uid, modseq: m.modseq})
+			continue
+		}
+		keep = append(keep, m)
+	}
+	mb.msgs = keep
+	st.noteExpungedIDs([]string{hit.jmapID})
+	return true
+}
+
 func (st *Store) hasMailbox(name string) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()

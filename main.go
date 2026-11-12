@@ -27,43 +27,49 @@ type Bound struct {
 
 // Server is the loopback IMAP listener.
 type Server struct {
-	cfg         Config
-	pers        *Personality
-	store       *Store
-	hasCert     bool
-	tlsCfg      *tls.Config
-	ln          net.Listener
-	tlsLn       net.Listener
-	ctrlLn      net.Listener
-	smtpLn      net.Listener
-	jmapLn      net.Listener
-	jmapTLSLn   net.Listener
-	sieveLn     net.Listener
-	stdout      io.Writer
-	logf        *os.File
-	logMu       sync.Mutex
-	mu          sync.Mutex
-	reloadMu    sync.Mutex
-	imap        map[int]net.Conn
-	pausing     bool
-	faults      []*fault
-	nextFault   int
-	frozen      *time.Time
-	ready       chan struct{}
-	quit        chan struct{}
-	startErr    error
-	once        sync.Once
-	connSeq     atomic.Int64
-	bound       Bound
-	smtpMu      sync.Mutex
-	smtpLog     []smtpRecord
-	smtpN       int
-	smtpWaiters []*smtpWaiter
-	subMu       sync.Mutex
-	subN        uint64
-	subs        map[string][]jmapSub
-	sieveMu     sync.Mutex
-	sieveAccts  map[string]*sieveAcct
+	cfg       Config
+	pers      *Personality
+	store     *Store
+	hasCert   bool
+	tlsCfg    *tls.Config
+	ln        net.Listener
+	tlsLn     net.Listener
+	ctrlLn    net.Listener
+	smtpLn    net.Listener
+	jmapLn    net.Listener
+	jmapTLSLn net.Listener
+	sieveLn   net.Listener
+	stdout    io.Writer
+	logf      *os.File
+	logMu     sync.Mutex
+	mu        sync.Mutex
+	reloadMu  sync.Mutex
+	imap      map[int]net.Conn
+	sessions  map[int]*session
+	pausing   bool
+	faults    []*fault
+	nextFault int
+	frozen    *time.Time
+	ready     chan struct{}
+	quit      chan struct{}
+	startErr  error
+	once      sync.Once
+	connSeq   atomic.Int64
+	smtpSeq   atomic.Int64
+	jmapSeq   atomic.Int64
+	// fetchLineHook runs after each FETCH response line and before that
+	// line's pending-event flush. Tests expunge from another session there.
+	fetchLineHook func()
+	bound         Bound
+	smtpMu        sync.Mutex
+	smtpLog       []smtpRecord
+	smtpN         int
+	smtpWaiters   []*smtpWaiter
+	subMu         sync.Mutex
+	subN          uint64
+	subs          map[string][]jmapSub
+	sieveMu       sync.Mutex
+	sieveAccts    map[string]*sieveAcct
 }
 
 func newServer(path string, stdout io.Writer) (*Server, error) {
@@ -318,6 +324,21 @@ func (s *Server) track(id int, conn net.Conn) bool {
 func (s *Server) untrack(id int) {
 	s.mu.Lock()
 	delete(s.imap, id)
+	s.mu.Unlock()
+}
+
+func (s *Server) trackSession(sess *session) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions == nil {
+		s.sessions = map[int]*session{}
+	}
+	s.sessions[sess.id] = sess
+}
+
+func (s *Server) untrackSession(id int) {
+	s.mu.Lock()
+	delete(s.sessions, id)
 	s.mu.Unlock()
 }
 

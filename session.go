@@ -24,30 +24,38 @@ var (
 // session is one IMAP connection. box, readonly, seenID, wake, notify,
 // notifyQ, contexts, and ctxPend are guarded by Store.mu.
 type session struct {
-	srv        *Server
-	conn       net.Conn
-	br         *bufio.Reader
-	bw         *bufio.Writer
-	wmu        sync.Mutex
-	id         int
-	authed     bool
-	user       string
-	secure     bool
-	box        *Mailbox
-	readonly   bool
-	seenID     uint64
-	wake       chan struct{}
-	notify     *notifyReg
-	notifyQ    []notifyNote
-	notifyCh   chan struct{}
-	enabled    map[string]struct{}
-	savedUIDs  []uint32 // SEARCHRES result. UIDs, including ones later expunged.
-	contexts   []searchCtx
-	ctxPend    []ctxPend
-	pers       *Personality
-	fault      *fault
-	capture    *bytes.Buffer
-	compressed bool
+	srv           *Server
+	conn          net.Conn
+	br            *bufio.Reader
+	bw            *bufio.Writer
+	wmu           sync.Mutex
+	id            int
+	authed        bool
+	user          string
+	secure        bool
+	box           *Mailbox
+	readonly      bool
+	seenID        uint64
+	wake          chan struct{}
+	notify        *notifyReg
+	notifyQ       []notifyNote
+	notifyCh      chan struct{}
+	enabled       map[string]struct{}
+	savedUIDs     []uint32 // SEARCHRES result. UIDs, including ones later expunged.
+	contexts      []searchCtx
+	ctxPend       []ctxPend
+	pers          *Personality
+	fault         *fault
+	capture       *bytes.Buffer
+	compressed    bool
+	readingName   string
+	litCut        bool
+	trackExpunge  bool
+	expungeShifts []uint32
+	midDone       bool
+	// holdSeen are flag events this FETCH will report itself. An inter-line
+	// flush must not also send them.
+	holdSeen map[uint64]bool
 }
 
 type command struct {
@@ -126,6 +134,8 @@ func (s *session) bad(tag, text string) error {
 }
 
 func (s *session) serve() {
+	s.srv.trackSession(s)
+	defer s.srv.untrackSession(s.id)
 	defer s.srv.store.deselect(s)
 	defer s.srv.store.setNotify(s, nil)
 	var greet string
@@ -189,7 +199,8 @@ func (s *session) readCommandWake() (command, error) {
 }
 
 func (s *session) readCommand() (command, error) {
-	p := &proto{br: s.br, send: s.sendLine}
+	s.litCut = false
+	p := &proto{br: s.br, send: s.sendLine, cutLiteral: s.cutLiteral}
 	var cmd command
 	if err := p.skipSP(); err != nil {
 		return cmd, err
@@ -223,6 +234,7 @@ func (s *session) readCommand() (command, error) {
 		return cmd, err
 	}
 	cmd.name = strings.ToUpper(name)
+	s.readingName = cmd.name
 	if cmd.name == "UID" {
 		cmd.uid = true
 		if err := p.skipSP(); err != nil {
@@ -233,6 +245,7 @@ func (s *session) readCommand() (command, error) {
 			return cmd, err
 		}
 		cmd.name = strings.ToUpper(name)
+		s.readingName = cmd.name
 		switch cmd.name {
 		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD", "FILTER", "ESEARCH", "REPLACE", "CANCELUPDATE":
 		default:
@@ -266,6 +279,42 @@ func (s *session) readCommand() (command, error) {
 	}
 	cmd.args = args
 	return cmd, nil
+}
+
+// cutLiteral applies drop_literal or rst_literal once per command, after
+// the literal header and after + go ahead when the literal synchronizes.
+func (s *session) cutLiteral() error {
+	if s.litCut {
+		return nil
+	}
+	s.litCut = true
+	f := s.srv.takeLiteralFault(s.id, s.readingName)
+	if f == nil {
+		return nil
+	}
+	if f.bytes > 0 {
+		buf := make([]byte, f.bytes)
+		if _, err := io.ReadFull(s.br, buf); err != nil {
+			return err
+		}
+	}
+	if f.do == "rst_literal" {
+		if tc := tcpConnOf(s.conn); tc != nil {
+			_ = tc.SetLinger(0)
+		}
+	}
+	_ = s.conn.Close()
+	return io.EOF
+}
+
+// byeClose sends * BYE, flushes it, and closes the connection.
+func (s *session) byeClose(text string) error {
+	if text == "" {
+		text = "Server logging out"
+	}
+	_ = s.sendLine("* BYE " + text)
+	_ = s.conn.Close()
+	return io.EOF
 }
 
 func (s *session) readRawLine() (string, error) {
@@ -432,6 +481,23 @@ func reverseU32(ids []uint32) []uint32 {
 
 func (s *session) flush() error {
 	evs := s.srv.store.drain(s)
+	if len(s.holdSeen) > 0 {
+		kept := evs[:0]
+		for _, e := range evs {
+			if e.kind == "flags" && s.holdSeen[e.id] {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		evs = kept
+	}
+	if s.trackExpunge {
+		for _, e := range evs {
+			if e.kind == "expunge" {
+				s.expungeShifts = append(s.expungeShifts, e.seq)
+			}
+		}
+	}
 	pends := s.srv.store.takePends(s)
 	inEv := map[uint64]bool{}
 	for _, e := range evs {
@@ -2113,6 +2179,22 @@ func (s *session) cmdFetch(cmd command) error {
 	if err := s.sendCaughtContext(); err != nil {
 		return err
 	}
+	s.trackExpunge = true
+	s.expungeShifts = nil
+	s.holdSeen = nil
+	if !s.pers.FetchSeenFlags && !itemListed(items, "FLAGS") {
+		s.holdSeen = map[uint64]bool{}
+		for _, sn := range snaps {
+			if sn.seenEvent != 0 {
+				s.holdSeen[sn.seenEvent] = true
+			}
+		}
+	}
+	defer func() {
+		s.trackExpunge = false
+		s.expungeShifts = nil
+		s.holdSeen = nil
+	}()
 	if itemListed(items, "OBJECTID") {
 		if err := s.activateObjectPlus(); err != nil {
 			return err
@@ -2122,14 +2204,41 @@ func (s *session) cmdFetch(cmd command) error {
 	if s.on("UIDONLY") && !s.on("QRESYNC") && !itemListed(cmd.fetch, "UID") {
 		show = dropFetchItem(items, "UID")
 	}
+	need := len(snaps)
+	if s.fault != nil && s.fault.do == "expunge_mid" {
+		need = s.fault.after
+		if need > len(snaps) {
+			need = len(snaps)
+		}
+	}
+	sent := 0
 	for _, sn := range snaps {
+		if sent >= need {
+			if err := s.fireExpungeMid(); err != nil {
+				return err
+			}
+		}
 		use := show
 		if s.pers.FetchSeenFlags && sn.seenEvent != 0 && !itemListed(items, "FLAGS") {
 			use = append([]string{"FLAGS"}, show...)
 		}
-		if err := s.sendRaw([]byte(s.formatFetch(sn, use))); err != nil {
+		snSend := sn
+		if !s.on("UIDONLY") {
+			snSend.seq = s.shiftedSeq(sn.seq)
+		}
+		if err := s.sendRaw([]byte(s.formatFetch(snSend, use))); err != nil {
 			return err
 		}
+		sent++
+		if s.srv.fetchLineHook != nil {
+			s.srv.fetchLineHook()
+		}
+		if err := s.flush(); err != nil {
+			return err
+		}
+	}
+	if err := s.fireExpungeMid(); err != nil {
+		return err
 	}
 	// FLAGS was not requested. One extra response carries \Seen,
 	// and UID only when this is a UID command or QRESYNC forces it.
@@ -2144,7 +2253,11 @@ func (s *session) cmdFetch(cmd command) error {
 			if sn.seenEvent == 0 {
 				continue
 			}
-			if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, seenUID, sn.modseq, s.on("CONDSTORE"))); err != nil {
+			seq := sn.seq
+			if !s.on("UIDONLY") {
+				seq = s.shiftedSeq(sn.seq)
+			}
+			if err := s.sendLine(s.flagsFetch(seq, sn.flags, sn.uid, seenUID, sn.modseq, s.on("CONDSTORE"))); err != nil {
 				return err
 			}
 			if sn.seenEvent > last {
@@ -3602,7 +3715,12 @@ func (s *session) cmdIdle(cmd command) error {
 	if !s.srv.store.selected(s) {
 		return s.no(cmd.tag, "IDLE not selected")
 	}
-	if err := s.sendLine("+ idling"); err != nil {
+	if s.fault != nil && s.fault.do == "idle_burst" {
+		payload := append(lineCRLF("+ idling"), lineCRLF(s.fault.text)...)
+		if err := s.writeParts(payload); err != nil {
+			return err
+		}
+	} else if err := s.sendLine("+ idling"); err != nil {
 		return err
 	}
 	done := make(chan error, 1)
@@ -3634,6 +3752,28 @@ func (s *session) cmdIdle(cmd command) error {
 			return io.EOF
 		}
 	}
+}
+
+func (s *session) shiftedSeq(seq uint32) uint32 {
+	n := seq
+	for _, e := range s.expungeShifts {
+		if e < seq {
+			n--
+		}
+	}
+	return n
+}
+
+// fireExpungeMid removes the armed UID once and flushes the notice.
+func (s *session) fireExpungeMid() error {
+	if s.midDone || s.fault == nil || s.fault.do != "expunge_mid" {
+		return nil
+	}
+	s.midDone = true
+	if !s.srv.store.expungeUID(s, s.fault.uid) {
+		return nil
+	}
+	return s.flush()
 }
 
 func formatUIDSet(uids []uint32) string {

@@ -84,6 +84,11 @@ type ctrlRequest struct {
 	Tag       string   `json:"tag"`
 	Order     []string `json:"order"`
 	TimeoutMs *int     `json:"timeout_ms"`
+	Status    string   `json:"status"`
+	Code      string   `json:"code"`
+	Proto     string   `json:"proto"`
+	Size      *int     `json:"size"`
+	After     *int     `json:"after"`
 }
 
 func okResp(extra map[string]any) map[string]any {
@@ -189,10 +194,22 @@ func (s *Server) ctrl(req ctrlRequest) any {
 		s.frozen = nil
 		s.mu.Unlock()
 		return okResp(nil)
+	case "bye":
+		text := req.Text
+		if text == "" {
+			text = "Server logging out"
+		}
+		if err := s.byeConns(req.Conn, text); err != nil {
+			return errResp(err.Error())
+		}
+		return okResp(nil)
 	case "arm-fault":
 		f, err := buildFault(req)
 		if err != nil {
 			return errResp(err.Error())
+		}
+		if f.do == "expunge_mid" && !s.store.hasUID(f.uid) {
+			return errResp("no such message")
 		}
 		id := s.armFault(f)
 		return okResp(map[string]any{"id": id})
@@ -331,6 +348,30 @@ func (s *Server) disconnectID(id int) error {
 	return c.Close()
 }
 
+// byeConns writes * BYE to each matched IMAP session and closes it.
+// A nil conn, or conn 0, matches every IMAP connection.
+func (s *Server) byeConns(conn *int, text string) error {
+	s.mu.Lock()
+	var ss []*session
+	if conn != nil && *conn != 0 {
+		sess := s.sessions[*conn]
+		s.mu.Unlock()
+		if sess == nil {
+			return fmt.Errorf("no such connection")
+		}
+		ss = []*session{sess}
+	} else {
+		for _, sess := range s.sessions {
+			ss = append(ss, sess)
+		}
+		s.mu.Unlock()
+	}
+	for _, sess := range ss {
+		_ = sess.byeClose(text)
+	}
+	return nil
+}
+
 func (s *Server) armFault(f *fault) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -361,7 +402,8 @@ func canonDo(do string) (string, bool) {
 	case "close", "rst", "half_close", "silent", "delay", "drip", "truncate", "raw",
 		"bad_literal", "flood", "split", "coalesce", "wrong_tag", "unsolicited",
 		"reorder", "mid", "fetch_order", "tag_first", "mutate", "wrong_name",
-		"expired", "self_signed":
+		"expired", "self_signed",
+		"reply", "bye", "idle_burst", "drop_literal", "rst_literal", "overquota", "expunge_mid":
 		return strings.ToLower(do), true
 	default:
 		return "", false
@@ -377,6 +419,15 @@ func buildFault(req ctrlRequest) (*fault, error) {
 		return nil, fmt.Errorf("unknown fault")
 	}
 	f := &fault{do: do}
+	if req.Proto != "" {
+		p, ok := canonProto(req.Proto)
+		if !ok {
+			return nil, fmt.Errorf("unknown fault")
+		}
+		if p != "imap" {
+			f.proto = p
+		}
+	}
 	if req.Conn != nil {
 		if *req.Conn < 0 {
 			return nil, fmt.Errorf("missing field")
@@ -440,6 +491,60 @@ func buildFault(req ctrlRequest) (*fault, error) {
 			return nil, fmt.Errorf("missing field")
 		}
 		f.order = append([]string(nil), req.Order...)
+	case "reply":
+		switch strings.ToUpper(req.Status) {
+		case "OK", "NO", "BAD":
+			f.status = strings.ToUpper(req.Status)
+		default:
+			return nil, fmt.Errorf("missing field")
+		}
+		f.code = req.Code
+		f.text = req.Text
+	case "bye":
+		f.text = req.Text
+		if f.text == "" {
+			f.text = "Server logging out"
+		}
+	case "idle_burst":
+		if f.command != "IDLE" || req.Text == "" {
+			return nil, fmt.Errorf("missing field")
+		}
+		f.text = req.Text
+	case "drop_literal", "rst_literal":
+		if req.Bytes == nil || *req.Bytes < 0 {
+			return nil, fmt.Errorf("missing field")
+		}
+		f.bytes = *req.Bytes
+	case "bad_literal":
+		if req.Size != nil {
+			if *req.Size < 0 {
+				return nil, fmt.Errorf("missing field")
+			}
+			f.size = *req.Size
+			f.sizeSet = true
+		}
+	case "expunge_mid":
+		if req.UID == nil {
+			return nil, fmt.Errorf("missing field")
+		}
+		if req.After != nil && *req.After < 0 {
+			return nil, fmt.Errorf("missing field")
+		}
+		f.uid = *req.UID
+		f.after = 1
+		if req.After != nil {
+			f.after = *req.After
+			f.afterSet = true
+		}
 	}
 	return f, nil
+}
+
+func canonProto(p string) (string, bool) {
+	switch strings.ToLower(p) {
+	case "imap", "smtp", "jmap":
+		return strings.ToLower(p), true
+	default:
+		return "", false
+	}
 }

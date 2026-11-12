@@ -292,6 +292,7 @@ func (s *Server) jmapAPI(w http.ResponseWriter, r *http.Request, user string) {
 	}
 	prev := map[string]jmapDone{}
 	var responses []any
+	connID := int(s.jmapSeq.Add(1))
 	for _, call := range calls {
 		args, refErr := resolveJMAPArgs(call.args, prev)
 		if refErr != "" {
@@ -300,7 +301,7 @@ func (s *Server) jmapAPI(w http.ResponseWriter, r *http.Request, user string) {
 			continue
 		}
 		var extra []any
-		result, typ := s.jmapCall(user, call.name, args, call.id, subOK, &extra)
+		result, typ := s.jmapCall(user, call.name, args, call.id, subOK, &extra, connID)
 		if typ != "" {
 			responses = append(responses, []any{"error", map[string]any{"type": typ}, call.id})
 			prev[call.id] = jmapDone{name: call.name}
@@ -406,7 +407,10 @@ func jsonPointer(doc any, path string) (any, bool) {
 	return cur, true
 }
 
-func (s *Server) jmapCall(user, name string, args map[string]any, callID string, subOK bool, extra *[]any) (map[string]any, string) {
+func (s *Server) jmapCall(user, name string, args map[string]any, callID string, subOK bool, extra *[]any, connID int) (map[string]any, string) {
+	if (name == "Email/import" || name == "Email/set") && s.matchProtoFault("jmap", connID, name) != nil {
+		return nil, "overQuota"
+	}
 	switch name {
 	case "Mailbox/get":
 		return s.jmapMailboxGet(user, args)

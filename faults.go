@@ -32,6 +32,14 @@ type fault struct {
 	offset   int
 	tag      string
 	order    []string
+	status   string
+	code     string
+	proto    string
+	uid      uint32
+	after    int
+	afterSet bool
+	size     int
+	sizeSet  bool
 	hits     int
 	spent    bool
 	certOnce sync.Once
@@ -51,15 +59,38 @@ type faultView struct {
 	Offset  int      `json:"offset,omitempty"`
 	Tag     string   `json:"tag,omitempty"`
 	Order   []string `json:"order,omitempty"`
+	Status  string   `json:"status,omitempty"`
+	Code    string   `json:"code,omitempty"`
+	Proto   string   `json:"proto,omitempty"`
+	UID     uint32   `json:"uid,omitempty"`
+	After   *int     `json:"after,omitempty"`
+	Size    *int     `json:"size,omitempty"`
 	Spent   bool     `json:"spent,omitempty"`
 }
 
 func (f *fault) view() faultView {
-	return faultView{
+	v := faultView{
 		ID: f.id, Conn: f.conn, Command: f.command, Times: f.times, Do: f.do,
 		DelayMs: f.delayMs, Bytes: f.bytes, Text: f.text, Count: f.count,
 		Offset: f.offset, Tag: f.tag, Order: f.order, Spent: f.spent,
+		Status: f.status, Code: f.code, Proto: f.proto, UID: f.uid,
 	}
+	if f.afterSet {
+		n := f.after
+		v.After = &n
+	}
+	if f.sizeSet {
+		n := f.size
+		v.Size = &n
+	}
+	return v
+}
+
+func faultProto(f *fault) string {
+	if f.proto == "" {
+		return "imap"
+	}
+	return f.proto
 }
 
 func isCertDo(do string) bool {
@@ -93,6 +124,58 @@ func (s *Server) matchReplyFault(id int, command string) *fault {
 	defer s.mu.Unlock()
 	for _, f := range s.faults {
 		if f.spent || isCertDo(f.do) || f.command == "" {
+			continue
+		}
+		if faultProto(f) != "imap" {
+			continue
+		}
+		if f.do == "drop_literal" || f.do == "rst_literal" {
+			continue
+		}
+		if f.conn != 0 && f.conn != id {
+			continue
+		}
+		if !strings.EqualFold(f.command, command) {
+			continue
+		}
+		return takeHit(f)
+	}
+	return nil
+}
+
+// takeLiteralFault counts a drop_literal or rst_literal when that fault
+// is the next IMAP match for this command. A different fault ahead of it
+// is left for runCommand, and this call does not consume it.
+func (s *Server) takeLiteralFault(id int, command string) *fault {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.faults {
+		if f.spent || isCertDo(f.do) || f.command == "" || faultProto(f) != "imap" {
+			continue
+		}
+		if f.conn != 0 && f.conn != id {
+			continue
+		}
+		if !strings.EqualFold(f.command, command) {
+			continue
+		}
+		if f.do != "drop_literal" && f.do != "rst_literal" {
+			return nil
+		}
+		return takeHit(f)
+	}
+	return nil
+}
+
+// matchProtoFault counts an overquota fault for SMTP or JMAP.
+func (s *Server) matchProtoFault(proto string, id int, command string) *fault {
+	if proto == "" || proto == "imap" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.faults {
+		if f.spent || f.do != "overquota" || faultProto(f) != proto || f.command == "" {
 			continue
 		}
 		if f.conn != 0 && f.conn != id {
@@ -181,6 +264,7 @@ func (s *session) itemRank(it string) int {
 }
 
 func (s *session) runCommand(cmd command) error {
+	s.midDone = false
 	s.srv.logLine("command", s.id, joinCmd(cmd.tag, cmd.name, cmd.uid, cmd.args, cmd.fetch))
 	if err := s.flush(); err != nil {
 		return err
@@ -198,6 +282,24 @@ func (s *session) applyFault(cmd command, f *fault) error {
 	switch f.do {
 	case "close", "rst", "half_close":
 		return s.emitFault(f, cmd.tag, nil)
+	case "reply":
+		return s.sendLine(cannedStatus(cmd.tag, f))
+	case "bye":
+		return s.byeClose(f.text)
+	case "overquota":
+		if refusesQuota(cmd) {
+			return s.no(cmd.tag, "[OVERQUOTA] quota exceeded")
+		}
+		return s.dispatch(cmd)
+	case "expunge_mid":
+		if cmd.name != "FETCH" {
+			if err := s.fireExpungeMid(); err != nil {
+				return err
+			}
+		}
+		return s.dispatch(cmd)
+	case "idle_burst":
+		return s.dispatch(cmd)
 	case "reorder":
 		return s.applyReorder(cmd)
 	case "coalesce":
@@ -271,7 +373,7 @@ func (s *session) captureDispatch(cmd command) ([]byte, error) {
 
 func (s *session) captureSecond(cmd command) ([]byte, error) {
 	f := s.srv.matchReplyFault(s.id, cmd.name)
-	if f != nil && (f.do == "reorder" || f.do == "coalesce" || f.do == "close" || f.do == "rst" || f.do == "half_close") {
+	if f != nil && (f.do == "reorder" || f.do == "coalesce" || f.do == "close" || f.do == "rst" || f.do == "half_close" || f.do == "bye" || f.do == "idle_burst" || f.do == "expunge_mid") {
 		f = nil
 	}
 	outer := s.fault
@@ -430,7 +532,7 @@ func faultParts(f *fault, tag string, reply []byte) [][]byte {
 	case "raw":
 		return [][]byte{lineCRLF(f.text)}
 	case "bad_literal":
-		return [][]byte{badLiteral(reply)}
+		return [][]byte{badLiteral(reply, f.sizeSet, f.size)}
 	case "flood":
 		line := lineCRLF(f.text)
 		parts := make([][]byte, 0, f.count+1)
@@ -562,7 +664,27 @@ func moveTagFirst(reply []byte, tag string) []byte {
 	return out
 }
 
-func badLiteral(reply []byte) []byte {
+func cannedStatus(tag string, f *fault) string {
+	line := tag + " " + f.status
+	if f.code != "" {
+		line += " [" + f.code + "]"
+	}
+	if f.text != "" {
+		line += " " + f.text
+	}
+	return line
+}
+
+func refusesQuota(cmd command) bool {
+	switch cmd.name {
+	case "APPEND", "COPY", "MOVE", "XMOVE", "REPLACE":
+		return true
+	default:
+		return false
+	}
+}
+
+func badLiteral(reply []byte, sizeSet bool, size int) []byte {
 	fallback := []byte("* 1 FETCH (RFC822 {4}\r\nZZ)\r\n")
 	i := bytes.IndexByte(reply, '{')
 	if i < 0 {
@@ -583,6 +705,9 @@ func badLiteral(reply []byte) []byte {
 		return fallback
 	}
 	repl := strconv.Itoa(n + 1)
+	if sizeSet {
+		repl = strconv.Itoa(size)
+	}
 	if plus {
 		repl += "+"
 	}

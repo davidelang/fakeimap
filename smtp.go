@@ -47,6 +47,7 @@ type smtpConn struct {
 	c      net.Conn
 	br     *bufio.Reader
 	bw     *bufio.Writer
+	id     int
 	authed bool
 	secure bool
 	env    smtpEnv
@@ -64,7 +65,7 @@ func (s *Server) acceptSMTP() {
 
 func (s *Server) serveSMTP(c net.Conn) {
 	defer c.Close()
-	sc := &smtpConn{srv: s, c: c, br: bufio.NewReader(c), bw: bufio.NewWriter(c)}
+	sc := &smtpConn{srv: s, c: c, br: bufio.NewReader(c), bw: bufio.NewWriter(c), id: int(s.smtpSeq.Add(1))}
 	sc.serve()
 }
 
@@ -231,15 +232,24 @@ func (sc *smtpConn) command(line string) error {
 		if !sc.authed {
 			return sc.reply(530, "5.7.0 authentication required")
 		}
+		if sc.srv.matchProtoFault("smtp", sc.id, "MAIL") != nil {
+			return sc.reply(552, "5.2.2 mailbox full")
+		}
 		return sc.cmdMail(arg)
 	case "RCPT":
 		if !sc.authed {
 			return sc.reply(530, "5.7.0 authentication required")
 		}
+		if sc.srv.matchProtoFault("smtp", sc.id, "RCPT") != nil {
+			return sc.reply(552, "5.2.2 mailbox full")
+		}
 		return sc.cmdRcpt(arg)
 	case "DATA":
 		if !sc.authed {
 			return sc.reply(530, "5.7.0 authentication required")
+		}
+		if sc.srv.matchProtoFault("smtp", sc.id, "DATA") != nil {
+			return sc.reply(552, "5.2.2 mailbox full")
 		}
 		return sc.cmdData()
 	default:

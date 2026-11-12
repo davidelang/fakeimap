@@ -974,3 +974,7 @@
 - Approved plan: sandbox/plans/i18n-urlauth-stub-20261112-0529-plan.md
 - Work: COMPARATOR, GENURLAUTH, URLFETCH, and RESETKEY answer NO not implemented for valid arguments. I18NLEVEL=1, URLAUTH, and URLAUTH=BINARY are never advertised.
 - First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - IMAP test faults
+
+- Add reply, bye, idle_burst, drop_literal, rst_literal, overquota, and expunge_mid faults, plus the bye control op. Quota reports stay the same. Plan: sandbox/plans/imap-test-faults-20261112-0509-plan.md

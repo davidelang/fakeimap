@@ -15,8 +15,9 @@ type Token struct {
 }
 
 type proto struct {
-	br   *bufio.Reader
-	send func(line string) error
+	br         *bufio.Reader
+	send       func(line string) error
+	cutLiteral func() error
 }
 
 func (p *proto) skipSP() error {
@@ -131,6 +132,11 @@ func (p *proto) readLiteral() (string, error) {
 			}
 			if !plus {
 				if err := p.send("+ go ahead"); err != nil {
+					return "", err
+				}
+			}
+			if p.cutLiteral != nil {
+				if err := p.cutLiteral(); err != nil {
 					return "", err
 				}
 			}

@@ -222,13 +222,31 @@ An overlaid message is stored from its file. A generated mailbox keeps a header 
 
 One JSON object per line in, one JSON object per line out: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 
-Ops: `status`, `reset`, `set-personality`, `set-dataset`, `disconnect`, `inject`, `list-mail`, `fetch-mail`, `accounts`, `freeze-clock`, `thaw-clock`, `arm-fault`, `clear-faults`, `list-smtp`, `wait-smtp`. `status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `jmap`, `jmap_tls`, and `sieve`; `smtp`, `jmap`, `jmap_tls`, and `sieve` are the bound `host:port`, or `""` when that listener is not up.
+Ops: `status`, `reset`, `set-personality`, `set-dataset`, `disconnect`, `inject`, `list-mail`, `fetch-mail`, `accounts`, `freeze-clock`, `thaw-clock`, `arm-fault`, `clear-faults`, `list-smtp`, `wait-smtp`, `bye`. `status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `jmap`, `jmap_tls`, and `sieve`; `smtp`, `jmap`, `jmap_tls`, and `sieve` are the bound `host:port`, or `""` when that listener is not up.
 
-Request fields: `path`, `conn`, `mailbox`, `user`, `username`, `password`, `raw`, `uid`, `time`, `id`, `command`, `times`, `do`, `delay_ms`, `bytes`, `text`, `count`, `offset`, `tag`, `order`, `timeout_ms`.
+`bye` takes optional `conn` and optional `text` (default `Server logging out`). Each matched IMAP connection, including one inside `IDLE` after `+ idling` and before `DONE`, is sent `* BYE` plus that text, flushed, and closed. There is no tagged IDLE reply. Omitted `conn`, or `0`, matches every IMAP connection.
+
+Request fields: `path`, `conn`, `mailbox`, `user`, `username`, `password`, `raw`, `uid`, `time`, `id`, `command`, `times`, `do`, `delay_ms`, `bytes`, `text`, `count`, `offset`, `tag`, `order`, `timeout_ms`, `status`, `code`, `proto`, `size`, `after`.
 
 `list-smtp` returns `messages`. Each item has `from` and `recipients`. A recipient has `address` and `result` (`delivered` or `discarded`). A delivered recipient was appended to `INBOX`. A discarded recipient was accepted and not stored. `wait-smtp` takes `count`. Zero returns immediately. A positive count also takes `timeout_ms` and waits until that many SMTP messages have been accepted since the call. If `timeout_ms` passes first, the reply is `ok` false.
 
-Fault `do` names: `close`, `rst`, `half_close`, `silent`, `delay`, `drip`, `truncate`, `raw`, `bad_literal`, `flood`, `split`, `coalesce`, `wrong_tag`, `unsolicited`, `reorder`, `mid`, `fetch_order`, `tag_first`, `mutate`, `wrong_name`, `expired`, `self_signed`.
+Fault `do` names: `close`, `rst`, `half_close`, `silent`, `delay`, `drip`, `truncate`, `raw`, `bad_literal`, `flood`, `split`, `coalesce`, `wrong_tag`, `unsolicited`, `reorder`, `mid`, `fetch_order`, `tag_first`, `mutate`, `wrong_name`, `expired`, `self_signed`, `reply`, `bye`, `idle_burst`, `drop_literal`, `rst_literal`, `overquota`, `expunge_mid`.
+
+`times` and `conn` match the other faults. Omitted or `0` matches every time and every connection of that protocol. `times` N matches the Nth time only. An unknown `do` or `proto` is `unknown fault`. A missing required field is `missing field`. Optional `proto` defaults to `imap`.
+
+`reply` requires `command` and `status` of `OK`, `NO`, or `BAD`. Optional `code` and `text`. The tagged line is `tag STATUS [CODE] text` when those fields are set. The command does not run. `SELECT` does not select. `APPEND` does not store. A spent fault lets the next command run.
+
+`bye` requires `command`. Optional `text` defaults to `Server logging out`. When that command runs, the server sends `* BYE` plus that text, flushes, and closes. There is no tagged reply for that command.
+
+`idle_burst` requires `command` `IDLE` and the same `text` line payload as `unsolicited`. `+ idling` and those lines are one socket write, with no flush between them. `DONE` is still a tagged OK.
+
+`drop_literal` and `rst_literal` require `command` and `bytes` of 0 or more. After the literal header is accepted, and after `+ go ahead` when the literal is synchronizing, the server reads that many body octets and then closes or resets. The message is not stored. `LITERAL+` and a synchronizing literal both work.
+
+`bad_literal` with no `size` still advertises `n+1`. With `size`, the braces advertise that exact number, including a value larger than the payload. The payload bytes are unchanged. A `+` stays when the literal had one.
+
+`overquota` requires `command`. Optional `proto` defaults to `imap`. IMAP commands that store mail (`APPEND`, a multi-message `APPEND`, `COPY`, `MOVE`, `XMOVE`, `REPLACE`, and the `UID` forms) are tagged `NO [OVERQUOTA]` and store nothing. A move does not expunge the source. `REPLACE` does not expunge the old message and does not store the new one. SMTP `MAIL`, `RCPT`, or `DATA` is `552 5.2.2` and `list-smtp` gains no message. JMAP `Email/import` or `Email/set` returns `overQuota` and stores nothing. `GETQUOTA`, `GETQUOTAROOT`, and `SETQUOTA` are unchanged.
+
+`expunge_mid` requires `command` and `uid`, and takes optional `after` (default 1; `0` means before the first FETCH line). The UID is expunged in the selected mailbox through the same path as `EXPUNGE`, including the JMAP expunge record, and the notice is flushed before the tagged reply. A `CONTEXT=SEARCH` context that contained that UID sends `REMOVEFROM` before the notice. On `FETCH` or `UID FETCH`, `after` N places that notice after N fetch lines and before the rest. A UID that is not in the mailbox returns `ok` false and changes nothing. With `UIDONLY` or `QRESYNC` enabled the notice is `VANISHED`. With `UIDONLY` enabled later lines are `UIDFETCH`. Otherwise the notice is `* seq EXPUNGE` and later fetch lines use the corrected sequence numbers. `FETCH` also flushes pending events between fetch lines, so a second connection's `EXPUNGE` can land in that same gap.
 
 ## Probe
 

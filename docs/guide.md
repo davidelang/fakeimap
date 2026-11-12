@@ -87,6 +87,7 @@ An empty `op` is `missing field`. Any other `op` is `unknown op`.
 | `thaw-clock` | none | the clock runs again |
 | `arm-fault` | see below | returns `id` |
 | `clear-faults` | optional `id` | a missing `id` clears every fault |
+| `bye` | optional `conn` and `text` | `* BYE` and close; see `docs/facts/imap-server.md` |
 | `list-smtp` | none | accepted SMTP messages |
 | `wait-smtp` | `count` | zero returns immediately. A positive count also needs `timeout_ms`. A timeout is `ok` false |
 
@@ -118,7 +119,7 @@ Reply faults run in `runCommand` before the command handler. The certificate fau
 - `drip` writes the reply in two halves with `delay_ms` between them. `delay_ms` is required.
 - `truncate` writes the first `bytes` octets. `bytes` is required.
 - `raw` writes `text` in place of the reply. `text` is required.
-- `bad_literal` rewrites a literal length (the number in `{...}` plus one).
+- `bad_literal` rewrites a literal length. With no `size` the number in `{...}` becomes that number plus one. A `size` and a `+` follow `docs/facts/imap-server.md`.
 - `flood` writes `text` `count` times and then the real reply. Both fields are required, and `count` is at least 1.
 - `split` writes the reply as two socket writes at `offset`. `offset` is required.
 - `coalesce` writes this reply and the next command's reply in one socket write.
@@ -132,6 +133,7 @@ Reply faults run in `runCommand` before the command handler. The certificate fau
 - `wrong_name` presents a certificate for `wrong.example`.
 - `expired` presents a certificate that has already expired.
 - `self_signed` presents a generated localhost certificate.
+- `reply`, `bye`, `idle_burst`, `drop_literal`, `rst_literal`, `overquota`, and `expunge_mid` are named here. What each one does, and what the `bye` op does, is in `docs/facts/imap-server.md`.
 
 An unknown `do` is `unknown fault`. A missing required field is `missing field`.
 
