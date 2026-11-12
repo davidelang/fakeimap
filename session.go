@@ -2270,18 +2270,29 @@ func (s *session) cmdAppend(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
 	}
-	mbox, flags, date, body, err := parseAppend(cmd.args)
+	mbox, parts, err := parseAppend(cmd.args, s.advertiseCap("MULTIAPPEND"))
 	if err != nil {
 		return s.bad(cmd.tag, "APPEND syntax")
 	}
 	mbox, err = s.boxIn(mbox)
-	if err != nil {
+	if err != nil || !s.srv.store.hasMailbox(mbox) {
 		return s.no(cmd.tag, "[TRYCREATE] APPEND no such mailbox")
 	}
-	if lim, ok := s.appendLimit(); ok && uint64(len(body)) > lim {
-		return s.no(cmd.tag, "[TOOBIG] APPEND exceeds limit")
+	for _, p := range parts {
+		for _, f := range p.flags {
+			if _, ok := canonFlag(f); !ok {
+				return s.bad(cmd.tag, "APPEND bad flag")
+			}
+		}
 	}
-	uv, uid, err := s.srv.store.appendMsg(s, mbox, flags, date, body, s.srv.frozenTime())
+	if lim, ok := s.appendLimit(); ok {
+		for _, p := range parts {
+			if uint64(len(p.raw)) > lim {
+				return s.no(cmd.tag, "[TOOBIG] APPEND exceeds limit")
+			}
+		}
+	}
+	uv, uids, err := s.srv.store.appendMsgs(s, mbox, parts, s.srv.frozenTime())
 	if err != nil {
 		if err.Error() == "bad flag" {
 			return s.bad(cmd.tag, "APPEND bad flag")
@@ -2291,42 +2302,78 @@ func (s *session) cmdAppend(cmd command) error {
 	if err := s.flush(); err != nil {
 		return err
 	}
-	return s.sendLine(fmt.Sprintf("%s OK [APPENDUID %d %d] APPEND completed", cmd.tag, uv, uid))
+	return s.sendLine(fmt.Sprintf("%s OK [APPENDUID %d %s] APPEND completed", cmd.tag, uv, formatUIDSet(uids)))
 }
 
-func parseAppend(args []Token) (string, []string, *time.Time, []byte, error) {
+// parseAppend reads one mailbox and one or more messages. Without multi,
+// a second message is an error and the caller stores nothing.
+func parseAppend(args []Token, multi bool) (string, []appendPart, error) {
 	if len(args) < 2 {
-		return "", nil, nil, nil, fmt.Errorf("bad")
+		return "", nil, fmt.Errorf("bad")
 	}
 	mbox, ok := astring(args[0])
 	if !ok {
-		return "", nil, nil, nil, fmt.Errorf("bad")
+		return "", nil, fmt.Errorf("bad")
 	}
 	i := 1
+	var parts []appendPart
+	for {
+		if i >= len(args) {
+			return "", nil, fmt.Errorf("bad")
+		}
+		var flags []string
+		var err error
+		if args[i].Kind == "lparen" {
+			flags, i, err = parseRawFlagList(args, i)
+			if err != nil {
+				return "", nil, err
+			}
+		}
+		if i >= len(args) {
+			return "", nil, fmt.Errorf("bad")
+		}
+		var date *time.Time
+		if args[i].Kind == "quoted" {
+			t, err := parseIMAPDateTime(args[i].Val)
+			if err != nil {
+				return "", nil, err
+			}
+			date = &t
+			i++
+		}
+		if i >= len(args) || args[i].Kind != "literal" {
+			return "", nil, fmt.Errorf("bad")
+		}
+		parts = append(parts, appendPart{flags: flags, date: date, raw: []byte(args[i].Val)})
+		i++
+		if i >= len(args) {
+			return mbox, parts, nil
+		}
+		if !multi {
+			return "", nil, fmt.Errorf("bad")
+		}
+	}
+}
+
+// parseRawFlagList reads a parenthesized flag list without checking names.
+// A bad name is decided after the mailbox check.
+func parseRawFlagList(toks []Token, i int) ([]string, int, error) {
+	if i >= len(toks) || toks[i].Kind != "lparen" {
+		return nil, i, fmt.Errorf("bad flags")
+	}
+	i++
 	var flags []string
-	var err error
-	if args[i].Kind == "lparen" {
-		flags, i, err = parseFlagList(args, i)
-		if err != nil {
-			return "", nil, nil, nil, err
+	for i < len(toks) && toks[i].Kind != "rparen" {
+		if toks[i].Kind != "atom" && toks[i].Kind != "quoted" {
+			return nil, i, fmt.Errorf("bad flags")
 		}
-	}
-	if i >= len(args) {
-		return "", nil, nil, nil, fmt.Errorf("bad")
-	}
-	var date *time.Time
-	if args[i].Kind == "quoted" {
-		t, err := parseIMAPDateTime(args[i].Val)
-		if err != nil {
-			return "", nil, nil, nil, err
-		}
-		date = &t
+		flags = append(flags, toks[i].Val)
 		i++
 	}
-	if i != len(args)-1 || args[i].Kind != "literal" {
-		return "", nil, nil, nil, fmt.Errorf("bad")
+	if i >= len(toks) || toks[i].Kind != "rparen" {
+		return nil, i, fmt.Errorf("bad flags")
 	}
-	return mbox, flags, date, []byte(args[i].Val), nil
+	return flags, i + 1, nil
 }
 
 func moveCmd(name string) bool {

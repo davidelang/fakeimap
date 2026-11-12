@@ -21,6 +21,7 @@
     "SORT",
     "THREAD=REFERENCES",
     "THREAD=ORDEREDSUBJECT",
+    "MULTIAPPEND",
     "SASL-IR"
   ],
   "post_login_capabilities": [
@@ -38,6 +39,7 @@
     "SORT",
     "THREAD=REFERENCES",
     "THREAD=ORDEREDSUBJECT",
+    "MULTIAPPEND",
     "SASL-IR",
     "STARTTLS"
   ],

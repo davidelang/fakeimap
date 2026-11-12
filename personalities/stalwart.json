@@ -29,6 +29,7 @@
     "IDLE",
     "NAMESPACE",
     "CHILDREN",
+    "MULTIAPPEND",
     "BINARY",
     "UNSELECT",
     "UIDPLUS",

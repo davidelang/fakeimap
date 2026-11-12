@@ -825,3 +825,16 @@
 ## 2026-11-12 - XLIST and XMOVE
 
 - XLIST answers a two-argument LIST with the word XLIST when that token is listed. XMOVE is MOVE, including UID XMOVE, and does not require MOVE. The lab personalities named in the plan advertise each token. XLIST left the gaps file.
+
+## 2026-11-12 - MULTIAPPEND execution start
+
+- Approved plan: sandbox/plans/multiappend-20261112-0013-plan.md
+- Work: one APPEND stores every message or none when MULTIAPPEND is listed. One message stays a normal APPEND. Lab personalities that advertise it gain the token. Facts and guide describe it.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - MULTIAPPEND landed
+
+- Approved plan: sandbox/plans/multiappend-20261112-0013-plan.md
+- One APPEND stores every message or none when MULTIAPPEND is listed. Each message keeps its own flags, internal date, and literal. The save time follows the frozen clock or the wall clock, the same as one APPEND. The tagged OK lists every new UID, and a consecutive run is a range.
+- A second message without the token is BAD and stores nothing. A missing mailbox is NO with TRYCREATE, a bad flag is BAD, and a literal past APPENDLIMIT is NO with TOOBIG. None of those store a message. CATENATE and UID APPEND stay rejected.
+- The token is on the lab lists named in the plan. Greeting lists are unchanged. courier-50.json and courier-606.json do not list it. cyrus-3137.gaps.json no longer contains MULTIAPPEND. The facts file and the guide describe it.

@@ -2441,6 +2441,16 @@ func indexOverlay(m *Message) {
 	}
 }
 
+func (st *Store) hasMailbox(name string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return false
+	}
+	return st.boxes[cn] != nil
+}
+
 func (st *Store) appendMsg(s *session, name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, uint32, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -2449,6 +2459,45 @@ func (st *Store) appendMsg(s *session, name string, flags []string, date *time.T
 		return 0, 0, err
 	}
 	return uv, m.uid, nil
+}
+
+// appendPart is one message inside an APPEND. Flags and date apply only to it.
+type appendPart struct {
+	flags []string
+	date  *time.Time
+	raw   []byte
+}
+
+// appendMsgs stores every part or, if a check fails, none of them.
+// The mailbox and the flags are checked before the first message is stored.
+func (st *Store) appendMsgs(s *session, name string, parts []appendPart, frozen *time.Time) (uint32, []uint32, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cn, err := st.canon(name)
+	if err != nil {
+		return 0, nil, err
+	}
+	if st.boxes[cn] == nil {
+		return 0, nil, fmt.Errorf("no mailbox")
+	}
+	for _, p := range parts {
+		for _, f := range p.flags {
+			if _, ok := canonFlag(f); !ok {
+				return 0, nil, fmt.Errorf("bad flag")
+			}
+		}
+	}
+	var uids []uint32
+	var uv uint32
+	for _, p := range parts {
+		var m *Message
+		uv, m, err = st.appendLocked(name, p.flags, p.date, p.raw, frozen)
+		if err != nil {
+			return 0, nil, err
+		}
+		uids = append(uids, m.uid)
+	}
+	return uv, uids, nil
 }
 
 // saveClock is the frozen clock when freeze-clock is set, and the wall clock otherwise.
