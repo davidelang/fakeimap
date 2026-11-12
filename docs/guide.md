@@ -163,6 +163,10 @@ Keys:
 
 A capability is advertised only when `implementedCaps` contains it. On a cleartext connection that has a certificate and has not started TLS, `advertiseList` also appends `STARTTLS` when the list it is filtering is not the post-login list and that list omitted `STARTTLS`. It drops `STARTTLS` once TLS has started, and it drops a listed `STARTTLS` when no certificate is loaded. `DIGEST-MD5` is absent from `implementedCaps` and is not advertised. `AUTHENTICATE` implements `PLAIN`, `LOGIN`, `CRAM-MD5`, `SCRAM-SHA-1`, `SCRAM-SHA-256`, `SCRAM-SHA-1-PLUS`, `SCRAM-SHA-256-PLUS`, and `EXTERNAL`, and only when the personality lists `AUTH=<name>`.
 
+`UNAUTHENTICATE`, when listed, returns an authenticated connection to the not-authenticated state without expunging the selected mailbox. TLS and `COMPRESS=DEFLATE` stay up. Enabled extensions do not. Which personalities list it, and the reply, are in `docs/facts/imap-server.md`.
+
+`ID`, when listed, is accepted before and after login. The untagged reply is `* ID ("name" "fakeimap")`. Otherwise the command is tagged `BAD`. The argument rules are in `docs/facts/imap-server.md`.
+
 Lab files are `personalities/<server>.json` for each lab server: Cyrus `cyrus-3137`, `cyrus-22`, `cyrus-24`, `cyrus-25`, `cyrus-36`, `cyrus-3124`; Dovecot `dovecot-245`, `dovecot-dev`, `dovecot-10`, `dovecot-12`, `dovecot-22`; Stalwart `stalwart`, `stalwart-01625`, `stalwart-dev`, `stalwart-0155`; Zimbra `zimbra-883`; Courier `courier-50`, `courier-606`; UW-IMAP `uwimap`. `sasl.json` is the Cyrus mailbox behavior plus the extra `AUTH=` tokens. It is not the probed Cyrus personality.
 
 The fixture files `sasl`, `condstore`, `list`, `esearch`, `compress`, `sort`, `utf8`, `thread`, `fuzzy`, `binary`, `preview`, and `multisearch` add one capability family on the Cyrus mailbox behavior. What each family answers is in `docs/facts/imap-server.md`.

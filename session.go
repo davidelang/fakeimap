@@ -381,6 +381,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdClose(cmd)
 	case "UNSELECT":
 		return s.cmdUnselect(cmd)
+	case "UNAUTHENTICATE":
+		return s.cmdUnauthenticate(cmd)
 	case "IDLE":
 		return s.cmdIdle(cmd)
 	default:
@@ -2279,6 +2281,22 @@ func (s *session) cmdUnselect(cmd command) error {
 	}
 	s.srv.store.deselect(s)
 	return s.ok(cmd.tag, "UNSELECT completed")
+}
+
+// cmdUnauthenticate drops authentication and the enabled set. TLS and
+// compression stay. A selected mailbox is closed without expunge.
+func (s *session) cmdUnauthenticate(cmd command) error {
+	if !s.advertiseCap("UNAUTHENTICATE") {
+		return s.bad(cmd.tag, "UNAUTHENTICATE not supported")
+	}
+	if len(cmd.args) != 0 {
+		return s.bad(cmd.tag, "UNAUTHENTICATE syntax")
+	}
+	s.srv.store.deselect(s)
+	s.authed = false
+	s.user = ""
+	s.enabled = map[string]struct{}{}
+	return s.ok(cmd.tag, "UNAUTHENTICATE completed")
 }
 
 func (s *session) cmdIdle(cmd command) error {

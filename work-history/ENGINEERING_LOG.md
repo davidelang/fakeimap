@@ -729,3 +729,14 @@
 - Approved plan: sandbox/plans/id-command-20261111-2120-plan.md
 - Work: advertise ID where the lab lists it and answer with one canned server identity
 - First action per STANDARD BLOCK: ./orch/exec-preflight
+
+## 2026-11-11 - UNAUTHENTICATE execution start
+
+- Approved plan: sandbox/plans/unauthenticate-20261111-2131-plan.md
+- Work: return an authenticated connection to the not-authenticated state without expunging, and list UNAUTHENTICATE on the four Stalwart post-login lists
+- First action per standard-plan-compliance-block.md
+
+## 2026-11-11 - UNAUTHENTICATE landed
+
+- Approved plan: sandbox/plans/unauthenticate-20261111-2131-plan.md
+- UNAUTHENTICATE returns the connection to the not-authenticated state without expunging. TLS and COMPRESS=DEFLATE stay. The enabled set is cleared. The four Stalwart post-login lists place it between QRESYNC and PREVIEW. The guide names the ID reply and points at the facts file.
