@@ -152,6 +152,18 @@ An identifier is a non-empty astring, including `anyone` and an identifier that 
 
 `UID` plus any of the five names is tagged `BAD` `syntax error` and does not return the stub phrase.
 
+## FILTER command
+
+`FILTER` and `UID FILTER` are the Sieve command from draft-bosch-imap-filter-sieve-00. They are recognized on every personality. `FILTER=SIEVE` is not advertised. RFC 5466 `FILTERS` is not implemented. No personality file lists `FILTER=SIEVE`. ManageSieve script storage is unchanged.
+
+With no mailbox selected, before or after login, `FILTER` and `UID FILTER` are tagged `NO` `FILTER not selected`. The arguments are not checked.
+
+With a mailbox selected, a command whose arguments are valid is tagged `NO` `not implemented`. That text is exact. There is no response code. There is no untagged `FILTER` or `FILTERED` line. No script runs. The search is not run. Messages, flags, mailboxes, and ManageSieve scripts stay as they were. `UID FILTER` uses that same phrase and does not report UIDs.
+
+The spec words are case-insensitive. The spec is one of `SIEVE DELIVERY`, `SIEVE PERSONAL` and a non-empty astring, `SIEVE GLOBAL` and a non-empty astring, or `SIEVE SCRIPT` and an astring. The script astring may be empty and may be text that is not a Sieve script. The name is not looked up. The script text is not parsed. Any other spec, a missing spec, or an empty `PERSONAL` or `GLOBAL` name is tagged `BAD`. That text is not `not implemented`.
+
+After the spec, an optional `CHARSET` astring and one or more search keys follow. `CHARSET` and the keys are accepted exactly when `SEARCH` on this connection would accept them, including the capability gates `SEARCH` already applies. A key or charset `SEARCH` would reject is tagged `BAD`. Zero search keys is tagged `BAD`. A `RETURN` parenthesized list is tagged `BAD`.
+
 ## SASL
 
 `AUTHENTICATE` mechanisms this binary implements: `PLAIN`, `LOGIN`, `CRAM-MD5`, `SCRAM-SHA-1`, `SCRAM-SHA-256`, `SCRAM-SHA-1-PLUS`, `SCRAM-SHA-256-PLUS`, and `EXTERNAL`. A mechanism is advertised only when the personality lists `AUTH=<name>`, and `AUTHENTICATE` of a mechanism that is not listed fails. `DIGEST-MD5` is not implemented and is not advertised.

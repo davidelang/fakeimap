@@ -198,7 +198,7 @@ func (s *session) readCommand() (command, error) {
 		}
 		cmd.name = strings.ToUpper(name)
 		switch cmd.name {
-		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD":
+		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD", "FILTER":
 		default:
 			return cmd, errSyntax
 		}
@@ -423,6 +423,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdStore(cmd)
 	case "SEARCH":
 		return s.cmdSearch(cmd)
+	case "FILTER":
+		return s.cmdFilter(cmd)
 	case "ESEARCH":
 		return s.cmdEsearch(cmd)
 	case "SORT":
@@ -2250,6 +2252,65 @@ func (s *session) cmdSearch(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, done)
+}
+
+// parseFilterSpec reads one Sieve spec. A name is not looked up.
+// Script text is not parsed. An empty PERSONAL or GLOBAL name is an error.
+func parseFilterSpec(args []Token) ([]Token, error) {
+	if len(args) < 2 || args[0].Kind != "atom" || !strings.EqualFold(args[0].Val, "SIEVE") || args[1].Kind != "atom" {
+		return nil, fmt.Errorf("bad")
+	}
+	switch strings.ToUpper(args[1].Val) {
+	case "DELIVERY":
+		return args[2:], nil
+	case "PERSONAL", "GLOBAL":
+		if len(args) < 3 {
+			return nil, fmt.Errorf("bad")
+		}
+		name, ok := astring(args[2])
+		if !ok || name == "" {
+			return nil, fmt.Errorf("bad")
+		}
+		return args[3:], nil
+	case "SCRIPT":
+		if len(args) < 3 {
+			return nil, fmt.Errorf("bad")
+		}
+		if _, ok := astring(args[2]); !ok {
+			return nil, fmt.Errorf("bad")
+		}
+		return args[3:], nil
+	default:
+		return nil, fmt.Errorf("bad")
+	}
+}
+
+// cmdFilter recognizes FILTER from draft-bosch-imap-filter-sieve-00.
+// Valid arguments are tagged NO. No script runs and the search is not run.
+// FILTER=SIEVE is not advertised.
+func (s *session) cmdFilter(cmd command) error {
+	if !s.srv.store.selected(s) {
+		return s.no(cmd.tag, "FILTER not selected")
+	}
+	rest, err := parseFilterSpec(cmd.args)
+	if err != nil {
+		return s.bad(cmd.tag, "FILTER syntax")
+	}
+	if len(rest) > 0 && rest[0].Kind == "atom" && strings.EqualFold(rest[0].Val, "RETURN") {
+		return s.bad(cmd.tag, "FILTER syntax")
+	}
+	hasCS, cs, rest, csErr := charsetPrefix(rest)
+	if csErr != nil {
+		return s.bad(cmd.tag, "FILTER syntax")
+	}
+	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
+		return s.bad(cmd.tag, "FILTER charset")
+	}
+	_, allowUID := s.messageLimit()
+	if _, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow()); err != nil {
+		return s.bad(cmd.tag, "FILTER bad key")
+	}
+	return s.no(cmd.tag, "not implemented")
 }
 
 // parseEsearchIn reads IN (subtree name), IN (personal), or IN (subscribed).

@@ -201,6 +201,8 @@ The fixture files `sasl`, `condstore`, `list`, `esearch`, `compress`, `sort`, `u
 
 `SETACL`, `DELETEACL`, `GETACL`, `LISTRIGHTS`, and `MYRIGHTS` are recognized on every personality. Before login each is tagged `NO` `must authenticate first`. After login a command with valid arguments is tagged `NO` `valid syntax not implemented`, and nothing is stored. Invalid arguments are tagged `BAD`. `ACL` is not advertised. The argument rules are in `docs/facts/imap-server.md`.
 
+`FILTER` and `UID FILTER` check a Sieve filter spec and search criteria. With no mailbox selected, including before login, each is tagged `NO` `FILTER not selected`. With a mailbox selected, valid arguments are tagged `NO` `not implemented`, and no script runs. Invalid arguments are tagged `BAD`. `FILTER=SIEVE` is not advertised. The argument rules are in `docs/facts/imap-server.md`.
+
 ## Dataset
 
 `dataset.json` keys, as `docs/facts/imap-server.md` defines them:

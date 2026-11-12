@@ -884,3 +884,17 @@
 - An identifier is a non-empty astring, including anyone and a leading -. Empty identifiers are BAD. SETACL rights are an optional leading + or -, then the RFC 4314 letters. The empty string, +, -, and a repeated letter are valid. UID plus any of the five names stays BAD syntax error.
 - ACL, RIGHTS=kxten, and LIST-MYRIGHTS stay unadvertised. No personality file lists them. The gaps file is unchanged. The facts file and the guide describe the stub.
 - make exited 0.
+
+## 2026-11-12 - FILTER=SIEVE stub execution start
+
+- Approved plan: sandbox/plans/filter-sieve-stub-20261112-0350-plan.md
+- Work: FILTER and UID FILTER check a Sieve spec and search criteria, then answer tagged NO not implemented. Invalid arguments are BAD. Nothing is searched or stored. FILTER=SIEVE stays unadvertised.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - FILTER=SIEVE stub landed
+
+- Approved plan: sandbox/plans/filter-sieve-stub-20261112-0350-plan.md
+- FILTER and UID FILTER are recognized on every personality. With no mailbox selected, before or after login, each is tagged NO FILTER not selected and the arguments are not checked. With a mailbox selected, a valid Sieve spec plus search criteria is tagged NO not implemented, with no response code and no untagged FILTER line. Invalid arguments are BAD. No script runs and the search is not run.
+- The spec is SIEVE DELIVERY, SIEVE PERSONAL or SIEVE GLOBAL with a non-empty name, or SIEVE SCRIPT with any astring. Names are not looked up and script text is not parsed. CHARSET and the search keys follow the gates SEARCH already applies. A RETURN list is BAD. UID FILTER uses the same NO phrase and does not report UIDs.
+- FILTER=SIEVE stays out of implementedCaps. No personality file lists it. The gaps file is unchanged. RFC 5466 FILTERS is not added. ManageSieve storage is unchanged. The facts file and the guide describe the stub.
+- make exited 0.
