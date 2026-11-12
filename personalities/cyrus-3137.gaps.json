@@ -5,7 +5,6 @@
     "APPENDLIMIT=2147483647",
     "CATENATE",
     "DIGEST=SHA1",
-    "ID",
     "IMAP4rev2",
     "INPROGRESS",
     "LIST-METADATA",

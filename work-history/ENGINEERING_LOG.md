@@ -723,3 +723,9 @@
 - docs/guide.md is the developer guide. README names fakeimap, says make builds it, and points at the guide.
 - Facts sentences for STARTTLS, the three Stalwart files, sasl.json post-login, the personality keys, and SEARCH=FUZZY now match the tree. SEARCH=FUZZY left personalities/cyrus-3137.gaps.json. URLAUTH=BINARY stayed.
 - No Go behavior change. No certificate added. make does not start Docker.
+
+## 2026-11-11 - ID command
+
+- Approved plan: sandbox/plans/id-command-20261111-2120-plan.md
+- Work: advertise ID where the lab lists it and answer with one canned server identity
+- First action per STANDARD BLOCK: ./orch/exec-preflight

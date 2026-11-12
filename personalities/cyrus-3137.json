@@ -3,16 +3,15 @@
   "delimiter": "/",
   "greeting_capabilities": [
     "IMAP4rev1",
-    "AUTH=PLAIN",
-    "AUTH=LOGIN",
     "ENABLE",
+    "ID",
     "LITERAL+",
-    "SASL-IR"
+    "SASL-IR",
+    "AUTH=PLAIN",
+    "AUTH=LOGIN"
   ],
   "pre_login_capabilities": [
     "IMAP4rev1",
-    "AUTH=PLAIN",
-    "AUTH=LOGIN",
     "BINARY",
     "CHILDREN",
     "COMPRESS=DEFLATE",
@@ -21,6 +20,7 @@
     "ENABLE",
     "ESEARCH",
     "ESORT",
+    "ID",
     "IDLE",
     "LIST-EXTENDED",
     "LIST-STATUS",
@@ -39,7 +39,9 @@
     "THREAD=REFERENCES",
     "UIDPLUS",
     "UNSELECT",
-    "THREAD=REFS"
+    "THREAD=REFS",
+    "AUTH=PLAIN",
+    "AUTH=LOGIN"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
@@ -51,6 +53,7 @@
     "ENABLE",
     "ESEARCH",
     "ESORT",
+    "ID",
     "IDLE",
     "LIST-EXTENDED",
     "LIST-STATUS",

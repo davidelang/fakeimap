@@ -4,14 +4,16 @@
   "greeting_capabilities": [
     "IMAP4rev1",
     "LITERAL+",
+    "ID",
     "ENABLE",
+    "SASL-IR",
     "AUTH=PLAIN",
-    "AUTH=LOGIN",
-    "SASL-IR"
+    "AUTH=LOGIN"
   ],
   "pre_login_capabilities": [
     "IMAP4rev1",
     "LITERAL+",
+    "ID",
     "ENABLE",
     "NAMESPACE",
     "UIDPLUS",
@@ -30,15 +32,16 @@
     "MOVE",
     "SPECIAL-USE",
     "CREATE-SPECIAL-USE",
-    "AUTH=PLAIN",
-    "AUTH=LOGIN",
     "SASL-IR",
     "COMPRESS=DEFLATE",
-    "IDLE"
+    "IDLE",
+    "AUTH=PLAIN",
+    "AUTH=LOGIN"
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
     "LITERAL+",
+    "ID",
     "ENABLE",
     "NAMESPACE",
     "UIDPLUS",

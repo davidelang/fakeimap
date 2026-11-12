@@ -3,6 +3,7 @@
   "delimiter": "/",
   "greeting_capabilities": [
     "IMAP4rev1",
+    "ID",
     "ENABLE",
     "IDLE",
     "SASL-IR",
@@ -11,6 +12,7 @@
   ],
   "pre_login_capabilities": [
     "IMAP4rev1",
+    "ID",
     "ENABLE",
     "IDLE",
     "SASL-IR",
@@ -20,6 +22,7 @@
   "post_login_capabilities": [
     "IMAP4rev1",
     "SASL-IR",
+    "ID",
     "ENABLE",
     "IDLE",
     "SORT",

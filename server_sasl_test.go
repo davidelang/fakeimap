@@ -89,6 +89,9 @@ func TestSaslPersonality(t *testing.T) {
 	if sasl.lists("AUTH=DIGEST-MD5") || cyrus.lists("AUTH=DIGEST-MD5") {
 		t.Fatal("DIGEST-MD5 listed")
 	}
+	if listed(sasl.GreetingCaps, "ID") || listed(sasl.PreLogin, "ID") || !listed(sasl.PostLogin, "ID") {
+		t.Fatal("sasl ID placement")
+	}
 }
 
 func sameCapSet(a, b []string) bool {

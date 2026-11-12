@@ -310,6 +310,8 @@ func (s *session) dispatch(cmd command) error {
 	switch cmd.name {
 	case "CAPABILITY":
 		return s.cmdCapability(cmd)
+	case "ID":
+		return s.cmdID(cmd)
 	case "NOOP":
 		return s.ok(cmd.tag, "NOOP completed")
 	case "CHECK":
@@ -394,6 +396,62 @@ func (s *session) cmdCapability(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, "CAPABILITY completed")
+}
+
+// cmdID answers with one canned server identity. The client field list
+// is not echoed. A personality that does not advertise ID is tagged BAD.
+func (s *session) cmdID(cmd command) error {
+	if !s.advertiseCap("ID") {
+		return s.bad(cmd.tag, "ID not supported")
+	}
+	if !idParamsOK(cmd.args) {
+		return s.bad(cmd.tag, "ID syntax")
+	}
+	if err := s.sendLine(`* ID ("name" "fakeimap")`); err != nil {
+		return err
+	}
+	return s.ok(cmd.tag, "ID completed")
+}
+
+// idParamsOK accepts NIL or one parenthesized field/value list, and
+// nothing after it. Two lists, or no argument, are not that form.
+func idParamsOK(args []Token) bool {
+	if len(args) == 1 && args[0].Kind == "atom" && strings.EqualFold(args[0].Val, "NIL") {
+		return true
+	}
+	if len(args) == 0 || args[0].Kind != "lparen" {
+		return false
+	}
+	end := -1
+	for i, t := range args {
+		if t.Kind == "lparen" {
+			if i != 0 {
+				return false
+			}
+			continue
+		}
+		if t.Kind == "rparen" {
+			end = i
+			break
+		}
+	}
+	if end != len(args)-1 {
+		return false
+	}
+	inner := args[1:end]
+	if len(inner)%2 != 0 {
+		return false
+	}
+	for i, t := range inner {
+		val, ok := astring(t)
+		if !ok {
+			return false
+		}
+		if i%2 == 0 && t.Kind == "atom" && strings.EqualFold(val, "NIL") {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *session) cmdCompress(cmd command) error {
