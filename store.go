@@ -496,6 +496,7 @@ func (st *Store) selectBox(s *session, name string, readOnly bool, qr *qresyncSe
 	s.seenID = mb.nextID
 	s.wake = make(chan struct{}, 1)
 	mb.waiters = append(mb.waiters, s.wake)
+	s.savedUIDs = nil
 	return info, nil
 }
 
@@ -1056,10 +1057,19 @@ type seqBound struct {
 
 type seqSpan struct{ a, b seqBound }
 
-type seqSet struct{ spans []seqSpan }
+type seqSet struct {
+	spans  []seqSpan
+	dollar bool
+}
 
 func parseSeqSet(s string) (*seqSet, error) {
 	if s == "" {
+		return nil, fmt.Errorf("bad sequence")
+	}
+	if s == "$" {
+		return &seqSet{dollar: true}, nil
+	}
+	if strings.Contains(s, "$") {
 		return nil, fmt.Errorf("bad sequence")
 	}
 	var spans []seqSpan
@@ -1131,6 +1141,44 @@ func (mb *Mailbox) starMax(uidMode bool) uint32 {
 	return uint32(len(mb.msgs))
 }
 
+// seqFromIDs is one span per id. Zero is skipped. An empty list matches nothing.
+func seqFromIDs(ids []uint32) *seqSet {
+	spans := make([]seqSpan, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		b := seqBound{n: id}
+		spans = append(spans, seqSpan{a: b, b: b})
+	}
+	return &seqSet{spans: spans}
+}
+
+// resolveDollar replaces "$" with the saved UIDs, or with the current
+// sequence numbers of those UIDs. The caller holds st.mu.
+func (st *Store) resolveDollar(s *session, uidMode bool, set *seqSet) (*seqSet, error) {
+	if set == nil || !set.dollar {
+		return set, nil
+	}
+	if s.box == nil {
+		return nil, fmt.Errorf("not selected")
+	}
+	if uidMode {
+		return seqFromIDs(s.savedUIDs), nil
+	}
+	want := make(map[uint32]struct{}, len(s.savedUIDs))
+	for _, u := range s.savedUIDs {
+		want[u] = struct{}{}
+	}
+	var seqs []uint32
+	for i, m := range s.box.msgs {
+		if _, ok := want[m.uid]; ok {
+			seqs = append(seqs, uint32(i+1))
+		}
+	}
+	return seqFromIDs(seqs), nil
+}
+
 func (mb *Mailbox) each(uidMode bool, set *seqSet, fn func(seq uint32, m *Message)) {
 	max := mb.starMax(uidMode)
 	for i, m := range mb.msgs {
@@ -1167,6 +1215,10 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, ch
 		return nil, nil, err
 	}
 	if err := binarySpecsOK(expanded); err != nil {
+		return nil, nil, err
+	}
+	set, err = st.resolveDollar(s, uidMode, set)
+	if err != nil {
 		return nil, nil, err
 	}
 	if changedSince != nil && !itemListed(expanded, "MODSEQ") {
@@ -1418,6 +1470,10 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 	default:
 		return nil, nil, fmt.Errorf("bad store item")
 	}
+	set, err := st.resolveDollar(s, uidMode, set)
+	if err != nil {
+		return nil, nil, err
+	}
 	var snaps []storeSnap
 	var modified []uint32
 	mb := s.box
@@ -1483,8 +1539,8 @@ type searchKey struct {
 	fuzzy bool
 }
 
-func parseSearch(toks []Token, allowFuzzy, allowWithin bool, now time.Time) ([]searchKey, error) {
-	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, now)
+func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved bool, now time.Time) ([]searchKey, error) {
+	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, now)
 	if err != nil || len(rest) != 0 || len(keys) == 0 {
 		return nil, fmt.Errorf("bad search")
 	}
@@ -1494,7 +1550,7 @@ func parseSearch(toks []Token, allowFuzzy, allowWithin bool, now time.Time) ([]s
 // parseSearchSeq reads keys until the input ends. Inside a parenthesis the
 // closing parenthesis is left unconsumed. An unclosed parenthesis is an error.
 // fuzzy marks text leaves parsed from this sequence.
-func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin bool, now time.Time) ([]searchKey, []Token, error) {
+func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved bool, now time.Time) ([]searchKey, []Token, error) {
 	var keys []searchKey
 	for len(toks) > 0 {
 		if toks[0].Kind == "rparen" {
@@ -1503,7 +1559,7 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin bool, n
 			}
 			return keys, toks, nil
 		}
-		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, now)
+		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, now)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1516,12 +1572,12 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin bool, n
 	return keys, nil, nil
 }
 
-func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin bool, now time.Time) (searchKey, []Token, error) {
+func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved bool, now time.Time) (searchKey, []Token, error) {
 	if len(toks) == 0 || toks[0].Kind == "rparen" {
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
 	if toks[0].Kind == "lparen" {
-		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, now)
+		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, now)
 		if err != nil || len(inner) == 0 || len(rest) == 0 || rest[0].Kind != "rparen" {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
@@ -1533,19 +1589,19 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin bool, now time.
 		if !allowFuzzy {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
-		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, now)
+		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, now)
 	case "OR":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, now)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
-		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, now)
+		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
 		return searchKey{op: "OR", kids: []searchKey{a, b}}, rest, nil
 	case "NOT":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, now)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
@@ -1611,13 +1667,35 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin bool, now time.
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
 		set, err := parseSeqSet(toks[1].Val)
-		if err != nil {
+		if err != nil || (set.dollar && !allowSaved) {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
 		return searchKey{op: "UID", set: set}, toks[2:], nil
+	case "$":
+		if !allowSaved {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: "$"}, toks[1:], nil
 	default:
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
+}
+
+// bindSaved fills "$" keys, and a UID key whose set is "$", from saved UIDs.
+func bindSaved(keys []searchKey, uids []uint32) {
+	set := seqFromIDs(uids)
+	var walk func([]searchKey)
+	walk = func(ks []searchKey) {
+		for i := range ks {
+			if ks[i].op == "$" || (ks[i].op == "UID" && ks[i].set != nil && ks[i].set.dollar) {
+				ks[i].set = set
+			}
+			if len(ks[i].kids) > 0 {
+				walk(ks[i].kids)
+			}
+		}
+	}
+	walk(keys)
 }
 
 // nzSeconds is a non-zero integer of seconds that fits in a time.Duration.
@@ -1701,8 +1779,8 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 		return m.size > k.num
 	case "SMALLER":
 		return m.size < k.num
-	case "UID":
-		return k.set.contains(m.uid, maxUID)
+	case "UID", "$":
+		return k.set != nil && k.set.contains(m.uid, maxUID)
 	default:
 		return false
 	}
@@ -1871,12 +1949,13 @@ func lessSort(a, b *Message, c *sortCrit) bool {
 	return cmp < 0
 }
 
-func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCrit) ([]uint32, error) {
+func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCrit) ([]uint32, []uint32, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
-		return nil, fmt.Errorf("not selected")
+		return nil, nil, fmt.Errorf("not selected")
 	}
+	bindSaved(keys, s.savedUIDs)
 	mb := s.box
 	maxUID := mb.starMax(true)
 	type hit struct {
@@ -1907,10 +1986,12 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCr
 		})
 	}
 	ids := make([]uint32, len(hits))
+	uids := make([]uint32, len(hits))
 	for i, h := range hits {
 		ids[i] = h.id
+		uids[i] = h.m.uid
 	}
-	return ids, nil
+	return ids, uids, nil
 }
 
 type sourceHit struct {
@@ -2425,6 +2506,10 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		return copyResult{}, fmt.Errorf("no mailbox")
 	}
 	src := s.box
+	set, err = st.resolveDollar(s, uidMode, set)
+	if err != nil {
+		return copyResult{}, err
+	}
 	var picked []*Message
 	var srcUIDs []uint32
 	src.each(uidMode, set, func(seq uint32, m *Message) {
@@ -2498,6 +2583,10 @@ func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
 		return nil, fmt.Errorf("read-only")
 	}
 	mb := s.box
+	uidSet, err := st.resolveDollar(s, true, uidSet)
+	if err != nil {
+		return nil, err
+	}
 	maxUID := mb.starMax(true)
 	var keep []*Message
 	var lines []string

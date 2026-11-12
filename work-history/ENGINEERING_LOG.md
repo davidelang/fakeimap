@@ -768,3 +768,16 @@
 
 - Approved plan: sandbox/plans/within-20261111-2212-plan.md
 - OLDER and YOUNGER take a non-zero interval in seconds. The target is the current second minus that interval. The frozen clock is that current time when it is set. Both keys include the equal instant. Personalities that record WITHIN advertise it, and the gaps file no longer contains it.
+
+## 2026-11-11 - SEARCHRES execution start
+
+- Approved plan: sandbox/plans/searchres-20261111-2224-plan.md
+- Work: save RETURN (SAVE) as UIDs when SEARCHRES is listed, accept $ for that set, and list the token on the lab personalities named in the plan
+- First action per standard-plan-compliance-block.md
+
+## 2026-11-11 - SEARCHRES landed
+
+- Approved plan: sandbox/plans/searchres-20261111-2224-plan.md
+- SEARCHRES saves the full match of RETURN (SAVE) as UIDs on SEARCH, UID SEARCH, and SORT. RETURN (SAVE) alone sends no untagged line. SAVE with PARTIAL is BAD. THREAD still does not parse RETURN.
+- $ alone is that saved set. In a UID command the numbers are UIDs. Otherwise they are the current sequence numbers. 1,$ and 1:$ are BAD. SELECT and EXAMINE clear the set. An expunge leaves the saved UIDs in place.
+- The token is on the lab lists named in the plan. Greeting lists are unchanged. cyrus-3137.gaps.json no longer contains SEARCHRES. The facts file and the guide describe it.

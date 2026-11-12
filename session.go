@@ -38,6 +38,7 @@ type session struct {
 	seenID     uint64
 	wake       chan struct{}
 	enabled    map[string]struct{}
+	savedUIDs  []uint32 // SEARCHRES result. UIDs, including ones later expunged.
 	pers       *Personality
 	fault      *fault
 	capture    *bytes.Buffer
@@ -1141,6 +1142,19 @@ func (s *session) cmdSelect(cmd command) error {
 	if qr != nil && !s.on("QRESYNC") {
 		return s.bad(cmd.tag, "QRESYNC not enabled")
 	}
+	if qr != nil && qr.known != nil && qr.known.dollar {
+		if !s.advertiseCap("SEARCHRES") {
+			return s.bad(cmd.tag, "syntax")
+		}
+		ids := append([]uint32(nil), s.savedUIDs...)
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		qr.known = seqFromIDs(ids)
+		if len(ids) == 0 {
+			qr.knownRaw = ""
+		} else {
+			qr.knownRaw = formatUIDSet(ids)
+		}
+	}
 	info, err := s.srv.store.selectBox(s, name, cmd.name == "EXAMINE", qr)
 	if err != nil {
 		return s.no(cmd.tag, cmd.name+" no such mailbox")
@@ -1320,7 +1334,7 @@ func (s *session) cmdFetch(cmd command) error {
 		return s.bad(cmd.tag, "FETCH syntax")
 	}
 	set, err := parseSeqSet(cmd.args[0].Val)
-	if err != nil {
+	if err != nil || (set.dollar && !s.advertiseCap("SEARCHRES")) {
 		return s.bad(cmd.tag, "FETCH syntax")
 	}
 	if cmd.changedSince != nil || itemListed(cmd.fetch, "MODSEQ") {
@@ -1513,7 +1527,7 @@ func (s *session) cmdStore(cmd command) error {
 		return s.bad(cmd.tag, "STORE syntax")
 	}
 	set, err := parseSeqSet(cmd.args[0].Val)
-	if err != nil {
+	if err != nil || (set.dollar && !s.advertiseCap("SEARCHRES")) {
 		return s.bad(cmd.tag, "STORE syntax")
 	}
 	i := 1
@@ -1608,8 +1622,13 @@ type searchReturn struct {
 	count   bool
 	all     bool
 	partial bool
+	save    bool
 	a, b    int
 	echo    string
+}
+
+func (r searchReturn) saveOnly() bool {
+	return r.save && !r.min && !r.max && !r.count && !r.all && !r.partial
 }
 
 func parseSearchReturn(args []Token) (searchReturn, []Token, error) {
@@ -1658,8 +1677,14 @@ func parseSearchReturn(args []Token) (searchReturn, []Token, error) {
 			}
 			r.all = true
 			i++
+		case "SAVE":
+			if r.save || r.partial {
+				return r, nil, fmt.Errorf("bad")
+			}
+			r.save = true
+			i++
 		case "PARTIAL":
-			if r.partial || r.all {
+			if r.partial || r.all || r.save {
 				return r, nil, fmt.Errorf("bad")
 			}
 			i++
@@ -1678,7 +1703,7 @@ func parseSearchReturn(args []Token) (searchReturn, []Token, error) {
 			return r, nil, fmt.Errorf("bad")
 		}
 	}
-	if !r.min && !r.max && !r.count && !r.all && !r.partial {
+	if !r.min && !r.max && !r.count && !r.all && !r.partial && !r.save {
 		r.all = true
 	}
 	return r, args[i:], nil
@@ -1843,6 +1868,9 @@ func (s *session) cmdSearch(cmd command) error {
 	if ret.on && !s.advertiseCap("ESEARCH") {
 		return s.bad(cmd.tag, "SEARCH syntax")
 	}
+	if ret.save && !s.advertiseCap("SEARCHRES") {
+		return s.bad(cmd.tag, "SEARCH syntax")
+	}
 	if ret.partial && !s.advertiseCap("PARTIAL") {
 		return s.bad(cmd.tag, "SEARCH syntax")
 	}
@@ -1853,13 +1881,19 @@ func (s *session) cmdSearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "SEARCH charset")
 	}
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.searchNow())
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.searchNow())
 	if err != nil {
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
-	ids, err := s.srv.store.search(s, cmd.uid, keys, nil)
+	ids, uids, err := s.srv.store.search(s, cmd.uid, keys, nil)
 	if err != nil {
 		return s.no(cmd.tag, "SEARCH not selected")
+	}
+	if ret.save {
+		s.savedUIDs = append([]uint32(nil), uids...)
+	}
+	if ret.saveOnly() {
+		return s.ok(cmd.tag, "SEARCH completed")
 	}
 	line := formatEsearch(cmd.tag, cmd.uid, ids, ret)
 	if !ret.on {
@@ -1932,7 +1966,7 @@ func (s *session) cmdEsearch(cmd command) error {
 		}
 	}
 	ret, rest, err := parseSearchReturn(rest)
-	if err != nil {
+	if err != nil || ret.save {
 		return s.bad(cmd.tag, "ESEARCH syntax")
 	}
 	if ret.partial && !s.advertiseCap("PARTIAL") {
@@ -1945,7 +1979,7 @@ func (s *session) cmdEsearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "ESEARCH charset")
 	}
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.searchNow())
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.searchNow())
 	if err != nil {
 		return s.bad(cmd.tag, "ESEARCH bad key")
 	}
@@ -2034,6 +2068,9 @@ func (s *session) cmdSort(cmd command) error {
 	if ret.on && !s.advertiseCap("ESORT") {
 		return s.bad(cmd.tag, "SORT syntax")
 	}
+	if ret.save && !s.advertiseCap("SEARCHRES") {
+		return s.bad(cmd.tag, "SORT syntax")
+	}
 	if ret.partial && !s.advertiseCap("PARTIAL") {
 		return s.bad(cmd.tag, "SORT syntax")
 	}
@@ -2057,19 +2094,26 @@ func (s *session) cmdSort(cmd command) error {
 	}
 	within := s.advertiseCap("WITHIN")
 	now := s.searchNow()
+	saved := s.advertiseCap("SEARCHRES")
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, now)
+		keys, err = parseSearch(rest, false, within, saved, now)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "SORT bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, now)
+		keys, err = parseSearch(rest[1:], false, within, saved, now)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "SORT bad key")
 	}
-	ids, err := s.srv.store.search(s, cmd.uid, keys, &crit)
+	ids, uids, err := s.srv.store.search(s, cmd.uid, keys, &crit)
 	if err != nil {
 		return s.no(cmd.tag, "SORT not selected")
+	}
+	if ret.save {
+		s.savedUIDs = append([]uint32(nil), uids...)
+	}
+	if ret.saveOnly() {
+		return s.ok(cmd.tag, "SORT completed")
 	}
 	line := ""
 	if ret.on {
@@ -2128,11 +2172,11 @@ func (s *session) cmdThread(cmd command) error {
 	within := s.advertiseCap("WITHIN")
 	now := s.searchNow()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, now)
+		keys, err = parseSearch(rest, false, within, false, now)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "THREAD bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, now)
+		keys, err = parseSearch(rest[1:], false, within, false, now)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "THREAD bad key")
@@ -2218,7 +2262,7 @@ func (s *session) cmdCopy(cmd command) error {
 		return s.bad(cmd.tag, cmd.name+" syntax")
 	}
 	set, err := parseSeqSet(cmd.args[0].Val)
-	if err != nil {
+	if err != nil || (set.dollar && !s.advertiseCap("SEARCHRES")) {
 		return s.bad(cmd.tag, cmd.name+" syntax")
 	}
 	dest, ok := astring(cmd.args[1])
@@ -2276,7 +2320,7 @@ func (s *session) cmdExpunge(cmd command) error {
 			return s.bad(cmd.tag, "UID EXPUNGE syntax")
 		}
 		parsed, err := parseSeqSet(cmd.args[0].Val)
-		if err != nil {
+		if err != nil || (parsed.dollar && !s.advertiseCap("SEARCHRES")) {
 			return s.bad(cmd.tag, "UID EXPUNGE syntax")
 		}
 		set = parsed

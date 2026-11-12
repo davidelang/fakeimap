@@ -179,6 +179,8 @@ The fixture files `sasl`, `condstore`, `list`, `esearch`, `compress`, `sort`, `u
 
 `cyrus-3137.json` lists `SEARCH=FUZZY` on the pre-login and post-login lists and not on the greeting. `sasl.json` does not list it. `SEARCH=FUZZY` is implemented and is not in the gaps file.
 
+`SEARCHRES`, when listed, saves the full match of `RETURN (SAVE)` as UIDs and lets `$` stand for that set. `SELECT` and `EXAMINE` make `$` empty, and an empty `$` is a valid `FETCH` that sends no `FETCH` line. The `SAVE` rules and the files that list the token are in `docs/facts/imap-server.md`.
+
 ## Dataset
 
 `dataset.json` keys, as `docs/facts/imap-server.md` defines them:
@@ -250,7 +252,7 @@ The UW greeting appends ` at ` and a timestamp after the fixed text. One post-lo
 
 ## Capabilities that stay off
 
-Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `QUOTA`, `ACL`, and `IMAP4rev2`. After `SEARCH=FUZZY` and `APPENDLIMIT=2147483647` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `MULTIAPPEND`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA` and its `QUOTA=RES-*` forms, `QUOTASET`, `REPLACE`, `RIGHTS=kxten`, `SAVEDATE`, `SEARCHRES`, `SORT=MODSEQ`, `SORT=UID`, `STATUS=SIZE`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, `X-SIEVE-MAILBOX`, and `XLIST`.
+Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `QUOTA`, `ACL`, and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, and `SEARCHRES` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `MULTIAPPEND`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA` and its `QUOTA=RES-*` forms, `QUOTASET`, `REPLACE`, `RIGHTS=kxten`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, `STATUS=SIZE`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, `X-SIEVE-MAILBOX`, and `XLIST`.
 
 `URLAUTH`, `URLAUTH=BINARY`, `SORT=MODSEQ`, and `SORT=UID` stay unimplemented. `LOGIN-REFERRALS` and `JMAPACCESS` stay off the personality files. `URLAUTH=BINARY` stays in the gaps file.
 

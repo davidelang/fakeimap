@@ -23,7 +23,6 @@
     "REPLACE",
     "RIGHTS=kxten",
     "SAVEDATE",
-    "SEARCHRES",
     "SORT=MODSEQ",
     "SORT=UID",
     "STATUS=SIZE",

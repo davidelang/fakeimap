@@ -83,6 +83,7 @@ var implementedCaps = map[string]struct{}{
 	"ESEARCH":                 {},
 	"MULTISEARCH":             {},
 	"SEARCH=FUZZY":            {},
+	"SEARCHRES":               {},
 	"WITHIN":                  {},
 	"ESORT":                   {},
 	"PARTIAL":                 {},

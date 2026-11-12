@@ -65,7 +65,8 @@
     "WITHIN",
     "THREAD=REFS",
     "BINARY",
-    "MULTISEARCH"
+    "MULTISEARCH",
+    "SEARCHRES"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

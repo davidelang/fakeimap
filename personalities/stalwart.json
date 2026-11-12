@@ -34,6 +34,7 @@
     "UIDPLUS",
     "ESEARCH",
     "WITHIN",
+    "SEARCHRES",
     "SORT",
     "THREAD=REFERENCES",
     "LIST-EXTENDED",

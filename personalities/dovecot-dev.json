@@ -39,6 +39,7 @@
     "QRESYNC",
     "ESEARCH",
     "ESORT",
+    "SEARCHRES",
     "WITHIN",
     "LIST-STATUS",
     "BINARY",
