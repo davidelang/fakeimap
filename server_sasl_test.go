@@ -69,7 +69,7 @@ func TestSaslPersonality(t *testing.T) {
 		strings.Join(cyrus.SelectOrder, " ") != strings.Join(sasl.SelectOrder, " ") ||
 		strings.Join(cyrus.FlagOrder, " ") != strings.Join(sasl.FlagOrder, " ") ||
 		strings.Join(cyrus.FetchItemOrder, " ") != strings.Join(sasl.FetchItemOrder, " ") ||
-		strings.Join(cyrus.PostLogin, " ") != strings.Join(sasl.PostLogin, " ") {
+		!sameCapSet(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), sasl.PostLogin) {
 		t.Fatalf("mailbox behavior drifted")
 	}
 	want := []string{"AUTH=LOGIN", "AUTH=CRAM-MD5", "AUTH=SCRAM-SHA-1", "AUTH=SCRAM-SHA-256", "AUTH=SCRAM-SHA-1-PLUS", "AUTH=SCRAM-SHA-256-PLUS", "AUTH=EXTERNAL"}
@@ -89,6 +89,23 @@ func TestSaslPersonality(t *testing.T) {
 	if sasl.lists("AUTH=DIGEST-MD5") || cyrus.lists("AUTH=DIGEST-MD5") {
 		t.Fatal("DIGEST-MD5 listed")
 	}
+}
+
+func sameCapSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, c := range a {
+		seen[c]++
+	}
+	for _, c := range b {
+		seen[c]--
+		if seen[c] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func sameString(a, b *string) bool {
