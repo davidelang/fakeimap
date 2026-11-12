@@ -175,6 +175,8 @@ A capability is advertised only when `capImplemented` accepts it. Named tokens a
 
 `WITHIN`, when listed, answers `OLDER` and `YOUNGER`. The interval is one non-zero number of seconds. The target is the current time minus that interval, to one second, and the frozen clock is that current time when it is set. `OLDER` includes an internal date at or before the target. `YOUNGER` includes one at or after it, so the equal instant matches both. The rules are in `docs/facts/imap-server.md`.
 
+`SCAN`, when listed, filters mailbox names. It returns the mailboxes `LIST` would return for the same reference and pattern whose names contain a string, and it does not search message text. `cyrus-24.json`, `cyrus-25.json`, `cyrus-36.json`, and `uwimap.json` list it on the pre-login and post-login lists and not on the greeting. The rules are in `docs/facts/imap-server.md`.
+
 `SORT=MODSEQ`, when listed, accepts `MODSEQ` as the one sort key. The order is the message mod-sequence, ascending, and `REVERSE MODSEQ` is descending. `SORT=UID`, when listed, is the final tie-break, ascending UID, and `REVERSE` does not flip it. It is not a key the client writes. Without that token, equal keys stay in ascending sequence order. Which files list each token is in `docs/facts/imap-server.md`.
 
 `BINARY.SIZE` is a `FETCH` item when `BINARY` is listed. It is not its own capability. The reply is the decoded size of one section as a number, using the same section as `BINARY.PEEK`, and it does not set `\Seen`. The item, including the `BAD` and `NO` cases, is in `docs/facts/imap-server.md`.

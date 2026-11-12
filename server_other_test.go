@@ -270,7 +270,7 @@ func TestCourierAndUW(t *testing.T) {
 	courierFlags := `\Draft \Answered \Flagged \Deleted \Seen \Recent`
 	courierPerm := `\* \Draft \Answered \Flagged \Deleted \Seen`
 	courierOrder := []string{"FLAGS", "PERMANENTFLAGS", "EXISTS", "RECENT", "UIDVALIDITY"}
-	uwCaps := "IMAP4REV1 LITERAL+ IDLE UIDPLUS NAMESPACE CHILDREN BINARY UNSELECT ESEARCH WITHIN SORT THREAD=REFERENCES THREAD=ORDEREDSUBJECT SASL-IR"
+	uwCaps := "IMAP4REV1 LITERAL+ IDLE UIDPLUS NAMESPACE CHILDREN BINARY UNSELECT ESEARCH WITHIN SCAN SORT THREAD=REFERENCES THREAD=ORDEREDSUBJECT SASL-IR"
 	uwPost := uwCaps + " STARTTLS"
 	uwNS := `* NAMESPACE (("" "/")("#mhinbox" NIL)("#mh/" "/")) (("~" "/")) (("#shared/" "/")("#ftp/" "/")("#news." ".")("#public/" "/"))`
 	uwFlags := `\Answered \Flagged \Deleted \Draft \Seen`

@@ -30,6 +30,7 @@
     "LIST-EXTENDED",
     "WITHIN",
     "QRESYNC",
+    "SCAN",
     "SASL-IR",
     "COMPRESS=DEFLATE",
     "IDLE",
@@ -56,6 +57,7 @@
     "LIST-EXTENDED",
     "WITHIN",
     "QRESYNC",
+    "SCAN",
     "COMPRESS=DEFLATE",
     "IDLE"
   ],

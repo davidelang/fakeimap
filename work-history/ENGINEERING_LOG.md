@@ -809,3 +809,15 @@
 
 - Approved plan: sandbox/plans/sort-uid-modseq-20261111-2324-plan.md
 - MODSEQ is one sort key when SORT=MODSEQ is listed: ascending mod-sequence, and REVERSE MODSEQ is descending. SORT=UID breaks equal keys by ascending UID and REVERSE does not flip that tie. A second key, and SORT (UID), stay BAD. cyrus-24 lists SORT=MODSEQ. cyrus-25, cyrus-36, cyrus-3124, and cyrus-3137 list both. sasl.json lists both on the post-login list only. Both tokens left the gaps file.
+
+## 2026-11-11 - SCAN execution start
+
+- Approved plan: sandbox/plans/scan-20261111-2345-plan.md
+- Work: SCAN returns mailbox names LIST would return whose names contain a string. It does not search message text. Cyrus 2.4, 2.5, 3.6, and UW-IMAP advertise it.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-11 - SCAN landed
+
+- Approved plan: sandbox/plans/scan-20261111-2345-plan.md
+- SCAN returns the mailboxes LIST would return for the same reference and pattern whose names contain a string. The match is case-insensitive and includes a hierarchy row. It does not search message text. Fewer or more arguments, RETURN, and a selection list are BAD. Before login it is NO.
+- cyrus-24 lists it after QRESYNC. cyrus-25 lists it after QRESYNC and before MOVE. cyrus-36 lists it after WITHIN and before SORT=MODSEQ. uwimap lists it after WITHIN and before SORT. Greeting lists are unchanged. sasl.json, cyrus-3137.json, and the gaps file do not gain it. The facts file and the guide describe it.

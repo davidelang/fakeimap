@@ -418,8 +418,8 @@ func TestSortExtensionFiles(t *testing.T) {
 	}
 	both("personalities/cyrus-24.json", "SORT", "")
 	both("personalities/cyrus-25.json", "SORT", "SORT=DISPLAY")
+	both("personalities/cyrus-36.json", "SCAN", "SORT=MODSEQ")
 	for _, file := range []string{
-		"personalities/cyrus-36.json",
 		"personalities/cyrus-3124.json",
 		"personalities/cyrus-3137.json",
 	} {

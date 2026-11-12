@@ -369,6 +369,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdNamespace(cmd)
 	case "LIST":
 		return s.cmdList(cmd)
+	case "SCAN":
+		return s.cmdScan(cmd)
 	case "LSUB":
 		return s.cmdLsub(cmd)
 	case "SUBSCRIBE":
@@ -785,6 +787,49 @@ func (s *session) cmdList(cmd command) error {
 		}
 	}
 	return s.ok(cmd.tag, "LIST completed")
+}
+
+// cmdScan returns mailbox names from the same reference and pattern as LIST
+// when the name contains the string. It does not read message text.
+func (s *session) cmdScan(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !s.advertiseCap("SCAN") {
+		return s.bad(cmd.tag, "SCAN not supported")
+	}
+	if len(cmd.args) != 3 {
+		return s.bad(cmd.tag, "SCAN syntax")
+	}
+	ref, ok1 := astring(cmd.args[0])
+	pat, ok2 := astring(cmd.args[1])
+	needle, ok3 := astring(cmd.args[2])
+	if !ok1 || !ok2 || !ok3 {
+		return s.bad(cmd.tag, "SCAN syntax")
+	}
+	ref, err := s.boxIn(ref)
+	if err != nil {
+		return s.bad(cmd.tag, "SCAN syntax")
+	}
+	pat, err = s.boxIn(pat)
+	if err != nil {
+		return s.bad(cmd.tag, "SCAN syntax")
+	}
+	entries, _, _, err := s.srv.store.list(ref, pat, listQuery{})
+	if err != nil {
+		return s.bad(cmd.tag, "SCAN syntax")
+	}
+	fold := strings.ToLower(needle)
+	for _, e := range entries {
+		wn := s.boxOut(e.name)
+		if needle != "" && !strings.Contains(strings.ToLower(wn), fold) {
+			continue
+		}
+		if err := s.sendLine("* SCAN " + imapAtom(wn)); err != nil {
+			return err
+		}
+	}
+	return s.ok(cmd.tag, "SCAN completed")
 }
 
 func (s *session) cmdLsub(cmd command) error {
