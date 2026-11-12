@@ -944,3 +944,9 @@
 - Work: personalities that list OBJECTID speak RFC 8474 mailbox and message ids. Personalities that list OBJECTID+ and not OBJECTID speak the compound form, with ACCOUNTID equal to the JMAP account id. COPY and MOVE keep EMAILID. CATENATE stays unimplemented.
 - Plan: sandbox/plans/objectid-20261112-0529-plan.md
 - Files: store.go, session.go, notify.go, personality.go, personalities, docs/facts/imap-server.md, docs/guide.md, server tests
+
+## 2026-11-12 - OBJECTID expunge, rename, and silent store
+
+- Expunging the last copies of one EMAILID in one EXPUNGE or CLOSE records JMAP destroyed. A copy that remains is updated.
+- RENAME INBOX INBOX stays NO for every personality.
+- On OBJECTID+, STORE .SILENT applies a shared flag to the other copies and does not flush those FETCH lines later.

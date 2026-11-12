@@ -165,6 +165,11 @@ func TestObjectIDRFC(t *testing.T) {
 		t.Fatalf("greeting %q", cl.greeting)
 	}
 	loginDemo(t, cl)
+	sameInbox := cl.cmd("RENAME INBOX INBOX")
+	sameInbox.no(t)
+	if strings.Contains(sameInbox.tagLine, "MAILBOXID") || strings.Contains(sameInbox.tagLine, "OBJECTID") {
+		t.Fatalf("rename inbox inbox %s", sameInbox.tagLine)
+	}
 	post := capsOf(cl.cmd("CAPABILITY").mustOK(t).untagged[0])
 	if !listed(post, "OBJECTID") || listed(post, "OBJECTID+") {
 		t.Fatalf("post-login %v", post)
@@ -358,6 +363,11 @@ func TestObjectIDPlus(t *testing.T) {
 		t.Fatalf("greeting %q", cl.greeting)
 	}
 	loginDemo(t, cl)
+	sameInbox := cl.cmd("RENAME INBOX INBOX")
+	sameInbox.no(t)
+	if strings.Contains(sameInbox.tagLine, "OBJECTID") || strings.Contains(sameInbox.tagLine, "MAILBOXID") {
+		t.Fatalf("rename inbox inbox %s", sameInbox.tagLine)
+	}
 	post := capsOf(cl.cmd("CAPABILITY").mustOK(t).untagged[0])
 	if listed(post, "OBJECTID") || !listed(post, "OBJECTID+") {
 		t.Fatalf("post %v", post)
@@ -450,6 +460,19 @@ func TestObjectIDPlus(t *testing.T) {
 	if !strings.Contains(by["2"], `\Seen`) || !strings.Contains(by["2"], `\Deleted`) || strings.Contains(by["2"], `\Flagged`) || strings.Contains(by["2"], "Work") {
 		t.Fatalf("propagated %s", by["2"])
 	}
+	silent := cl.cmd("STORE 1 +FLAGS.SILENT (\\Flagged)").mustOK(t)
+	if hasSub(silent.untagged, "FETCH") {
+		t.Fatalf("silent store %q", silent.untagged)
+	}
+	noop := cl.cmd("NOOP").mustOK(t)
+	if hasSub(noop.untagged, "FETCH") || hasSub(noop.untagged, "FLAGS") {
+		t.Fatalf("silent flush %q", noop.untagged)
+	}
+	after := cl.cmd("FETCH 1:2 (FLAGS)").mustOK(t)
+	by = fetchBySeq(after.untagged)
+	if !strings.Contains(by["1"], `\Flagged`) || !strings.Contains(by["2"], `\Flagged`) {
+		t.Fatalf("silent did not apply %q", after.untagged)
+	}
 	cl.cmd("ENABLE UIDONLY").mustOK(t)
 	uf := cl.cmd("UID FETCH 1 (OBJECTID)").mustOK(t)
 	if !hasSub(uf.untagged, "UIDFETCH") || !hasSub(uf.untagged, "OBJECTID (EMAILID ") {
@@ -529,10 +552,74 @@ func TestObjectIDPlus(t *testing.T) {
 	}
 }
 
+func TestObjectIDLastCopyExpunge(t *testing.T) {
+	_, bound := start(t, Config{
+		Listen:     "127.0.0.1:0",
+		JmapListen: "127.0.0.1:0",
+	})
+	session := jmapSession(t, bound.Jmap, "demo", "secret")
+	accountID := objectField(t, session, "primaryAccounts")["urn:ietf:params:jmap:mail"].(string)
+	cl := dial(t, bound.Listen)
+	loginDemo(t, cl)
+	body := "From: a@example\r\nMessage-ID: <twin@example>\r\nSubject: twin\r\n\r\ntwin\r\n"
+	cl.cmd("CREATE Twins").mustOK(t)
+	cl.cmd("APPEND Twins " + imapLit(body)).mustOK(t)
+	cl.cmd("SELECT Twins").mustOK(t)
+	cl.cmd("COPY 1 Twins").mustOK(t)
+	id := fetchIDs(t, cl, "1")[0].email
+	if fetchIDs(t, cl, "2")[0].email != id {
+		t.Fatal("copy did not keep EMAILID")
+	}
+	cl.cmd("STORE 1 +FLAGS (\\Deleted)").mustOK(t)
+	mark := jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	cl.cmd("EXPUNGE").mustOK(t)
+	ch := emailChanges(t, bound.Jmap, session, accountID, mark)
+	if strings.Join(stringArray(t, ch["destroyed"]), ",") != "" || strings.Join(stringArray(t, ch["updated"]), ",") != id {
+		t.Fatalf("one copy left %+v", ch)
+	}
+	if len(emailList(t, jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/get", map[string]any{"accountId": accountID, "ids": []any{id}, "properties": []any{"id"}}, "0"},
+	}))) != 1 {
+		t.Fatal("remaining copy was destroyed")
+	}
+	cl.cmd("STORE 1 +FLAGS (\\Deleted)").mustOK(t)
+	mark = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	cl.cmd("EXPUNGE").mustOK(t)
+	ch = emailChanges(t, bound.Jmap, session, accountID, mark)
+	if strings.Join(stringArray(t, ch["destroyed"]), ",") != id || strings.Join(stringArray(t, ch["updated"]), ",") != "" {
+		t.Fatalf("last expunge %+v", ch)
+	}
+
+	cl.cmd("CREATE Closed").mustOK(t)
+	cl.cmd("APPEND Closed " + imapLit(body)).mustOK(t)
+	cl.cmd("SELECT Closed").mustOK(t)
+	cl.cmd("COPY 1 Closed").mustOK(t)
+	closedID := fetchIDs(t, cl, "1")[0].email
+	cl.cmd("STORE 1:2 +FLAGS (\\Deleted)").mustOK(t)
+	mark = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
+	cl.cmd("CLOSE").mustOK(t)
+	ch = emailChanges(t, bound.Jmap, session, accountID, mark)
+	if strings.Join(stringArray(t, ch["destroyed"]), ",") != closedID || strings.Join(stringArray(t, ch["updated"]), ",") != "" {
+		t.Fatalf("last close %+v", ch)
+	}
+}
+
+func emailChanges(t *testing.T, addr string, session map[string]any, accountID, since string) map[string]any {
+	t.Helper()
+	return methodArgs(t, jmapCall(t, addr, session, "demo", "secret", []any{
+		[]any{"Email/changes", map[string]any{"accountId": accountID, "sinceState": since}, "0"},
+	}), "Email/changes")
+}
+
 func TestObjectIDAbsent(t *testing.T) {
 	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/cyrus-22.json"})
 	cl := dial(t, bound.Listen)
 	loginDemo(t, cl)
+	sameInbox := cl.cmd("RENAME INBOX INBOX")
+	sameInbox.no(t)
+	if strings.Contains(sameInbox.tagLine, "MAILBOXID") || strings.Contains(sameInbox.tagLine, "OBJECTID") {
+		t.Fatalf("rename inbox inbox %s", sameInbox.tagLine)
+	}
 	post := capsOf(cl.cmd("CAPABILITY").mustOK(t).untagged[0])
 	if listed(post, "OBJECTID") || listed(post, "OBJECTID+") {
 		t.Fatalf("post %v", post)

@@ -1228,13 +1228,15 @@ func (st *Store) rename(oldName, newName string, moveInbox bool) (string, error)
 	if st.boxes[oldC] == nil {
 		return "", fmt.Errorf("no mailbox")
 	}
+	// RENAME INBOX INBOX stays NO for every personality. A different
+	// destination is allowed only when this personality moves INBOX.
+	if oldC == "INBOX" && (!moveInbox || oldC == newC) {
+		return "", fmt.Errorf("cannot rename INBOX")
+	}
 	if oldC == newC {
 		return st.boxes[oldC].jmapID, nil
 	}
 	if oldC == "INBOX" {
-		if !moveInbox {
-			return "", fmt.Errorf("cannot rename INBOX")
-		}
 		return st.renameInboxLocked(newC)
 	}
 	type pair struct{ old, neu string }
@@ -1889,11 +1891,13 @@ func (st *Store) propagateObjectFlags(selected *Mailbox, src *Message, op string
 			mb.bump(m)
 			st.noteMail("updated", m.jmapID)
 			ev := mb.push(mbEvent{kind: "flags", seq: uint32(i + 1), uid: m.uid, modseq: m.modseq, flags: formatted})
+			// .SILENT still moves this session past the event. A later flush
+			// must not emit the propagated FETCH. Other sessions keep it.
+			if mb == selected && ev > last {
+				last = ev
+			}
 			if report && mb == selected {
 				snaps = append(snaps, storeSnap{seq: uint32(i + 1), uid: m.uid, modseq: m.modseq, flags: formatted})
-				if ev > last {
-					last = ev
-				}
 			}
 		}
 	}
@@ -3281,9 +3285,10 @@ func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, ui
 			var gone []uint32
 			var last uint64
 			qresync := s.on("QRESYNC") || s.on("UIDONLY")
+			var goneIDs []string
 			for _, h := range kept {
 				mb.noteExpunge(h.m)
-				st.noteCopyGone(h.m.jmapID, h.m, nil)
+				goneIDs = append(goneIDs, h.m.jmapID)
 				gone = append(gone, h.m.uid)
 				if !qresync {
 					lines = append(lines, fmt.Sprintf("* %d EXPUNGE", h.seq))
@@ -3302,6 +3307,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, ui
 				lines = append(lines, "* VANISHED "+formatUIDSet(asc))
 			}
 			mb.msgs = keep
+			st.noteExpungedIDs(goneIDs)
 			if last > s.seenID {
 				s.seenID = last
 			}
@@ -3311,6 +3317,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, ui
 	var keep []*Message
 	var lines []string
 	var gone []uint32
+	var goneIDs []string
 	seq := uint32(1)
 	var last uint64
 	qresync := s.on("QRESYNC") || s.on("UIDONLY")
@@ -3321,7 +3328,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, ui
 		}
 		if hit {
 			mb.noteExpunge(m)
-			st.noteCopyGone(m.jmapID, m, nil)
+			goneIDs = append(goneIDs, m.jmapID)
 			gone = append(gone, m.uid)
 			if !qresync {
 				lines = append(lines, fmt.Sprintf("* %d EXPUNGE", seq))
@@ -3336,6 +3343,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, ui
 		lines = append(lines, "* VANISHED "+formatUIDSet(gone))
 	}
 	mb.msgs = keep
+	st.noteExpungedIDs(goneIDs)
 	if last > s.seenID {
 		s.seenID = last
 	}
@@ -3353,13 +3361,14 @@ func (st *Store) closeBox(s *session) ([]string, error) {
 	}
 	mb := s.box
 	var gone []uint32
+	var goneIDs []string
 	if !s.readonly {
 		var keep []*Message
 		seq := uint32(1)
 		for _, m := range mb.msgs {
 			if m.has(`\Deleted`) {
 				mb.noteExpunge(m)
-				st.noteCopyGone(m.jmapID, m, nil)
+				goneIDs = append(goneIDs, m.jmapID)
 				gone = append(gone, m.uid)
 				mb.push(mbEvent{kind: "expunge", seq: seq, uid: m.uid, modseq: m.modseq})
 				continue
@@ -3371,6 +3380,7 @@ func (st *Store) closeBox(s *session) ([]string, error) {
 			mb.msgs = keep
 			mb.pushExists()
 		}
+		st.noteExpungedIDs(goneIDs)
 	}
 	var lines []string
 	if s.on("UIDONLY") && len(gone) > 0 {
@@ -3984,6 +3994,20 @@ func (st *Store) applyOneUpdate(p emailPatch, frozen *time.Time) string {
 		st.noteMail("updated", p.id)
 	}
 	return ""
+}
+
+// noteExpungedIDs records one JMAP change per id after those messages have
+// left their mailbox. A copy that is still stored is updated. None left is
+// destroyed. Caller holds st.mu.
+func (st *Store) noteExpungedIDs(ids []string) {
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		st.noteCopyGone(id, nil, nil)
+	}
 }
 
 // noteCopyGone records destroyed when no copy of id remains outside skip
