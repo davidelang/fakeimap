@@ -133,6 +133,130 @@ func parseAtomList(args []Token, i int) ([]string, int, error) {
 	return out, i + 1, nil
 }
 
+// parseFetchList reads a MessageNew fetch list. NOTIFY is split by readTokens,
+// which ends an atom at '(' and ')'. FETCH keeps those inside one item via
+// readOneFetchItem. Spaces that splitter dropped are put back in the RFC shape:
+// a space before '(', none after it, none before ')' or a token that continues
+// the section (']', '<'). A ')' at parenthesis depth zero ends the item and
+// stays for the list, including when the section is still open. expandFetch
+// then accepts or rejects that string the same way FETCH does.
+func parseFetchList(args []Token, i int) ([]string, int, error) {
+	if i >= len(args) || args[i].Kind != "lparen" {
+		return nil, i, errSyntax
+	}
+	i++
+	var items []string
+	for i < len(args) && args[i].Kind != "rparen" {
+		item, next, err := oneFetchItem(args, i)
+		if err != nil || item == "" {
+			return nil, i, errSyntax
+		}
+		items = append(items, item)
+		i = next
+	}
+	if len(items) == 0 || i >= len(args) || args[i].Kind != "rparen" {
+		return nil, i, errSyntax
+	}
+	return items, i + 1, nil
+}
+
+func oneFetchItem(args []Token, i int) (string, int, error) {
+	var b strings.Builder
+	bracket, paren := 0, 0
+	for i < len(args) {
+		t := args[i]
+		if t.Kind == "rparen" && paren == 0 {
+			if b.Len() == 0 {
+				return "", i, errSyntax
+			}
+			return b.String(), i, nil
+		}
+		if b.Len() > 0 && bracket == 0 && paren == 0 {
+			return b.String(), i, nil
+		}
+		var err error
+		bracket, paren, err = appendFetchTok(&b, t, bracket, paren)
+		if err != nil {
+			return "", i, err
+		}
+		i++
+	}
+	if b.Len() == 0 || bracket != 0 || paren != 0 {
+		return "", i, errSyntax
+	}
+	return b.String(), i, nil
+}
+
+func appendFetchTok(b *strings.Builder, t Token, bracket, paren int) (int, int, error) {
+	if b.Len() > 0 {
+		s := b.String()
+		prev := s[len(s)-1]
+		glue := false
+		switch {
+		case t.Kind == "rparen" || prev == '(':
+			glue = true
+		case t.Kind == "lparen":
+			glue = false
+		default:
+			val := t.Val
+			if t.Kind == "quoted" {
+				val = imapString(t.Val)
+			}
+			if val != "" && (val[0] == ']' || val[0] == '<' || val[0] == '>') {
+				glue = true
+			}
+		}
+		if !glue {
+			b.WriteByte(' ')
+		}
+	}
+	switch t.Kind {
+	case "lparen":
+		b.WriteByte('(')
+		return bracket, paren + 1, nil
+	case "rparen":
+		if paren == 0 {
+			return bracket, paren, errSyntax
+		}
+		b.WriteByte(')')
+		return bracket, paren - 1, nil
+	case "atom", "quoted", "literal":
+		text := t.Val
+		if t.Kind == "quoted" {
+			text = imapString(t.Val)
+		} else if t.Kind == "literal" {
+			text = fmt.Sprintf("{%d}\r\n%s", len(t.Val), t.Val)
+		}
+		b.WriteString(text)
+		nb, np, err := countFetchDelims(t.Val, bracket, paren)
+		return nb, np, err
+	default:
+		return bracket, paren, errSyntax
+	}
+}
+
+func countFetchDelims(val string, bracket, paren int) (int, int, error) {
+	for i := 0; i < len(val); i++ {
+		switch val[i] {
+		case '[':
+			bracket++
+		case ']':
+			if bracket == 0 {
+				return bracket, paren, errSyntax
+			}
+			bracket--
+		case '(':
+			paren++
+		case ')':
+			if paren == 0 {
+				return bracket, paren, errSyntax
+			}
+			paren--
+		}
+	}
+	return bracket, paren, nil
+}
+
 func parseNotifySet(s *session, args []Token) (*notifyReg, error) {
 	reg := &notifyReg{}
 	i := 0
@@ -256,7 +380,7 @@ func parseNotifyEvents(args []Token, i int) (map[string]notifyEvent, int, error)
 		i++
 		var fetch []string
 		if name == "MessageNew" && i < len(args) && args[i].Kind == "lparen" {
-			items, next, err := parseAtomList(args, i)
+			items, next, err := parseFetchList(args, i)
 			if err != nil || len(items) == 0 {
 				return nil, i, errSyntax
 			}
@@ -424,9 +548,36 @@ func (s *session) sendNewFetch(uids []uint32, items []string) error {
 		}
 		return err
 	}
+	// A non-peek body sets \Seen inside fetch. FetchSeenFlags puts that on
+	// this same response. The selected mailbox does not flush the flags note.
 	for _, sn := range snaps {
-		if err := s.sendRaw([]byte(s.formatFetch(sn, show))); err != nil {
+		use := show
+		if s.pers.FetchSeenFlags && sn.seenEvent != 0 && !itemListed(show, "FLAGS") {
+			use = append([]string{"FLAGS"}, show...)
+		}
+		if err := s.sendRaw([]byte(s.formatFetch(sn, use))); err != nil {
 			return err
+		}
+	}
+	seenUID := s.on("QRESYNC")
+	if s.on("UIDONLY") {
+		seenUID = s.on("QRESYNC") || itemListed(items, "UID")
+	}
+	if !s.pers.FetchSeenFlags && !itemListed(show, "FLAGS") {
+		var last uint64
+		for _, sn := range snaps {
+			if sn.seenEvent == 0 {
+				continue
+			}
+			if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, seenUID, sn.modseq, s.on("CONDSTORE"))); err != nil {
+				return err
+			}
+			if sn.seenEvent > last {
+				last = sn.seenEvent
+			}
+		}
+		if last > 0 {
+			s.srv.store.advanceSeen(s, last)
 		}
 	}
 	return nil

@@ -932,3 +932,9 @@
 
 - NOTIFY SET registers event groups for one session. Dovecot 2.4.5 and dovecot-dev advertise it after COMPRESS=DEFLATE and before LITERAL+. A matched mailbox that is not selected is pushed as STATUS, and mailbox or subscription changes are pushed as LIST, including while IDLE or waiting for the next command.
 - make exits 0. The gaps file is unchanged.
+
+## 2026-11-12 - NOTIFY fetch items
+
+- MessageNew accepts a fetch item when FETCH would, including BODY.PEEK[HEADER.FIELDS (FROM)]. A syntax error still leaves the previous registration.
+- The MessageNew FETCH or UIDFETCH includes \Seen for a non-peek body when the personality sets fetch_seen_flags, the same way FETCH does.
+- make exits 0.

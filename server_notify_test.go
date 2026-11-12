@@ -366,6 +366,68 @@ func TestNotifyUnauthenticateAndUIDONLY(t *testing.T) {
 	if !vanished || expunge {
 		t.Fatalf("expunge lines %q", got)
 	}
+
+	a.cmd("NOTIFY SET (selected (MessageNew (BODY[]) MessageExpunge))").mustOK(t)
+	actor.cmd("APPEND INBOX {5+}\r\nhello").mustOK(t)
+	got = pullUntagged(t, a, 2*time.Second)
+	nUID, nFetch = 0, 0
+	var uidLine string
+	for _, line := range got {
+		if strings.Contains(line, " UIDFETCH ") {
+			nUID++
+			uidLine = line
+		}
+		if strings.Contains(line, " FETCH ") {
+			nFetch++
+		}
+	}
+	if nUID != 1 || nFetch != 0 || !strings.Contains(uidLine, "BODY[]") || !strings.Contains(uidLine, `\Seen`) {
+		t.Fatalf("uidfetch seen %q", got)
+	}
+}
+
+func TestNotifyFetchItems(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/dovecot-245.json"})
+	cl := dial(t, bound.Listen)
+	actor := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").mustOK(t)
+	actor.cmd("LOGIN demo secret").mustOK(t)
+	cl.cmd("SELECT INBOX").mustOK(t)
+	cl.cmd("NOTIFY SET (selected (MessageNew (FLAGS) MessageExpunge))").mustOK(t)
+
+	set := "NOTIFY SET (selected (MessageNew (BODY.PEEK[HEADER.FIELDS (FROM)]) MessageExpunge))"
+	cl.cmd(set).mustOK(t)
+	if rp := cl.cmd("NOTIFY SET (selected (MessageNew (BODY.PEEK[HEADER.FIELDS (FROM)) MessageExpunge))"); rp.status != "BAD" {
+		t.Fatalf("open section %+v", rp)
+	}
+	msg := "From: a@b.test\r\n\r\nhello"
+	actor.cmd(fmt.Sprintf("APPEND INBOX {%d+}\r\n%s", len(msg), msg)).mustOK(t)
+	got := pullUntagged(t, cl, 2*time.Second)
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "BODY[HEADER.FIELDS (FROM)]") || !strings.Contains(joined, "a@b.test") {
+		t.Fatalf("header fetch %q", got)
+	}
+	if strings.Contains(joined, "* STATUS ") {
+		t.Fatalf("selected status %q", got)
+	}
+
+	cl.cmd("NOTIFY SET (selected (MessageNew (BODY[]) MessageExpunge))").mustOK(t)
+	actor.cmd("APPEND INBOX {5+}\r\nhello").mustOK(t)
+	got = pullUntagged(t, cl, 2*time.Second)
+	nFetch := 0
+	var fetchLine string
+	for _, line := range got {
+		if strings.Contains(line, " FETCH ") {
+			nFetch++
+			fetchLine = line
+		}
+		if strings.HasPrefix(line, "* STATUS ") {
+			t.Fatalf("selected status %q", got)
+		}
+	}
+	if nFetch != 1 || !strings.Contains(fetchLine, "BODY[]") || !strings.Contains(fetchLine, "FLAGS ") || !strings.Contains(fetchLine, `\Seen`) {
+		t.Fatalf("seen on new fetch %q", got)
+	}
 }
 
 func pullUntagged(t *testing.T, cl *imapClient, wait time.Duration) []string {
