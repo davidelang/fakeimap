@@ -821,3 +821,7 @@
 - Approved plan: sandbox/plans/scan-20261111-2345-plan.md
 - SCAN returns the mailboxes LIST would return for the same reference and pattern whose names contain a string. The match is case-insensitive and includes a hierarchy row. It does not search message text. Fewer or more arguments, RETURN, and a selection list are BAD. Before login it is NO.
 - cyrus-24 lists it after QRESYNC. cyrus-25 lists it after QRESYNC and before MOVE. cyrus-36 lists it after WITHIN and before SORT=MODSEQ. uwimap lists it after WITHIN and before SORT. Greeting lists are unchanged. sasl.json, cyrus-3137.json, and the gaps file do not gain it. The facts file and the guide describe it.
+
+## 2026-11-12 - XLIST and XMOVE
+
+- XLIST answers a two-argument LIST with the word XLIST when that token is listed. XMOVE is MOVE, including UID XMOVE, and does not require MOVE. The lab personalities named in the plan advertise each token. XLIST left the gaps file.

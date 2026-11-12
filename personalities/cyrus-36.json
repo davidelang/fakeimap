@@ -42,6 +42,8 @@
     "SORT=MODSEQ",
     "SORT=UID",
     "THREAD=REFS",
+    "XLIST",
+    "XMOVE",
     "SASL-IR",
     "COMPRESS=DEFLATE",
     "IDLE",
@@ -81,6 +83,8 @@
     "SORT=MODSEQ",
     "SORT=UID",
     "THREAD=REFS",
+    "XLIST",
+    "XMOVE",
     "COMPRESS=DEFLATE",
     "IDLE",
     "APPENDLIMIT=4294967295"

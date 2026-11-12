@@ -70,7 +70,8 @@
     "THREAD=REFS",
     "BINARY",
     "MULTISEARCH",
-    "SEARCHRES"
+    "SEARCHRES",
+    "XLIST"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

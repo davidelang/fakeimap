@@ -472,7 +472,7 @@ func TestSortExtensionFiles(t *testing.T) {
 	if strings.Contains(string(gaps), "SORT=MODSEQ") || strings.Contains(string(gaps), "SORT=UID") {
 		t.Fatal("gaps still lists a sort extension")
 	}
-	for _, tok := range []string{"ACL", "QUOTA", "URLAUTH", "URLAUTH=BINARY", "XLIST", "IMAP4rev2"} {
+	for _, tok := range []string{"ACL", "QUOTA", "URLAUTH", "URLAUTH=BINARY", "IMAP4rev2"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

@@ -48,6 +48,7 @@
     "SORT=MODSEQ",
     "SORT=UID",
     "THREAD=REFS",
+    "XLIST",
     "AUTH=PLAIN",
     "AUTH=LOGIN"
   ],
@@ -87,7 +88,8 @@
     "WITHIN",
     "SORT=MODSEQ",
     "SORT=UID",
-    "THREAD=REFS"
+    "THREAD=REFS",
+    "XLIST"
   ],
   "other_users": "Other Users/",
   "shared_folders": "Shared Folders/",

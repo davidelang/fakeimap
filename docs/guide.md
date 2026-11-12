@@ -177,6 +177,8 @@ A capability is advertised only when `capImplemented` accepts it. Named tokens a
 
 `SCAN`, when listed, filters mailbox names. It returns the mailboxes `LIST` would return for the same reference and pattern whose names contain a string, and it does not search message text. `cyrus-24.json`, `cyrus-25.json`, `cyrus-36.json`, and `uwimap.json` list it on the pre-login and post-login lists and not on the greeting. The rules are in `docs/facts/imap-server.md`.
 
+`XLIST`, when listed, is `LIST` with the response word `XLIST`. `XMOVE`, when listed, is `MOVE`, including `UID XMOVE`, and it does not require `MOVE` to be listed. Which files list each token, and the reply rules, are in `docs/facts/imap-server.md`.
+
 `SORT=MODSEQ`, when listed, accepts `MODSEQ` as the one sort key. The order is the message mod-sequence, ascending, and `REVERSE MODSEQ` is descending. `SORT=UID`, when listed, is the final tie-break, ascending UID, and `REVERSE` does not flip it. It is not a key the client writes. Without that token, equal keys stay in ascending sequence order. Which files list each token is in `docs/facts/imap-server.md`.
 
 `BINARY.SIZE` is a `FETCH` item when `BINARY` is listed. It is not its own capability. The reply is the decoded size of one section as a number, using the same section as `BINARY.PEEK`, and it does not set `\Seen`. The item, including the `BAD` and `NO` cases, is in `docs/facts/imap-server.md`.
@@ -260,7 +262,7 @@ The UW greeting appends ` at ` and a timestamp after the fixed text. One post-lo
 
 ## Capabilities that stay off
 
-Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `QUOTA`, `ACL`, and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, and `SORT=UID` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `MULTIAPPEND`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA` and its `QUOTA=RES-*` forms, `QUOTASET`, `REPLACE`, `RIGHTS=kxten`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, `X-SIEVE-MAILBOX`, and `XLIST`.
+Capabilities the lab advertises that stay off are the tokens in `personalities/cyrus-3137.gaps.json`, including `QUOTA`, `ACL`, and `IMAP4rev2`. After `SEARCH=FUZZY`, `APPENDLIMIT=2147483647`, `SEARCHRES`, `STATUS=SIZE`, `SAVEDATE`, `SORT=MODSEQ`, `SORT=UID`, and `XLIST` left that file, the tokens are `ACL`, `ANNOTATE-EXPERIMENT-1`, `CATENATE`, `DIGEST=SHA1`, `IMAP4rev2`, `INPROGRESS`, `LIST-METADATA`, `LIST-MYRIGHTS`, `LOGINDISABLED`, `MAILBOX-REFERRALS`, `METADATA`, `MULTIAPPEND`, `NO_ATOMIC_RENAME`, `OBJECTID`, `QUOTA` and its `QUOTA=RES-*` forms, `QUOTASET`, `REPLACE`, `RIGHTS=kxten`, `UIDBATCHES`, `UIDONLY`, `URL-PARTIAL`, `URLAUTH`, `URLAUTH=BINARY`, `X-CREATEDMODSEQ`, `X-REPLICATION`, `X-REPLICATION-ARCHIVE`, and `X-SIEVE-MAILBOX`.
 
 `URLAUTH` and `URLAUTH=BINARY` stay unimplemented. `LOGIN-REFERRALS` and `JMAPACCESS` stay off the personality files. `URLAUTH=BINARY` stays in the gaps file.
 

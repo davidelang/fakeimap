@@ -194,8 +194,8 @@ func TestScanLists(t *testing.T) {
 		postNext string
 	}
 	for _, c := range []spot{
-		{"personalities/cyrus-24.json", "QRESYNC", "SASL-IR", "QRESYNC", "COMPRESS=DEFLATE"},
-		{"personalities/cyrus-25.json", "QRESYNC", "MOVE", "QRESYNC", "MOVE"},
+		{"personalities/cyrus-24.json", "QRESYNC", "XLIST", "QRESYNC", "XLIST"},
+		{"personalities/cyrus-25.json", "QRESYNC", "XLIST", "QRESYNC", "XLIST"},
 		{"personalities/cyrus-36.json", "WITHIN", "SORT=MODSEQ", "WITHIN", "SORT=MODSEQ"},
 		{"personalities/uwimap.json", "WITHIN", "SORT", "WITHIN", "SORT"},
 	} {

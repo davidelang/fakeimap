@@ -30,8 +30,7 @@
     "X-CREATEDMODSEQ",
     "X-REPLICATION",
     "X-REPLICATION-ARCHIVE",
-    "X-SIEVE-MAILBOX",
-    "XLIST"
+    "X-SIEVE-MAILBOX"
   ],
   "commands": []
 }

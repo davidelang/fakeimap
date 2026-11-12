@@ -24,6 +24,7 @@
     "UIDPLUS",
     "UNSELECT",
     "WITHIN",
+    "XLIST",
     "AUTH=PLAIN",
     "STARTTLS"
   ],
@@ -48,7 +49,8 @@
     "THREAD=ORDEREDSUBJECT",
     "UIDPLUS",
     "UNSELECT",
-    "WITHIN"
+    "WITHIN",
+    "XLIST"
   ],
   "other_users": "/home/",
   "logout_bye": true,

@@ -88,6 +88,8 @@ var implementedCaps = map[string]struct{}{
 	"SEARCHRES":               {},
 	"WITHIN":                  {},
 	"SCAN":                    {},
+	"XLIST":                   {},
+	"XMOVE":                   {},
 	"ESORT":                   {},
 	"PARTIAL":                 {},
 	"SORT":                    {},

@@ -194,7 +194,7 @@ func (s *session) readCommand() (command, error) {
 		}
 		cmd.name = strings.ToUpper(name)
 		switch cmd.name {
-		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "EXPUNGE", "SORT", "THREAD":
+		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD":
 		default:
 			return cmd, errSyntax
 		}
@@ -367,7 +367,7 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdEnable(cmd)
 	case "NAMESPACE":
 		return s.cmdNamespace(cmd)
-	case "LIST":
+	case "LIST", "XLIST":
 		return s.cmdList(cmd)
 	case "SCAN":
 		return s.cmdScan(cmd)
@@ -401,7 +401,7 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdThread(cmd)
 	case "APPEND":
 		return s.cmdAppend(cmd)
-	case "COPY", "MOVE":
+	case "COPY", "MOVE", "XMOVE":
 		return s.cmdCopy(cmd)
 	case "EXPUNGE":
 		return s.cmdExpunge(cmd)
@@ -731,29 +731,39 @@ func (s *session) cmdList(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
 	}
+	word := "LIST"
+	if cmd.name == "XLIST" {
+		word = "XLIST"
+		if !s.advertiseCap("XLIST") {
+			return s.bad(cmd.tag, "XLIST not supported")
+		}
+		if !twoAstrings(cmd.args) {
+			return s.bad(cmd.tag, "XLIST syntax")
+		}
+	}
 	parsed, err := parseListArgs(cmd.args)
 	if err != nil {
-		return s.bad(cmd.tag, "LIST syntax")
+		return s.bad(cmd.tag, word+" syntax")
 	}
 	if parsed.extended && !s.advertiseCap("LIST-EXTENDED") {
-		return s.bad(cmd.tag, "LIST syntax")
+		return s.bad(cmd.tag, word+" syntax")
 	}
 	if parsed.children && !s.advertiseCap("CHILDREN") {
-		return s.bad(cmd.tag, "LIST syntax")
+		return s.bad(cmd.tag, word+" syntax")
 	}
 	if parsed.special && !s.advertiseCap("SPECIAL-USE") {
-		return s.bad(cmd.tag, "LIST syntax")
+		return s.bad(cmd.tag, word+" syntax")
 	}
 	if parsed.hasStatus && !s.advertiseCap("LIST-STATUS") {
-		return s.bad(cmd.tag, "LIST syntax")
+		return s.bad(cmd.tag, word+" syntax")
 	}
 	ref, err := s.boxIn(parsed.ref)
 	if err != nil {
-		return s.bad(cmd.tag, "LIST syntax")
+		return s.bad(cmd.tag, word+" syntax")
 	}
 	pat, err := s.boxIn(parsed.pat)
 	if err != nil {
-		return s.bad(cmd.tag, "LIST syntax")
+		return s.bad(cmd.tag, word+" syntax")
 	}
 	parsed.ref, parsed.pat = ref, pat
 	q := listQuery{
@@ -771,13 +781,13 @@ func (s *session) cmdList(cmd command) error {
 	entries, delim, _, err := s.srv.store.list(parsed.ref, parsed.pat, q)
 	if err != nil {
 		if err.Error() == "bad status item" {
-			return s.bad(cmd.tag, "LIST bad item")
+			return s.bad(cmd.tag, word+" bad item")
 		}
-		return s.bad(cmd.tag, "LIST syntax")
+		return s.bad(cmd.tag, word+" syntax")
 	}
 	for _, e := range entries {
 		wn := s.boxOut(e.name)
-		if err := s.sendLine(fmt.Sprintf("* LIST %s %s %s", e.flags, imapString(delim), imapAtom(wn))); err != nil {
+		if err := s.sendLine(fmt.Sprintf("* %s %s %s %s", word, e.flags, imapString(delim), imapAtom(wn))); err != nil {
 			return err
 		}
 		if e.status != nil {
@@ -786,7 +796,7 @@ func (s *session) cmdList(cmd command) error {
 			}
 		}
 	}
-	return s.ok(cmd.tag, "LIST completed")
+	return s.ok(cmd.tag, word+" completed")
 }
 
 // cmdScan returns mailbox names from the same reference and pattern as LIST
@@ -912,6 +922,15 @@ type parsedList struct {
 	special     bool
 	hasStatus   bool
 	status      []string
+}
+
+func twoAstrings(args []Token) bool {
+	if len(args) != 2 {
+		return false
+	}
+	_, ok1 := astring(args[0])
+	_, ok2 := astring(args[1])
+	return ok1 && ok2
 }
 
 func parseListArgs(args []Token) (parsedList, error) {
@@ -2310,7 +2329,19 @@ func parseAppend(args []Token) (string, []string, *time.Time, []byte, error) {
 	return mbox, flags, date, []byte(args[i].Val), nil
 }
 
+func moveCmd(name string) bool {
+	return name == "MOVE" || name == "XMOVE"
+}
+
 func (s *session) cmdCopy(cmd command) error {
+	if cmd.name == "XMOVE" {
+		if !s.needAuth(cmd.tag) {
+			return nil
+		}
+		if !s.advertiseCap("XMOVE") {
+			return s.bad(cmd.tag, "XMOVE not supported")
+		}
+	}
 	if !s.srv.store.selected(s) {
 		return s.no(cmd.tag, cmd.name+" not selected")
 	}
@@ -2329,7 +2360,7 @@ func (s *session) cmdCopy(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, "[TRYCREATE] "+cmd.name+" no such mailbox")
 	}
-	res, err := s.srv.store.copyMsgs(s, cmd.uid, set, dest, cmd.name == "MOVE", s.srv.frozenTime())
+	res, err := s.srv.store.copyMsgs(s, cmd.uid, set, dest, moveCmd(cmd.name), s.srv.frozenTime())
 	if err != nil {
 		if err.Error() == "read-only" {
 			return s.no(cmd.tag, cmd.name+" read-only")
@@ -2339,7 +2370,7 @@ func (s *session) cmdCopy(cmd command) error {
 		}
 		return s.no(cmd.tag, cmd.name+" failed")
 	}
-	if cmd.name == "MOVE" && s.pers.MoveCopyUIDUntagged && len(res.src) > 0 {
+	if moveCmd(cmd.name) && s.pers.MoveCopyUIDUntagged && len(res.src) > 0 {
 		if err := s.sendLine(fmt.Sprintf("* OK [COPYUID %d %s %s] %s",
 			res.uidv, formatUIDSet(res.src), formatUIDSet(res.dst), cmd.name)); err != nil {
 			return err
