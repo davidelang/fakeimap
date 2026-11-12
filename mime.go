@@ -43,16 +43,39 @@ func decodeHdr(s string) string {
 	return d
 }
 
-// imapAtom returns an atom when s is one, otherwise a quoted string or literal.
-func imapAtom(s string) string {
+func isIMAPAtom(s string) bool {
 	if s == "" {
-		return `""`
+		return false
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if c <= 0x20 || c >= 0x7f || strings.ContainsRune("(){%*\"\\]", rune(c)) {
-			return imapString(s)
+			return false
 		}
+	}
+	return true
+}
+
+// imapAtom returns an atom when s is one, otherwise a quoted string or literal.
+func imapAtom(s string) string {
+	if !isIMAPAtom(s) {
+		return imapString(s)
+	}
+	return s
+}
+
+// mailboxToken is the mailbox name on a LIST, LSUB, or STATUS line.
+// An atom stays an atom, or a quoted string when quoteAtom is set.
+// Anything else, including invalid UTF-8, is an IMAP literal.
+func mailboxToken(s string, quoteAtom bool) string {
+	if s == "" {
+		return `""`
+	}
+	if !isIMAPAtom(s) {
+		return fmt.Sprintf("{%d}\r\n%s", len(s), s)
+	}
+	if quoteAtom {
+		return `"` + s + `"`
 	}
 	return s
 }

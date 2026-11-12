@@ -991,3 +991,16 @@
 - Advertise LOGINDISABLED on the cyrus-3137 greeting and pre-login list. Cleartext LOGIN is refused only while that token is on the wire. set-login-disabled forces it on or off.
 - The probe script STARTTLS-upgrades before LOGIN when the greeting advertises LOGINDISABLED.
 - Plan: sandbox/plans/inprogress-logindisabled-20261112-0509-plan.md
+
+## 2026-11-12 - mailbox auth cert execution start
+
+- Approved plan: sandbox/plans/mailbox-auth-cert-20261112-0509-plan.md
+- Work: create-mailbox accepts raw name bytes, set-auth-policy delays and locks failed IMAP logins, and reload-cert swaps the certificate used on the next handshake.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - mailbox auth cert landed
+
+- create-mailbox stores a raw mailbox name, including invalid UTF-8, and LIST, LSUB, and STATUS emit those bytes. A name that is not an atom is a literal. SELECT of the same bytes works before and after UTF8=ACCEPT.
+- set-auth-policy delays a failed LOGIN or AUTHENTICATE and locks the username after repeated failures. PRIVACYREQUIRED does not count. freeze-clock sets the lock deadline. reset and set-dataset leave the policy.
+- reload-cert swaps the certificate used for the next handshake and leaves a finished TLS connection on the old one. An expired or self-signed fault still wins.
+- Plan: sandbox/plans/mailbox-auth-cert-20261112-0509-plan.md

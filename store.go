@@ -309,6 +309,7 @@ type Store struct {
 	quotaMessage uint64                     // MESSAGE limit
 	watchers     []*session                 // sessions with a NOTIFY registration
 	ctxWatch     []*session                 // sessions with a SEARCH UPDATE context
+	rawNames     sync.Map                   // mailbox keys whose wire form is the raw bytes
 }
 
 const (
@@ -1139,6 +1140,30 @@ func (st *Store) specialOwned(flag string) bool {
 }
 
 func (st *Store) create(name string, uses []string) (string, error) {
+	return st.createMailbox(name, uses, false)
+}
+
+// createRaw stores name as the mailbox key, including invalid UTF-8.
+// LIST, LSUB, and STATUS emit those bytes unchanged.
+func (st *Store) createRaw(name string) error {
+	_, err := st.createMailbox(name, nil, true)
+	return err
+}
+
+func (st *Store) isRaw(name string) bool {
+	_, ok := st.rawNames.Load(name)
+	return ok
+}
+
+func (st *Store) moveRaw(old, neu string) {
+	if _, ok := st.rawNames.Load(old); !ok {
+		return
+	}
+	st.rawNames.Delete(old)
+	st.rawNames.Store(neu, true)
+}
+
+func (st *Store) createMailbox(name string, uses []string, raw bool) (string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	cn, err := st.canon(name)
@@ -1161,6 +1186,9 @@ func (st *Store) create(name string, uses []string) (string, error) {
 	st.stampBox(mb)
 	st.boxes[cn] = mb
 	st.order = append(st.order, cn)
+	if raw {
+		st.rawNames.Store(cn, true)
+	}
 	st.touch()
 	st.fanBox("create", cn, "")
 	return mb.jmapID, nil
@@ -1204,6 +1232,7 @@ func (st *Store) delete(s *session, name string) error {
 		st.touch()
 	}
 	delete(st.boxes, cn)
+	st.rawNames.Delete(cn)
 	order := st.order[:0]
 	for _, n := range st.order {
 		if n != cn {
@@ -1274,6 +1303,7 @@ func (st *Store) rename(oldName, newName string, moveInbox bool) (string, error)
 		mb.name = mv.neu
 		neuBoxes[mv.neu] = mb
 		rewritten[mv.old] = mv.neu
+		st.moveRaw(mv.old, mv.neu)
 	}
 	st.boxes = neuBoxes
 	for i, name := range st.order {
@@ -1318,6 +1348,7 @@ func (st *Store) renameInboxLocked(newC string) (string, error) {
 	id := old.jmapID
 	old.name = newC
 	st.boxes[newC] = old
+	st.moveRaw("INBOX", newC)
 	nb := &Mailbox{name: "INBOX", uidValidity: st.allocUIDV(), uidNext: 1, st: st}
 	st.stampBox(nb)
 	st.boxes["INBOX"] = nb

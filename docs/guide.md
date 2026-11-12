@@ -89,6 +89,10 @@ An empty `op` is `missing field`. Any other `op` is `unknown op`.
 | `clear-faults` | optional `id` | a missing `id` clears every fault |
 | `bye` | optional `conn` and `text` | `* BYE` and close; see `docs/facts/imap-server.md` |
 | `set-login-disabled` | `value` true or false | forces `LOGINDISABLED` on or off; see `docs/facts/imap-server.md` |
+| `create-mailbox` | `name` or `name_b64`; optional `user` | see `docs/facts/imap-server.md` |
+| `set-auth-policy` | optional `fail_delay_ms`, `lockout_after`, `lockout_ms` | see `docs/facts/imap-server.md` |
+| `clear-auth-policy` | none | see `docs/facts/imap-server.md` |
+| `reload-cert` | optional `cert_file` and `key_file`, both or neither | see `docs/facts/imap-server.md` |
 | `list-smtp` | none | accepted SMTP messages |
 | `wait-smtp` | `count` | zero returns immediately. A positive count also needs `timeout_ms`. A timeout is `ok` false |
 

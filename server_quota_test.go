@@ -103,7 +103,7 @@ func TestQuotaReport(t *testing.T) {
 	cl.cmd(`CREATE "A B"`).mustOK(t)
 	list := cl.cmd(`LIST "" "A B"`).mustOK(t)
 	qr := cl.cmd(`GETQUOTAROOT "A B"`).mustOK(t)
-	if len(list.untagged) != 1 || !strings.Contains(list.untagged[0], `"A B"`) {
+	if len(list.untagged) != 1 || !strings.Contains(list.untagged[0], "{3}\r\nA B") || strings.Contains(list.untagged[0], `"A B"`) {
 		t.Fatalf("list spelling %q", list.untagged)
 	}
 	if len(qr.untagged) != 2 || qr.untagged[0] != `* QUOTAROOT "A B" ROOT` || strings.Contains(qr.untagged[1], "ANNOTATION") || strings.Contains(qr.untagged[1], "MAILBOX") {

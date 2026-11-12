@@ -31,7 +31,10 @@ type Server struct {
 	pers          *Personality
 	store         *Store
 	hasCert       bool
+	leaf          *tls.Certificate
 	tlsCfg        *tls.Config
+	authPol       authPolicy
+	authFails     map[string]*authFailState
 	ln            net.Listener
 	tlsLn         net.Listener
 	ctrlLn        net.Listener
@@ -99,13 +102,16 @@ func newServerFrom(cfg Config, stdout io.Writer) (*Server, error) {
 		quit:       make(chan struct{}),
 		sieveAccts: map[string]*sieveAcct{},
 	}
+	srv.tlsCfg = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			return srv.handshakeConfig(0, "")
+		},
+	}
 	if cfg.CertFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-		if err != nil {
+		if err := srv.installCert(cfg.CertFile, cfg.KeyFile); err != nil {
 			return nil, err
 		}
-		srv.hasCert = true
-		srv.tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	}
 	if cfg.ClientCAFile != "" {
 		b, err := os.ReadFile(cfg.ClientCAFile)
@@ -116,11 +122,9 @@ func newServerFrom(cfg Config, stdout io.Writer) (*Server, error) {
 		if !pool.AppendCertsFromPEM(b) {
 			return nil, fmt.Errorf("client_ca_file: no certificates")
 		}
-		if srv.tlsCfg != nil {
-			srv.tlsCfg.ClientCAs = pool
-		}
+		srv.tlsCfg.ClientCAs = pool
 	}
-	if srv.tlsCfg != nil && pers.lists("AUTH=EXTERNAL") {
+	if pers.lists("AUTH=EXTERNAL") {
 		if srv.tlsCfg.ClientCAs != nil {
 			srv.tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
 		} else {
@@ -137,12 +141,64 @@ func newServerFrom(cfg Config, stdout io.Writer) (*Server, error) {
 	return srv, nil
 }
 
+func (s *Server) installCert(certFile, keyFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.leaf = &cert
+	s.hasCert = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Server) certLoaded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hasCert
+}
+
+// certFor is the certificate for one new handshake. An armed certificate
+// fault wins. Otherwise it is the certificate loaded now.
+func (s *Server) certFor(id int, command string) (*tls.Certificate, error) {
+	if cert := s.handshakeCert(id, command); cert != nil {
+		return cert, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.leaf == nil {
+		return nil, fmt.Errorf("no certificate")
+	}
+	return s.leaf, nil
+}
+
+// handshakeConfig is a tls.Config for one new handshake. The certificate
+// is fixed here so a later reload does not change this handshake.
+func (s *Server) handshakeConfig(id int, command string) (*tls.Config, error) {
+	s.mu.Lock()
+	base := s.tlsCfg
+	s.mu.Unlock()
+	if base == nil {
+		return nil, fmt.Errorf("no certificate")
+	}
+	cert, err := s.certFor(id, command)
+	if err != nil {
+		return nil, err
+	}
+	cfg := base.Clone()
+	cfg.GetConfigForClient = nil
+	cfg.Certificates = nil
+	cfg.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return cert, nil
+	}
+	return cfg, nil
+}
+
 func (s *Server) tlsServerFor(conn net.Conn, id int, command string) *tls.Conn {
-	cfg := s.tlsCfg
-	if cert := s.handshakeCert(id, command); cert != nil && cfg != nil {
-		clone := cfg.Clone()
-		clone.Certificates = []tls.Certificate{*cert}
-		cfg = clone
+	cfg, err := s.handshakeConfig(id, command)
+	if err != nil {
+		cfg = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	return tls.Server(conn, cfg)
 }

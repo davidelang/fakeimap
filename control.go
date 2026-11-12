@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -63,36 +64,43 @@ func (s *Server) serveControl(c net.Conn) {
 }
 
 type ctrlRequest struct {
-	Op        string          `json:"op"`
-	Path      string          `json:"path"`
-	Conn      *int            `json:"conn"`
-	Mailbox   string          `json:"mailbox"`
-	User      string          `json:"user"`
-	Username  string          `json:"username"`
-	Password  string          `json:"password"`
-	Raw       string          `json:"raw"`
-	UID       *uint32         `json:"uid"`
-	Time      string          `json:"time"`
-	ID        *int            `json:"id"`
-	Command   string          `json:"command"`
-	Times     *int            `json:"times"`
-	Do        string          `json:"do"`
-	DelayMs   *int            `json:"delay_ms"`
-	Bytes     *int            `json:"bytes"`
-	Text      string          `json:"text"`
-	Count     *int            `json:"count"`
-	Offset    *int            `json:"offset"`
-	Tag       string          `json:"tag"`
-	Order     []string        `json:"order"`
-	TimeoutMs *int            `json:"timeout_ms"`
-	Status    string          `json:"status"`
-	Code      string          `json:"code"`
-	Proto     string          `json:"proto"`
-	Size      *int            `json:"size"`
-	After     *int            `json:"after"`
-	Value     json.RawMessage `json:"value"`
-	Done      json.RawMessage `json:"done"`
-	Total     json.RawMessage `json:"total"`
+	Op           string          `json:"op"`
+	Path         string          `json:"path"`
+	Conn         *int            `json:"conn"`
+	Mailbox      string          `json:"mailbox"`
+	User         string          `json:"user"`
+	Username     string          `json:"username"`
+	Password     string          `json:"password"`
+	Raw          string          `json:"raw"`
+	UID          *uint32         `json:"uid"`
+	Time         string          `json:"time"`
+	ID           *int            `json:"id"`
+	Command      string          `json:"command"`
+	Times        *int            `json:"times"`
+	Do           string          `json:"do"`
+	DelayMs      *int            `json:"delay_ms"`
+	Bytes        *int            `json:"bytes"`
+	Text         string          `json:"text"`
+	Count        *int            `json:"count"`
+	Offset       *int            `json:"offset"`
+	Tag          string          `json:"tag"`
+	Order        []string        `json:"order"`
+	TimeoutMs    *int            `json:"timeout_ms"`
+	Status       string          `json:"status"`
+	Code         string          `json:"code"`
+	Proto        string          `json:"proto"`
+	Size         *int            `json:"size"`
+	After        *int            `json:"after"`
+	Value        json.RawMessage `json:"value"`
+	Done         json.RawMessage `json:"done"`
+	Total        json.RawMessage `json:"total"`
+	Name         string          `json:"name"`
+	NameB64      string          `json:"name_b64"`
+	FailDelayMs  *int            `json:"fail_delay_ms"`
+	LockoutAfter *int            `json:"lockout_after"`
+	LockoutMs    *int            `json:"lockout_ms"`
+	CertFile     string          `json:"cert_file"`
+	KeyFile      string          `json:"key_file"`
 }
 
 func okResp(extra map[string]any) map[string]any {
@@ -207,6 +215,55 @@ func (s *Server) ctrl(req ctrlRequest) any {
 			return errResp(err.Error())
 		}
 		return okResp(nil)
+	case "create-mailbox":
+		if req.Name == "" && req.NameB64 == "" {
+			return errResp("missing field")
+		}
+		if req.Name != "" && req.NameB64 != "" {
+			return errResp("bad name")
+		}
+		name := req.Name
+		if req.NameB64 != "" {
+			b, err := base64.StdEncoding.DecodeString(req.NameB64)
+			if err != nil {
+				b, err = base64.RawStdEncoding.DecodeString(req.NameB64)
+				if err != nil {
+					return errResp("bad name")
+				}
+			}
+			name = string(b)
+		}
+		if req.User != "" && !s.store.hasAccount(req.User) {
+			return errResp("no such account")
+		}
+		if err := s.store.createRaw(name); err != nil {
+			return errResp(err.Error())
+		}
+		return okResp(nil)
+	case "set-auth-policy":
+		delay, after, lock, err := authPolicyNums(req.FailDelayMs, req.LockoutAfter, req.LockoutMs)
+		if err != nil {
+			return errResp(err.Error())
+		}
+		s.setAuthPolicy(delay, after, lock)
+		return okResp(nil)
+	case "clear-auth-policy":
+		s.setAuthPolicy(0, 0, 0)
+		return okResp(nil)
+	case "reload-cert":
+		if (req.CertFile == "") != (req.KeyFile == "") {
+			return errResp("missing field")
+		}
+		certFile, keyFile := req.CertFile, req.KeyFile
+		if certFile == "" {
+			s.mu.Lock()
+			certFile, keyFile = s.cfg.CertFile, s.cfg.KeyFile
+			s.mu.Unlock()
+		}
+		if err := s.installCert(certFile, keyFile); err != nil {
+			return errResp(err.Error())
+		}
+		return okResp(nil)
 	case "set-login-disabled":
 		if len(bytes.TrimSpace(req.Value)) == 0 || string(req.Value) == "null" {
 			return errResp("missing field")
@@ -277,6 +334,116 @@ func (s *Server) ctrlStatus() map[string]any {
 		"clock_frozen":        s.frozen != nil,
 		"faults":              views,
 	}
+}
+
+type authPolicy struct {
+	delay time.Duration
+	after int
+	lock  time.Duration
+}
+
+type authFailState struct {
+	n     int
+	until time.Time
+}
+
+func authPolicyNums(delay, after, lock *int) (int, int, int, error) {
+	d, err := nonNegInt(delay)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	a, err := nonNegInt(after)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	l, err := nonNegInt(lock)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return d, a, l, nil
+}
+
+func nonNegInt(p *int) (int, error) {
+	if p == nil {
+		return 0, nil
+	}
+	if *p < 0 {
+		return 0, fmt.Errorf("missing field")
+	}
+	return *p, nil
+}
+
+func authKey(conn int, user string) string {
+	if user == "" {
+		return "\x00" + strconv.Itoa(conn)
+	}
+	return user
+}
+
+func (s *Server) setAuthPolicy(delayMs, after, lockMs int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authPol = authPolicy{
+		delay: time.Duration(delayMs) * time.Millisecond,
+		after: after,
+		lock:  time.Duration(lockMs) * time.Millisecond,
+	}
+	s.authFails = nil
+}
+
+func (s *Server) authNowLocked() time.Time {
+	if s.frozen != nil {
+		return *s.frozen
+	}
+	return time.Now()
+}
+
+func (s *Server) authBlocked(conn int, user string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.authFails[authKey(conn, user)]
+	if st == nil || st.until.IsZero() {
+		return false
+	}
+	if !s.authNowLocked().Before(st.until) {
+		st.until = time.Time{}
+		st.n = 0
+		return false
+	}
+	return true
+}
+
+func (s *Server) noteAuthFailure(conn int, user string) {
+	s.mu.Lock()
+	delay := s.authPol.delay
+	after := s.authPol.after
+	lockFor := s.authPol.lock
+	if after > 0 && lockFor > 0 {
+		key := authKey(conn, user)
+		st := s.authFails[key]
+		if st == nil {
+			st = &authFailState{}
+			if s.authFails == nil {
+				s.authFails = map[string]*authFailState{}
+			}
+			s.authFails[key] = st
+		}
+		st.n++
+		if st.n >= after {
+			st.until = s.authNowLocked().Add(lockFor)
+			st.n = 0
+		}
+	}
+	s.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+}
+
+func (s *Server) clearAuthFailure(conn int, user string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.authFails, authKey(conn, user))
 }
 
 func (s *Server) frozenTime() *time.Time {

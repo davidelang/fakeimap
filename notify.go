@@ -680,5 +680,5 @@ func (st *Store) notifyLines(s *session) []string {
 }
 
 func listNote(flags, delim, name string) string {
-	return fmt.Sprintf("* LIST %s %s %s", flags, imapString(delim), imapAtom(name))
+	return fmt.Sprintf("* LIST %s %s %s", flags, imapString(delim), mailboxToken(name, false))
 }

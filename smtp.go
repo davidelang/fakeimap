@@ -259,7 +259,7 @@ func (sc *smtpConn) command(line string) error {
 
 func (sc *smtpConn) ehloLines() []string {
 	lines := []string{"fakeimap", "AUTH PLAIN LOGIN", "8BITMIME"}
-	if sc.srv.hasCert && !sc.secure {
+	if sc.srv.certLoaded() && !sc.secure {
 		lines = append(lines, "STARTTLS")
 	}
 	return lines
@@ -269,7 +269,7 @@ func (sc *smtpConn) cmdStartTLS(arg string) error {
 	if arg != "" {
 		return sc.reply(501, "5.5.4 syntax error")
 	}
-	if sc.secure || !sc.srv.hasCert {
+	if sc.secure || !sc.srv.certLoaded() {
 		return sc.reply(454, "4.7.0 TLS not available")
 	}
 	if err := sc.reply(220, "2.0.0 Ready to start TLS"); err != nil {

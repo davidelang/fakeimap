@@ -83,7 +83,7 @@ func (s *Server) sieveGreeting(secure bool) []string {
 		sieveQuote("SASL") + " " + sieveQuote("PLAIN CRAM-MD5"),
 		sieveQuote("SIEVE") + " " + sieveQuote("fileinto include"),
 	}
-	if s.hasCert && !secure {
+	if s.certLoaded() && !secure {
 		lines = append(lines, sieveQuote("STARTTLS"))
 	}
 	return lines
@@ -237,7 +237,7 @@ func (sc *sieveConn) cmdStartTLS(rest []sieveVal) error {
 	if len(rest) != 0 {
 		return sc.no("syntax")
 	}
-	if sc.secure || !sc.srv.hasCert || sc.user != "" {
+	if sc.secure || !sc.srv.certLoaded() || sc.user != "" {
 		return sc.no("STARTTLS not available")
 	}
 	if err := sc.ok(""); err != nil {

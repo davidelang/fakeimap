@@ -24,7 +24,7 @@ var errAuthCancelled = errors.New("sasl cancelled")
 const scramIters = 4096
 
 func (s *session) authFail(tag string) error {
-	return s.no(tag, "[AUTHENTICATIONFAILED] AUTHENTICATE failed")
+	return s.failAuth(tag, s.authUser)
 }
 
 func (s *session) authErr(tag string, err error) error {
@@ -93,6 +93,7 @@ func (s *session) authLogin(tag string, hasIR bool, ir string) error {
 			return s.authFail(tag)
 		}
 		user = string(raw)
+		s.authUser = user
 	} else {
 		line, err := s.saslRead(b64std([]byte("Username:")))
 		if err != nil {
@@ -103,6 +104,7 @@ func (s *session) authLogin(tag string, hasIR bool, ir string) error {
 			return s.authFail(tag)
 		}
 		user = string(raw)
+		s.authUser = user
 	}
 	line, err := s.saslRead(b64std([]byte("Password:")))
 	if err != nil {
@@ -142,6 +144,7 @@ func (s *session) authCRAM(tag string, hasIR bool, ir string) error {
 	if !ok || user == "" || strings.Contains(digest, " ") {
 		return s.authFail(tag)
 	}
+	s.authUser = user
 	pass, found := s.srv.store.secret(user)
 	if !found {
 		pass = "secret"
@@ -355,6 +358,7 @@ func (s *session) authSCRAM(tag, mech string, hasIR bool, ir string) error {
 	if !ok || user == "" {
 		return s.authFail(tag)
 	}
+	s.authUser = user
 	if authzidRaw != "" {
 		zid, ok := scramUnescape(authzidRaw)
 		if !ok || zid != user {
@@ -515,6 +519,9 @@ func (s *session) authExternal(tag string, hasIR bool, ir string) error {
 		return s.authFail(tag)
 	}
 	authzid := string(raw)
+	if authzid != "" {
+		s.authUser = authzid
+	}
 	cert := s.verifiedClientCert()
 	if cert == nil {
 		return s.authFail(tag)

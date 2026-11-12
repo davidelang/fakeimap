@@ -56,6 +56,7 @@ type session struct {
 	// holdSeen are flag events this FETCH will report itself. An inter-line
 	// flush must not also send them.
 	holdSeen map[uint64]bool
+	authUser string // username of the AUTHENTICATE attempt in progress, if known
 }
 
 type command struct {
@@ -72,7 +73,7 @@ func (s *session) jmapBound() bool {
 }
 
 func (s *session) caps() []string {
-	return s.pers.advertiseLogin(s.authed, s.secure, s.srv.hasCert, s.jmapBound(), s.srv.loginDisabledOverride())
+	return s.pers.advertiseLogin(s.authed, s.secure, s.srv.certLoaded(), s.jmapBound(), s.srv.loginDisabledOverride())
 }
 
 func (s *session) sendLine(line string) error {
@@ -144,7 +145,7 @@ func (s *session) serve() {
 	} else {
 		greetCaps := s.caps()
 		if len(s.pers.GreetingCaps) > 0 {
-			greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.hasCert, s.jmapBound(), s.srv.loginDisabledOverride())
+			greetCaps = s.pers.advertiseList(s.pers.GreetingCaps, false, s.secure, s.srv.certLoaded(), s.jmapBound(), s.srv.loginDisabledOverride())
 		}
 		greet = fmt.Sprintf("* OK [CAPABILITY %s] %s", strings.Join(greetCaps, " "), s.pers.Greeting)
 	}
@@ -1027,7 +1028,7 @@ func (s *session) cmdStartTLS(cmd command) error {
 	if len(cmd.args) != 0 {
 		return s.bad(cmd.tag, "STARTTLS syntax")
 	}
-	if s.secure || !s.srv.hasCert {
+	if s.secure || !s.srv.certLoaded() {
 		return s.bad(cmd.tag, "STARTTLS not available")
 	}
 	if s.authed {
@@ -1057,7 +1058,11 @@ func (s *session) cmdStartTLS(cmd command) error {
 }
 
 func (s *session) loginOK(tag, cmd string, user, pass string) error {
+	if s.srv.authBlocked(s.id, user) {
+		return s.no(tag, "[UNAVAILABLE] Authentication temporarily locked")
+	}
 	if !s.srv.store.check(user, pass) {
+		s.srv.noteAuthFailure(s.id, user)
 		return s.no(tag, "[AUTHENTICATIONFAILED] "+cmd+" failed")
 	}
 	s.user = user
@@ -1065,11 +1070,22 @@ func (s *session) loginOK(tag, cmd string, user, pass string) error {
 }
 
 func (s *session) authDone(tag, cmd string) error {
+	s.srv.clearAuthFailure(s.id, s.user)
 	s.authed = true
 	return s.sendLine(fmt.Sprintf("%s OK [CAPABILITY %s] %s completed", tag, strings.Join(s.caps(), " "), cmd))
 }
 
+// failAuth is a failed AUTHENTICATE. user is empty when the attempt named none.
+func (s *session) failAuth(tag, user string) error {
+	if s.srv.authBlocked(s.id, user) {
+		return s.no(tag, "[UNAVAILABLE] Authentication temporarily locked")
+	}
+	s.srv.noteAuthFailure(s.id, user)
+	return s.no(tag, "[AUTHENTICATIONFAILED] AUTHENTICATE failed")
+}
+
 func (s *session) cmdLogin(cmd command) error {
+	s.authUser = ""
 	if s.authed {
 		return s.bad(cmd.tag, "LOGIN already authenticated")
 	}
@@ -1088,6 +1104,7 @@ func (s *session) cmdLogin(cmd command) error {
 }
 
 func (s *session) cmdAuth(cmd command) error {
+	s.authUser = ""
 	if s.authed {
 		return s.bad(cmd.tag, "AUTHENTICATE already authenticated")
 	}
@@ -1203,8 +1220,12 @@ func (s *session) cmdEnable(cmd command) error {
 }
 
 // boxIn turns a wire mailbox name into the Unicode name the store keeps.
-// Before UTF8=ACCEPT, the wire form is modified UTF-7.
+// Before UTF8=ACCEPT, the wire form is modified UTF-7. A raw control-socket
+// name is the stored bytes, including invalid UTF-8, and is not decoded.
 func (s *session) boxIn(name string) (string, error) {
+	if s.srv.store.isRaw(name) {
+		return name, nil
+	}
 	if s.on("UTF8=ACCEPT") {
 		if name != "" && !utf8.ValidString(name) {
 			return "", fmt.Errorf("bad mailbox name")
@@ -1215,8 +1236,9 @@ func (s *session) boxIn(name string) (string, error) {
 }
 
 // boxOut turns a stored mailbox name into the form this connection speaks.
+// A raw name, and any name that is not valid UTF-8, is emitted unchanged.
 func (s *session) boxOut(name string) string {
-	if s.on("UTF8=ACCEPT") {
+	if s.on("UTF8=ACCEPT") || s.srv.store.isRaw(name) || !utf8.ValidString(name) {
 		return name
 	}
 	return encodeMUTF7(name)
@@ -1470,7 +1492,7 @@ func (s *session) cmdList(cmd command) error {
 	}
 	for _, e := range entries {
 		wn := s.boxOut(e.name)
-		line := fmt.Sprintf("* %s %s %s %s", word, e.flags, imapString(delim), imapAtom(wn))
+		line := fmt.Sprintf("* %s %s %s %s", word, e.flags, imapString(delim), mailboxToken(wn, false))
 		if parsed.objectID {
 			line += " (OBJECTID (MAILBOXID " + imapAtom(e.mailboxID) + " ACCOUNTID " + imapAtom(s.user) + "))"
 		}
@@ -1554,7 +1576,7 @@ func (s *session) cmdLsub(cmd command) error {
 		return s.bad(cmd.tag, "LSUB syntax")
 	}
 	for _, e := range entries {
-		if err := s.sendLine(fmt.Sprintf("* LSUB %s %s %s", e.flags, imapString(delim), imapAtom(s.boxOut(e.name)))); err != nil {
+		if err := s.sendLine(fmt.Sprintf("* LSUB %s %s %s", e.flags, imapString(delim), mailboxToken(s.boxOut(e.name), false))); err != nil {
 			return err
 		}
 	}
@@ -1746,7 +1768,7 @@ func formatStatus(name string, pairs [][2]string) string {
 		b.WriteByte(' ')
 		b.WriteString(p[1])
 	}
-	return fmt.Sprintf("* STATUS %s (%s)", imapString(name), b.String())
+	return fmt.Sprintf("* STATUS %s (%s)", mailboxToken(name, true), b.String())
 }
 
 func (s *session) cmdStatus(cmd command) error {
