@@ -85,12 +85,22 @@ func TestSieveGreetingAuthAndScripts(t *testing.T) {
 		t.Fatal("plain auth")
 	}
 
-	body := []byte("not sieve {{\n\x00")
+	body := []byte("fileinto \"a\x00b\";\n")
 	if cl.scriptCmd("CHECKSCRIPT", body) != "OK" {
 		t.Fatal("checkscript")
 	}
 	if lines := cl.list(); len(lines) != 1 || lines[0] != "OK" {
 		t.Fatalf("check stored %q", lines)
+	}
+	bad := []byte("not sieve {{\n\x00")
+	if !strings.HasPrefix(cl.scriptCmd("CHECKSCRIPT", bad), "NO") {
+		t.Fatal("invalid check accepted")
+	}
+	if !strings.HasPrefix(cl.scriptCmd(`PUTSCRIPT "nope"`, bad), "NO") {
+		t.Fatal("invalid put stored")
+	}
+	if lines := cl.list(); len(lines) != 1 || lines[0] != "OK" {
+		t.Fatalf("invalid check stored %q", lines)
 	}
 	if cl.scriptCmd("CHECKSCRIPT", nil) == "OK" {
 		t.Fatal("empty check stored or accepted")
@@ -215,6 +225,146 @@ func TestSieveCRAMAndStartTLS(t *testing.T) {
 	okLine, got := cl.get("liveimap")
 	if okLine != "OK" || !bytes.Equal(got, []byte("keep;\n")) {
 		t.Fatalf("get after cram %q %q", okLine, got)
+	}
+}
+
+func TestSieveScriptCheckAndFaults(t *testing.T) {
+	facts := string(mustRead(t, "docs/facts/imap-server.md"))
+	guide := string(mustRead(t, "docs/guide.md"))
+	for _, phrase := range []string{"elsif", "this is not sieve", "unauthorized", "server_fail", "drop_eventsource"} {
+		if !strings.Contains(facts, phrase) {
+			t.Fatalf("facts missing %s", phrase)
+		}
+	}
+	if !strings.Contains(guide, "unauthorized") || !strings.Contains(guide, "server_fail") || !strings.Contains(guide, "drop_eventsource") || !strings.Contains(guide, "docs/facts/imap-server.md") {
+		t.Fatal("guide missing the checker or the jmap faults")
+	}
+	if strings.Contains(guide, "elsif") || strings.Contains(guide, "serverFail") {
+		t.Fatal("guide pastes the facts file")
+	}
+
+	_, bound, cc := startCtrl(t, Config{
+		Listen:      "127.0.0.1:0",
+		SieveListen: "127.0.0.1:0",
+		SmtpListen:  smtpListenList{{Addr: "127.0.0.1:0"}},
+	})
+	cl := dialSieve(t, bound.Sieve)
+	authSieveDemo(t, cl)
+
+	okScripts := [][]byte{
+		[]byte("keep;"),
+		[]byte("require [\"fileinto\"]; fileinto \"INBOX\";"),
+		[]byte("discard;"),
+		[]byte("stop;"),
+		[]byte("redirect \"a@b\";"),
+		[]byte("KEEP;"),
+		[]byte("fileinto :copy \"INBOX\";"),
+		[]byte("fileinto \"{\";"),
+		[]byte("if true { keep; } elsif false { discard; } else { stop; }"),
+		[]byte("# {\nkeep;\n"),
+	}
+	for _, body := range okScripts {
+		if cl.scriptCmd("CHECKSCRIPT", body) != "OK" {
+			t.Fatalf("check %q", body)
+		}
+		if cl.scriptCmd(`PUTSCRIPT "ok"`, body) != "OK" {
+			t.Fatalf("put %q", body)
+		}
+	}
+	if lines := cl.list(); strings.Join(lines, "\n") != "\"ok\"\nOK" {
+		t.Fatalf("check stored or put failed %q", lines)
+	}
+	if _, got := cl.get("ok"); !bytes.Equal(got, okScripts[len(okScripts)-1]) {
+		t.Fatalf("stored %q", got)
+	}
+
+	badScripts := [][]byte{
+		nil,
+		[]byte("if true { keep;"),
+		[]byte("keep"),
+		[]byte("fileinto \"INBOX\""),
+		[]byte("this is not sieve"),
+		[]byte("vacation;"),
+		[]byte("reject \"x\";"),
+		[]byte("keep; }"),
+	}
+	for _, body := range badScripts {
+		if !strings.HasPrefix(cl.scriptCmd("CHECKSCRIPT", body), "NO") {
+			t.Fatalf("check accepted %q", body)
+		}
+		if !strings.HasPrefix(cl.scriptCmd(`PUTSCRIPT "bad"`, body), "NO") {
+			t.Fatalf("put accepted %q", body)
+		}
+	}
+	if lines := cl.list(); strings.Contains(strings.Join(lines, "\n"), "bad") {
+		t.Fatalf("bad script stored %q", lines)
+	}
+
+	for _, req := range []map[string]any{
+		{"op": "arm-fault", "do": "silent", "command": "CHECKSCRIPT", "proto": "sieve"},
+		{"op": "arm-fault", "do": "close", "command": "PUTSCRIPT", "proto": "sieve"},
+		{"op": "arm-fault", "do": "reply", "command": "LISTSCRIPTS", "proto": "sieve"},
+		{"op": "arm-fault", "do": "unauthorized", "command": "NOOP", "proto": "sieve"},
+	} {
+		rp := cc.call(req)
+		if rp.OK || rp.Error != "unknown fault" {
+			t.Fatalf("sieve do %+v -> %+v", req, rp)
+		}
+	}
+	if rp := cc.call(map[string]any{"op": "arm-fault", "do": "reply", "proto": "sieve"}); rp.OK || rp.Error != "missing field" {
+		t.Fatalf("sieve reply without command %+v", rp)
+	}
+
+	cc.arm(map[string]any{"do": "reply", "command": "CHECKSCRIPT", "proto": "sieve", "conn": 99999, "times": 1})
+	if cl.scriptCmd("CHECKSCRIPT", []byte("keep;")) != "OK" {
+		t.Fatal("other conn matched")
+	}
+	cc.call(map[string]any{"op": "clear-faults"}).ok(t)
+	cc.arm(map[string]any{"do": "reply", "command": "checkscript", "proto": "Sieve", "status": "OK", "times": 2})
+	if cl.scriptCmd("CHECKSCRIPT", []byte("keep;")) != "OK" {
+		t.Fatal("times 2 fired early")
+	}
+	if !strings.HasPrefix(cl.scriptCmd("CHECKSCRIPT", []byte("keep;")), "NO") {
+		t.Fatal("times 2 did not force NO")
+	}
+	if cl.scriptCmd("CHECKSCRIPT", []byte("keep;")) != "OK" {
+		t.Fatal("spent fault still matched")
+	}
+
+	cc.arm(map[string]any{"do": "reply", "command": "PUTSCRIPT", "proto": "sieve", "times": 1})
+	if !strings.HasPrefix(cl.scriptCmd(`PUTSCRIPT "hidden"`, []byte("keep;")), "NO") {
+		t.Fatal("put fault")
+	}
+	if lines := cl.list(); strings.Contains(strings.Join(lines, "\n"), "hidden") {
+		t.Fatalf("fault stored %q", lines)
+	}
+	if cl.scriptCmd(`PUTSCRIPT "shown"`, []byte("discard;")) != "OK" {
+		t.Fatal("put after fault")
+	}
+
+	active := []byte("require [\"fileinto\"]; fileinto \"Trash\"; discard;")
+	if cl.scriptCmd(`PUTSCRIPT "active"`, active) != "OK" || cl.transact(`SETACTIVE "active"`) != "OK" {
+		t.Fatal("active script")
+	}
+	im := dial(t, bound.Listen)
+	im.cmd("LOGIN demo secret").ok(t)
+	beforeBoxes := strings.Join(im.cmd(`LIST "" "*"`).mustOK(t).untagged, "\n")
+	beforeN := inboxCount(t, cc)
+	smtp := dialSMTP(t, bound.Smtp)
+	smtp.authPlain("demo", "secret")
+	raw := "From: a@example.com\r\nSubject: sieve-off\r\n\r\nnot filtered\r\n"
+	if code := smtp.mailData("a@example.com", []string{"demo"}, raw); code != 250 {
+		t.Fatalf("deliver %d", code)
+	}
+	if inboxCount(t, cc) != beforeN+1 {
+		t.Fatal("delivery ran the script")
+	}
+	if got := strings.Join(im.cmd(`LIST "" "*"`).mustOK(t).untagged, "\n"); got != beforeBoxes {
+		t.Fatalf("mailboxes changed\n%s\n%s", beforeBoxes, got)
+	}
+	msgs := cc.call(map[string]any{"op": "list-mail", "mailbox": "INBOX"}).ok(t).Messages
+	if !bytes.Contains(fetchRFC822(t, cc, msgs[len(msgs)-1].UID), []byte("sieve-off")) {
+		t.Fatal("delivered bytes changed")
 	}
 }
 

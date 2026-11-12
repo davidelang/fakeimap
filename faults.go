@@ -207,6 +207,67 @@ func smtpFaultApplies(do, command string) bool {
 	}
 }
 
+// matchSieveReply counts a ManageSieve reply fault. The command does not store.
+func (s *Server) matchSieveReply(id int, command string) *fault {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.faults {
+		if f.spent || faultProto(f) != "sieve" || f.do != "reply" || f.command == "" {
+			continue
+		}
+		if f.conn != 0 && f.conn != id {
+			continue
+		}
+		if !strings.EqualFold(f.command, command) {
+			continue
+		}
+		return takeHit(f)
+	}
+	return nil
+}
+
+func jmapFaultDo(do string) bool {
+	switch do {
+	case "unauthorized", "server_fail", "drop_eventsource":
+		return true
+	default:
+		return false
+	}
+}
+
+// jmapCommandMatch: an omitted command matches a whole request kind.
+// A set command matches that kind or that method name only.
+func jmapCommandMatch(command, kind string) bool {
+	if command == "" {
+		switch kind {
+		case "api", "upload", "download", "eventsource":
+			return true
+		default:
+			return false
+		}
+	}
+	return strings.EqualFold(command, kind)
+}
+
+// takeJMAPFault counts one JMAP fault for this request kind or method name.
+func (s *Server) takeJMAPFault(id int, kind, do string) *fault {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.faults {
+		if f.spent || f.do != do || faultProto(f) != "jmap" {
+			continue
+		}
+		if f.conn != 0 && f.conn != id {
+			continue
+		}
+		if !jmapCommandMatch(f.command, kind) {
+			continue
+		}
+		return takeHit(f)
+	}
+	return nil
+}
+
 // matchProtoFault counts an overquota fault for JMAP.
 func (s *Server) matchProtoFault(proto string, id int, command string) *fault {
 	if proto == "" || proto == "imap" {

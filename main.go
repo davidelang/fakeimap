@@ -64,6 +64,8 @@ type Server struct {
 	connSeq       atomic.Int64
 	smtpSeq       atomic.Int64
 	jmapSeq       atomic.Int64
+	jmapDropMu    sync.Mutex
+	jmapDrops     map[int]chan struct{}
 	// fetchLineHook runs after each FETCH response line and before that
 	// line's pending-event flush. Tests expunge from another session there.
 	fetchLineHook func()

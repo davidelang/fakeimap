@@ -95,11 +95,56 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) watchJMAPDrop(id int) chan struct{} {
+	ch := make(chan struct{}, 1)
+	s.jmapDropMu.Lock()
+	if s.jmapDrops == nil {
+		s.jmapDrops = map[int]chan struct{}{}
+	}
+	s.jmapDrops[id] = ch
+	s.jmapDropMu.Unlock()
+	return ch
+}
+
+func (s *Server) unwatchJMAPDrop(id int) {
+	s.jmapDropMu.Lock()
+	delete(s.jmapDrops, id)
+	s.jmapDropMu.Unlock()
+}
+
+func (s *Server) wakeJMAPDrops() {
+	s.jmapDropMu.Lock()
+	defer s.jmapDropMu.Unlock()
+	for _, ch := range s.jmapDrops {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func jmapUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="jmap"`)
+	w.WriteHeader(http.StatusUnauthorized)
+}
+
 func (s *Server) jmapEventSource(w http.ResponseWriter, r *http.Request, user string) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	id := int(s.jmapSeq.Add(1))
+	if s.takeJMAPFault(id, "eventsource", "unauthorized") != nil {
+		jmapUnauthorized(w)
+		return
+	}
+	if s.takeJMAPFault(id, "eventsource", "server_fail") != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	dropCh := s.watchJMAPDrop(id)
+	defer s.unwatchJMAPDrop(id)
+	closeAfterFirst := s.takeJMAPFault(id, "eventsource", "drop_eventsource") != nil
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -139,6 +184,10 @@ func (s *Server) jmapEventSource(w http.ResponseWriter, r *http.Request, user st
 		select {
 		case <-ctx.Done():
 			return
+		case <-dropCh:
+			if s.takeJMAPFault(id, "eventsource", "drop_eventsource") != nil {
+				return
+			}
 		case <-ticks:
 			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
 				return
@@ -165,7 +214,7 @@ func (s *Server) jmapEventSource(w http.ResponseWriter, r *http.Request, user st
 				return
 			}
 			flusher.Flush()
-			if closeAfterState {
+			if closeAfterFirst || closeAfterState {
 				return
 			}
 		}
@@ -237,6 +286,11 @@ type jmapDone struct {
 }
 
 func (s *Server) jmapAPI(w http.ResponseWriter, r *http.Request, user string) {
+	connID := int(s.jmapSeq.Add(1))
+	if s.takeJMAPFault(connID, "api", "unauthorized") != nil {
+		jmapUnauthorized(w)
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 	if err != nil {
 		jmapProblem(w, http.StatusBadRequest, "urn:ietf:params:jmap:error:notJSON")
@@ -290,10 +344,21 @@ func (s *Server) jmapAPI(w http.ResponseWriter, r *http.Request, user string) {
 		}
 		calls = append(calls, jmapInvoke{name: name, args: args, id: id})
 	}
+	for _, call := range calls {
+		if s.takeJMAPFault(connID, call.name, "unauthorized") != nil {
+			jmapUnauthorized(w)
+			return
+		}
+	}
 	prev := map[string]jmapDone{}
 	var responses []any
-	connID := int(s.jmapSeq.Add(1))
+	allFail := s.takeJMAPFault(connID, "api", "server_fail") != nil
 	for _, call := range calls {
+		if allFail || s.takeJMAPFault(connID, call.name, "server_fail") != nil {
+			responses = append(responses, []any{"error", map[string]any{"type": "serverFail"}, call.id})
+			prev[call.id] = jmapDone{name: call.name}
+			continue
+		}
 		args, refErr := resolveJMAPArgs(call.args, prev)
 		if refErr != "" {
 			responses = append(responses, []any{"error", map[string]any{"type": refErr}, call.id})
@@ -453,6 +518,15 @@ func (s *Server) jmapUpload(w http.ResponseWriter, r *http.Request, user string)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	reqID := int(s.jmapSeq.Add(1))
+	if s.takeJMAPFault(reqID, "upload", "unauthorized") != nil {
+		jmapUnauthorized(w)
+		return
+	}
+	if s.takeJMAPFault(reqID, "upload", "server_fail") != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	account, ok := jmapOneSegment(r.URL.Path, "/jmap/upload/")
 	if !ok || account != user {
 		http.NotFound(w, r)
@@ -486,6 +560,15 @@ func (s *Server) jmapUpload(w http.ResponseWriter, r *http.Request, user string)
 func (s *Server) jmapDownload(w http.ResponseWriter, r *http.Request, user string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id := int(s.jmapSeq.Add(1))
+	if s.takeJMAPFault(id, "download", "unauthorized") != nil {
+		jmapUnauthorized(w)
+		return
+	}
+	if s.takeJMAPFault(id, "download", "server_fail") != nil {
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	account, blobID, ok := jmapDownloadPath(r.URL.Path)

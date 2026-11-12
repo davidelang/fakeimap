@@ -2075,3 +2075,195 @@ func expectClosedEmailState(t *testing.T, addr string, session map[string]any, a
 		t.Fatal("closeafter=state left the stream open")
 	}
 }
+
+func TestJMAPFaults(t *testing.T) {
+	_, bound, cc := startCtrl(t, Config{Listen: "127.0.0.1:0", JmapListen: "127.0.0.1:0"})
+	for _, proto := range []string{"imap", "smtp"} {
+		for _, do := range []string{"unauthorized", "server_fail", "drop_eventsource"} {
+			rp := cc.call(map[string]any{"op": "arm-fault", "do": do, "command": "NOOP", "proto": proto})
+			if rp.OK || rp.Error != "unknown fault" {
+				t.Fatalf("%s %s %+v", proto, do, rp)
+			}
+		}
+	}
+	if rp := cc.call(map[string]any{"op": "arm-fault", "do": "unauthorized", "proto": "jmap", "times": -1}); rp.OK || rp.Error != "missing field" {
+		t.Fatalf("bad times %+v", rp)
+	}
+
+	cc.arm(map[string]any{"do": "unauthorized", "proto": "jmap", "conn": 2, "times": 1})
+	if code, _ := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("0")); code != 200 {
+		t.Fatalf("conn 1 %d", code)
+	}
+	if code, _ := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("1")); code != 401 {
+		t.Fatalf("conn 2 %d", code)
+	}
+	if code, _ := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("2")); code != 200 {
+		t.Fatalf("conn 3 %d", code)
+	}
+
+	cc.arm(map[string]any{"do": "unauthorized", "proto": "jmap", "times": 1})
+	res, _ := jmapHTTP(t, bound.Jmap, "demo", "secret", http.MethodGet, "/.well-known/jmap", nil)
+	if res.StatusCode != 200 {
+		t.Fatalf("well-known %d", res.StatusCode)
+	}
+	if code, _ := jmapAPIStatus(t, bound.Jmap, "demo", "wrong", jmapMailboxCall("0")); code != 401 {
+		t.Fatalf("wrong password consumed the fault %d", code)
+	}
+	if code, _ := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("0")); code != 401 {
+		t.Fatalf("api unauthorized %d", code)
+	}
+	if code, root := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("0")); code != 200 || len(arrayField(t, root, "methodResponses")) == 0 {
+		t.Fatal("api after unauthorized")
+	}
+
+	up, _ := jmapDo(t, bound.Jmap, "demo", "secret", http.MethodPost, "/jmap/upload/demo/", "text/plain", []byte("blob"))
+	if up.StatusCode != 201 {
+		t.Fatalf("upload before fault %d", up.StatusCode)
+	}
+	cc.arm(map[string]any{"do": "unauthorized", "proto": "jmap", "command": "upload", "times": 1})
+	if code, _ := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("0")); code != 200 {
+		t.Fatal("upload fault matched api")
+	}
+	up, _ = jmapDo(t, bound.Jmap, "demo", "secret", http.MethodPost, "/jmap/upload/demo/", "text/plain", []byte("nope"))
+	if up.StatusCode != 401 {
+		t.Fatalf("upload unauthorized %d", up.StatusCode)
+	}
+	down, _ := jmapDo(t, bound.Jmap, "demo", "secret", http.MethodGet, "/jmap/download/demo/missing/a.txt", "", nil)
+	if down.StatusCode == 401 {
+		t.Fatal("upload fault matched download")
+	}
+	cc.arm(map[string]any{"do": "unauthorized", "proto": "jmap", "command": "download", "times": 1})
+	down, _ = jmapDo(t, bound.Jmap, "demo", "secret", http.MethodGet, "/jmap/download/demo/missing/a.txt", "", nil)
+	if down.StatusCode != 401 {
+		t.Fatalf("download unauthorized %d", down.StatusCode)
+	}
+	cc.arm(map[string]any{"do": "unauthorized", "proto": "jmap", "command": "eventsource", "times": 1})
+	if code := jmapTimedStatus(t, bound.Jmap, "demo", "secret", http.MethodGet, "/jmap/eventsource/?types=Email", nil); code != 401 {
+		t.Fatalf("event source unauthorized %d", code)
+	}
+
+	cc.arm(map[string]any{"do": "server_fail", "proto": "jmap", "times": 2})
+	if code, root := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("0")); code != 200 || methodArgs(t, root, "Mailbox/get")["list"] == nil {
+		t.Fatal("server_fail times 2 fired early")
+	}
+	if code, root := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("1")); code != 200 || methodType(t, root, "1") != "serverFail" {
+		t.Fatalf("server_fail %+v", root)
+	}
+	if code, root := jmapAPIStatus(t, bound.Jmap, "demo", "secret", jmapMailboxCall("2")); code != 200 || methodArgs(t, root, "Mailbox/get")["list"] == nil {
+		t.Fatal("server_fail stayed armed")
+	}
+
+	session := jmapSession(t, bound.Jmap, "demo", "secret")
+	accountID := objectField(t, session, "primaryAccounts")["urn:ietf:params:jmap:mail"].(string)
+	inboxID := mailboxID(t, bound.Jmap, session, accountID, "INBOX")
+	listed := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/query", map[string]any{"accountId": accountID, "filter": map[string]any{"inMailbox": inboxID}}, "0"},
+	})
+	ids := stringArray(t, methodArgs(t, listed, "Email/query")["ids"])
+	if len(ids) == 0 {
+		t.Fatal("no email")
+	}
+	cc.arm(map[string]any{"do": "server_fail", "proto": "jmap", "command": "Email/get", "times": 1})
+	both := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/get", map[string]any{"accountId": accountID, "ids": []any{ids[0]}}, "a"},
+		[]any{"Mailbox/get", map[string]any{"accountId": accountID}, "b"},
+	})
+	if methodType(t, both, "a") != "serverFail" || methodArgs(t, both, "Mailbox/get")["list"] == nil {
+		t.Fatalf("method server_fail %+v", both)
+	}
+	cc.arm(map[string]any{"do": "server_fail", "proto": "jmap", "times": 1})
+	set := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/set", map[string]any{"accountId": accountID, "destroy": []any{ids[0]}}, "1"},
+	})
+	if methodType(t, set, "1") != "serverFail" {
+		t.Fatalf("destroy %+v", set)
+	}
+	again := jmapCall(t, bound.Jmap, session, "demo", "secret", []any{
+		[]any{"Email/get", map[string]any{"accountId": accountID, "ids": []any{ids[0]}, "properties": []any{"id"}}, "2"},
+	})
+	if emailList(t, again)[0]["id"] != ids[0] {
+		t.Fatalf("server_fail ran %+v", again)
+	}
+
+	cc.arm(map[string]any{"do": "server_fail", "proto": "jmap", "command": "upload", "times": 1})
+	up, _ = jmapDo(t, bound.Jmap, "demo", "secret", http.MethodPost, "/jmap/upload/demo/", "text/plain", []byte("x"))
+	if up.StatusCode != 500 {
+		t.Fatalf("upload 500 %d", up.StatusCode)
+	}
+	up, _ = jmapDo(t, bound.Jmap, "demo", "secret", http.MethodPost, "/jmap/upload/demo/", "text/plain", []byte("y"))
+	if up.StatusCode != 201 {
+		t.Fatalf("upload after %d", up.StatusCode)
+	}
+	cc.arm(map[string]any{"do": "server_fail", "proto": "jmap", "command": "download", "times": 1})
+	down, _ = jmapDo(t, bound.Jmap, "demo", "secret", http.MethodGet, "/jmap/download/demo/missing/a.txt", "", nil)
+	if down.StatusCode != 500 {
+		t.Fatalf("download 500 %d", down.StatusCode)
+	}
+	cc.arm(map[string]any{"do": "server_fail", "proto": "jmap", "command": "eventsource", "times": 1})
+	if code := jmapTimedStatus(t, bound.Jmap, "demo", "secret", http.MethodGet, "/jmap/eventsource/?types=Email", nil); code != 500 {
+		t.Fatalf("event source 500 %d", code)
+	}
+
+	stream := openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=no&ping=120")
+	cc.arm(map[string]any{"do": "drop_eventsource", "proto": "jmap"})
+	if block, eof := stream.next(2 * time.Second); !eof || block != "" {
+		t.Fatalf("open stream %q eof %v", block, eof)
+	}
+	stream = openJMAPEvents(t, bound.Jmap, "demo", "secret", "types=Email&closeafter=no&ping=120")
+	if block, eof := stream.next(300 * time.Millisecond); eof || block != "" {
+		t.Fatalf("next stream closed before an event %q eof %v", block, eof)
+	}
+	im := dial(t, bound.Listen)
+	im.cmd("LOGIN demo secret").ok(t)
+	im.cmd("APPEND INBOX {4+}\r\ndrop").ok(t)
+	block, eof := stream.next(3 * time.Second)
+	if eof || !strings.HasPrefix(block, "event: state\n") {
+		t.Fatalf("first event %q eof %v", block, eof)
+	}
+	if _, eof = stream.next(2 * time.Second); !eof {
+		t.Fatal("next stream stayed open after its first event")
+	}
+}
+
+func jmapMailboxCall(id string) []byte {
+	body, err := json.Marshal(map[string]any{
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"},
+		"methodCalls": []any{[]any{"Mailbox/get", map[string]any{"accountId": "demo"}, id}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return body
+}
+
+func jmapAPIStatus(t *testing.T, addr, user, pass string, body []byte) (int, map[string]any) {
+	t.Helper()
+	res, raw := jmapHTTP(t, addr, user, pass, http.MethodPost, "/jmap/", body)
+	if res.StatusCode != 200 {
+		return res.StatusCode, nil
+	}
+	return res.StatusCode, jmapJSON(t, raw)
+}
+
+func jmapTimedStatus(t *testing.T, addr, user, pass, method, path string, body []byte) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+addr+path, rdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.SetBasicAuth(user, pass)
+	cl := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	res, err := cl.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	return res.StatusCode
+}

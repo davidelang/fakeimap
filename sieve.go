@@ -15,7 +15,7 @@ import (
 )
 
 // ManageSieve (RFC 5804) stores scripts per account. It does not run them.
-// CHECKSCRIPT does not parse Sieve.
+// CHECKSCRIPT and PUTSCRIPT accept only the small command list.
 
 const sieveLitMax = 1 << 20
 
@@ -401,6 +401,12 @@ func (sc *sieveConn) cmdPut(rest []sieveVal) error {
 	if len(rest[1].raw) == 0 {
 		return sc.no("empty script")
 	}
+	if !sieveScriptOK(rest[1].raw) {
+		return sc.no("invalid script")
+	}
+	if sc.srv.matchSieveReply(sc.id, "PUTSCRIPT") != nil {
+		return sc.no("fault")
+	}
 	sc.srv.sievePut(sc.user, rest[0].text, rest[1].raw)
 	return sc.ok("")
 }
@@ -414,6 +420,12 @@ func (sc *sieveConn) cmdCheck(rest []sieveVal) error {
 	}
 	if len(rest[0].raw) == 0 {
 		return sc.no("empty script")
+	}
+	if !sieveScriptOK(rest[0].raw) {
+		return sc.no("invalid script")
+	}
+	if sc.srv.matchSieveReply(sc.id, "CHECKSCRIPT") != nil {
+		return sc.no("fault")
 	}
 	return sc.ok("")
 }
@@ -623,4 +635,259 @@ func sieveQuote(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// sieveScriptOK accepts only the small command list. It does not run the script.
+// Braces inside a quoted string or a # comment do not count.
+func sieveScriptOK(body []byte) bool {
+	if len(body) == 0 || !sieveBracesOK(body) {
+		return false
+	}
+	p := &sieveChk{b: body}
+	if !p.commands(true) {
+		return false
+	}
+	p.skip()
+	return p.i == len(p.b) && p.saw
+}
+
+func sieveCmdName(name string) bool {
+	switch strings.ToLower(name) {
+	case "require", "keep", "discard", "stop", "fileinto", "redirect", "if", "elsif", "else":
+		return true
+	default:
+		return false
+	}
+}
+
+// sieveBracesOK counts braces outside quoted strings and # comments.
+func sieveBracesOK(body []byte) bool {
+	depth := 0
+	inStr := false
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if inStr {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '#' {
+			for i < len(body) && body[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			continue
+		}
+		if c == '{' {
+			depth++
+			continue
+		}
+		if c == '}' {
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0 && !inStr
+}
+
+type sieveChk struct {
+	b   []byte
+	i   int
+	saw bool
+}
+
+func (p *sieveChk) eof() bool { return p.i >= len(p.b) }
+
+func (p *sieveChk) skip() {
+	for p.i < len(p.b) {
+		c := p.b[p.i]
+		if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+			p.i++
+			continue
+		}
+		if c == '#' {
+			for p.i < len(p.b) && p.b[p.i] != '\n' {
+				p.i++
+			}
+			continue
+		}
+		return
+	}
+}
+
+func (p *sieveChk) commands(top bool) bool {
+	for {
+		p.skip()
+		if p.eof() {
+			return top
+		}
+		if p.b[p.i] == '}' {
+			return !top
+		}
+		if !p.command() {
+			return false
+		}
+	}
+}
+
+func (p *sieveChk) command() bool {
+	name, ok := p.ident()
+	if !ok || !sieveCmdName(name) {
+		return false
+	}
+	p.saw = true
+	if !p.args() {
+		return false
+	}
+	p.skip()
+	if p.eof() {
+		return false
+	}
+	switch p.b[p.i] {
+	case ';':
+		p.i++
+		return true
+	case '{':
+		p.i++
+		if !p.commands(false) {
+			return false
+		}
+		p.skip()
+		if p.eof() || p.b[p.i] != '}' {
+			return false
+		}
+		p.i++
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *sieveChk) args() bool {
+	for {
+		p.skip()
+		if p.eof() {
+			return false
+		}
+		c := p.b[p.i]
+		if c == ';' || c == '{' || c == '}' {
+			return true
+		}
+		switch c {
+		case '"':
+			if !p.str() {
+				return false
+			}
+		case '[':
+			if !p.list() {
+				return false
+			}
+		case '(', ')', ',':
+			p.i++
+		case ':':
+			p.i++
+			if _, ok := p.ident(); !ok {
+				return false
+			}
+		default:
+			if c >= '0' && c <= '9' {
+				if !p.number() {
+					return false
+				}
+				continue
+			}
+			if _, ok := p.ident(); !ok {
+				return false
+			}
+		}
+	}
+}
+
+func (p *sieveChk) list() bool {
+	p.i++
+	for {
+		p.skip()
+		if p.eof() {
+			return false
+		}
+		switch p.b[p.i] {
+		case ']':
+			p.i++
+			return true
+		case '"':
+			if !p.str() {
+				return false
+			}
+		case ',':
+			p.i++
+		default:
+			return false
+		}
+	}
+}
+
+func (p *sieveChk) str() bool {
+	p.i++
+	for p.i < len(p.b) {
+		c := p.b[p.i]
+		if c == '\\' {
+			if p.i+1 >= len(p.b) {
+				return false
+			}
+			p.i += 2
+			continue
+		}
+		if c == '"' {
+			p.i++
+			return true
+		}
+		p.i++
+	}
+	return false
+}
+
+func (p *sieveChk) ident() (string, bool) {
+	if p.eof() || !sieveIdentStart(p.b[p.i]) {
+		return "", false
+	}
+	start := p.i
+	p.i++
+	for p.i < len(p.b) && sieveIdentCont(p.b[p.i]) {
+		p.i++
+	}
+	return string(p.b[start:p.i]), true
+}
+
+func (p *sieveChk) number() bool {
+	if p.eof() || p.b[p.i] < '0' || p.b[p.i] > '9' {
+		return false
+	}
+	for p.i < len(p.b) && p.b[p.i] >= '0' && p.b[p.i] <= '9' {
+		p.i++
+	}
+	if p.i < len(p.b) {
+		switch p.b[p.i] {
+		case 'K', 'M', 'G', 'k', 'm', 'g':
+			p.i++
+		}
+	}
+	return true
+}
+
+func sieveIdentStart(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+}
+
+func sieveIdentCont(c byte) bool {
+	return sieveIdentStart(c) || (c >= '0' && c <= '9') || c == '_'
 }

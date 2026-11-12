@@ -1017,3 +1017,14 @@
 - smtp_auth_required false is a sink. EHLO lists PIPELINING, SMTPUTF8, SIZE, and DSN when the listener asks. MAIL and RCPT record the DSN parameters.
 - inject-dsn and a bounce fault store delivery-status reports. SMTP faults do not match IMAP faults.
 - Plan: sandbox/plans/smtp-listen-dsn-20261112-0509-plan.md
+
+## 2026-11-12 - Sieve check and JMAP faults execution start
+
+- Approved plan: sandbox/plans/sieve-jmap-faults-20261112-0509-plan.md
+- Work: CHECKSCRIPT and PUTSCRIPT reject a script outside the small command list and still do not run it. JMAP arm-fault can force 401, serverFail, or a closed event stream.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - Sieve check and JMAP faults landed
+
+- CHECKSCRIPT and PUTSCRIPT accept only require, keep, discard, stop, fileinto, redirect, if, elsif, and else. A bad script is NO and is not stored. Nothing runs the script on delivery.
+- proto sieve reply forces NO for CHECKSCRIPT and PUTSCRIPT. proto jmap unauthorized, server_fail, and drop_eventsource force 401, serverFail or HTTP 500, or a closed event stream.

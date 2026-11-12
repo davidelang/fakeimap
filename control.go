@@ -563,11 +563,16 @@ func (s *Server) byeConns(conn *int, text string) error {
 
 func (s *Server) armFault(f *fault) int {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.nextFault++
 	f.id = s.nextFault
 	s.faults = append(s.faults, f)
-	return f.id
+	drop := f.do == "drop_eventsource"
+	id := f.id
+	s.mu.Unlock()
+	if drop {
+		s.wakeJMAPDrops()
+	}
+	return id
 }
 
 func (s *Server) setLoginDisabled(v bool) {
@@ -622,7 +627,8 @@ func canonDo(do string) (string, bool) {
 		"reorder", "mid", "fetch_order", "tag_first", "mutate", "wrong_name",
 		"expired", "self_signed",
 		"reply", "bye", "idle_burst", "drop_literal", "rst_literal", "overquota", "expunge_mid",
-		"inprogress", "drop_after_354", "bounce":
+		"inprogress", "drop_after_354", "bounce",
+		"unauthorized", "server_fail", "drop_eventsource":
 		return strings.ToLower(do), true
 	default:
 		return "", false
@@ -633,6 +639,11 @@ func smtpDoAllowed(do, proto string) bool {
 	switch do {
 	case "bounce", "drop_after_354":
 		return proto == "smtp"
+	case "unauthorized", "server_fail", "drop_eventsource":
+		return proto == "jmap"
+	}
+	if proto == "sieve" {
+		return do == "reply"
 	}
 	if proto != "smtp" {
 		return true
@@ -713,9 +724,12 @@ func buildFault(req ctrlRequest) (*fault, error) {
 	}
 	if !isCertDo(do) {
 		if req.Command == "" {
-			return nil, fmt.Errorf("missing field")
+			if !jmapFaultDo(do) {
+				return nil, fmt.Errorf("missing field")
+			}
+		} else {
+			f.command = strings.ToUpper(req.Command)
 		}
-		f.command = strings.ToUpper(req.Command)
 	} else if req.Command != "" {
 		f.command = strings.ToUpper(req.Command)
 	}
@@ -766,23 +780,30 @@ func buildFault(req ctrlRequest) (*fault, error) {
 		}
 		f.order = append([]string(nil), req.Order...)
 	case "reply":
-		if faultProto(f) == "smtp" {
+		switch faultProto(f) {
+		case "smtp":
 			n, err := strconv.Atoi(req.Code)
 			if err != nil || n < 200 || n > 599 {
 				return nil, fmt.Errorf("missing field")
 			}
 			f.code = strconv.Itoa(n)
 			f.text = req.Text
-			break
-		}
-		switch strings.ToUpper(req.Status) {
-		case "OK", "NO", "BAD":
-			f.status = strings.ToUpper(req.Status)
+		case "sieve":
+			switch f.command {
+			case "CHECKSCRIPT", "PUTSCRIPT":
+			default:
+				return nil, fmt.Errorf("unknown fault")
+			}
 		default:
-			return nil, fmt.Errorf("missing field")
+			switch strings.ToUpper(req.Status) {
+			case "OK", "NO", "BAD":
+				f.status = strings.ToUpper(req.Status)
+			default:
+				return nil, fmt.Errorf("missing field")
+			}
+			f.code = req.Code
+			f.text = req.Text
 		}
-		f.code = req.Code
-		f.text = req.Text
 	case "bye":
 		f.text = req.Text
 		if f.text == "" {
@@ -868,7 +889,7 @@ func buildFault(req ctrlRequest) (*fault, error) {
 
 func canonProto(p string) (string, bool) {
 	switch strings.ToLower(p) {
-	case "imap", "smtp", "jmap":
+	case "imap", "smtp", "jmap", "sieve":
 		return strings.ToLower(p), true
 	default:
 		return "", false

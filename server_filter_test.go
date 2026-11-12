@@ -200,7 +200,7 @@ func TestFilterSieveStub(t *testing.T) {
 
 	sv := dialSieve(t, bound.Sieve)
 	authSieveDemo(t, sv)
-	body := []byte("not a sieve script {{\n")
+	body := []byte("keep;\n")
 	if sv.scriptCmd(`PUTSCRIPT "vacation"`, body) != "OK" {
 		t.Fatal("put")
 	}

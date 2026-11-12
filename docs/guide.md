@@ -144,6 +144,7 @@ Reply faults run in `runCommand` before the command handler. The certificate fau
 - `self_signed` presents a generated localhost certificate.
 - `reply`, `bye`, `idle_burst`, `drop_literal`, `rst_literal`, `overquota`, `expunge_mid`, and `inprogress` are named here. What each one does, and what the `bye` op does, is in `docs/facts/imap-server.md`.
 - `proto` defaults to `imap`. `proto` `smtp` applies `close`, `rst`, `half_close`, `silent`, `delay`, `raw`, `reply`, `drop_after_354`, `bounce`, and `overquota` to the named SMTP verb. An IMAP fault does not match an SMTP command. The SMTP rules are in `docs/facts/imap-server.md`.
+- `unauthorized`, `server_fail`, and `drop_eventsource` are `proto` `jmap` faults. `proto` `sieve` `reply` forces `NO` on `CHECKSCRIPT` and `PUTSCRIPT`. The effects are in `docs/facts/imap-server.md`.
 
 An unknown `do` is `unknown fault`. A missing required field is `missing field`.
 
@@ -255,7 +256,7 @@ SMTP cleartext listeners and the implicit TLS listener, the EHLO list, the recor
 
 `jmap_listen` is cleartext HTTP. It does not speak TLS. `jmap_tls_listen` speaks TLS from the first byte on the same routes, reports the bound address as `jmap_tls`, allows port `0`, and leaves session URLs as paths. An empty or omitted address is not bound. Setting it without a certificate is a config error. Method behavior is in `docs/facts/imap-server.md`.
 
-ManageSieve stores scripts and does not execute them. `CHECKSCRIPT` does not parse Sieve. Its `STARTTLS` is listed only when a certificate is loaded. `STARTTLS` returns `OK`, and the next greeting has no `STARTTLS`.
+ManageSieve stores scripts and does not execute them. `CHECKSCRIPT` and `PUTSCRIPT` reject a script outside the small command list. The checker is in `docs/facts/imap-server.md`. Its `STARTTLS` is listed only when a certificate is loaded. `STARTTLS` returns `OK`, and the next greeting has no `STARTTLS`.
 
 ## Log and clock
 
