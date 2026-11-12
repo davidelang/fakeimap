@@ -611,7 +611,7 @@ func (s *Server) jmapEmailSet(user string, args map[string]any) (map[string]any,
 			return nil, typ
 		}
 	}
-	old, neu, updated, notUpdated, destroyed, missing := s.store.applyEmailSet(patches, ids)
+	old, neu, updated, notUpdated, destroyed, missing := s.store.applyEmailSet(patches, ids, s.frozenTime())
 	res := map[string]any{
 		"accountId": user,
 		"oldState":  old,
@@ -2256,7 +2256,7 @@ func (s *Server) destroySubmitted(user, callID string, refs []string, okEmail ma
 	if len(ids) == 0 {
 		return
 	}
-	old, neu, _, _, destroyed, missing := s.store.applyEmailSet(nil, ids)
+	old, neu, _, _, destroyed, missing := s.store.applyEmailSet(nil, ids, s.frozenTime())
 	res := map[string]any{
 		"accountId": user,
 		"oldState":  old,

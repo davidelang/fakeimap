@@ -793,3 +793,8 @@
 - Approved plan: sandbox/plans/status-size-20261111-2253-plan.md
 - STATUS SIZE is the sum of RFC822 sizes still in the mailbox, including \Deleted until EXPUNGE. LIST RETURN (STATUS (SIZE)) returns the same number. Without the capability, STATUS of SIZE is BAD.
 - cyrus-36, cyrus-3124, and cyrus-3137 list STATUS=SIZE immediately after SPECIAL-USE on the pre-login and post-login lists. dovecot-245 and dovecot-dev list it there on the post-login list only. The four Stalwart files list it immediately after UNAUTHENTICATE on the post-login list. sasl.json lists it immediately after SPECIAL-USE on the post-login list only. The gaps file no longer contains it.
+
+## 2026-11-11 - SAVEDATE execution start
+
+- Approved plan: sandbox/plans/savedate-20261111-2306-plan.md
+- Work: save time separate from INTERNALDATE, SAVEDATE fetch and search, lab capability lists, facts and guide

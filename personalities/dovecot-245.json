@@ -49,6 +49,7 @@
     "PREVIEW",
     "SPECIAL-USE",
     "STATUS=SIZE",
+    "SAVEDATE",
     "COMPRESS=DEFLATE",
     "LITERAL+",
     "UTF8=ACCEPT"

@@ -22,7 +22,6 @@
     "QUOTASET",
     "REPLACE",
     "RIGHTS=kxten",
-    "SAVEDATE",
     "SORT=MODSEQ",
     "SORT=UID",
     "UIDBATCHES",

@@ -29,6 +29,7 @@ type Message struct {
 	keywords    []string
 	recent      bool
 	internal    time.Time
+	saved       time.Time // when this copy was saved into its mailbox
 	raw         []byte
 	from        string
 	to          string
@@ -1217,6 +1218,7 @@ type fetchSnap struct {
 	modseq    uint64
 	flags     string
 	internal  time.Time
+	saved     time.Time
 	size      int
 	raw       []byte
 	seenEvent uint64
@@ -1228,7 +1230,7 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, ch
 	if s.box == nil {
 		return nil, nil, fmt.Errorf("not selected")
 	}
-	expanded, err := expandFetch(items, uidMode, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"))
+	expanded, err := expandFetch(items, uidMode, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1280,7 +1282,7 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, ch
 		raw := append([]byte(nil), m.bytes()...)
 		snaps = append(snaps, fetchSnap{
 			seq: seq, uid: m.uid, modseq: m.modseq, flags: formatFlags(m, s.pers.FlagOrder),
-			internal: m.internal, size: m.size, raw: raw,
+			internal: m.internal, saved: m.saved, size: m.size, raw: raw,
 			seenEvent: seenEvent,
 		})
 	}
@@ -1357,7 +1359,7 @@ func itemListed(items []string, name string) bool {
 	return false
 }
 
-func expandFetch(items []string, uidMode bool, binary, preview bool) ([]string, error) {
+func expandFetch(items []string, uidMode bool, binary, preview, savedate bool) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
 	var add func(string) error
@@ -1371,7 +1373,7 @@ func expandFetch(items []string, uidMode bool, binary, preview bool) ([]string, 
 		case "FULL":
 			return addAll([]string{"FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY"}, add)
 		}
-		if !knownFetch(u, binary, preview) {
+		if !knownFetch(u, binary, preview, savedate) {
 			return fmt.Errorf("bad fetch item")
 		}
 		key := u
@@ -1407,13 +1409,15 @@ func addAll(items []string, add func(string) error) error {
 	return nil
 }
 
-func knownFetch(u string, binary, preview bool) bool {
+func knownFetch(u string, binary, preview, savedate bool) bool {
 	switch u {
 	case "FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY", "BODYSTRUCTURE",
 		"RFC822", "RFC822.HEADER", "RFC822.TEXT", "MODSEQ":
 		return true
 	case "PREVIEW":
 		return preview
+	case "SAVEDATE":
+		return savedate
 	}
 	if strings.HasPrefix(u, "BODY[") || strings.HasPrefix(u, "BODY.PEEK[") {
 		return strings.Contains(u, "]")
@@ -1557,8 +1561,8 @@ type searchKey struct {
 	fuzzy bool
 }
 
-func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved bool, now time.Time) ([]searchKey, error) {
-	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, now)
+func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDate bool, now time.Time) ([]searchKey, error) {
+	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
 	if err != nil || len(rest) != 0 || len(keys) == 0 {
 		return nil, fmt.Errorf("bad search")
 	}
@@ -1568,7 +1572,7 @@ func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved bool, now tim
 // parseSearchSeq reads keys until the input ends. Inside a parenthesis the
 // closing parenthesis is left unconsumed. An unclosed parenthesis is an error.
 // fuzzy marks text leaves parsed from this sequence.
-func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved bool, now time.Time) ([]searchKey, []Token, error) {
+func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate bool, now time.Time) ([]searchKey, []Token, error) {
 	var keys []searchKey
 	for len(toks) > 0 {
 		if toks[0].Kind == "rparen" {
@@ -1577,7 +1581,7 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowS
 			}
 			return keys, toks, nil
 		}
-		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, now)
+		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1590,12 +1594,12 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowS
 	return keys, nil, nil
 }
 
-func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved bool, now time.Time) (searchKey, []Token, error) {
+func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate bool, now time.Time) (searchKey, []Token, error) {
 	if len(toks) == 0 || toks[0].Kind == "rparen" {
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
 	if toks[0].Kind == "lparen" {
-		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, now)
+		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
 		if err != nil || len(inner) == 0 || len(rest) == 0 || rest[0].Kind != "rparen" {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
@@ -1607,19 +1611,19 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved boo
 		if !allowFuzzy {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
-		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, now)
+		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
 	case "OR":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, now)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
-		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, now)
+		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
 		return searchKey{op: "OR", kids: []searchKey{a, b}}, rest, nil
 	case "NOT":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, now)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
@@ -1647,7 +1651,10 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved boo
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
 		return searchKey{op: op, arg: arg, fuzzy: fuzzy}, toks[2:], nil
-	case "SINCE", "BEFORE", "ON":
+	case "SINCE", "BEFORE", "ON", "SAVEDSINCE", "SAVEDBEFORE", "SAVEDON":
+		if strings.HasPrefix(op, "SAVED") && !allowSaveDate {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
 		if len(toks) < 2 {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
@@ -1789,6 +1796,12 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 		return ymd(m.internal) < ymd(k.when)
 	case "ON":
 		return ymd(m.internal) == ymd(k.when)
+	case "SAVEDSINCE":
+		return ymd(m.saved) >= ymd(k.when)
+	case "SAVEDBEFORE":
+		return ymd(m.saved) < ymd(k.when)
+	case "SAVEDON":
+		return ymd(m.saved) == ymd(k.when)
 	case "OLDER":
 		return !m.internal.Truncate(time.Second).After(k.when)
 	case "YOUNGER":
@@ -2425,6 +2438,14 @@ func (st *Store) appendMsg(s *session, name string, flags []string, date *time.T
 	return uv, m.uid, nil
 }
 
+// saveClock is the frozen clock when freeze-clock is set, and the wall clock otherwise.
+func saveClock(frozen *time.Time) time.Time {
+	if frozen != nil {
+		return *frozen
+	}
+	return time.Now()
+}
+
 // appendLocked appends one message. Caller holds st.mu.
 func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, *Message, error) {
 	cn, err := st.canon(name)
@@ -2441,17 +2462,17 @@ func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw 
 		}
 	}
 	raw = toCRLF(raw)
-	internal := time.Now()
+	now := saveClock(frozen)
+	internal := now
 	if date != nil {
 		internal = *date
-	} else if frozen != nil {
-		internal = *frozen
 	}
 	m := &Message{
 		uid:      mb.uidNext,
 		flags:    map[string]struct{}{},
 		recent:   true,
 		internal: internal,
+		saved:    now,
 		raw:      raw,
 		size:     len(raw),
 	}
@@ -2468,7 +2489,7 @@ func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw 
 	return mb.uidValidity, m, nil
 }
 
-func cloneMsg(src *Message, uid uint32) *Message {
+func cloneMsg(src *Message, uid uint32, saved time.Time) *Message {
 	flags, kw := copyFlags(src)
 	nm := &Message{
 		uid:         uid,
@@ -2476,6 +2497,7 @@ func cloneMsg(src *Message, uid uint32) *Message {
 		keywords:    kw,
 		recent:      true,
 		internal:    src.internal,
+		saved:       saved,
 		from:        src.from,
 		to:          src.to,
 		displayFrom: src.displayFrom,
@@ -2506,7 +2528,7 @@ type copyResult struct {
 	lines []string // expunge lines for MOVE, already accounted on this session
 }
 
-func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, move bool) (copyResult, error) {
+func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, move bool, frozen *time.Time) (copyResult, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
@@ -2572,8 +2594,9 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 	}
 	var dstUIDs []uint32
 	var createdIDs []string
+	savedAt := saveClock(frozen)
 	for _, m := range picked {
-		nm := cloneMsg(m, dst.uidNext)
+		nm := cloneMsg(m, dst.uidNext, savedAt)
 		st.stampMsg(nm)
 		dst.bump(nm)
 		dst.uidNext++
@@ -2790,6 +2813,7 @@ func loadStore(dir, delim string) (*Store, error) {
 				flags:    map[string]struct{}{},
 				recent:   true,
 				internal: when,
+				saved:    when,
 				raw:      b,
 				size:     len(b),
 			}
@@ -2814,11 +2838,13 @@ func loadStore(dir, delim string) (*Store, error) {
 			}
 			for i := 0; i < g.Count; i++ {
 				uid := mb.uidNext
+				when := start.Add(time.Duration(int64(i)*int64(g.StepSeconds)) * time.Second)
 				m := &Message{
 					uid:         uid,
 					flags:       map[string]struct{}{},
 					recent:      true,
-					internal:    start.Add(time.Duration(int64(i)*int64(g.StepSeconds)) * time.Second),
+					internal:    when,
+					saved:       when,
 					from:        g.From,
 					to:          g.To,
 					displayFrom: addrPhrase(g.From),
@@ -3076,8 +3102,8 @@ func (st *Store) locateJMAP(id string) []jmapLocated {
 // appendCopyLocked adds one mailbox copy of an existing email. The JMAP id
 // stays the same, so this is not a new email. Caller holds st.mu and records
 // the change itself.
-func (st *Store) appendCopyLocked(dst *Mailbox, src *Message) {
-	nm := cloneMsg(src, dst.uidNext)
+func (st *Store) appendCopyLocked(dst *Mailbox, src *Message, saved time.Time) {
+	nm := cloneMsg(src, dst.uidNext, saved)
 	nm.jmapID = src.jmapID
 	dst.bump(nm)
 	dst.uidNext++
@@ -3122,7 +3148,7 @@ func applyKeywordPatch(m *Message, kw map[string]bool) bool {
 
 // applyOneUpdate patches one email. An empty string means it was applied.
 // Caller holds st.mu.
-func (st *Store) applyOneUpdate(p emailPatch) string {
+func (st *Store) applyOneUpdate(p emailPatch, frozen *time.Time) string {
 	locs := st.locateJMAP(p.id)
 	if len(locs) == 0 {
 		return "notFound"
@@ -3179,7 +3205,7 @@ func (st *Store) applyOneUpdate(p emailPatch) string {
 		if _, ok := cur[id]; ok {
 			continue
 		}
-		st.appendCopyLocked(mb, src)
+		st.appendCopyLocked(mb, src, saveClock(frozen))
 		changed = true
 	}
 	for id, loc := range cur {
@@ -3229,14 +3255,14 @@ func (st *Store) destroyLocked(id string) bool {
 	return true
 }
 
-func (st *Store) applyEmailSet(patches []emailPatch, destroyIDs []string) (string, string, []string, map[string]string, []string, []string) {
+func (st *Store) applyEmailSet(patches []emailPatch, destroyIDs []string, frozen *time.Time) (string, string, []string, map[string]string, []string, []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	old := strconv.FormatUint(st.jmapState, 10)
 	var updated []string
 	notUpdated := map[string]string{}
 	for _, p := range patches {
-		if typ := st.applyOneUpdate(p); typ != "" {
+		if typ := st.applyOneUpdate(p, frozen); typ != "" {
 			notUpdated[p.id] = typ
 			continue
 		}

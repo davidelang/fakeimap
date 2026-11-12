@@ -49,6 +49,7 @@
     "UNSELECT",
     "CONDSTORE",
     "QRESYNC",
+    "SAVEDATE",
     "LIST-EXTENDED",
     "CHILDREN",
     "SPECIAL-USE",

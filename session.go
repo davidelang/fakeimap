@@ -1421,6 +1421,8 @@ func (s *session) fetchItemText(item string, sn fetchSnap) string {
 		return fmt.Sprintf("UID %d", sn.uid)
 	case "INTERNALDATE":
 		return "INTERNALDATE " + imapString(formatInternalDate(sn.internal))
+	case "SAVEDATE":
+		return "SAVEDATE " + imapString(formatInternalDate(sn.saved))
 	case "RFC822.SIZE":
 		return fmt.Sprintf("RFC822.SIZE %d", sn.size)
 	case "ENVELOPE":
@@ -1882,7 +1884,7 @@ func (s *session) cmdSearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "SEARCH charset")
 	}
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.searchNow())
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), s.searchNow())
 	if err != nil {
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
@@ -1980,7 +1982,7 @@ func (s *session) cmdEsearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "ESEARCH charset")
 	}
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.searchNow())
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.advertiseCap("SAVEDATE"), s.searchNow())
 	if err != nil {
 		return s.bad(cmd.tag, "ESEARCH bad key")
 	}
@@ -2096,12 +2098,13 @@ func (s *session) cmdSort(cmd command) error {
 	within := s.advertiseCap("WITHIN")
 	now := s.searchNow()
 	saved := s.advertiseCap("SEARCHRES")
+	saveDate := s.advertiseCap("SAVEDATE")
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, saved, now)
+		keys, err = parseSearch(rest, false, within, saved, saveDate, now)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "SORT bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, saved, now)
+		keys, err = parseSearch(rest[1:], false, within, saved, saveDate, now)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "SORT bad key")
@@ -2172,12 +2175,13 @@ func (s *session) cmdThread(cmd command) error {
 	}
 	within := s.advertiseCap("WITHIN")
 	now := s.searchNow()
+	saveDate := s.advertiseCap("SAVEDATE")
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, false, now)
+		keys, err = parseSearch(rest, false, within, false, saveDate, now)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "THREAD bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, false, now)
+		keys, err = parseSearch(rest[1:], false, within, false, saveDate, now)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "THREAD bad key")
@@ -2274,7 +2278,7 @@ func (s *session) cmdCopy(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, "[TRYCREATE] "+cmd.name+" no such mailbox")
 	}
-	res, err := s.srv.store.copyMsgs(s, cmd.uid, set, dest, cmd.name == "MOVE")
+	res, err := s.srv.store.copyMsgs(s, cmd.uid, set, dest, cmd.name == "MOVE", s.srv.frozenTime())
 	if err != nil {
 		if err.Error() == "read-only" {
 			return s.no(cmd.tag, cmd.name+" read-only")
