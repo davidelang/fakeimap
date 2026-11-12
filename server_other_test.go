@@ -14,6 +14,7 @@ func TestOtherServerPersonalities(t *testing.T) {
 	devPost := "IMAP4rev1 SASL-IR ID ENABLE IDLE SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT MULTIAPPEND UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN LIST-STATUS BINARY MOVE PREVIEW SPECIAL-USE STATUS=SIZE SAVEDATE COMPRESS=DEFLATE LITERAL+"
 	stalGreet := "IMAP4rev1 ENABLE SASL-IR LITERAL+ ID UTF8=ACCEPT"
 	stalPost := "IMAP4rev1 ENABLE SASL-IR LITERAL+ ID UTF8=ACCEPT JMAPACCESS IDLE NAMESPACE CHILDREN MULTIAPPEND BINARY UNSELECT UIDPLUS ESEARCH WITHIN SEARCHRES SORT THREAD=REFERENCES LIST-EXTENDED LIST-STATUS ESORT SORT=DISPLAY SPECIAL-USE CREATE-SPECIAL-USE MOVE CONDSTORE QRESYNC UNAUTHENTICATE STATUS=SIZE PREVIEW QUOTA QUOTA=RES-STORAGE"
+	stalPostLimit := stalPost + " MESSAGELIMIT=1000000"
 	stalOrder := []string{"EXISTS", "FLAGS", "RECENT", "PERMANENTFLAGS", "UIDVALIDITY", "UIDNEXT"}
 	stalPerm := `\Deleted \Seen \Answered \Flagged \Draft \*`
 	zimFlags := `\Answered \Deleted \Draft \Flagged \Seen $Forwarded $MDNSent Forwarded $Junk $NotJunk Junk JunkRecorded NonJunk NotJunk`
@@ -93,7 +94,6 @@ func TestOtherServerPersonalities(t *testing.T) {
 		},
 	}
 	liveStalGreet := stalGreet + " AUTH=PLAIN"
-	liveStalPost := stalPost + " STARTTLS"
 	for _, name := range []string{
 		"personalities/stalwart.json",
 		"personalities/stalwart-01625.json",
@@ -101,8 +101,10 @@ func TestOtherServerPersonalities(t *testing.T) {
 		"personalities/stalwart-0155.json",
 	} {
 		greet := liveStalGreet
+		liveStalPost := stalPostLimit + " STARTTLS"
 		if name == "personalities/stalwart-0155.json" {
 			greet = stalGreet + " JMAPACCESS AUTH=PLAIN"
+			liveStalPost = stalPost + " STARTTLS"
 		}
 		cases = append(cases, struct {
 			file     string

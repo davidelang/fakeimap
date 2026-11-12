@@ -282,6 +282,32 @@ func (s *session) appendLimitValue() uint64 {
 	return n
 }
 
+// messageLimit is the positive integer on this connection's capability
+// list. After login that list is the post-login list.
+func (s *session) messageLimit() (uint64, bool) {
+	for _, c := range s.caps() {
+		if n, ok := parseMessageLimit(c); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func messageLimitText(n uint64, uid uint32, withUID bool) string {
+	if withUID {
+		return fmt.Sprintf("[MESSAGELIMIT %d %d]", n, uid)
+	}
+	return fmt.Sprintf("[MESSAGELIMIT %d]", n)
+}
+
+func reverseU32(ids []uint32) []uint32 {
+	out := make([]uint32, len(ids))
+	for i := range ids {
+		out[i] = ids[len(ids)-1-i]
+	}
+	return out
+}
+
 func (s *session) flush() error {
 	evs := s.srv.store.drain(s)
 	gone := map[uint32]bool{}
@@ -1569,7 +1595,11 @@ func (s *session) cmdFetch(cmd command) error {
 			return err
 		}
 	}
-	snaps, items, err := s.srv.store.fetch(s, cmd.uid, set, cmd.fetch, cmd.changedSince)
+	limit := uint64(0)
+	if n, ok := s.messageLimit(); ok {
+		limit = n
+	}
+	snaps, items, lowest, limited, err := s.srv.store.fetch(s, cmd.uid, set, cmd.fetch, cmd.changedSince, limit)
 	if err != nil {
 		if err.Error() == "not selected" {
 			return s.no(cmd.tag, "FETCH not selected")
@@ -1609,6 +1639,9 @@ func (s *session) cmdFetch(cmd command) error {
 	}
 	if err := s.flush(); err != nil {
 		return err
+	}
+	if limited {
+		return s.ok(cmd.tag, messageLimitText(limit, lowest, true)+" FETCH completed")
 	}
 	return s.ok(cmd.tag, "FETCH completed")
 }
@@ -1792,7 +1825,11 @@ func (s *session) cmdStore(cmd command) error {
 	if err != nil || next != len(cmd.args) {
 		return s.bad(cmd.tag, "STORE syntax")
 	}
-	snaps, modified, err := s.srv.store.storeFlags(s, cmd.uid, set, item, flags, unchanged)
+	limit := uint64(0)
+	if n, ok := s.messageLimit(); ok {
+		limit = n
+	}
+	snaps, modified, lowest, limited, err := s.srv.store.storeFlags(s, cmd.uid, set, item, flags, unchanged, limit)
 	if err != nil {
 		if err.Error() == "read-only" {
 			return s.no(cmd.tag, "STORE read-only")
@@ -1808,6 +1845,9 @@ func (s *session) cmdStore(cmd command) error {
 		if err := s.sendLine(s.flagsFetch(sn.seq, sn.flags, sn.uid, withUID, sn.modseq, withMod)); err != nil {
 			return err
 		}
+	}
+	if limited {
+		return s.ok(cmd.tag, messageLimitText(limit, lowest, true)+" STORE completed")
 	}
 	if len(modified) > 0 {
 		return s.sendLine(fmt.Sprintf("%s OK [MODIFIED %s] STORE completed", cmd.tag, formatUIDSet(modified)))
@@ -2107,25 +2147,34 @@ func (s *session) cmdSearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "SEARCH charset")
 	}
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), s.searchNow())
+	limit, allowUID := s.messageLimit()
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow())
 	if err != nil {
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
-	ids, uids, err := s.srv.store.search(s, cmd.uid, keys, nil)
+	ids, uids, lowest, limited, err := s.srv.store.search(s, cmd.uid, keys, nil, limit)
 	if err != nil {
 		return s.no(cmd.tag, "SEARCH not selected")
 	}
 	if ret.save {
 		s.savedUIDs = append([]uint32(nil), uids...)
 	}
+	done := "SEARCH completed"
+	if limited {
+		done = messageLimitText(limit, lowest, true) + " SEARCH completed"
+	}
 	if ret.saveOnly() {
-		return s.ok(cmd.tag, "SEARCH completed")
+		return s.ok(cmd.tag, done)
 	}
 	line := formatEsearch(cmd.tag, cmd.uid, ids, ret)
 	if !ret.on {
+		show := ids
+		if limited {
+			show = reverseU32(ids)
+		}
 		var b strings.Builder
 		b.WriteString("* SEARCH")
-		for _, id := range ids {
+		for _, id := range show {
 			fmt.Fprintf(&b, " %d", id)
 		}
 		line = b.String()
@@ -2133,7 +2182,7 @@ func (s *session) cmdSearch(cmd command) error {
 	if err := s.sendLine(line); err != nil {
 		return err
 	}
-	return s.ok(cmd.tag, "SEARCH completed")
+	return s.ok(cmd.tag, done)
 }
 
 // parseEsearchIn reads IN (subtree name), IN (personal), or IN (subscribed).
@@ -2205,7 +2254,8 @@ func (s *session) cmdEsearch(cmd command) error {
 	if hasCS && (s.on("UTF8=ACCEPT") || !knownCharset(cs)) {
 		return s.bad(cmd.tag, "ESEARCH charset")
 	}
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.advertiseCap("SAVEDATE"), s.searchNow())
+	_, allowUID := s.messageLimit()
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.advertiseCap("SAVEDATE"), allowUID, s.searchNow())
 	if err != nil {
 		return s.bad(cmd.tag, "ESEARCH bad key")
 	}
@@ -2328,17 +2378,27 @@ func (s *session) cmdSort(cmd command) error {
 	now := s.searchNow()
 	saved := s.advertiseCap("SEARCHRES")
 	saveDate := s.advertiseCap("SAVEDATE")
+	_, allowUID := s.messageLimit()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, saved, saveDate, now)
+		keys, err = parseSearch(rest, false, within, saved, saveDate, allowUID, now)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "SORT bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, saved, saveDate, now)
+		keys, err = parseSearch(rest[1:], false, within, saved, saveDate, allowUID, now)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "SORT bad key")
 	}
-	ids, uids, err := s.srv.store.search(s, cmd.uid, keys, &crit)
+	if n, ok := s.messageLimit(); ok {
+		count, cerr := s.srv.store.selectedCount(s)
+		if cerr != nil {
+			return s.no(cmd.tag, "SORT not selected")
+		}
+		if uint64(count) > n {
+			return s.no(cmd.tag, messageLimitText(n, 0, false)+" SORT exceeds limit")
+		}
+	}
+	ids, uids, _, _, err := s.srv.store.search(s, cmd.uid, keys, &crit, 0)
 	if err != nil {
 		return s.no(cmd.tag, "SORT not selected")
 	}
@@ -2405,15 +2465,25 @@ func (s *session) cmdThread(cmd command) error {
 	within := s.advertiseCap("WITHIN")
 	now := s.searchNow()
 	saveDate := s.advertiseCap("SAVEDATE")
+	_, allowUID := s.messageLimit()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, false, saveDate, now)
+		keys, err = parseSearch(rest, false, within, false, saveDate, allowUID, now)
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "THREAD bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, false, saveDate, now)
+		keys, err = parseSearch(rest[1:], false, within, false, saveDate, allowUID, now)
 	}
 	if err != nil {
 		return s.bad(cmd.tag, "THREAD bad key")
+	}
+	if n, ok := s.messageLimit(); ok {
+		count, cerr := s.srv.store.selectedCount(s)
+		if cerr != nil {
+			return s.no(cmd.tag, "THREAD not selected")
+		}
+		if uint64(count) > n {
+			return s.no(cmd.tag, messageLimitText(n, 0, false)+" THREAD exceeds limit")
+		}
 	}
 	line, err := s.srv.store.thread(s, cmd.uid, keys, alg)
 	if err != nil {
@@ -2450,6 +2520,9 @@ func (s *session) cmdAppend(cmd command) error {
 				return s.no(cmd.tag, "[TOOBIG] APPEND exceeds limit")
 			}
 		}
+	}
+	if n, ok := s.messageLimit(); ok && uint64(len(parts)) > n {
+		return s.no(cmd.tag, messageLimitText(n, 0, false)+" APPEND exceeds limit")
 	}
 	uv, uids, err := s.srv.store.appendMsgs(s, mbox, parts, s.srv.frozenTime())
 	if err != nil {
@@ -2566,7 +2639,11 @@ func (s *session) cmdCopy(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, "[TRYCREATE] "+cmd.name+" no such mailbox")
 	}
-	res, err := s.srv.store.copyMsgs(s, cmd.uid, set, dest, moveCmd(cmd.name), s.srv.frozenTime())
+	limit := uint64(0)
+	if n, ok := s.messageLimit(); ok {
+		limit = n
+	}
+	res, err := s.srv.store.copyMsgs(s, cmd.uid, set, dest, moveCmd(cmd.name), s.srv.frozenTime(), limit)
 	if err != nil {
 		if err.Error() == "read-only" {
 			return s.no(cmd.tag, cmd.name+" read-only")
@@ -2575,6 +2652,24 @@ func (s *session) cmdCopy(cmd command) error {
 			return s.no(cmd.tag, "[TRYCREATE] "+cmd.name+" no such mailbox")
 		}
 		return s.no(cmd.tag, cmd.name+" failed")
+	}
+	if res.refused {
+		return s.no(cmd.tag, messageLimitText(limit, res.lowest, true)+" "+cmd.name+" exceeds limit")
+	}
+	if res.limited && moveCmd(cmd.name) && len(res.src) > 0 {
+		if err := s.sendLine(fmt.Sprintf("* OK [COPYUID %d %s %s] %s",
+			res.uidv, formatUIDSet(res.src), formatUIDSet(res.dst), cmd.name)); err != nil {
+			return err
+		}
+		for _, line := range res.lines {
+			if err := s.sendLine(line); err != nil {
+				return err
+			}
+		}
+		if err := s.flush(); err != nil {
+			return err
+		}
+		return s.ok(cmd.tag, messageLimitText(limit, res.lowest, true)+" "+cmd.name+" completed")
 	}
 	if moveCmd(cmd.name) && s.pers.MoveCopyUIDUntagged && len(res.src) > 0 {
 		if err := s.sendLine(fmt.Sprintf("* OK [COPYUID %d %s %s] %s",
@@ -2620,7 +2715,13 @@ func (s *session) cmdExpunge(cmd command) error {
 	} else if len(cmd.args) != 0 {
 		return s.bad(cmd.tag, "EXPUNGE syntax")
 	}
-	lines, err := s.srv.store.expunge(s, set)
+	limit := uint64(0)
+	if cmd.uid {
+		if n, ok := s.messageLimit(); ok {
+			limit = n
+		}
+	}
+	lines, lowest, limited, err := s.srv.store.expunge(s, set, limit)
 	if err != nil {
 		if err.Error() == "read-only" {
 			return s.no(cmd.tag, "EXPUNGE read-only")
@@ -2634,6 +2735,9 @@ func (s *session) cmdExpunge(cmd command) error {
 	}
 	if err := s.flush(); err != nil {
 		return err
+	}
+	if limited {
+		return s.ok(cmd.tag, messageLimitText(limit, lowest, true)+" EXPUNGE completed")
 	}
 	if s.on("CONDSTORE") {
 		hi, err := s.srv.store.highestModseq(s)

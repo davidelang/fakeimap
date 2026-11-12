@@ -862,3 +862,11 @@
 - Approved plan: sandbox/plans/jmapaccess-20261112-0058-plan.md
 - GETJMAPACCESS returns one quoted absolute /.well-known/jmap URL when the personality lists JMAPACCESS and a JMAP listener is bound. TLS wins over cleartext. A wildcard host is written as 127.0.0.1, and an IPv6 host is bracketed. Before login the command is NO. With no listener, or on a personality that does not list the token, it is BAD.
 - stalwart.json, stalwart-01625.json, and stalwart-dev.json list it after UTF8=ACCEPT on the post-login list only. stalwart-0155.json also lists it there on the greeting and the pre-login list, before AUTH=PLAIN. No other lab personality lists it. OBJECTID stays unimplemented and the gaps file is unchanged. The facts file and the guide describe it.
+
+## 2026-11-12 - MESSAGELIMIT landed
+
+- Approved plan: sandbox/plans/messagelimit-20261112-0111-plan.md
+- MESSAGELIMIT=<positive integer> caps how many existing messages one command examines. COPY and UID COPY of a larger set are NO and store nothing. A MULTIAPPEND larger than the limit is NO with [MESSAGELIMIT N] and stores nothing. FETCH, STORE, MOVE, UID MOVE, XMOVE, SEARCH, UID SEARCH, and UID EXPUNGE process the highest UIDs and tag OK with [MESSAGELIMIT N UID]. SORT and THREAD of a larger mailbox are NO with [MESSAGELIMIT N] and return no result line.
+- UIDAFTER and UIDBEFORE are search keys when the token is listed. A missing or non-numeric value is BAD. Without the capability both keys are BAD. SAVELIMIT stays unimplemented. FETCH PARTIAL is not added. Plain EXPUNGE, CLOSE, STATUS, and ESEARCH IN are not limited.
+- stalwart.json, stalwart-01625.json, and stalwart-dev.json list MESSAGELIMIT=1000000 on the post-login list only, after QUOTA=RES-STORAGE and before STARTTLS. stalwart-0155.json and every other lab personality do not. The facts file and the guide describe it.
+- make exited 0.

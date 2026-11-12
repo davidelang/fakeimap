@@ -245,9 +245,9 @@ func TestQuotaLists(t *testing.T) {
 		{"personalities/sasl.json", []string{"", "", "post"}, four, []string{"", "", "QRESYNC"}, []string{"", "", "SAVEDATE"}},
 		{"personalities/courier-50.json", []string{"greet", "pre", "post"}, one, []string{"SORT", "SORT", "SORT"}, []string{"IDLE", "IDLE", "IDLE"}},
 		{"personalities/courier-606.json", []string{"greet", "pre", "post"}, one, []string{"SORT", "SORT", "SORT"}, []string{"IDLE", "IDLE", "IDLE"}},
-		{"personalities/stalwart.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "STARTTLS"}},
-		{"personalities/stalwart-01625.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "STARTTLS"}},
-		{"personalities/stalwart-dev.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "STARTTLS"}},
+		{"personalities/stalwart.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "MESSAGELIMIT=1000000"}},
+		{"personalities/stalwart-01625.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "MESSAGELIMIT=1000000"}},
+		{"personalities/stalwart-dev.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "MESSAGELIMIT=1000000"}},
 		{"personalities/stalwart-0155.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "STARTTLS"}},
 		{"personalities/zimbra-883.json", []string{"", "pre", "post"}, one, []string{"", "QRESYNC", "QRESYNC"}, []string{"", "SASL-IR", "SASL-IR"}},
 	}

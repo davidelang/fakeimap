@@ -1228,6 +1228,32 @@ func (mb *Mailbox) each(uidMode bool, set *seqSet, fn func(seq uint32, m *Messag
 	}
 }
 
+type msgHit struct {
+	seq uint32
+	m   *Message
+}
+
+func (mb *Mailbox) hits(uidMode bool, set *seqSet) []msgHit {
+	var out []msgHit
+	mb.each(uidMode, set, func(seq uint32, m *Message) {
+		out = append(out, msgHit{seq: seq, m: m})
+	})
+	return out
+}
+
+// cutHighest keeps every hit when limit is 0 or the count fits.
+// Above the limit the result is the highest UIDs, highest first.
+// lowest is the lowest UID kept, and it is set only when the set was cut.
+func cutHighest(hits []msgHit, limit uint64) ([]msgHit, uint32, bool) {
+	if limit == 0 || uint64(len(hits)) <= limit {
+		return hits, 0, false
+	}
+	kept := append([]msgHit(nil), hits...)
+	sort.SliceStable(kept, func(i, j int) bool { return kept[i].m.uid > kept[j].m.uid })
+	kept = kept[:limit]
+	return kept, kept[len(kept)-1].m.uid, true
+}
+
 type fetchSnap struct {
 	seq       uint32
 	uid       uint32
@@ -1240,37 +1266,38 @@ type fetchSnap struct {
 	seenEvent uint64
 }
 
-func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, changedSince *uint64) ([]fetchSnap, []string, error) {
+func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, changedSince *uint64, limit uint64) ([]fetchSnap, []string, uint32, bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
-		return nil, nil, fmt.Errorf("not selected")
+		return nil, nil, 0, false, fmt.Errorf("not selected")
 	}
 	expanded, err := expandFetch(items, uidMode, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, false, err
 	}
 	if err := binarySpecsOK(expanded); err != nil {
-		return nil, nil, err
+		return nil, nil, 0, false, err
 	}
 	set, err = st.resolveDollar(s, uidMode, set)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, false, err
 	}
 	if changedSince != nil && !itemListed(expanded, "MODSEQ") {
 		expanded = append(expanded, "MODSEQ")
 	}
-	var hits []fetchHit
 	mb := s.box
-	mb.each(uidMode, set, func(seq uint32, m *Message) {
-		if changedSince != nil && m.modseq <= *changedSince {
-			return
+	kept, lowest, limited := cutHighest(mb.hits(uidMode, set), limit)
+	var hits []msgHit
+	for _, h := range kept {
+		if changedSince != nil && h.m.modseq <= *changedSince {
+			continue
 		}
-		hits = append(hits, fetchHit{seq: seq, m: m})
-	})
+		hits = append(hits, h)
+	}
 	for _, h := range hits {
 		if err := binaryMessageOK(expanded, h.m.bytes()); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, false, err
 		}
 	}
 	var snaps []fetchSnap
@@ -1302,12 +1329,7 @@ func (st *Store) fetch(s *session, uidMode bool, set *seqSet, items []string, ch
 			seenEvent: seenEvent,
 		})
 	}
-	return snaps, expanded, nil
-}
-
-type fetchHit struct {
-	seq uint32
-	m   *Message
+	return snaps, expanded, lowest, limited, nil
 }
 
 func isBinaryFetch(u string) bool {
@@ -1487,14 +1509,14 @@ type storeSnap struct {
 	flags  string
 }
 
-func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, flags []string, unchanged *uint64) ([]storeSnap, []uint32, error) {
+func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, flags []string, unchanged *uint64, limit uint64) ([]storeSnap, []uint32, uint32, bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
-		return nil, nil, fmt.Errorf("not selected")
+		return nil, nil, 0, false, fmt.Errorf("not selected")
 	}
 	if s.readonly {
-		return nil, nil, fmt.Errorf("read-only")
+		return nil, nil, 0, false, fmt.Errorf("read-only")
 	}
 	u := strings.ToUpper(item)
 	silent := false
@@ -1506,24 +1528,26 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 	switch op {
 	case "FLAGS", "+FLAGS", "-FLAGS":
 	default:
-		return nil, nil, fmt.Errorf("bad store item")
+		return nil, nil, 0, false, fmt.Errorf("bad store item")
 	}
 	set, err := st.resolveDollar(s, uidMode, set)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, false, err
 	}
 	var snaps []storeSnap
 	var modified []uint32
 	mb := s.box
 	var last uint64
-	mb.each(uidMode, set, func(seq uint32, m *Message) {
+	kept, lowest, limited := cutHighest(mb.hits(uidMode, set), limit)
+	for _, h := range kept {
+		seq, m := h.seq, h.m
 		if unchanged != nil && m.modseq > *unchanged {
 			id := seq
 			if uidMode {
 				id = m.uid
 			}
 			modified = append(modified, id)
-			return
+			continue
 		}
 		before := formatFlags(m, s.pers.FlagOrder)
 		switch op {
@@ -1551,11 +1575,14 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 		if !silent {
 			snaps = append(snaps, storeSnap{seq: seq, uid: m.uid, modseq: m.modseq, flags: formatted})
 		}
-	})
+	}
 	if last > s.seenID {
 		s.seenID = last
 	}
-	return snaps, modified, nil
+	if limited {
+		sort.Slice(modified, func(i, j int) bool { return modified[i] < modified[j] })
+	}
+	return snaps, modified, lowest, limited, nil
 }
 
 func (st *Store) highestModseq(s *session) (uint64, error) {
@@ -1571,14 +1598,15 @@ type searchKey struct {
 	op    string
 	arg   string
 	num   int
+	bound uint64
 	when  time.Time
 	set   *seqSet
 	kids  []searchKey
 	fuzzy bool
 }
 
-func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDate bool, now time.Time) ([]searchKey, error) {
-	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
+func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time) ([]searchKey, error) {
+	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
 	if err != nil || len(rest) != 0 || len(keys) == 0 {
 		return nil, fmt.Errorf("bad search")
 	}
@@ -1588,7 +1616,7 @@ func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDat
 // parseSearchSeq reads keys until the input ends. Inside a parenthesis the
 // closing parenthesis is left unconsumed. An unclosed parenthesis is an error.
 // fuzzy marks text leaves parsed from this sequence.
-func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate bool, now time.Time) ([]searchKey, []Token, error) {
+func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time) ([]searchKey, []Token, error) {
 	var keys []searchKey
 	for len(toks) > 0 {
 		if toks[0].Kind == "rparen" {
@@ -1597,7 +1625,7 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowS
 			}
 			return keys, toks, nil
 		}
-		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
+		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1610,12 +1638,12 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowS
 	return keys, nil, nil
 }
 
-func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate bool, now time.Time) (searchKey, []Token, error) {
+func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time) (searchKey, []Token, error) {
 	if len(toks) == 0 || toks[0].Kind == "rparen" {
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
 	if toks[0].Kind == "lparen" {
-		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
+		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
 		if err != nil || len(inner) == 0 || len(rest) == 0 || rest[0].Kind != "rparen" {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
@@ -1627,19 +1655,19 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, al
 		if !allowFuzzy {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
-		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
+		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
 	case "OR":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
-		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
+		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
 		return searchKey{op: "OR", kids: []searchKey{a, b}}, rest, nil
 	case "NOT":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, now)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
@@ -1694,6 +1722,15 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, al
 		// The target is the current second minus the interval. Both keys include that instant.
 		target := now.Truncate(time.Second).Add(-time.Duration(n) * time.Second)
 		return searchKey{op: op, when: target}, toks[2:], nil
+	case "UIDAFTER", "UIDBEFORE":
+		if !allowUIDRel || len(toks) < 2 || toks[1].Kind != "atom" {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		n, ok := uidBound(toks[1].Val)
+		if !ok {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: op, bound: n}, toks[2:], nil
 	case "LARGER", "SMALLER":
 		if len(toks) < 2 || toks[1].Kind != "atom" {
 			return searchKey{}, nil, fmt.Errorf("bad search")
@@ -1737,6 +1774,23 @@ func bindSaved(keys []searchKey, uids []uint32) {
 		}
 	}
 	walk(keys)
+}
+
+// uidBound is a non-negative integer. Zero is allowed. A sign or a suffix is not.
+func uidBound(s string) (uint64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // nzSeconds is a non-zero integer of seconds that fits in a time.Duration.
@@ -1822,6 +1876,10 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 		return !m.internal.Truncate(time.Second).After(k.when)
 	case "YOUNGER":
 		return !m.internal.Truncate(time.Second).Before(k.when)
+	case "UIDAFTER":
+		return uint64(m.uid) > k.bound
+	case "UIDBEFORE":
+		return uint64(m.uid) < k.bound
 	case "LARGER":
 		return m.size > k.num
 	case "SMALLER":
@@ -2009,11 +2067,72 @@ func lessSort(a, b *Message, c *sortCrit) bool {
 	return cmp < 0
 }
 
-func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCrit) ([]uint32, []uint32, error) {
+// pureSetKey is a key that only constrains which UIDs are in the request.
+func pureSetKey(k searchKey) bool {
+	switch k.op {
+	case "UID", "$":
+		return true
+	case "AND", "OR":
+		if len(k.kids) == 0 {
+			return false
+		}
+		for _, c := range k.kids {
+			if !pureSetKey(c) {
+				return false
+			}
+		}
+		return true
+	case "NOT":
+		return len(k.kids) == 1 && pureSetKey(k.kids[0])
+	default:
+		return false
+	}
+}
+
+// setOK reports whether m is in the set the key asks to examine.
+// A flag, text, or date key does not shrink that set.
+func setOK(m *Message, k searchKey, maxUID uint32) bool {
+	switch k.op {
+	case "UID", "$":
+		return m.matches(k, maxUID)
+	case "AND":
+		for _, c := range k.kids {
+			if !setOK(m, c, maxUID) {
+				return false
+			}
+		}
+		return true
+	case "OR":
+		for _, c := range k.kids {
+			if setOK(m, c, maxUID) {
+				return true
+			}
+		}
+		return false
+	case "NOT":
+		if pureSetKey(k.kids[0]) {
+			return !setOK(m, k.kids[0], maxUID)
+		}
+		return true
+	default:
+		return true
+	}
+}
+
+func inRequested(m *Message, keys []searchKey, maxUID uint32) bool {
+	for _, k := range keys {
+		if !setOK(m, k, maxUID) {
+			return false
+		}
+	}
+	return true
+}
+
+func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCrit, limit uint64) ([]uint32, []uint32, uint32, bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
-		return nil, nil, fmt.Errorf("not selected")
+		return nil, nil, 0, false, fmt.Errorf("not selected")
 	}
 	bindSaved(keys, s.savedUIDs)
 	mb := s.box
@@ -2022,11 +2141,31 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCr
 		id uint32
 		m  *Message
 	}
-	var hits []hit
+	type cand struct {
+		seq uint32
+		m   *Message
+	}
+	var cands []cand
 	for i, m := range mb.msgs {
+		if limit > 0 && !inRequested(m, keys, maxUID) {
+			continue
+		}
+		cands = append(cands, cand{seq: uint32(i + 1), m: m})
+	}
+	var lowest uint32
+	limited := false
+	if limit > 0 && uint64(len(cands)) > limit {
+		sort.SliceStable(cands, func(i, j int) bool { return cands[i].m.uid > cands[j].m.uid })
+		cands = cands[:limit]
+		lowest = cands[len(cands)-1].m.uid
+		limited = true
+		sort.SliceStable(cands, func(i, j int) bool { return cands[i].m.uid < cands[j].m.uid })
+	}
+	var hits []hit
+	for _, c := range cands {
 		ok := true
 		for _, k := range keys {
-			if !m.matches(k, maxUID) {
+			if !c.m.matches(k, maxUID) {
 				ok = false
 				break
 			}
@@ -2034,11 +2173,11 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCr
 		if !ok {
 			continue
 		}
-		id := uint32(i + 1)
+		id := c.seq
 		if uidMode {
-			id = m.uid
+			id = c.m.uid
 		}
-		hits = append(hits, hit{id: id, m: m})
+		hits = append(hits, hit{id: id, m: c.m})
 	}
 	if crit != nil {
 		sort.SliceStable(hits, func(i, j int) bool {
@@ -2051,7 +2190,7 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCr
 		ids[i] = h.id
 		uids[i] = h.m.uid
 	}
-	return ids, uids, nil
+	return ids, uids, lowest, limited, nil
 }
 
 type sourceHit struct {
@@ -2600,13 +2739,16 @@ func cloneMsg(src *Message, uid uint32, saved time.Time) *Message {
 }
 
 type copyResult struct {
-	uidv  uint32
-	src   []uint32
-	dst   []uint32
-	lines []string // expunge lines for MOVE, already accounted on this session
+	uidv    uint32
+	src     []uint32
+	dst     []uint32
+	lines   []string // expunge lines for MOVE, already accounted on this session
+	limited bool
+	lowest  uint32
+	refused bool // COPY over the limit; nothing was stored
 }
 
-func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, move bool, frozen *time.Time) (copyResult, error) {
+func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, move bool, frozen *time.Time, limit uint64) (copyResult, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
@@ -2628,14 +2770,58 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 	if err != nil {
 		return copyResult{}, err
 	}
-	var picked []*Message
-	var srcUIDs []uint32
-	src.each(uidMode, set, func(seq uint32, m *Message) {
-		picked = append(picked, m)
-		srcUIDs = append(srcUIDs, m.uid)
-	})
-	res := copyResult{uidv: dst.uidValidity, src: srcUIDs}
-	if move && len(picked) > 0 {
+	hits := src.hits(uidMode, set)
+	kept, lowest, limited := cutHighest(hits, limit)
+	if limited && !move {
+		return copyResult{limited: true, lowest: lowest, refused: true}, nil
+	}
+	use := hits
+	if limited {
+		use = kept
+	}
+	picked := make([]*Message, len(use))
+	srcUIDs := make([]uint32, len(use))
+	for i, h := range use {
+		picked[i] = h.m
+		srcUIDs[i] = h.m.uid
+	}
+	res := copyResult{uidv: dst.uidValidity, src: srcUIDs, limited: limited, lowest: lowest}
+	if move && len(picked) > 0 && limited {
+		drop := map[uint32]bool{}
+		for _, u := range srcUIDs {
+			drop[u] = true
+		}
+		var last uint64
+		var gone []uint32
+		qresync := s.on("QRESYNC")
+		for _, h := range use {
+			src.noteExpunge(h.m)
+			st.noteCopyGone(h.m.jmapID, h.m, nil)
+			gone = append(gone, h.m.uid)
+			if !qresync {
+				res.lines = append(res.lines, fmt.Sprintf("* %d EXPUNGE", h.seq))
+			}
+			last = src.push(mbEvent{kind: "expunge", seq: h.seq, uid: h.m.uid, modseq: h.m.modseq})
+		}
+		var keep []*Message
+		for _, m := range src.msgs {
+			if !drop[m.uid] {
+				keep = append(keep, m)
+			}
+		}
+		if qresync && len(gone) > 0 {
+			asc := append([]uint32(nil), gone...)
+			sort.Slice(asc, func(i, j int) bool { return asc[i] < asc[j] })
+			res.lines = append(res.lines, "* VANISHED "+formatUIDSet(asc))
+		}
+		src.msgs = keep
+		if last > s.seenID {
+			s.seenID = last
+		}
+		if s.pers == nil || !s.pers.MoveCopyUIDUntagged {
+			src.pushExists()
+		}
+	} else if move && len(picked) > 0 {
 		drop := map[uint32]bool{}
 		for _, u := range srcUIDs {
 			drop[u] = true
@@ -2692,21 +2878,65 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 	return res, nil
 }
 
-func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
+func (st *Store) expunge(s *session, uidSet *seqSet, limit uint64) ([]string, uint32, bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
-		return nil, fmt.Errorf("not selected")
+		return nil, 0, false, fmt.Errorf("not selected")
 	}
 	if s.readonly {
-		return nil, fmt.Errorf("read-only")
+		return nil, 0, false, fmt.Errorf("read-only")
 	}
 	mb := s.box
 	uidSet, err := st.resolveDollar(s, true, uidSet)
 	if err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
 	maxUID := mb.starMax(true)
+	if uidSet != nil && limit > 0 {
+		var deleted []msgHit
+		for i, m := range mb.msgs {
+			if m.has(`\Deleted`) && uidSet.contains(m.uid, maxUID) {
+				deleted = append(deleted, msgHit{seq: uint32(i + 1), m: m})
+			}
+		}
+		kept, lowest, limited := cutHighest(deleted, limit)
+		if limited {
+			drop := map[uint32]bool{}
+			for _, h := range kept {
+				drop[h.m.uid] = true
+			}
+			var lines []string
+			var gone []uint32
+			var last uint64
+			qresync := s.on("QRESYNC")
+			for _, h := range kept {
+				mb.noteExpunge(h.m)
+				st.noteCopyGone(h.m.jmapID, h.m, nil)
+				gone = append(gone, h.m.uid)
+				if !qresync {
+					lines = append(lines, fmt.Sprintf("* %d EXPUNGE", h.seq))
+				}
+				last = mb.push(mbEvent{kind: "expunge", seq: h.seq, uid: h.m.uid, modseq: h.m.modseq})
+			}
+			var keep []*Message
+			for _, m := range mb.msgs {
+				if !drop[m.uid] {
+					keep = append(keep, m)
+				}
+			}
+			if qresync && len(gone) > 0 {
+				asc := append([]uint32(nil), gone...)
+				sort.Slice(asc, func(i, j int) bool { return asc[i] < asc[j] })
+				lines = append(lines, "* VANISHED "+formatUIDSet(asc))
+			}
+			mb.msgs = keep
+			if last > s.seenID {
+				s.seenID = last
+			}
+			return lines, lowest, true, nil
+		}
+	}
 	var keep []*Message
 	var lines []string
 	var gone []uint32
@@ -2738,7 +2968,7 @@ func (st *Store) expunge(s *session, uidSet *seqSet) ([]string, error) {
 	if last > s.seenID {
 		s.seenID = last
 	}
-	return lines, nil
+	return lines, 0, false, nil
 }
 
 // closeBox expunges on a read-write mailbox without sending EXPUNGE to this
@@ -2778,6 +3008,15 @@ func (st *Store) selected(s *session) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return s.box != nil
+}
+
+func (st *Store) selectedCount(s *session) (int, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s.box == nil {
+		return 0, fmt.Errorf("not selected")
+	}
+	return len(s.box.msgs), nil
 }
 
 func (st *Store) generatedBodiesStored() int {

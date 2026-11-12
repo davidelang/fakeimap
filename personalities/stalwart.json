@@ -53,6 +53,7 @@
     "PREVIEW",
     "QUOTA",
     "QUOTA=RES-STORAGE",
+    "MESSAGELIMIT=1000000",
     "STARTTLS"
   ],
   "logout_bye": true,
