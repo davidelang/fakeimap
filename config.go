@@ -20,6 +20,7 @@ type Config struct {
 	Control           string `json:"control"`
 	SmtpListen        string `json:"smtp_listen"`
 	JmapListen        string `json:"jmap_listen"`
+	JmapTLSListen     string `json:"jmap_tls_listen"`
 	SieveListen       string `json:"sieve_listen"`
 }
 
@@ -46,6 +47,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg.ImplicitTLSListen != "" && (cfg.CertFile == "" || cfg.KeyFile == "") {
 		return Config{}, fmt.Errorf("config %s: implicit TLS needs cert_file and key_file", path)
+	}
+	if cfg.JmapTLSListen != "" && (cfg.CertFile == "" || cfg.KeyFile == "") {
+		return Config{}, fmt.Errorf("config %s: JMAP TLS needs cert_file and key_file", path)
 	}
 	if (cfg.CertFile == "") != (cfg.KeyFile == "") {
 		return Config{}, fmt.Errorf("config %s: cert_file and key_file are set together", path)

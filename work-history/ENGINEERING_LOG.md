@@ -698,3 +698,14 @@
 - Approved plan: sandbox/plans/smtp-starttls-20261111-1902-plan.md
 - EHLO lists STARTTLS only when the IMAP certificate is loaded. STARTTLS returns 220 and that connection then speaks TLS. The next EHLO omits STARTTLS. A second STARTTLS, or STARTTLS with no certificate, is rejected. MAIL before AUTH stays 530.
 - No certificate was added. No personality file changed.
+
+## 2026-11-11 - JMAP implicit TLS execution start
+
+- Approved plan: sandbox/plans/jmap-tls-20261111-1912-plan.md
+- Work: jmap_tls_listen binds TLS from the first byte with the certificate IMAP already loads. Empty or omitted does not bind. Cleartext jmap_listen stays cleartext. No certificate is added to the repo.
+- First action per standard-plan-compliance-block.md
+
+## 2026-11-11 - JMAP implicit TLS landed
+
+- Approved plan: sandbox/plans/jmap-tls-20261111-1912-plan.md
+- jmap_tls_listen binds TLS from the first byte with the certificate IMAP already loads. Ready JSON and status report it as jmap_tls. Empty or omitted does not bind. Cleartext jmap_listen stays cleartext HTTP. Setting jmap_tls_listen without a certificate is a config error. No certificate was added.

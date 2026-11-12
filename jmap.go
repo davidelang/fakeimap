@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"mime/quotedprintable"
+	"net"
 	"net/http"
 	"net/mail"
 	"sort"
@@ -23,14 +24,14 @@ const (
 	jmapAPIPath    = "/jmap/"
 )
 
-func (s *Server) acceptJMAP() {
+func (s *Server) acceptJMAP(ln net.Listener) {
 	hs := &http.Server{
 		Handler:           s,
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
 	hs.SetKeepAlivesEnabled(false)
-	_ = hs.Serve(s.jmapLn)
+	_ = hs.Serve(ln)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

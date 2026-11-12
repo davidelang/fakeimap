@@ -21,6 +21,7 @@ type Bound struct {
 	Control           string `json:"control,omitempty"`
 	Smtp              string `json:"smtp,omitempty"`
 	Jmap              string `json:"jmap,omitempty"`
+	JmapTLS           string `json:"jmap_tls,omitempty"`
 	Sieve             string `json:"sieve,omitempty"`
 }
 
@@ -36,6 +37,7 @@ type Server struct {
 	ctrlLn      net.Listener
 	smtpLn      net.Listener
 	jmapLn      net.Listener
+	jmapTLSLn   net.Listener
 	sieveLn     net.Listener
 	stdout      io.Writer
 	logf        *os.File
@@ -212,7 +214,14 @@ func (s *Server) Serve() error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.acceptJMAP()
+			s.acceptJMAP(s.jmapLn)
+		}()
+	}
+	if s.jmapTLSLn != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.acceptJMAP(tls.NewListener(s.jmapTLSLn, s.tlsCfg))
 		}()
 	}
 	if s.sieveLn != nil {
@@ -263,6 +272,14 @@ func (s *Server) listen() error {
 		}
 		s.jmapLn = ln
 		s.bound.Jmap = ln.Addr().String()
+	}
+	if s.cfg.JmapTLSListen != "" {
+		ln, err := net.Listen("tcp", s.cfg.JmapTLSListen)
+		if err != nil {
+			return err
+		}
+		s.jmapTLSLn = ln
+		s.bound.JmapTLS = ln.Addr().String()
 	}
 	if s.cfg.SieveListen != "" {
 		ln, err := net.Listen("tcp", s.cfg.SieveListen)
@@ -357,6 +374,9 @@ func (s *Server) Close() {
 		}
 		if s.jmapLn != nil {
 			_ = s.jmapLn.Close()
+		}
+		if s.jmapTLSLn != nil {
+			_ = s.jmapTLSLn.Close()
 		}
 		if s.sieveLn != nil {
 			_ = s.sieveLn.Close()

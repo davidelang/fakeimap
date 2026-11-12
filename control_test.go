@@ -64,6 +64,7 @@ type ctrlReply struct {
 	Control           string         `json:"control"`
 	Smtp              string         `json:"smtp"`
 	Jmap              string         `json:"jmap"`
+	JmapTLS           string         `json:"jmap_tls"`
 	Sieve             string         `json:"sieve"`
 	Personality       string         `json:"personality"`
 	Dataset           string         `json:"dataset"`
@@ -148,7 +149,7 @@ func TestControlSocket(t *testing.T) {
 	if stt.Listen != bound.Listen || stt.ImplicitTLSListen != bound.ImplicitTLSListen || stt.Control != path || stt.Personality == "" || stt.Dataset == "" {
 		t.Fatalf("status %+v", stt)
 	}
-	if stt.Smtp != "" || stt.Jmap != "" || stt.Sieve != "" {
+	if stt.Smtp != "" || stt.Jmap != "" || stt.Sieve != "" || stt.JmapTLS != "" {
 		t.Fatalf("unbound smtp/jmap/sieve %+v", stt)
 	}
 	if stt.Connections != 0 || stt.ClockFrozen || len(stt.Faults) != 0 {

@@ -238,6 +238,7 @@ func (s *Server) ctrlStatus() map[string]any {
 		"control":             s.bound.Control,
 		"smtp":                s.bound.Smtp,
 		"jmap":                s.bound.Jmap,
+		"jmap_tls":            s.bound.JmapTLS,
 		"sieve":               s.bound.Sieve,
 		"personality":         s.cfg.Personality,
 		"dataset":             s.cfg.Dataset,

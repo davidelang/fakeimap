@@ -4,7 +4,7 @@ Binary: `fakeimap`, at the checkout root. `make` runs `go test ./...` and then `
 
 Run: `fakeimap <config.json>`. The one argument is the config path. Paths inside the config are relative to the process working directory, not to the config file.
 
-Before accept, the process writes one JSON object to stdout and flushes it. The object has `listen` when a cleartext listener is bound, `implicit_tls_listen` when an implicit-TLS listener is bound, `control` when the control socket is bound, `smtp` when the submission listener is bound, `jmap` when the JMAP listener is bound, and `sieve` when the ManageSieve listener is bound. A configured port of `0` is the bound ephemeral port.
+Before accept, the process writes one JSON object to stdout and flushes it. The object has `listen` when a cleartext listener is bound, `implicit_tls_listen` when an implicit-TLS listener is bound, `control` when the control socket is bound, `smtp` when the submission listener is bound, `jmap` when the JMAP listener is bound, `jmap_tls` when the JMAP TLS listener is bound, and `sieve` when the ManageSieve listener is bound. A configured port of `0` is the bound ephemeral port.
 
 ## Config keys
 
@@ -18,12 +18,15 @@ Before accept, the process writes one JSON object to stdout and flushes it. The 
 - `dataset` — dataset directory. The directory contains `dataset.json`.
 - `control` — filesystem path of the mode-0600 Unix control socket. Empty or omitted: no socket.
 - `smtp_listen` — `host:port` cleartext SMTP submission listener. Empty or omitted: no SMTP listener. Port `0`: ephemeral. The port starts cleartext. SMTP offers `STARTTLS` when a certificate is configured. `EHLO` lists it only then. `STARTTLS` returns `220`, then both directions are TLS, and the next `EHLO` omits it. A second `STARTTLS`, or `STARTTLS` with no certificate, is rejected. `AUTH PLAIN` and `AUTH LOGIN` use the same dataset passwords as IMAP. `MAIL FROM` and `RCPT TO` before a successful `AUTH` are rejected. `RCPT TO` a dataset account, as a bare name or `name@domain`, delivers `DATA` to that account's `INBOX`. Any other recipient is accepted and the message is not stored. There is no queue, relay, or DSN.
-- `jmap_listen` — `host:port` cleartext HTTP JMAP listener. Empty or omitted: no JMAP listener. Port `0`: ephemeral. The port speaks cleartext. It does not satisfy the requirement for an IMAP listener.
+- `jmap_listen` — `host:port` cleartext HTTP JMAP listener. Empty or omitted: no JMAP listener. Port `0`: ephemeral. The port speaks cleartext. It does not speak TLS. It does not satisfy the requirement for an IMAP listener.
+- `jmap_tls_listen` — `host:port` JMAP listener with TLS from the first byte. Empty or omitted: not bound. Port `0`: ephemeral. It uses the certificate already loaded from `cert_file` and `key_file`, and the same routes as `jmap_listen`. The cleartext listener is unchanged. It does not satisfy the requirement for an IMAP listener. Setting it without `cert_file` and `key_file` is a config error.
 - `sieve_listen` — `host:port` ManageSieve listener. Empty or omitted: no ManageSieve listener. Port `0`: ephemeral. It does not satisfy the requirement for an IMAP listener. Scripts are stored in memory, per dataset account, and are not executed. `CHECKSCRIPT` does not parse Sieve.
 
-At least one listener is required. Implicit TLS requires `cert_file` and `key_file`. `STARTTLS` is offered on a cleartext connection only when a certificate is loaded and TLS has not started. `smtp_listen`, `jmap_listen`, and `sieve_listen` do not satisfy that requirement.
+At least one listener is required. Implicit TLS and `jmap_tls_listen` require `cert_file` and `key_file`. `STARTTLS` is offered on a cleartext connection only when a certificate is loaded and TLS has not started. `smtp_listen`, `jmap_listen`, `jmap_tls_listen`, and `sieve_listen` do not satisfy that requirement.
 
 ## JMAP
+
+`jmap_listen` stays cleartext HTTP. `jmap_tls_listen`, when set, is a separate listener that speaks TLS from the first byte and serves the same routes. Session URLs stay paths on both.
 
 `GET /.well-known/jmap` with HTTP Basic for a dataset account returns the session. A missing or wrong password is 401. `capabilities` and that account's `accountCapabilities` are `urn:ietf:params:jmap:core`, `urn:ietf:params:jmap:mail`, and `urn:ietf:params:jmap:submission`. `primaryAccounts` points each of those at that account. `username` is the account name. `apiUrl` is `/jmap/`. `downloadUrl` is `/jmap/download/{accountId}/{blobId}/{name}?accept={type}`. `uploadUrl` is `/jmap/upload/{accountId}/`. `eventSourceUrl` is `/jmap/eventsource/?types={types}&closeafter={closeafter}&ping={ping}`. Those are path-only. `state` is a string and changes when the store changes, including an IMAP append, flag change, or expunge, and a JMAP import, update, or destroy.
 
@@ -133,7 +136,7 @@ An overlaid message is stored from its file. A generated mailbox keeps a header 
 
 One JSON object per line in, one JSON object per line out: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 
-Ops: `status`, `reset`, `set-personality`, `set-dataset`, `disconnect`, `inject`, `list-mail`, `fetch-mail`, `accounts`, `freeze-clock`, `thaw-clock`, `arm-fault`, `clear-faults`, `list-smtp`, `wait-smtp`. `status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `jmap`, and `sieve`; `smtp`, `jmap`, and `sieve` are the bound `host:port`, or `""` when that listener is not up.
+Ops: `status`, `reset`, `set-personality`, `set-dataset`, `disconnect`, `inject`, `list-mail`, `fetch-mail`, `accounts`, `freeze-clock`, `thaw-clock`, `arm-fault`, `clear-faults`, `list-smtp`, `wait-smtp`. `status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `jmap`, `jmap_tls`, and `sieve`; `smtp`, `jmap`, `jmap_tls`, and `sieve` are the bound `host:port`, or `""` when that listener is not up.
 
 Request fields: `path`, `conn`, `mailbox`, `user`, `username`, `password`, `raw`, `uid`, `time`, `id`, `command`, `times`, `do`, `delay_ms`, `bytes`, `text`, `count`, `offset`, `tag`, `order`, `timeout_ms`.
 

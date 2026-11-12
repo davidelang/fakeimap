@@ -843,6 +843,13 @@ func start(t *testing.T, cfg Config) (*Server, Bound) {
 				t.Errorf("jmap %s still open", bound.Jmap)
 			}
 		}
+		if bound.JmapTLS != "" {
+			c, err := net.DialTimeout("tcp", bound.JmapTLS, 200*time.Millisecond)
+			if err == nil {
+				c.Close()
+				t.Errorf("jmap tls %s still open", bound.JmapTLS)
+			}
+		}
 		if bound.Sieve != "" {
 			c, err := net.DialTimeout("tcp", bound.Sieve, 200*time.Millisecond)
 			if err == nil {

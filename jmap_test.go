@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -42,6 +44,108 @@ func TestJMAPListen(t *testing.T) {
 	if res.StatusCode != 401 {
 		t.Fatalf("wrong password %d %s", res.StatusCode, raw)
 	}
+}
+
+func TestJMAPTLSListen(t *testing.T) {
+	_, bound := start(t, Config{Listen: "127.0.0.1:0"})
+	if bound.JmapTLS != "" {
+		t.Fatalf("omitted jmap_tls_listen bound %q", bound.JmapTLS)
+	}
+	_, bound = start(t, Config{Listen: "127.0.0.1:0", JmapTLSListen: ""})
+	if bound.JmapTLS != "" {
+		t.Fatalf("empty jmap_tls_listen bound %q", bound.JmapTLS)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.json")
+	rawCfg, err := json.Marshal(Config{
+		Listen:        "127.0.0.1:0",
+		JmapTLSListen: "127.0.0.1:0",
+		Personality:   "personalities/cyrus-3137.json",
+		Dataset:       "datasets/demo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, rawCfg, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newServer(path, io.Discard); err == nil || !strings.Contains(err.Error(), "JMAP TLS needs cert_file and key_file") {
+		t.Fatalf("jmap_tls_listen without a certificate: %v", err)
+	}
+
+	cert, key := writeCert(t)
+	_, bound, cc := startCtrl(t, Config{
+		Listen:        "127.0.0.1:0",
+		CertFile:      cert,
+		KeyFile:       key,
+		JmapListen:    "127.0.0.1:0",
+		JmapTLSListen: "127.0.0.1:0",
+	})
+	host, port, err := net.SplitHostPort(bound.JmapTLS)
+	if err != nil || host != "127.0.0.1" || port == "" || port == "0" {
+		t.Fatalf("jmap tls bound %q", bound.JmapTLS)
+	}
+	st := cc.call(map[string]any{"op": "status"}).ok(t)
+	if st.JmapTLS != bound.JmapTLS || st.Jmap != bound.Jmap || st.Jmap == "" {
+		t.Fatalf("status jmap %q tls %q bound %+v", st.Jmap, st.JmapTLS, bound)
+	}
+	d := &tls.Dialer{Config: &tls.Config{InsecureSkipVerify: true}}
+	if c, err := d.Dial("tcp", bound.Jmap); err == nil {
+		c.Close()
+		t.Fatal("cleartext jmap listener accepted TLS")
+	}
+	res, raw := jmapHTTP(t, bound.Jmap, "demo", "secret", http.MethodGet, "/.well-known/jmap", nil)
+	if res.StatusCode != 200 {
+		t.Fatalf("cleartext session %d %s", res.StatusCode, raw)
+	}
+	session := jmapSessionTLS(t, bound.JmapTLS, "demo", "secret")
+	for _, key := range []string{"apiUrl", "downloadUrl", "uploadUrl", "eventSourceUrl"} {
+		s, _ := session[key].(string)
+		if !strings.HasPrefix(s, "/") || strings.Contains(s, "://") {
+			t.Fatalf("%s %q", key, s)
+		}
+	}
+}
+
+func jmapSessionTLS(t *testing.T, addr, user, pass string) map[string]any {
+	t.Helper()
+	res, raw := jmapDoTLS(t, addr, user, pass, http.MethodGet, "/.well-known/jmap", "", nil)
+	if res.StatusCode != 200 {
+		t.Fatalf("tls session %d %s", res.StatusCode, raw)
+	}
+	return jmapJSON(t, raw)
+}
+
+func jmapDoTLS(t *testing.T, addr, user, pass, method, path, contentType string, body []byte) (*http.Response, []byte) {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, "https://"+addr+path, rdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user != "" || pass != "" {
+		req.SetBasicAuth(user, pass)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	cl := &http.Client{Transport: &http.Transport{
+		DisableKeepAlives: true,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+	}}
+	res, err := cl.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res, raw
 }
 
 func TestJMAPRead(t *testing.T) {
