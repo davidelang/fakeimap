@@ -22,7 +22,7 @@ var (
 )
 
 // session is one IMAP connection. box, readonly, seenID, wake, notify,
-// and notifyQ are guarded by Store.mu.
+// notifyQ, contexts, and ctxPend are guarded by Store.mu.
 type session struct {
 	srv        *Server
 	conn       net.Conn
@@ -42,6 +42,8 @@ type session struct {
 	notifyCh   chan struct{}
 	enabled    map[string]struct{}
 	savedUIDs  []uint32 // SEARCHRES result. UIDs, including ones later expunged.
+	contexts   []searchCtx
+	ctxPend    []ctxPend
 	pers       *Personality
 	fault      *fault
 	capture    *bytes.Buffer
@@ -176,6 +178,10 @@ func (s *session) readCommandWake() (command, error) {
 			if err := s.flush(); err != nil {
 				return command{}, err
 			}
+		case <-s.contextWake():
+			if err := s.flush(); err != nil {
+				return command{}, err
+			}
 		case <-s.srv.quit:
 			return command{}, io.EOF
 		}
@@ -228,7 +234,7 @@ func (s *session) readCommand() (command, error) {
 		}
 		cmd.name = strings.ToUpper(name)
 		switch cmd.name {
-		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD", "FILTER", "ESEARCH", "REPLACE":
+		case "FETCH", "STORE", "SEARCH", "COPY", "MOVE", "XMOVE", "EXPUNGE", "SORT", "THREAD", "FILTER", "ESEARCH", "REPLACE", "CANCELUPDATE":
 		default:
 			return cmd, errSyntax
 		}
@@ -426,6 +432,25 @@ func reverseU32(ids []uint32) []uint32 {
 
 func (s *session) flush() error {
 	evs := s.srv.store.drain(s)
+	pends := s.srv.store.takePends(s)
+	inEv := map[uint64]bool{}
+	for _, e := range evs {
+		inEv[e.id] = true
+	}
+	pendAt := map[uint64][]ctxPend{}
+	var early []ctxPend
+	for _, p := range pends {
+		if inEv[p.id] {
+			pendAt[p.id] = append(pendAt[p.id], p)
+		} else {
+			early = append(early, p)
+		}
+	}
+	for _, line := range formatCtxPends(early) {
+		if err := s.sendLine(line); err != nil {
+			return err
+		}
+	}
 	var newItems []string
 	for _, e := range evs {
 		if e.kind == "exists" && len(e.newUIDs) > 0 {
@@ -443,20 +468,34 @@ func (s *session) flush() error {
 		e := evs[i]
 		switch e.kind {
 		case "expunge":
+			j := i
+			var group []ctxPend
+			for j < len(evs) && evs[j].kind == "expunge" {
+				group = append(group, pendAt[evs[j].id]...)
+				j++
+			}
+			for _, line := range formatCtxPends(group) {
+				if err := s.sendLine(line); err != nil {
+					return err
+				}
+			}
 			if s.on("QRESYNC") || s.on("UIDONLY") {
 				var uids []uint32
-				for i < len(evs) && evs[i].kind == "expunge" {
-					uids = append(uids, evs[i].uid)
-					i++
+				for k := i; k < j; k++ {
+					uids = append(uids, evs[k].uid)
 				}
 				if err := s.sendLine("* VANISHED " + formatUIDSet(uids)); err != nil {
 					return err
 				}
-				continue
+			} else {
+				for k := i; k < j; k++ {
+					if err := s.sendLine(fmt.Sprintf("* %d EXPUNGE", evs[k].seq)); err != nil {
+						return err
+					}
+				}
 			}
-			if err := s.sendLine(fmt.Sprintf("* %d EXPUNGE", e.seq)); err != nil {
-				return err
-			}
+			i = j
+			continue
 		case "exists":
 			if err := s.sendLine(fmt.Sprintf("* %d EXISTS", e.exists)); err != nil {
 				return err
@@ -469,13 +508,34 @@ func (s *session) flush() error {
 					return err
 				}
 			}
+			for _, line := range formatCtxPends(pendAt[e.id]) {
+				if err := s.sendLine(line); err != nil {
+					return err
+				}
+			}
 		case "flags":
-			if gone[e.uid] {
-				break
+			j := i
+			var group []ctxPend
+			for j < len(evs) && evs[j].kind == "flags" {
+				group = append(group, pendAt[evs[j].id]...)
+				j++
 			}
-			if err := s.sendLine(s.flagsFetch(e.seq, e.flags, e.uid, s.on("QRESYNC"), e.modseq, s.on("CONDSTORE"))); err != nil {
-				return err
+			for _, line := range formatCtxPends(group) {
+				if err := s.sendLine(line); err != nil {
+					return err
+				}
 			}
+			for k := i; k < j; k++ {
+				fe := evs[k]
+				if gone[fe.uid] {
+					continue
+				}
+				if err := s.sendLine(s.flagsFetch(fe.seq, fe.flags, fe.uid, s.on("QRESYNC"), fe.modseq, s.on("CONDSTORE"))); err != nil {
+					return err
+				}
+			}
+			i = j
+			continue
 		}
 		i++
 	}
@@ -585,6 +645,8 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdIdle(cmd)
 	case "NOTIFY":
 		return s.cmdNotify(cmd)
+	case "CANCELUPDATE":
+		return s.cmdCancelUpdate(cmd)
 	case "SETACL", "DELETEACL", "GETACL", "LISTRIGHTS", "MYRIGHTS":
 		return s.cmdACL(cmd)
 	default:
@@ -1896,6 +1958,9 @@ func (s *session) cmdFetch(cmd command) error {
 		}
 		return s.bad(cmd.tag, "FETCH bad item")
 	}
+	if err := s.sendCaughtContext(); err != nil {
+		return err
+	}
 	if itemListed(items, "OBJECTID") {
 		if err := s.activateObjectPlus(); err != nil {
 			return err
@@ -2158,6 +2223,9 @@ func (s *session) cmdStore(cmd command) error {
 		}
 		return s.bad(cmd.tag, "STORE syntax")
 	}
+	if err := s.sendCaughtContext(); err != nil {
+		return err
+	}
 	withUID := cmd.uid || s.on("QRESYNC")
 	if s.on("UIDONLY") {
 		withUID = s.on("QRESYNC")
@@ -2217,6 +2285,8 @@ type searchReturn struct {
 	all     bool
 	partial bool
 	save    bool
+	update  bool
+	context bool
 	a, b    int
 	echo    string
 }
@@ -2292,6 +2362,18 @@ func parseSearchReturn(args []Token) (searchReturn, []Token, error) {
 			r.partial = true
 			r.a, r.b = a, b
 			r.echo = args[i].Val
+			i++
+		case "UPDATE":
+			if r.update {
+				return r, nil, fmt.Errorf("bad")
+			}
+			r.update = true
+			i++
+		case "CONTEXT":
+			if r.context {
+				return r, nil, fmt.Errorf("bad")
+			}
+			r.context = true
 			i++
 		default:
 			return r, nil, fmt.Errorf("bad")
@@ -2451,6 +2533,27 @@ func formatMultiEsearch(tag, mbox string, uidv uint32, ids []uint32, ret searchR
 	return b.String()
 }
 
+func (s *session) cmdCancelUpdate(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if cmd.uid || !s.advertiseCap("CONTEXT=SEARCH") {
+		return s.bad(cmd.tag, "CANCELUPDATE unsupported")
+	}
+	if len(cmd.args) == 0 {
+		return s.bad(cmd.tag, "CANCELUPDATE syntax")
+	}
+	tags := make([]string, 0, len(cmd.args))
+	for _, a := range cmd.args {
+		if a.Kind != "quoted" {
+			return s.bad(cmd.tag, "CANCELUPDATE syntax")
+		}
+		tags = append(tags, a.Val)
+	}
+	s.srv.store.cancelContexts(s, tags)
+	return s.ok(cmd.tag, "CANCELUPDATE completed")
+}
+
 func (s *session) cmdSearch(cmd command) error {
 	if s.seqNumbersBanned(cmd) {
 		return s.uidRequired(cmd.tag)
@@ -2471,6 +2574,12 @@ func (s *session) cmdSearch(cmd command) error {
 	if ret.partial && !s.advertiseCap("PARTIAL") {
 		return s.bad(cmd.tag, "SEARCH syntax")
 	}
+	if (ret.update || ret.context) && !s.advertiseCap("CONTEXT=SEARCH") {
+		return s.bad(cmd.tag, "SEARCH syntax")
+	}
+	if ret.update && s.srv.store.hasContextTag(s, cmd.tag) {
+		return s.bad(cmd.tag, "SEARCH syntax")
+	}
 	hasCS, cs, rest, csErr := charsetPrefix(rest)
 	if csErr != nil {
 		return s.bad(cmd.tag, "SEARCH syntax")
@@ -2486,8 +2595,15 @@ func (s *session) cmdSearch(cmd command) error {
 		}
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
-	ids, uids, lowest, limited, err := s.srv.store.search(s, cmd.uid, keys, nil, limit)
+	var reg *searchCtx
+	if ret.update {
+		reg = &searchCtx{tag: cmd.tag, uid: cmd.uid}
+	}
+	ids, uids, lowest, limited, err := s.srv.store.search(s, cmd.uid, keys, nil, limit, reg)
 	if err != nil {
+		if errors.Is(err, errContextExists) {
+			return s.bad(cmd.tag, "SEARCH syntax")
+		}
 		return s.no(cmd.tag, "SEARCH not selected")
 	}
 	if ret.save {
@@ -2640,7 +2756,7 @@ func (s *session) cmdEsearch(cmd command) error {
 		}
 	}
 	ret, rest, err := parseSearchReturn(rest)
-	if err != nil || ret.save {
+	if err != nil || ret.save || ret.update || ret.context {
 		return s.bad(cmd.tag, "ESEARCH syntax")
 	}
 	if ret.partial && !s.advertiseCap("PARTIAL") {
@@ -2748,7 +2864,7 @@ func (s *session) cmdSort(cmd command) error {
 		return s.no(cmd.tag, "SORT not selected")
 	}
 	ret, rest, err := parseSearchReturn(cmd.args)
-	if err != nil {
+	if err != nil || ret.update || ret.context {
 		return s.bad(cmd.tag, "SORT syntax")
 	}
 	if ret.on && !s.advertiseCap("ESORT") {
@@ -2806,7 +2922,7 @@ func (s *session) cmdSort(cmd command) error {
 			return s.no(cmd.tag, messageLimitText(n, 0, false)+" SORT exceeds limit")
 		}
 	}
-	ids, uids, _, _, err := s.srv.store.search(s, cmd.uid, keys, &crit, 0)
+	ids, uids, _, _, err := s.srv.store.search(s, cmd.uid, keys, &crit, 0, nil)
 	if err != nil {
 		return s.no(cmd.tag, "SORT not selected")
 	}
@@ -3152,6 +3268,9 @@ func (s *session) cmdCopy(cmd command) error {
 	if res.refused {
 		return s.no(cmd.tag, messageLimitText(limit, res.lowest, true)+" "+cmd.name+" exceeds limit")
 	}
+	if err := s.sendCaughtContext(); err != nil {
+		return err
+	}
 	if res.limited && moveCmd(cmd.name) && len(res.src) > 0 {
 		if err := s.sendLine(fmt.Sprintf("* OK [COPYUID %d %s %s] %s",
 			res.uidv, formatUIDSet(res.src), formatUIDSet(res.dst), cmd.name)); err != nil {
@@ -3226,6 +3345,9 @@ func (s *session) cmdExpunge(cmd command) error {
 			return s.no(cmd.tag, "EXPUNGE read-only")
 		}
 		return s.no(cmd.tag, "EXPUNGE not selected")
+	}
+	if err := s.sendCaughtContext(); err != nil {
+		return err
 	}
 	for _, line := range lines {
 		if err := s.sendLine(line); err != nil {

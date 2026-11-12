@@ -270,6 +270,9 @@ func (mb *Mailbox) push(e mbEvent) uint64 {
 	mb.nextID++
 	e.id = mb.nextID
 	mb.events = append(mb.events, e)
+	if mb.st != nil {
+		mb.st.noteContexts(mb, e)
+	}
 	for _, ch := range mb.waiters {
 		select {
 		case ch <- struct{}{}:
@@ -305,6 +308,7 @@ type Store struct {
 	quotaStorage uint64                     // STORAGE limit, units of 1024 octets
 	quotaMessage uint64                     // MESSAGE limit
 	watchers     []*session                 // sessions with a NOTIFY registration
+	ctxWatch     []*session                 // sessions with a SEARCH UPDATE context
 }
 
 const (
@@ -632,22 +636,22 @@ func (mb *Mailbox) resync(qr *qresyncSel, flagOrder []string) (string, []resyncM
 }
 
 func (st *Store) detachLocked(s *session) {
-	if s.box == nil {
-		return
-	}
-	mb := s.box
-	if s.wake != nil {
-		out := mb.waiters[:0]
-		for _, ch := range mb.waiters {
-			if ch != s.wake {
-				out = append(out, ch)
+	if s.box != nil {
+		mb := s.box
+		if s.wake != nil {
+			out := mb.waiters[:0]
+			for _, ch := range mb.waiters {
+				if ch != s.wake {
+					out = append(out, ch)
+				}
 			}
+			mb.waiters = out
 		}
-		mb.waiters = out
+		s.box = nil
+		s.wake = nil
+		s.readonly = false
 	}
-	s.box = nil
-	s.wake = nil
-	s.readonly = false
+	st.clearContextsLocked(s)
 }
 
 func (st *Store) deselect(s *session) {
@@ -2503,7 +2507,7 @@ func inRequested(m *Message, keys []searchKey, maxUID uint32) bool {
 	return true
 }
 
-func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCrit, limit uint64) ([]uint32, []uint32, uint32, bool, error) {
+func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCrit, limit uint64, reg *searchCtx) ([]uint32, []uint32, uint32, bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if s.box == nil {
@@ -2564,6 +2568,19 @@ func (st *Store) search(s *session, uidMode bool, keys []searchKey, crit *sortCr
 	for i, h := range hits {
 		ids[i] = h.id
 		uids[i] = h.m.uid
+	}
+	if reg != nil {
+		for _, old := range s.contexts {
+			if old.tag == reg.tag {
+				return nil, nil, 0, false, errContextExists
+			}
+		}
+		freezeSearchKeys(keys)
+		reg.keys = keys
+		reg.have = append([]uint32(nil), uids...)
+		reg.limit = limit
+		s.contexts = append(s.contexts, *reg)
+		st.addCtxWatchLocked(s)
 	}
 	return ids, uids, lowest, limited, nil
 }

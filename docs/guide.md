@@ -189,6 +189,8 @@ A capability is advertised only when `capImplemented` accepts it. Named tokens a
 
 `WITHIN`, when listed, answers `OLDER` and `YOUNGER`. The interval is one non-zero number of seconds. The target is the current time minus that interval, to one second, and the frozen clock is that current time when it is set. `OLDER` includes an internal date at or before the target. `YOUNGER` includes one at or after it, so the equal instant matches both. The rules are in `docs/facts/imap-server.md`.
 
+`CONTEXT=SEARCH`, when listed, lets `SEARCH` and `UID SEARCH` keep a result with `RETURN (UPDATE)` and push `ADDTO` and `REMOVEFROM` when that set changes. `CONTEXT` inside `RETURN` changes nothing. `CANCELUPDATE` drops the named contexts. `SELECT`, `EXAMINE`, `CLOSE`, `UNSELECT`, and `UNAUTHENTICATE` drop every context on that session. `CONTEXT=SORT` stays unimplemented. The return options, the push lines, what clears a context, and which files list the token are in `docs/facts/imap-server.md`.
+
 `SCAN`, when listed, filters mailbox names. It returns the mailboxes `LIST` would return for the same reference and pattern whose names contain a string, and it does not search message text. `cyrus-24.json`, `cyrus-25.json`, `cyrus-36.json`, and `uwimap.json` list it on the pre-login and post-login lists and not on the greeting. The rules are in `docs/facts/imap-server.md`.
 
 `XLIST`, when listed, is `LIST` with the response word `XLIST`. `XMOVE`, when listed, is `MOVE`, including `UID XMOVE`, and it does not require `MOVE` to be listed. Which files list each token, and the reply rules, are in `docs/facts/imap-server.md`.

@@ -962,3 +962,9 @@
 - Approved plan: sandbox/plans/replace-20261112-0529-plan.md
 - REPLACE and UID REPLACE append one new message and expunge the addressed one, or do neither. The new message gets a new UID, EMAILID, and THREADID. A failed destination, flag, date, or literal stores nothing and expunges nothing.
 - The token is on the Cyrus 3.12 and 3.13 pre-login and post-login lists, the sasl post-login list, and the dovecot 2.4.5 and dovecot-dev post-login lists. It left the gaps file. The facts file and the guide describe it.
+
+## 2026-11-12 - context-search execution
+
+- Approved plan: sandbox/plans/context-search-20261112-0529-plan.md
+- Work: CONTEXT=SEARCH on SEARCH and UID SEARCH, with ADDTO and REMOVEFROM
+- First action per standard-plan-compliance-block.md

@@ -33,6 +33,7 @@
     "ESORT",
     "SEARCHRES",
     "WITHIN",
+    "CONTEXT=SEARCH",
     "LIST-STATUS",
     "AUTH=PLAIN",
     "AUTH=LOGIN"
@@ -60,6 +61,7 @@
     "ESORT",
     "SEARCHRES",
     "WITHIN",
+    "CONTEXT=SEARCH",
     "LIST-STATUS"
   ],
   "logout_bye": true,
