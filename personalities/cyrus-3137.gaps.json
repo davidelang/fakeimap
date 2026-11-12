@@ -25,7 +25,6 @@
     "REPLACE",
     "RIGHTS=kxten",
     "SAVEDATE",
-    "SEARCH=FUZZY",
     "SEARCHRES",
     "SORT=MODSEQ",
     "SORT=UID",

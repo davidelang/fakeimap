@@ -709,3 +709,17 @@
 
 - Approved plan: sandbox/plans/jmap-tls-20261111-1912-plan.md
 - jmap_tls_listen binds TLS from the first byte with the certificate IMAP already loads. Ready JSON and status report it as jmap_tls. Empty or omitted does not bind. Cleartext jmap_listen stays cleartext HTTP. Setting jmap_tls_listen without a certificate is a config error. No certificate was added.
+
+## 2026-11-11 - user guide execution start
+
+- Approved plan: sandbox/plans/user-guide-20261111-1924-plan.md
+- Work: write docs/guide.md, replace the stub README, correct the named facts sentences, and drop SEARCH=FUZZY from personalities/cyrus-3137.gaps.json
+- First action per standard-plan-compliance-block.md
+- Server behavior stays as it is. No Go change. AGENTS.md stays untouched.
+
+## 2026-11-11 - user guide landed
+
+- Approved plan: sandbox/plans/user-guide-20261111-1924-plan.md
+- docs/guide.md is the developer guide. README names fakeimap, says make builds it, and points at the guide.
+- Facts sentences for STARTTLS, the three Stalwart files, sasl.json post-login, the personality keys, and SEARCH=FUZZY now match the tree. SEARCH=FUZZY left personalities/cyrus-3137.gaps.json. URLAUTH=BINARY stayed.
+- No Go behavior change. No certificate added. make does not start Docker.
