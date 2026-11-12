@@ -199,6 +199,8 @@ The fixture files `sasl`, `condstore`, `list`, `esearch`, `compress`, `sort`, `u
 
 `GETQUOTA` and `GETQUOTAROOT` report one shared root, `ROOT`. `STORAGE` is the store's RFC822 size in 1024-octet units, rounded up, and `MESSAGE` is the message count when `QUOTA=RES-MESSAGE` is listed. The limits start at 1048576 and 1000000. `SETQUOTA` changes them when `QUOTASET` is listed. Which files list each token, and the reply rules, are in `docs/facts/imap-server.md`.
 
+`SETACL`, `DELETEACL`, `GETACL`, `LISTRIGHTS`, and `MYRIGHTS` are recognized on every personality. Before login each is tagged `NO` `must authenticate first`. After login a command with valid arguments is tagged `NO` `valid syntax not implemented`, and nothing is stored. Invalid arguments are tagged `BAD`. `ACL` is not advertised. The argument rules are in `docs/facts/imap-server.md`.
+
 ## Dataset
 
 `dataset.json` keys, as `docs/facts/imap-server.md` defines them:

@@ -451,9 +451,76 @@ func (s *session) dispatch(cmd command) error {
 		return s.cmdSetQuota(cmd)
 	case "IDLE":
 		return s.cmdIdle(cmd)
+	case "SETACL", "DELETEACL", "GETACL", "LISTRIGHTS", "MYRIGHTS":
+		return s.cmdACL(cmd)
 	default:
 		return s.bad(cmd.tag, "unknown command")
 	}
+}
+
+// aclArgCount is the number of astring arguments each ACL command takes.
+// idAt is the identifier argument, or -1 when the command has none.
+func aclArgCount(name string) (n int, idAt int) {
+	switch name {
+	case "SETACL":
+		return 3, 1
+	case "DELETEACL", "LISTRIGHTS":
+		return 2, 1
+	case "GETACL", "MYRIGHTS":
+		return 1, -1
+	default:
+		return -1, -1
+	}
+}
+
+// aclRightsOK accepts an optional leading + or -, then zero or more of the
+// RFC 4314 standard rights. The empty string, "+", and "-" are valid.
+// A repeated letter is valid. Any other character is not.
+func aclRightsOK(s string) bool {
+	i := 0
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		i = 1
+	}
+	for ; i < len(s); i++ {
+		switch s[i] {
+		case 'l', 'r', 's', 'w', 'i', 'p', 'k', 'x', 't', 'e', 'a', 'c', 'd':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func aclArgsOK(name string, args []Token) bool {
+	n, idAt := aclArgCount(name)
+	if n < 0 || len(args) != n {
+		return false
+	}
+	for i, t := range args {
+		v, ok := astring(t)
+		if !ok {
+			return false
+		}
+		if i == idAt && v == "" {
+			return false
+		}
+		if name == "SETACL" && i == 2 && !aclRightsOK(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// cmdACL recognizes the five RFC 4314 commands. Valid arguments are tagged
+// NO and nothing is stored. ACL is not advertised.
+func (s *session) cmdACL(cmd command) error {
+	if !s.needAuth(cmd.tag) {
+		return nil
+	}
+	if !aclArgsOK(cmd.name, cmd.args) {
+		return s.bad(cmd.tag, cmd.name+" syntax")
+	}
+	return s.no(cmd.tag, "valid syntax not implemented")
 }
 
 func (s *session) cmdCapability(cmd command) error {

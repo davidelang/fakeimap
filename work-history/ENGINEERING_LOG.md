@@ -870,3 +870,17 @@
 - UIDAFTER and UIDBEFORE are search keys when the token is listed. A missing or non-numeric value is BAD. Without the capability both keys are BAD. SAVELIMIT stays unimplemented. FETCH PARTIAL is not added. Plain EXPUNGE, CLOSE, STATUS, and ESEARCH IN are not limited.
 - stalwart.json, stalwart-01625.json, and stalwart-dev.json list MESSAGELIMIT=1000000 on the post-login list only, after QUOTA=RES-STORAGE and before STARTTLS. stalwart-0155.json and every other lab personality do not. The facts file and the guide describe it.
 - make exited 0.
+
+## 2026-11-12 - ACL syntax stub execution start
+
+- Approved plan: sandbox/plans/acl-syntax-stub-20261112-0338-plan.md
+- Work: SETACL, DELETEACL, GETACL, LISTRIGHTS, and MYRIGHTS check their arguments and answer tagged NO valid syntax not implemented. Invalid arguments are BAD. ACL stays unadvertised. Nothing is stored.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
+
+## 2026-11-12 - ACL syntax stub landed
+
+- Approved plan: sandbox/plans/acl-syntax-stub-20261112-0338-plan.md
+- SETACL, DELETEACL, GETACL, LISTRIGHTS, and MYRIGHTS are recognized on every personality, selected or not. Before login each is NO must authenticate first, including a bad argument count. After login, valid arguments are tagged NO valid syntax not implemented, with no response code and no untagged ACL line. Invalid arguments are BAD. A missing mailbox is that same NO, with no TRYCREATE. Nothing is stored.
+- An identifier is a non-empty astring, including anyone and a leading -. Empty identifiers are BAD. SETACL rights are an optional leading + or -, then the RFC 4314 letters. The empty string, +, -, and a repeated letter are valid. UID plus any of the five names stays BAD syntax error.
+- ACL, RIGHTS=kxten, and LIST-MYRIGHTS stay unadvertised. No personality file lists them. The gaps file is unchanged. The facts file and the guide describe the stub.
+- make exited 0.
