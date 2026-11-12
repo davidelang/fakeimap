@@ -67,6 +67,8 @@ var implementedCaps = map[string]struct{}{
 	"IDLE":                    {},
 	"ID":                      {},
 	"NAMESPACE":               {},
+	"OBJECTID":                {},
+	"OBJECTID+":               {},
 	"NOTIFY":                  {},
 	"UIDPLUS":                 {},
 	"UIDONLY":                 {},

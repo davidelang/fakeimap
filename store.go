@@ -51,7 +51,8 @@ type Message struct {
 	genSeed   string
 	genUID    uint32
 	modseq    uint64
-	jmapID    string // stable for the process; not the IMAP UID
+	jmapID    string // stable for the process; not the IMAP UID. EMAILID.
+	threadID  string // th plus a decimal, chosen when the message is stored
 }
 
 func (m *Message) bytes() []byte {
@@ -402,6 +403,70 @@ func (st *Store) stampMsg(m *Message) {
 	m.jmapID = "em" + strconv.FormatUint(st.nextJmap, 10)
 }
 
+// stampThread sets THREADID. A stored parent, found the way THREAD REFERENCES
+// finds one, lends its id. Otherwise the id is new. A stored id does not change.
+// Caller holds st.mu. mb may be the mailbox that is not in the order yet.
+func (st *Store) stampThread(m *Message, mb *Mailbox) {
+	if m.threadID != "" {
+		return
+	}
+	parent := parentMsgID(m)
+	if parent != "" && parent != m.msgID {
+		if tid := st.findThread(parent, mb); tid != "" {
+			m.threadID = tid
+			return
+		}
+	}
+	st.nextJmap++
+	m.threadID = "th" + strconv.FormatUint(st.nextJmap, 10)
+}
+
+// findThread returns the THREADID of a stored message with this Message-ID.
+func (st *Store) findThread(msgID string, extra *Mailbox) string {
+	if msgID == "" {
+		return ""
+	}
+	scan := func(mb *Mailbox) string {
+		if mb == nil {
+			return ""
+		}
+		for _, m := range mb.msgs {
+			if m.msgID == msgID && m.threadID != "" {
+				return m.threadID
+			}
+		}
+		return ""
+	}
+	if tid := scan(extra); tid != "" {
+		return tid
+	}
+	for _, name := range st.order {
+		mb := st.boxes[name]
+		if mb == extra {
+			continue
+		}
+		if tid := scan(mb); tid != "" {
+			return tid
+		}
+	}
+	return ""
+}
+
+// validObjectID is one to 255 letters, digits, underscores, or hyphens.
+func validObjectID(s string) bool {
+	if len(s) < 1 || len(s) > 255 {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (st *Store) check(user, pass string) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -485,6 +550,7 @@ type selectInfo struct {
 	closed      bool
 	vanished    string
 	changed     []resyncMsg
+	mailboxID   string
 }
 
 func (st *Store) selectBox(s *session, name string, readOnly bool, qr *qresyncSel) (selectInfo, error) {
@@ -509,6 +575,7 @@ func (st *Store) selectBox(s *session, name string, readOnly bool, qr *qresyncSe
 		highest:     mb.highestModseq,
 		readOnly:    readOnly,
 		closed:      closed,
+		mailboxID:   mb.jmapID,
 	}
 	if !readOnly {
 		for _, m := range mb.msgs {
@@ -614,9 +681,10 @@ func (st *Store) drain(s *session) []mbEvent {
 }
 
 type listEntry struct {
-	flags  string
-	name   string
-	status [][2]string
+	flags     string
+	name      string
+	status    [][2]string
+	mailboxID string
 }
 
 // listQuery is the extended LIST this server honors. A two-argument LIST
@@ -633,6 +701,8 @@ type listQuery struct {
 	user           string
 	subscribedOnly bool
 	markSubscribed bool
+	objectRFC      bool
+	objectPlus     bool
 }
 
 func canonPattern(pat, delim string) string {
@@ -709,7 +779,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if q.wantStatus {
-		if _, err := statusPairs(nil, q.status, q.appendLimit, q.statusSize); err != nil {
+		if _, err := statusPairs(nil, q.status, q.appendLimit, q.statusSize, q.objectRFC, q.objectPlus, q.user); err != nil {
 			return nil, "", false, err
 		}
 	}
@@ -756,7 +826,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 		var pairs [][2]string
 		if q.wantStatus {
 			var err error
-			pairs, err = statusPairs(mb, q.status, q.appendLimit, q.statusSize)
+			pairs, err = statusPairs(mb, q.status, q.appendLimit, q.statusSize, q.objectRFC, q.objectPlus, q.user)
 			if err != nil {
 				return nil, "", false, err
 			}
@@ -768,7 +838,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 		if q.markSubscribed {
 			flagText = strings.TrimSuffix(flagText, ")") + ` \Subscribed)`
 		}
-		out = append(out, listEntry{flags: flagText, name: name, status: pairs})
+		out = append(out, listEntry{flags: flagText, name: name, status: pairs, mailboxID: mb.jmapID})
 	}
 	return out, st.delim, false, nil
 }
@@ -924,7 +994,7 @@ func (st *Store) seedSubs() {
 	}
 }
 
-func (st *Store) status(name string, items []string, appendLimit uint64, statusSize bool) (string, [][2]string, error) {
+func (st *Store) status(name string, items []string, appendLimit uint64, statusSize, objectRFC, objectPlus bool, account string) (string, [][2]string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	cn, err := st.canon(name)
@@ -935,7 +1005,7 @@ func (st *Store) status(name string, items []string, appendLimit uint64, statusS
 	if mb == nil {
 		return "", nil, fmt.Errorf("no mailbox")
 	}
-	out, err := statusPairs(mb, items, appendLimit, statusSize)
+	out, err := statusPairs(mb, items, appendLimit, statusSize, objectRFC, objectPlus, account)
 	if err != nil {
 		return "", nil, err
 	}
@@ -947,7 +1017,7 @@ func (st *Store) status(name string, items []string, appendLimit uint64, statusS
 // is not on the list in effect. Zero is not a valid limit. statusSize is
 // whether that list includes STATUS=SIZE. SIZE is the sum of RFC822 sizes
 // still in the mailbox, including \Deleted until EXPUNGE.
-func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize bool) ([][2]string, error) {
+func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize, objectRFC, objectPlus bool, account string) ([][2]string, error) {
 	var out [][2]string
 	for _, it := range items {
 		name := strings.ToUpper(it)
@@ -971,6 +1041,28 @@ func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize boo
 				}
 			}
 			out = append(out, [2]string{name, strconv.FormatUint(sum, 10)})
+			continue
+		}
+		if name == "MAILBOXID" {
+			if !objectRFC {
+				return nil, fmt.Errorf("bad status item")
+			}
+			id := ""
+			if mb != nil {
+				id = mb.jmapID
+			}
+			out = append(out, [2]string{name, "(" + imapAtom(id) + ")"})
+			continue
+		}
+		if name == "OBJECTID" {
+			if !objectPlus {
+				return nil, fmt.Errorf("bad status item")
+			}
+			id := ""
+			if mb != nil {
+				id = mb.jmapID
+			}
+			out = append(out, [2]string{name, "(MAILBOXID " + imapAtom(id) + " ACCOUNTID " + imapAtom(account) + ")"})
 			continue
 		}
 		var v uint32
@@ -1042,23 +1134,23 @@ func (st *Store) specialOwned(flag string) bool {
 	return false
 }
 
-func (st *Store) create(name string, uses []string) error {
+func (st *Store) create(name string, uses []string) (string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	cn, err := st.canon(name)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if _, ok := st.boxes[cn]; ok {
-		return fmt.Errorf("exists")
+		return "", fmt.Errorf("exists")
 	}
 	special, err := canonSpecialUses(uses)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, u := range special {
 		if st.specialOwned(u) {
-			return fmt.Errorf("use conflict")
+			return "", fmt.Errorf("use conflict")
 		}
 	}
 	mb := &Mailbox{name: cn, uidValidity: st.allocUIDV(), uidNext: 1, special: special, st: st}
@@ -1067,7 +1159,7 @@ func (st *Store) create(name string, uses []string) error {
 	st.order = append(st.order, cn)
 	st.touch()
 	st.fanBox("create", cn, "")
-	return nil
+	return mb.jmapID, nil
 }
 
 func (st *Store) delete(s *session, name string) error {
@@ -1122,25 +1214,28 @@ func (st *Store) delete(s *session, name string) error {
 	return nil
 }
 
-func (st *Store) rename(oldName, newName string) error {
+func (st *Store) rename(oldName, newName string, moveInbox bool) (string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	oldC, err := st.canon(oldName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	newC, err := st.canon(newName)
 	if err != nil {
-		return err
-	}
-	if oldC == "INBOX" {
-		return fmt.Errorf("cannot rename INBOX")
+		return "", err
 	}
 	if st.boxes[oldC] == nil {
-		return fmt.Errorf("no mailbox")
+		return "", fmt.Errorf("no mailbox")
 	}
 	if oldC == newC {
-		return nil
+		return st.boxes[oldC].jmapID, nil
+	}
+	if oldC == "INBOX" {
+		if !moveInbox {
+			return "", fmt.Errorf("cannot rename INBOX")
+		}
+		return st.renameInboxLocked(newC)
 	}
 	type pair struct{ old, neu string }
 	var moves []pair
@@ -1158,7 +1253,7 @@ func (st *Store) rename(oldName, newName string) error {
 	}
 	for _, mv := range moves {
 		if _, ok := st.boxes[mv.neu]; ok && !moving[mv.neu] {
-			return fmt.Errorf("exists")
+			return "", fmt.Errorf("exists")
 		}
 	}
 	neuBoxes := make(map[string]*Mailbox, len(st.boxes))
@@ -1198,7 +1293,33 @@ func (st *Store) rename(oldName, newName string) error {
 		st.fanBox("rename-new", mv.neu, "")
 	}
 	st.touch()
-	return nil
+	if mb := st.boxes[newC]; mb != nil {
+		return mb.jmapID, nil
+	}
+	return "", nil
+}
+
+// renameInboxLocked moves INBOX's messages and MAILBOXID to newC and leaves
+// a new empty INBOX. Inferior names stay. Caller holds st.mu.
+func (st *Store) renameInboxLocked(newC string) (string, error) {
+	if st.boxes[newC] != nil {
+		return "", fmt.Errorf("exists")
+	}
+	old := st.boxes["INBOX"]
+	if old == nil {
+		return "", fmt.Errorf("no mailbox")
+	}
+	id := old.jmapID
+	old.name = newC
+	st.boxes[newC] = old
+	nb := &Mailbox{name: "INBOX", uidValidity: st.allocUIDV(), uidNext: 1, st: st}
+	st.stampBox(nb)
+	st.boxes["INBOX"] = nb
+	st.order = append(st.order, newC)
+	st.fanBox("rename-old", "INBOX", "")
+	st.fanBox("rename-new", newC, "")
+	st.touch()
+	return id, nil
 }
 
 type seqBound struct {
@@ -1380,6 +1501,8 @@ type fetchSnap struct {
 	size      int
 	raw       []byte
 	seenEvent uint64
+	emailID   string
+	threadID  string
 }
 
 func (st *Store) fetch(s *session, uidMode bool, addUID bool, set *seqSet, items []string, changedSince *uint64, limit uint64) ([]fetchSnap, []string, uint32, bool, error) {
@@ -1388,7 +1511,7 @@ func (st *Store) fetch(s *session, uidMode bool, addUID bool, set *seqSet, items
 	if s.box == nil {
 		return nil, nil, 0, false, fmt.Errorf("not selected")
 	}
-	expanded, err := expandFetch(items, addUID, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"))
+	expanded, err := expandFetch(items, addUID, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"), s.rfcObject(), s.plusObject())
 	if err != nil {
 		return nil, nil, 0, false, err
 	}
@@ -1442,7 +1565,7 @@ func (st *Store) fetch(s *session, uidMode bool, addUID bool, set *seqSet, items
 		snaps = append(snaps, fetchSnap{
 			seq: seq, uid: m.uid, modseq: m.modseq, flags: formatFlags(m, s.pers.FlagOrder),
 			internal: m.internal, saved: m.saved, size: m.size, raw: raw,
-			seenEvent: seenEvent,
+			seenEvent: seenEvent, emailID: m.jmapID, threadID: m.threadID,
 		})
 	}
 	return snaps, expanded, lowest, limited, nil
@@ -1513,7 +1636,7 @@ func itemListed(items []string, name string) bool {
 	return false
 }
 
-func expandFetch(items []string, uidMode bool, binary, preview, savedate bool) ([]string, error) {
+func expandFetch(items []string, uidMode bool, binary, preview, savedate, emailID, objectID bool) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
 	var add func(string) error
@@ -1527,7 +1650,7 @@ func expandFetch(items []string, uidMode bool, binary, preview, savedate bool) (
 		case "FULL":
 			return addAll([]string{"FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY"}, add)
 		}
-		if !knownFetch(u, binary, preview, savedate) {
+		if !knownFetch(u, binary, preview, savedate, emailID, objectID) {
 			return fmt.Errorf("bad fetch item")
 		}
 		key := u
@@ -1563,7 +1686,7 @@ func addAll(items []string, add func(string) error) error {
 	return nil
 }
 
-func knownFetch(u string, binary, preview, savedate bool) bool {
+func knownFetch(u string, binary, preview, savedate, emailID, objectID bool) bool {
 	switch u {
 	case "FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY", "BODYSTRUCTURE",
 		"RFC822", "RFC822.HEADER", "RFC822.TEXT", "MODSEQ":
@@ -1572,6 +1695,10 @@ func knownFetch(u string, binary, preview, savedate bool) bool {
 		return preview
 	case "SAVEDATE":
 		return savedate
+	case "EMAILID", "THREADID":
+		return emailID
+	case "OBJECTID":
+		return objectID
 	}
 	if strings.HasPrefix(u, "BODY[") || strings.HasPrefix(u, "BODY.PEEK[") {
 		return strings.Contains(u, "]")
@@ -1655,6 +1782,13 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 	mb := s.box
 	var last uint64
 	kept, lowest, limited := cutHighest(mb.hits(uidMode, set), limit)
+	skip := map[*Message]bool{}
+	share := s.pers != nil && s.pers.listsCap("OBJECTID+")
+	if share {
+		for _, h := range kept {
+			skip[h.m] = true
+		}
+	}
 	for _, h := range kept {
 		seq, m := h.seq, h.m
 		if unchanged != nil && m.modseq > *unchanged {
@@ -1691,6 +1825,13 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 		if !silent {
 			snaps = append(snaps, storeSnap{seq: seq, uid: m.uid, modseq: m.modseq, flags: formatted})
 		}
+		if share {
+			extra, prop := st.propagateObjectFlags(mb, m, op, flags, s.pers.FlagOrder, skip, !silent)
+			snaps = append(snaps, extra...)
+			if prop > last {
+				last = prop
+			}
+		}
 	}
 	if last > s.seenID {
 		s.seenID = last
@@ -1699,6 +1840,85 @@ func (st *Store) storeFlags(s *session, uidMode bool, set *seqSet, item string, 
 		sort.Slice(modified, func(i, j int) bool { return modified[i] < modified[j] })
 	}
 	return snaps, modified, lowest, limited, nil
+}
+
+// propagateObjectFlags applies flags other than \Deleted and \Recent to every
+// other message with src's EMAILID. \Deleted and \Recent stay on each copy.
+// Caller holds st.mu. report includes selected-mailbox copies in the reply.
+func (st *Store) propagateObjectFlags(selected *Mailbox, src *Message, op string, flags []string, order []string, skip map[*Message]bool, report bool) ([]storeSnap, uint64) {
+	if src == nil || src.jmapID == "" {
+		return nil, 0
+	}
+	shared := flagsExcept(flags, `\Deleted`, `\Recent`)
+	var snaps []storeSnap
+	var last uint64
+	for _, name := range st.order {
+		mb := st.boxes[name]
+		if mb == nil {
+			continue
+		}
+		for i, m := range mb.msgs {
+			if m == src || m.jmapID != src.jmapID || skip[m] {
+				continue
+			}
+			before := formatFlags(m, order)
+			switch op {
+			case "FLAGS":
+				deleted := m.has(`\Deleted`)
+				m.flags = map[string]struct{}{}
+				m.keywords = nil
+				for _, f := range shared {
+					m.addFlag(f)
+				}
+				if deleted {
+					m.addFlag(`\Deleted`)
+				}
+			case "+FLAGS":
+				for _, f := range shared {
+					m.addFlag(f)
+				}
+			case "-FLAGS":
+				for _, f := range shared {
+					m.removeFlag(f)
+				}
+			}
+			formatted := formatFlags(m, order)
+			if formatted == before {
+				continue
+			}
+			mb.bump(m)
+			st.noteMail("updated", m.jmapID)
+			ev := mb.push(mbEvent{kind: "flags", seq: uint32(i + 1), uid: m.uid, modseq: m.modseq, flags: formatted})
+			if report && mb == selected {
+				snaps = append(snaps, storeSnap{seq: uint32(i + 1), uid: m.uid, modseq: m.modseq, flags: formatted})
+				if ev > last {
+					last = ev
+				}
+			}
+		}
+	}
+	return snaps, last
+}
+
+func flagsExcept(flags []string, drop ...string) []string {
+	var out []string
+	for _, f := range flags {
+		c, ok := canonFlag(f)
+		if !ok {
+			continue
+		}
+		skip := false
+		for _, d := range drop {
+			if c == d {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func (st *Store) highestModseq(s *session) (uint64, error) {
@@ -1721,8 +1941,8 @@ type searchKey struct {
 	fuzzy bool
 }
 
-func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool) ([]searchKey, error) {
-	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool, allowObject bool) ([]searchKey, error) {
+	keys, rest, err := parseSearchSeq(toks, false, false, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq, allowObject)
 	if errors.Is(err, errUIDReq) {
 		return nil, err
 	}
@@ -1735,7 +1955,7 @@ func parseSearch(toks []Token, allowFuzzy, allowWithin, allowSaved, allowSaveDat
 // parseSearchSeq reads keys until the input ends. Inside a parenthesis the
 // closing parenthesis is left unconsumed. An unclosed parenthesis is an error.
 // fuzzy marks text leaves parsed from this sequence.
-func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool) ([]searchKey, []Token, error) {
+func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool, allowObject bool) ([]searchKey, []Token, error) {
 	var keys []searchKey
 	for len(toks) > 0 {
 		if toks[0].Kind == "rparen" {
@@ -1744,7 +1964,7 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowS
 			}
 			return keys, toks, nil
 		}
-		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+		k, rest, err := parseSearchKey(toks, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq, allowObject)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1757,12 +1977,12 @@ func parseSearchSeq(toks []Token, inside, fuzzy, allowFuzzy, allowWithin, allowS
 	return keys, nil, nil
 }
 
-func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool) (searchKey, []Token, error) {
+func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel bool, now time.Time, banSeq bool, allowObject bool) (searchKey, []Token, error) {
 	if len(toks) == 0 || toks[0].Kind == "rparen" {
 		return searchKey{}, nil, fmt.Errorf("bad search")
 	}
 	if toks[0].Kind == "lparen" {
-		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+		inner, rest, err := parseSearchSeq(toks[1:], true, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq, allowObject)
 		if errors.Is(err, errUIDReq) {
 			return searchKey{}, nil, err
 		}
@@ -1777,19 +1997,19 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, al
 		if !allowFuzzy {
 			return searchKey{}, nil, fmt.Errorf("bad search")
 		}
-		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+		return parseSearchKey(toks[1:], true, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq, allowObject)
 	case "OR":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq, allowObject)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
-		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+		b, rest, err := parseSearchKey(rest, fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq, allowObject)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
 		return searchKey{op: "OR", kids: []searchKey{a, b}}, rest, nil
 	case "NOT":
-		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq)
+		a, rest, err := parseSearchKey(toks[1:], fuzzy, allowFuzzy, allowWithin, allowSaved, allowSaveDate, allowUIDRel, now, banSeq, allowObject)
 		if err != nil {
 			return searchKey{}, nil, err
 		}
@@ -1874,6 +2094,11 @@ func parseSearchKey(toks []Token, fuzzy, allowFuzzy, allowWithin, allowSaved, al
 			return searchKey{}, nil, errUIDReq
 		}
 		return searchKey{op: "UID", set: set}, toks[2:], nil
+	case "EMAILID", "THREADID":
+		if !allowObject || len(toks) < 2 || toks[1].Kind != "atom" {
+			return searchKey{}, nil, fmt.Errorf("bad search")
+		}
+		return searchKey{op: op, arg: toks[1].Val}, toks[2:], nil
 	case "$":
 		if !allowSaved {
 			return searchKey{}, nil, fmt.Errorf("bad search")
@@ -2028,6 +2253,10 @@ func (m *Message) matches(k searchKey, maxUID uint32) bool {
 		return m.size < k.num
 	case "UID", "$":
 		return k.set != nil && k.set.contains(m.uid, maxUID)
+	case "EMAILID":
+		return m.jmapID == k.arg
+	case "THREADID":
+		return m.threadID == k.arg
 	default:
 		return false
 	}
@@ -2840,6 +3069,7 @@ func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw 
 	}
 	indexOverlay(m)
 	st.stampMsg(m)
+	st.stampThread(m, mb)
 	mb.bump(m)
 	mb.uidNext++
 	mb.msgs = append(mb.msgs, m)
@@ -2871,6 +3101,8 @@ func cloneMsg(src *Message, uid uint32, saved time.Time) *Message {
 		generated:   src.generated,
 		genSeed:     src.genSeed,
 		genUID:      src.genUID,
+		jmapID:      src.jmapID,
+		threadID:    src.threadID,
 	}
 	if src.generated {
 		nm.raw = nil
@@ -2938,7 +3170,6 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		qresync := s.on("QRESYNC") || s.on("UIDONLY")
 		for _, h := range use {
 			src.noteExpunge(h.m)
-			st.noteCopyGone(h.m.jmapID, h.m, nil)
 			gone = append(gone, h.m.uid)
 			if !qresync {
 				res.lines = append(res.lines, fmt.Sprintf("* %d EXPUNGE", h.seq))
@@ -2976,7 +3207,6 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		for _, m := range src.msgs {
 			if drop[m.uid] {
 				src.noteExpunge(m)
-				st.noteCopyGone(m.jmapID, m, nil)
 				gone = append(gone, m.uid)
 				if !qresync {
 					res.lines = append(res.lines, fmt.Sprintf("* %d EXPUNGE", seq))
@@ -2999,23 +3229,22 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 		}
 	}
 	var dstUIDs []uint32
-	var createdIDs []string
 	savedAt := saveClock(frozen)
+	seenID := map[string]bool{}
 	for _, m := range picked {
 		nm := cloneMsg(m, dst.uidNext, savedAt)
-		st.stampMsg(nm)
 		dst.bump(nm)
 		dst.uidNext++
 		dst.msgs = append(dst.msgs, nm)
 		dstUIDs = append(dstUIDs, nm.uid)
-		createdIDs = append(createdIDs, nm.jmapID)
+		if nm.jmapID != "" && !seenID[nm.jmapID] {
+			seenID[nm.jmapID] = true
+			st.noteMail("updated", nm.jmapID)
+		}
 	}
 	res.dst = dstUIDs
 	if len(picked) > 0 {
 		dst.push(mbEvent{kind: "exists", exists: len(dst.msgs), recent: dst.recentCount(), newUIDs: append([]uint32(nil), dstUIDs...)})
-		for _, id := range createdIDs {
-			st.noteMail("created", id)
-		}
 	}
 	return res, nil
 }
@@ -3293,6 +3522,7 @@ func loadStore(dir, delim string) (*Store, error) {
 			}
 			indexOverlay(m)
 			st.stampMsg(m)
+			st.stampThread(m, mb)
 			mb.bump(m)
 			mb.uidNext++
 			mb.msgs = append(mb.msgs, m)
@@ -3323,8 +3553,10 @@ func loadStore(dir, delim string) (*Store, error) {
 					genSeed:     g.Seed,
 					genUID:      uid,
 				}
+				m.msgID = fmt.Sprintf("<%d.%s@fakeimap.example>", uid, g.Seed)
 				m.size = len(m.bytes())
 				st.stampMsg(m)
+				st.stampThread(m, mb)
 				mb.bump(m)
 				mb.uidNext++
 				mb.msgs = append(mb.msgs, m)
@@ -3517,6 +3749,17 @@ func (st *Store) uploadBlob(account, id string) ([]byte, string, bool) {
 		return nil, "", false
 	}
 	return append([]byte(nil), b.data...), b.typ, true
+}
+
+// mailboxByObject is the stored name for a MAILBOXID. The match is case-sensitive.
+func (st *Store) mailboxByObject(id string) (string, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	mb := st.mailboxByJMAP(id)
+	if mb == nil {
+		return "", false
+	}
+	return mb.name, true
 }
 
 func (st *Store) mailboxByJMAP(id string) *Mailbox {

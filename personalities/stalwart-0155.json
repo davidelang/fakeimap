@@ -52,6 +52,7 @@
     "QRESYNC",
     "UNAUTHENTICATE",
     "STATUS=SIZE",
+    "OBJECTID",
     "PREVIEW",
     "QUOTA",
     "QUOTA=RES-STORAGE",

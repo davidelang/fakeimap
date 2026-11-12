@@ -938,3 +938,9 @@
 - MessageNew accepts a fetch item when FETCH would, including BODY.PEEK[HEADER.FIELDS (FROM)]. A syntax error still leaves the previous registration.
 - The MessageNew FETCH or UIDFETCH includes \Seen for a non-peek body when the personality sets fetch_seen_flags, the same way FETCH does.
 - make exits 0.
+
+## 2026-11-12 - OBJECTID and OBJECTID+
+
+- Work: personalities that list OBJECTID speak RFC 8474 mailbox and message ids. Personalities that list OBJECTID+ and not OBJECTID speak the compound form, with ACCOUNTID equal to the JMAP account id. COPY and MOVE keep EMAILID. CATENATE stays unimplemented.
+- Plan: sandbox/plans/objectid-20261112-0529-plan.md
+- Files: store.go, session.go, notify.go, personality.go, personalities, docs/facts/imap-server.md, docs/guide.md, server tests

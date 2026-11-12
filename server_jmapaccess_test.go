@@ -10,14 +10,14 @@ import (
 )
 
 func TestJMAPAccessLists(t *testing.T) {
-	if !capImplemented("JMAPACCESS") || capImplemented("OBJECTID") {
-		t.Fatal("JMAPACCESS or OBJECTID capability set")
+	if !capImplemented("JMAPACCESS") || !capImplemented("OBJECTID") || !capImplemented("OBJECTID+") {
+		t.Fatal("JMAPACCESS, OBJECTID, or OBJECTID+ is not implemented")
 	}
 	gaps, err := os.ReadFile("personalities/cyrus-3137.gaps.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(gaps), `"OBJECTID"`) || strings.Contains(string(gaps), "JMAPACCESS") {
+	if strings.Contains(string(gaps), `"OBJECTID"`) || strings.Contains(string(gaps), "JMAPACCESS") {
 		t.Fatal("gaps file changed")
 	}
 	postOnly := map[string]bool{

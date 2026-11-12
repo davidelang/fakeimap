@@ -44,8 +44,12 @@ func TestUnauthenticate(t *testing.T) {
 			q := indexCap(p.PostLogin, "QRESYNC")
 			u := indexCap(p.PostLogin, "UNAUTHENTICATE")
 			sz := indexCap(p.PostLogin, "STATUS=SIZE")
+			obj := indexCap(p.PostLogin, "OBJECTID")
+			if obj < 0 {
+				obj = indexCap(p.PostLogin, "OBJECTID+")
+			}
 			pr := indexCap(p.PostLogin, "PREVIEW")
-			if q < 0 || u != q+1 || sz != u+1 || pr != sz+1 || p.PostLogin[len(p.PostLogin)-1] != "STARTTLS" {
+			if q < 0 || u != q+1 || sz != u+1 || obj != sz+1 || pr != obj+1 || p.PostLogin[len(p.PostLogin)-1] != "STARTTLS" {
 				t.Fatalf("%s post list %v", e.Name(), p.PostLogin)
 			}
 			continue

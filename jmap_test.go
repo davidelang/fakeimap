@@ -1199,8 +1199,12 @@ func TestJMAPCopyRemainsAfterIMAPRemove(t *testing.T) {
 	mark = jmapSession(t, bound.Jmap, "demo", "secret")["state"].(string)
 	im.cmd("MOVE " + strconv.Itoa(exists) + " Third").ok(t)
 	ch := assertCopyRemains(t, bound.Jmap, session, accountID, mark, emailID, copiesID)
-	if len(stringArray(t, ch["created"])) != 1 || stringArray(t, ch["created"])[0] == emailID {
+	if len(stringArray(t, ch["created"])) != 0 {
 		t.Fatalf("move created %+v", ch)
+	}
+	thirdID := mailboxID(t, bound.Jmap, session, accountID, "Third")
+	if !queryHas(t, bound.Jmap, session, accountID, thirdID, emailID) {
+		t.Fatal("move did not keep the email id")
 	}
 
 	im.cmd("CREATE CloseBox").ok(t)

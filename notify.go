@@ -417,7 +417,7 @@ func notifyEventsOK(g notifyGroup) bool {
 
 // prepareNotify checks status items and fetch items the way STATUS and FETCH do.
 func (s *session) prepareNotify(reg *notifyReg) error {
-	if _, err := statusPairs(nil, reg.status, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE")); err != nil {
+	if _, err := statusPairs(nil, reg.status, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE"), s.rfcObject(), s.plusObject(), s.user); err != nil {
 		return err
 	}
 	modseq := false
@@ -427,7 +427,7 @@ func (s *session) prepareNotify(reg *notifyReg) error {
 		if !ok || len(ev.fetch) == 0 {
 			continue
 		}
-		expanded, err := expandFetch(ev.fetch, false, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"))
+		expanded, err := expandFetch(ev.fetch, false, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"), s.rfcObject(), s.plusObject())
 		if err != nil {
 			return err
 		}
@@ -548,6 +548,11 @@ func (s *session) sendNewFetch(uids []uint32, items []string) error {
 		}
 		return err
 	}
+	if itemListed(show, "OBJECTID") {
+		if err := s.activateObjectPlus(); err != nil {
+			return err
+		}
+	}
 	// A non-peek body sets \Seen inside fetch. FetchSeenFlags puts that on
 	// this same response. The selected mailbox does not flush the flags note.
 	for _, sn := range snaps {
@@ -641,7 +646,7 @@ func (st *Store) notifyLines(s *session) []string {
 			if mb == nil {
 				continue
 			}
-			pairs, err := statusPairs(mb, s.notify.status, limit, withSize)
+			pairs, err := statusPairs(mb, s.notify.status, limit, withSize, s.rfcObject(), s.plusObject(), s.user)
 			if err != nil || len(pairs) == 0 {
 				continue
 			}

@@ -46,6 +46,7 @@
     "MOVE",
     "MULTIAPPEND",
     "NAMESPACE",
+    "OBJECTID",
     "UIDONLY",
     "UIDPLUS",
     "UNSELECT",

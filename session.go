@@ -324,6 +324,63 @@ func (s *session) advertiseCap(name string) bool {
 	return false
 }
 
+// rfcObject is RFC 8474. The personality lists OBJECTID. ENABLE is not required.
+func (s *session) rfcObject() bool {
+	return s.pers != nil && s.pers.listsCap("OBJECTID")
+}
+
+// plusObject is the compound form. It applies only when OBJECTID+ is listed
+// and OBJECTID is not.
+func (s *session) plusObject() bool {
+	return s.pers != nil && s.pers.listsCap("OBJECTID+") && !s.pers.listsCap("OBJECTID")
+}
+
+func (s *session) plusObjectOn() bool {
+	return s.plusObject() && s.on("OBJECTID+")
+}
+
+// activateObjectPlus sends * ENABLED OBJECTID+ once. ENABLE uses its own line.
+func (s *session) activateObjectPlus() error {
+	if !s.plusObject() || s.on("OBJECTID+") {
+		return nil
+	}
+	if s.enabled == nil {
+		s.enabled = map[string]struct{}{}
+	}
+	s.enabled["OBJECTID+"] = struct{}{}
+	return s.sendLine("* ENABLED OBJECTID+")
+}
+
+func mailboxIDCode(id string) string {
+	return "[MAILBOXID (" + imapAtom(id) + ")]"
+}
+
+func objectIDCode(mailboxID, account string) string {
+	return "[OBJECTID (MAILBOXID " + imapAtom(mailboxID) + " ACCOUNTID " + imapAtom(account) + ")]"
+}
+
+func (s *session) objectOK(tag, id, done string) error {
+	switch {
+	case s.rfcObject():
+		return s.ok(tag, mailboxIDCode(id)+" "+done)
+	case s.plusObjectOn():
+		return s.ok(tag, objectIDCode(id, s.user)+" "+done)
+	default:
+		return s.ok(tag, done)
+	}
+}
+
+func (s *session) sendObjectSelect(id string) error {
+	switch {
+	case s.rfcObject():
+		return s.sendLine("* OK " + mailboxIDCode(id) + " Ok")
+	case s.plusObjectOn():
+		return s.sendLine("* OK " + objectIDCode(id, s.user) + " Ok")
+	default:
+		return nil
+	}
+}
+
 // appendLimit is the positive integer on this connection's capability
 // list. After login that list is the post-login list. One number applies
 // to every mailbox.
@@ -844,6 +901,8 @@ func (s *session) cmdEnable(cmd command) error {
 			add("UTF8=ACCEPT")
 		case "UIDONLY":
 			add("UIDONLY")
+		case "OBJECTID+":
+			add("OBJECTID+")
 		}
 	}
 	if recognized {
@@ -1095,6 +1154,9 @@ func (s *session) cmdList(cmd command) error {
 		return s.bad(cmd.tag, word+" syntax")
 	}
 	parsed.ref, parsed.pat = ref, pat
+	if parsed.objectID && !s.plusObject() {
+		return s.bad(cmd.tag, word+" syntax")
+	}
 	q := listQuery{
 		extended:       parsed.extended,
 		specialOnly:    parsed.specialOnly,
@@ -1106,6 +1168,8 @@ func (s *session) cmdList(cmd command) error {
 		user:           s.user,
 		subscribedOnly: parsed.subscribed,
 		markSubscribed: parsed.subscribed,
+		objectRFC:      s.rfcObject(),
+		objectPlus:     s.plusObject(),
 	}
 	entries, delim, _, err := s.srv.store.list(parsed.ref, parsed.pat, q)
 	if err != nil {
@@ -1114,9 +1178,18 @@ func (s *session) cmdList(cmd command) error {
 		}
 		return s.bad(cmd.tag, word+" syntax")
 	}
+	if parsed.objectID || statusWants(parsed.status, "OBJECTID") {
+		if err := s.activateObjectPlus(); err != nil {
+			return err
+		}
+	}
 	for _, e := range entries {
 		wn := s.boxOut(e.name)
-		if err := s.sendLine(fmt.Sprintf("* %s %s %s %s", word, e.flags, imapString(delim), imapAtom(wn))); err != nil {
+		line := fmt.Sprintf("* %s %s %s %s", word, e.flags, imapString(delim), imapAtom(wn))
+		if parsed.objectID {
+			line += " (OBJECTID (MAILBOXID " + imapAtom(e.mailboxID) + " ACCOUNTID " + imapAtom(s.user) + "))"
+		}
+		if err := s.sendLine(line); err != nil {
 			return err
 		}
 		if e.status != nil {
@@ -1251,6 +1324,7 @@ type parsedList struct {
 	special     bool
 	hasStatus   bool
 	status      []string
+	objectID    bool
 }
 
 func twoAstrings(args []Token) bool {
@@ -1331,6 +1405,9 @@ func parseListArgs(args []Token) (parsedList, error) {
 		case "CHILDREN":
 			p.children = true
 			i++
+		case "OBJECTID":
+			p.objectID = true
+			i++
 		case "SPECIAL-USE":
 			p.special = true
 			i++
@@ -1363,6 +1440,15 @@ func parseListArgs(args []Token) (parsedList, error) {
 		return p, fmt.Errorf("bad")
 	}
 	return p, nil
+}
+
+func statusWants(items []string, name string) bool {
+	for _, it := range items {
+		if strings.EqualFold(it, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func formatStatus(name string, pairs [][2]string) string {
@@ -1400,12 +1486,17 @@ func (s *session) cmdStatus(cmd command) error {
 		}
 		items = append(items, t.Val)
 	}
-	cn, pairs, err := s.srv.store.status(name, items, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE"))
+	cn, pairs, err := s.srv.store.status(name, items, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE"), s.rfcObject(), s.plusObject(), s.user)
 	if err != nil {
 		if err.Error() == "bad status item" {
 			return s.bad(cmd.tag, "STATUS bad item")
 		}
 		return s.no(cmd.tag, "STATUS no such mailbox")
+	}
+	if statusWants(items, "OBJECTID") {
+		if err := s.activateObjectPlus(); err != nil {
+			return err
+		}
 	}
 	if err := s.sendLine(formatStatus(s.boxOut(cn), pairs)); err != nil {
 		return err
@@ -1439,10 +1530,11 @@ func (s *session) cmdCreate(cmd command) error {
 			return s.bad(cmd.tag, "CREATE syntax")
 		}
 	}
-	if err := s.srv.store.create(name, uses); err != nil {
+	id, err := s.srv.store.create(name, uses)
+	if err != nil {
 		return s.no(cmd.tag, "CREATE failed")
 	}
-	return s.ok(cmd.tag, "CREATE completed")
+	return s.objectOK(cmd.tag, id, "CREATE completed")
 }
 
 func parseCreateUse(args []Token) ([]string, error) {
@@ -1504,18 +1596,22 @@ func (s *session) cmdRename(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, "RENAME failed")
 	}
-	if err := s.srv.store.rename(a, b); err != nil {
+	id, err := s.srv.store.rename(a, b, s.rfcObject() || s.plusObject())
+	if err != nil {
 		return s.no(cmd.tag, "RENAME failed")
 	}
-	return s.ok(cmd.tag, "RENAME completed")
+	return s.objectOK(cmd.tag, id, "RENAME completed")
 }
 
 func (s *session) cmdSelect(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
 	}
-	name, cond, qr, seqMatch, err := parseSelectArgs(cmd.args)
+	name, cond, qr, seqMatch, obj, err := parseSelectArgs(cmd.args)
 	if err != nil {
+		return s.bad(cmd.tag, "syntax")
+	}
+	if obj != nil && !s.plusObject() {
 		return s.bad(cmd.tag, "syntax")
 	}
 	if seqMatch && s.on("UIDONLY") {
@@ -1552,6 +1648,16 @@ func (s *session) cmdSelect(cmd command) error {
 			qr.knownRaw = formatUIDSet(ids)
 		}
 	}
+	if obj != nil {
+		if err := s.activateObjectPlus(); err != nil {
+			return err
+		}
+		if obj.accountID == s.user {
+			if got, ok := s.srv.store.mailboxByObject(obj.mailboxID); ok {
+				name = got
+			}
+		}
+	}
 	info, err := s.srv.store.selectBox(s, name, cmd.name == "EXAMINE", qr)
 	if err != nil {
 		return s.no(cmd.tag, cmd.name+" no such mailbox")
@@ -1568,6 +1674,9 @@ func (s *session) cmdSelect(cmd command) error {
 		}
 	}
 	if err := s.writeSelect(info); err != nil {
+		return err
+	}
+	if err := s.sendObjectSelect(info.mailboxID); err != nil {
 		return err
 	}
 	if qr != nil && info.vanished != "" {
@@ -1587,55 +1696,76 @@ func (s *session) cmdSelect(cmd command) error {
 	return s.sendLine(fmt.Sprintf("%s OK [%s] %s completed", cmd.tag, mode, cmd.name))
 }
 
-func parseSelectArgs(args []Token) (string, bool, *qresyncSel, bool, error) {
+type objectSel struct {
+	mailboxID string
+	accountID string
+}
+
+func parseSelectArgs(args []Token) (string, bool, *qresyncSel, bool, *objectSel, error) {
 	if len(args) == 0 {
-		return "", false, nil, false, fmt.Errorf("bad")
+		return "", false, nil, false, nil, fmt.Errorf("bad")
 	}
 	name, ok := astring(args[0])
 	if !ok {
-		return "", false, nil, false, fmt.Errorf("bad")
+		return "", false, nil, false, nil, fmt.Errorf("bad")
 	}
 	if len(args) == 1 {
-		return name, false, nil, false, nil
+		return name, false, nil, false, nil, nil
 	}
 	if args[1].Kind != "lparen" || args[len(args)-1].Kind != "rparen" {
-		return "", false, nil, false, fmt.Errorf("bad")
+		return "", false, nil, false, nil, fmt.Errorf("bad")
 	}
 	cond := false
 	seqMatch := false
 	var qr *qresyncSel
+	var obj *objectSel
 	i := 2
 	end := len(args) - 1
 	for i < end {
 		if args[i].Kind != "atom" {
-			return "", false, nil, false, fmt.Errorf("bad")
+			return "", false, nil, false, nil, fmt.Errorf("bad")
 		}
 		switch strings.ToUpper(args[i].Val) {
 		case "CONDSTORE":
 			cond = true
 			i++
+		case "OBJECTID":
+			if obj != nil || i+6 >= end || args[i+1].Kind != "lparen" {
+				return "", false, nil, false, nil, fmt.Errorf("bad")
+			}
+			if args[i+2].Kind != "atom" || !strings.EqualFold(args[i+2].Val, "MAILBOXID") || args[i+3].Kind != "atom" {
+				return "", false, nil, false, nil, fmt.Errorf("bad")
+			}
+			if args[i+4].Kind != "atom" || !strings.EqualFold(args[i+4].Val, "ACCOUNTID") || args[i+5].Kind != "atom" {
+				return "", false, nil, false, nil, fmt.Errorf("bad")
+			}
+			if args[i+6].Kind != "rparen" {
+				return "", false, nil, false, nil, fmt.Errorf("bad")
+			}
+			obj = &objectSel{mailboxID: args[i+3].Val, accountID: args[i+5].Val}
+			i += 7
 		case "QRESYNC":
 			if i+1 >= end || args[i+1].Kind != "lparen" {
-				return "", false, nil, false, fmt.Errorf("bad")
+				return "", false, nil, false, nil, fmt.Errorf("bad")
 			}
 			i += 2
 			if i+1 >= end || args[i].Kind != "atom" || args[i+1].Kind != "atom" {
-				return "", false, nil, false, fmt.Errorf("bad")
+				return "", false, nil, false, nil, fmt.Errorf("bad")
 			}
 			uidv, err := strconv.ParseUint(args[i].Val, 10, 32)
 			if err != nil || uidv == 0 {
-				return "", false, nil, false, fmt.Errorf("bad")
+				return "", false, nil, false, nil, fmt.Errorf("bad")
 			}
 			modseq, err := strconv.ParseUint(args[i+1].Val, 10, 64)
 			if err != nil {
-				return "", false, nil, false, fmt.Errorf("bad")
+				return "", false, nil, false, nil, fmt.Errorf("bad")
 			}
 			i += 2
 			sel := &qresyncSel{uidv: uint32(uidv), modseq: modseq}
 			if i < end && args[i].Kind == "atom" {
 				set, err := parseSeqSet(args[i].Val)
 				if err != nil {
-					return "", false, nil, false, fmt.Errorf("bad")
+					return "", false, nil, false, nil, fmt.Errorf("bad")
 				}
 				sel.known = set
 				sel.knownRaw = args[i].Val
@@ -1655,22 +1785,22 @@ func parseSelectArgs(args []Token) (string, bool, *qresyncSel, bool, error) {
 					i++
 				}
 				if depth != 0 {
-					return "", false, nil, false, fmt.Errorf("bad")
+					return "", false, nil, false, nil, fmt.Errorf("bad")
 				}
 			}
 			if i >= end || args[i].Kind != "rparen" {
-				return "", false, nil, false, fmt.Errorf("bad")
+				return "", false, nil, false, nil, fmt.Errorf("bad")
 			}
 			i++
 			qr = sel
 		default:
-			return "", false, nil, false, fmt.Errorf("bad")
+			return "", false, nil, false, nil, fmt.Errorf("bad")
 		}
 	}
 	if i != end {
-		return "", false, nil, false, fmt.Errorf("bad")
+		return "", false, nil, false, nil, fmt.Errorf("bad")
 	}
-	return name, cond, qr, seqMatch, nil
+	return name, cond, qr, seqMatch, obj, nil
 }
 
 func (s *session) writeSelect(info selectInfo) error {
@@ -1763,6 +1893,11 @@ func (s *session) cmdFetch(cmd command) error {
 			return s.no(cmd.tag, "[UNKNOWN-CTE] FETCH failed")
 		}
 		return s.bad(cmd.tag, "FETCH bad item")
+	}
+	if itemListed(items, "OBJECTID") {
+		if err := s.activateObjectPlus(); err != nil {
+			return err
+		}
 	}
 	show := items
 	if s.on("UIDONLY") && !s.on("QRESYNC") && !itemListed(cmd.fetch, "UID") {
@@ -1869,6 +2004,12 @@ func (s *session) fetchItemText(item string, sn fetchSnap) string {
 		return fmt.Sprintf("MODSEQ (%d)", sn.modseq)
 	case "PREVIEW":
 		return "PREVIEW " + nstring(previewSnippet(sn.raw))
+	case "EMAILID":
+		return "EMAILID (" + imapAtom(sn.emailID) + ")"
+	case "THREADID":
+		return "THREADID (" + imapAtom(sn.threadID) + ")"
+	case "OBJECTID":
+		return "OBJECTID (EMAILID " + imapAtom(sn.emailID) + " THREADID " + imapAtom(sn.threadID) + ")"
 	}
 	if strings.HasPrefix(item, "BODY[") || strings.HasPrefix(item, "BODY.PEEK[") {
 		return bodySection(item, sn.raw, s.pers.FetchPeekBody)
@@ -2336,7 +2477,7 @@ func (s *session) cmdSearch(cmd command) error {
 		return s.bad(cmd.tag, "SEARCH charset")
 	}
 	limit, allowUID := s.messageLimit()
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY"))
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY"), s.rfcObject())
 	if err != nil {
 		if errors.Is(err, errUIDReq) {
 			return s.uidRequired(cmd.tag)
@@ -2429,7 +2570,7 @@ func (s *session) cmdFilter(cmd command) error {
 		return s.bad(cmd.tag, "FILTER charset")
 	}
 	_, allowUID := s.messageLimit()
-	if _, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY")); err != nil {
+	if _, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), s.advertiseCap("SEARCHRES"), s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY"), s.rfcObject()); err != nil {
 		if errors.Is(err, errUIDReq) {
 			return s.uidRequired(cmd.tag)
 		}
@@ -2511,7 +2652,7 @@ func (s *session) cmdEsearch(cmd command) error {
 		return s.bad(cmd.tag, "ESEARCH charset")
 	}
 	_, allowUID := s.messageLimit()
-	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY"))
+	keys, err := parseSearch(rest, s.advertiseCap("SEARCH=FUZZY"), s.advertiseCap("WITHIN"), false, s.advertiseCap("SAVEDATE"), allowUID, s.searchNow(), s.on("UIDONLY"), s.rfcObject())
 	if err != nil {
 		if errors.Is(err, errUIDReq) {
 			return s.uidRequired(cmd.tag)
@@ -2642,11 +2783,11 @@ func (s *session) cmdSort(cmd command) error {
 	saveDate := s.advertiseCap("SAVEDATE")
 	_, allowUID := s.messageLimit()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, saved, saveDate, allowUID, now, s.on("UIDONLY"))
+		keys, err = parseSearch(rest, false, within, saved, saveDate, allowUID, now, s.on("UIDONLY"), s.rfcObject())
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "SORT bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, saved, saveDate, allowUID, now, s.on("UIDONLY"))
+		keys, err = parseSearch(rest[1:], false, within, saved, saveDate, allowUID, now, s.on("UIDONLY"), s.rfcObject())
 	}
 	if err != nil {
 		if errors.Is(err, errUIDReq) {
@@ -2735,11 +2876,11 @@ func (s *session) cmdThread(cmd command) error {
 	saveDate := s.advertiseCap("SAVEDATE")
 	_, allowUID := s.messageLimit()
 	if s.on("UTF8=ACCEPT") {
-		keys, err = parseSearch(rest, false, within, false, saveDate, allowUID, now, s.on("UIDONLY"))
+		keys, err = parseSearch(rest, false, within, false, saveDate, allowUID, now, s.on("UIDONLY"), s.rfcObject())
 	} else if !knownCharset(cs) {
 		return s.bad(cmd.tag, "THREAD bad charset")
 	} else {
-		keys, err = parseSearch(rest[1:], false, within, false, saveDate, allowUID, now, s.on("UIDONLY"))
+		keys, err = parseSearch(rest[1:], false, within, false, saveDate, allowUID, now, s.on("UIDONLY"), s.rfcObject())
 	}
 	if err != nil {
 		if errors.Is(err, errUIDReq) {
