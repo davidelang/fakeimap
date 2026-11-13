@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# libpin-sandbox — Landlock + bubblewrap for pin tooling
+#
+# Modes (write surfaces for mutation; reads stay unrestricted under Landlock):
+#   third_party  → third_party/
+#   lib          → third_party/<lib>/
+#   src          → third_party/<lib>/src/
+#   artifact     → third_party/<lib>/artifact/
+#
+# Order when both requested:
+#   bwrap (outer) → landlock (inner, stackable) → command
+#
+# Usage:
+#   libpin-sandbox --mode lib|src|artifact --lib NAME -- command…
+#   libpin-sandbox --mode third_party -- command…
+#
+# Sandbox is used when available (see docs/SANDBOX.md). Missing bwrap or
+# Landlock is reported and the command continues without that tool.
+# LIBPIN_NO_BWRAP=1 / LIBPIN_NO_LANDLOCK=1 skip a tool (fetch-deps already
+# reported it). --require-bwrap / --require-landlock stop if that tool is
+# not available (--require-libpin is the same as --require-landlock).
+#
+# Confinement is detected with a write probe at a unique path outside the
+# current mode's writable hole. LIBPIN_SANDBOX alone never skips sandboxing.
+#
+# Env:
+#   LIBPIN_NO_BWRAP=1 / LIBPIN_NO_LANDLOCK=1
+#   LIBPIN_BWRAP_DEBUG=1 / LIBPIN_LANDLOCK_DEBUG=1
+LIBPIN_VERSION=2026.10.24
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODE=""
+LIB=""
+REQUIRE_BWRAP=0
+REQUIRE_LANDLOCK=0
+
+USAGE_LINE="usage: libpin-sandbox [-h] --mode MODE [--lib NAME] [--require-bwrap] [--require-landlock] -- COMMAND..."
+usage() {
+  cat <<USAGE
+$USAGE_LINE
+
+Run COMMAND under Landlock and bubblewrap with only one third_party area
+writable.
+
+options:
+  -h, --help          show this help message and exit
+  --mode MODE         writable area: third_party, lib, src or artifact
+  --lib NAME          the library for modes lib, src and artifact
+  --require-bwrap     stop if bubblewrap is not available
+  --require-landlock  stop if Landlock is not available (alias: --require-libpin)
+
+Modes, sandbox order, confinement detection and environment: the comment at
+the top of libpin-sandbox.
+USAGE
+}
+
+bad_option() {
+  echo "$USAGE_LINE" >&2
+  echo "libpin-sandbox: error: unrecognized option: $1" >&2
+  exit 2
+}
+
+die() {
+  echo "libpin-sandbox: $*" >&2
+  exit 1
+}
+
+check_kit_version() {
+  local vfile="$HERE/VERSION" v
+  [[ -f "$vfile" ]] || die "missing $vfile (companion VERSION stamp)"
+  v="$(tr -d '[:space:]' <"$vfile")"
+  [[ "$v" == "$LIBPIN_VERSION" ]] || die "VERSION mismatch: kit/VERSION=$v embedded=$LIBPIN_VERSION"
+}
+
+helper_stamp() {
+  local f="$1" line
+  line="$(grep -E '^LIBPIN_VERSION[[:space:]=]' "$f" | head -1)" || die "no LIBPIN_VERSION in $f"
+  line="${line#*=}"
+  line="${line//[\"\' ]/}"
+  printf '%s' "$line"
+}
+
+check_helper_stamp() {
+  local f="$1" stamp
+  [[ -f "$f" ]] || die "missing helper $f"
+  stamp="$(helper_stamp "$f")"
+  [[ "$stamp" == "$LIBPIN_VERSION" ]] || die "helper $f stamp $stamp != $LIBPIN_VERSION"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --mode) MODE="$2"; shift 2 ;;
+    --lib) LIB="$2"; shift 2 ;;
+    --require-bwrap) REQUIRE_BWRAP=1; shift ;;
+    --require-landlock|--require-libpin) REQUIRE_LANDLOCK=1; shift ;;
+    --) shift; break ;;
+    -*) bad_option "$1" ;;
+    *) break ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  echo "libpin-sandbox: missing command" >&2
+  exit 2
+fi
+if [[ -z "$MODE" ]]; then
+  echo "libpin-sandbox: --mode required" >&2
+  exit 2
+fi
+
+check_kit_version
+check_helper_stamp "$HERE/libpin-bwrap"
+check_helper_stamp "$HERE/libpin-landlock"
+
+NO_BWRAP="${LIBPIN_NO_BWRAP:-0}"
+NO_LANDLOCK="${LIBPIN_NO_LANDLOCK:-0}"
+ENV_NO_BWRAP=0
+ENV_NO_LANDLOCK=0
+[[ "$NO_BWRAP" == "1" ]] && ENV_NO_BWRAP=1
+[[ "$NO_LANDLOCK" == "1" ]] && ENV_NO_LANDLOCK=1
+
+if [[ "$REQUIRE_BWRAP" -eq 1 && "$NO_BWRAP" == "1" ]]; then
+  echo "libpin-sandbox: --require-bwrap conflicts with LIBPIN_NO_BWRAP=1" >&2
+  exit 2
+fi
+if [[ "$REQUIRE_LANDLOCK" -eq 1 && "$NO_LANDLOCK" == "1" ]]; then
+  echo "libpin-sandbox: --require-landlock conflicts with LIBPIN_NO_LANDLOCK=1" >&2
+  exit 2
+fi
+
+if [[ "$NO_BWRAP" == "1" && "$NO_LANDLOCK" == "1" ]]; then
+  exec "$@"
+fi
+
+abs() {
+  realpath -m "$1"
+}
+
+HERE="$(abs "$HERE")"
+HOLE=""
+PARENT=""
+case "$MODE" in
+  third_party)
+    HOLE="$HERE"
+    PARENT="$(abs "$HERE/..")"
+    mkdir -p "$HOLE"
+    ;;
+  lib)
+    [[ -n "$LIB" ]] || die "--lib required for mode=lib"
+    HOLE="$(abs "$HERE/$LIB")"
+    PARENT="$HERE"
+    mkdir -p "$HOLE/src" "$HOLE/artifact"
+    ;;
+  src)
+    [[ -n "$LIB" ]] || die "--lib required for mode=src"
+    HOLE="$(abs "$HERE/$LIB/src")"
+    PARENT="$(abs "$HERE/$LIB")"
+    mkdir -p "$HOLE"
+    ;;
+  artifact)
+    [[ -n "$LIB" ]] || die "--lib required for mode=artifact"
+    HOLE="$(abs "$HERE/$LIB/artifact")"
+    PARENT="$(abs "$HERE/$LIB")"
+    mkdir -p "$HOLE"
+    ;;
+  *)
+    die "unknown mode $MODE"
+    ;;
+esac
+
+if [[ "$NO_BWRAP" != "1" ]]; then
+  if ! command -v bwrap >/dev/null; then
+    if [[ "$REQUIRE_BWRAP" -eq 1 ]]; then
+      die "bwrap required (--require-bwrap) but unavailable (bwrap not found on PATH)"
+    fi
+    echo "libpin-sandbox: bwrap unavailable (bwrap not found on PATH); continuing without it" >&2
+    NO_BWRAP=1
+  elif [[ ! -x "$HERE/libpin-bwrap" ]]; then
+    if [[ "$REQUIRE_BWRAP" -eq 1 ]]; then
+      die "bwrap required (--require-bwrap) but unavailable (libpin-bwrap not executable)"
+    fi
+    echo "libpin-sandbox: bwrap unavailable (libpin-bwrap not executable); continuing without it" >&2
+    NO_BWRAP=1
+  else
+    bwrap_rc=0
+    bwrap_err="$(bwrap --ro-bind / / true 2>&1)" || bwrap_rc=$?
+    if [[ "$bwrap_rc" -ne 0 ]]; then
+      bwrap_err="$(printf '%s' "$bwrap_err" | tr '\n' ' ')"
+      bwrap_err="${bwrap_err%" "}"
+      [[ -n "$bwrap_err" ]] || bwrap_err="bwrap --ro-bind / / true exited $bwrap_rc"
+      if [[ "$REQUIRE_BWRAP" -eq 1 ]]; then
+        die "bwrap required (--require-bwrap) but unavailable ($bwrap_err)"
+      fi
+      echo "libpin-sandbox: bwrap unavailable ($bwrap_err); continuing without it" >&2
+      NO_BWRAP=1
+    fi
+  fi
+fi
+if [[ "$NO_LANDLOCK" != "1" ]]; then
+  if [[ ! -x "$HERE/libpin-landlock" ]]; then
+    if [[ "$REQUIRE_LANDLOCK" -eq 1 ]]; then
+      die "Landlock required (--require-landlock) but unavailable (libpin-landlock not executable)"
+    fi
+    echo "libpin-sandbox: Landlock unavailable (libpin-landlock not executable); continuing without it" >&2
+    NO_LANDLOCK=1
+  else
+    ll_rc=0
+    ll_out="$("$HERE/libpin-landlock" --status 2>&1)" || ll_rc=$?
+    if [[ "$ll_rc" -ne 0 ]]; then
+      ll_out="$(printf '%s' "$ll_out" | tr '\n' ' ')"
+      ll_out="${ll_out%" "}"
+      [[ -n "$ll_out" ]] || ll_out="libpin-landlock --status exited $ll_rc"
+      if [[ "$REQUIRE_LANDLOCK" -eq 1 ]]; then
+        die "Landlock required (--require-landlock) but unavailable ($ll_out)"
+      fi
+      echo "libpin-sandbox: Landlock unavailable ($ll_out); continuing without it" >&2
+      NO_LANDLOCK=1
+    fi
+  fi
+fi
+
+if [[ "$NO_BWRAP" == "1" && "$NO_LANDLOCK" == "1" ]]; then
+  if [[ "$ENV_NO_BWRAP" -eq 0 || "$ENV_NO_LANDLOCK" -eq 0 ]]; then
+    echo "libpin-sandbox: no sandbox active; writes are not confined" >&2
+  fi
+  exec "$@"
+fi
+export LIBPIN_NO_BWRAP="$NO_BWRAP"
+export LIBPIN_NO_LANDLOCK="$NO_LANDLOCK"
+
+# Write probe at a unique path outside this mode's writable hole.
+# The redirect is a deliberate test, not a swallow; it is the only allowed 2>/dev/null.
+probe="$PARENT/.libpin-probe.$$.$RANDOM"
+if printf x >"$probe" 2>/dev/null; then
+  rm -f "$probe"
+else
+  exec "$@"
+fi
+
+CMD=("$@")
+if [[ "$NO_LANDLOCK" != "1" ]]; then
+  LL=( "$HERE/libpin-landlock" --mode "$MODE" --tp-root "$HERE" )
+  [[ -n "$LIB" ]] && LL+=( --lib "$LIB" )
+  LL+=( -- )
+  CMD=( "${LL[@]}" "${CMD[@]}" )
+fi
+
+if [[ "$NO_BWRAP" != "1" ]]; then
+  BW=( "$HERE/libpin-bwrap" --mode "$MODE" )
+  [[ -n "$LIB" ]] && BW+=( --lib "$LIB" )
+  BW+=( -- )
+  exec "${BW[@]}" "${CMD[@]}"
+fi
+
+exec "${CMD[@]}"

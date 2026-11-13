@@ -20,6 +20,7 @@ third_party/*
 !third_party/libpin-landlock
 !third_party/libpin-sandbox
 !third_party/README.md
+!third_party/VERSION
 !third_party/*/
 third_party/*/src/
 third_party/*/status.local

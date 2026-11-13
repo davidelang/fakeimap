@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# libpin-bwrap — bubblewrap helpers for third_party pin tooling
+#
+# Modes (write surfaces):
+#   third_party  RW: <repo>/third_party/ only
+#   lib          RW: third_party/<lib>/ only
+#   src          RW: third_party/<lib>/src/ only
+#   artifact     RW: third_party/<lib>/artifact/ only
+#
+# Usage:
+#   libpin-bwrap --mode third_party -- command…
+#   libpin-bwrap --mode lib|src|artifact --lib NAME -- command…
+#
+# Called after an entry point decided bwrap is usable. A missing bwrap here
+# is a real fault. LIBPIN_NO_BWRAP=1 skips this helper (exec bare). Nest
+# detection is in libpin-sandbox (write probe); LIBPIN_SANDBOX alone never skips.
+#
+# Env:
+#   LIBPIN_NO_BWRAP=1          skip sandbox (run bare)
+#   LIBPIN_BWRAP_DEBUG=1       print bwrap argv
+LIBPIN_VERSION=2026.10.24
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TP_ROOT="$HERE"
+MODE=""
+LIB=""
+
+USAGE_LINE="usage: libpin-bwrap [-h] --mode MODE [--lib NAME] -- COMMAND..."
+usage() {
+  cat <<USAGE
+$USAGE_LINE
+
+Run COMMAND under bubblewrap with only one third_party area writable.
+
+options:
+  -h, --help     show this help message and exit
+  --mode MODE    writable area: third_party, lib, src or artifact
+  --lib NAME     the library for modes lib, src and artifact
+
+Modes, environment and when this helper is skipped: the comment at the top of
+libpin-bwrap.
+USAGE
+}
+
+bad_option() {
+  echo "$USAGE_LINE" >&2
+  echo "libpin-bwrap: error: unrecognized option: $1" >&2
+  exit 2
+}
+
+die() {
+  echo "libpin-bwrap: $*" >&2
+  exit 1
+}
+
+check_kit_version() {
+  local vfile="$HERE/VERSION" v
+  [[ -f "$vfile" ]] || die "missing $vfile (companion VERSION stamp)"
+  v="$(tr -d '[:space:]' <"$vfile")"
+  [[ "$v" == "$LIBPIN_VERSION" ]] || die "VERSION mismatch: kit/VERSION=$v embedded=$LIBPIN_VERSION"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --mode) MODE="$2"; shift 2 ;;
+    --lib) LIB="$2"; shift 2 ;;
+    --) shift; break ;;
+    -*) bad_option "$1" ;;
+    *) break ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  echo "libpin-bwrap: missing command" >&2
+  exit 2
+fi
+
+if [[ -z "$MODE" ]]; then
+  echo "libpin-bwrap: --mode required" >&2
+  exit 2
+fi
+
+check_kit_version
+
+if [[ "${LIBPIN_NO_BWRAP:-0}" == "1" ]]; then
+  if [[ "${LIBPIN_BWRAP_DEBUG:-0}" == "1" ]]; then
+    echo "libpin-bwrap: debug: LIBPIN_NO_BWRAP=1 — exec bare" >&2
+  fi
+  exec "$@"
+fi
+
+if ! command -v bwrap >/dev/null; then
+  echo "libpin-bwrap: bwrap not found" >&2
+  exit 1
+fi
+
+abs() {
+  realpath -m "$1"
+}
+
+TP_ROOT="$(abs "$TP_ROOT")"
+CWD="$(pwd)"
+
+LIB_DIR=""
+SRC_DIR=""
+ART_DIR=""
+if [[ -n "$LIB" ]]; then
+  LIB_DIR="$(abs "$TP_ROOT/$LIB")"
+  SRC_DIR="$LIB_DIR/src"
+  ART_DIR="$LIB_DIR/artifact"
+fi
+
+case "$MODE" in
+  third_party)
+    mkdir -p "$TP_ROOT"
+    ;;
+  lib)
+    [[ -n "$LIB" ]] || { echo "libpin-bwrap: --lib required for mode=lib" >&2; exit 2; }
+    mkdir -p "$LIB_DIR" "$SRC_DIR" "$ART_DIR"
+    ;;
+  src)
+    [[ -n "$LIB" ]] || { echo "libpin-bwrap: --lib required for mode=src" >&2; exit 2; }
+    mkdir -p "$SRC_DIR"
+    ;;
+  artifact)
+    [[ -n "$LIB" ]] || { echo "libpin-bwrap: --lib required for mode=artifact" >&2; exit 2; }
+    mkdir -p "$ART_DIR"
+    ;;
+  *)
+    echo "libpin-bwrap: unknown mode: $MODE" >&2
+    exit 2
+    ;;
+esac
+
+BWRAP=(
+  bwrap
+  --ro-bind / /
+  --dev /dev
+  --proc /proc
+  --tmpfs /tmp
+  --tmpfs /var/tmp
+  --share-net
+  --die-with-parent
+  --chdir "$CWD"
+)
+
+# tmpfs /tmp hides anything that lives under /tmp (kit tests, throwaway
+# GIT_HOME). Restore those paths as read-only, then overlay the mode's
+# writable hole. GIT_HOME is always ro when set (never a host .git RW bind).
+bind_ro() {
+  local p="${1:-}"
+  [[ -n "$p" && -e "$p" ]] || return 0
+  p="$(abs "$p")"
+  BWRAP+=(--ro-bind "$p" "$p")
+}
+bind_ro "$CWD"
+bind_ro "$TP_ROOT"
+bind_ro "${GIT_HOME:-}"
+
+case "$MODE" in
+  third_party) BWRAP+=(--bind "$TP_ROOT" "$TP_ROOT") ;;
+  lib)         BWRAP+=(--bind "$LIB_DIR" "$LIB_DIR") ;;
+  src)         BWRAP+=(--bind "$SRC_DIR" "$SRC_DIR") ;;
+  artifact)    BWRAP+=(--bind "$ART_DIR" "$ART_DIR") ;;
+esac
+
+_dockersock=""
+if [[ -S /run/docker.sock ]]; then
+  _dockersock=/run/docker.sock
+elif [[ -S /var/run/docker.sock ]]; then
+  _dockersock=/var/run/docker.sock
+fi
+if [[ -n "$_dockersock" ]]; then
+  BWRAP+=(--bind "$_dockersock" "$_dockersock")
+  export DOCKER_HOST="${DOCKER_HOST:-unix://${_dockersock}}"
+fi
+
+if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "${XDG_RUNTIME_DIR}" ]]; then
+  BWRAP+=(--bind "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR")
+fi
+
+export LIBPIN_SANDBOX="$MODE"
+
+if [[ "${LIBPIN_BWRAP_DEBUG:-0}" == "1" ]]; then
+  echo "libpin-bwrap: mode=$MODE lib=${LIB:-}" >&2
+  printf '  %q' "${BWRAP[@]}" -- "$@" >&2
+  echo >&2
+fi
+
+exec "${BWRAP[@]}" -- "$@"

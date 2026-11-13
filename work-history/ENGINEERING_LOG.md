@@ -1028,3 +1028,10 @@
 
 - CHECKSCRIPT and PUTSCRIPT accept only require, keep, discard, stop, fileinto, redirect, if, elsif, and else. A bad script is NO and is not stored. Nothing runs the script on delivery.
 - proto sieve reply forces NO for CHECKSCRIPT and PUTSCRIPT. proto jmap unauthorized, server_fail, and drop_eventsource force 401, serverFail or HTTP 500, or a closed event stream.
+
+## 2026-11-12 - libpin kit 2026.10.24
+
+- Synced the libpin kit (fetch-deps, get-artifacts, VERSION, libpin-sandbox, libpin-bwrap, libpin-landlock) from orchestration-example@830b09e (libpin@1a98c91, LIBPIN_VERSION 2026.10.24).
+- .gitignore un-ignores third_party/VERSION (and the other kit tools where they were still ignored).
+- Pin tomls updated as needed for the new kit (example: source_kind=seed-src, default=false, sha256; heavy pins rclone/paddle/paddle-opt/opencv: default=false).
+

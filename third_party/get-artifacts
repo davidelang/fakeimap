@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+# get-artifacts — copy build products to destinations declared in libpin.toml
+#
+# Usage:
+#   third_party/get-artifacts [--verify|--record] [NAME…]
+#   third_party/get-artifacts --help
+#
+#   --verify (default)  a row whose file does not match its sha256 fails
+#   --record            a row whose sha256 differs (or is the 64-zero placeholder,
+#                       or is missing) is copied and reported as
+#                       ARTIFACT-SHA256<TAB>row-index<TAB>old<TAB>new
+#                       fetch-deps writes the new hashes into libpin.toml
+#   --capabilities      print 'record'
+#
+# libpin.toml [[artifact]] fields:
+#   from     source path or glob under third_party/<lib>/  (required)
+#   path     destination; must resolve inside the repo root
+#              - pin-relative (artifact/…) → third_party/<lib>/<path>
+#              - app/… → <repo-root>/app/…
+#              - absolute, only if realpath is under the repo root
+#   pick     omitted → exactly one match required
+#            newest | sort | sort-n  (must be written explicitly for globs with many matches)
+#   sha256   required. 64 zeros is the --record placeholder. Empty or TBD are errors.
+#
+# Pins with default = false are omitted from the default NAME set.
+LIBPIN_VERSION=2026.10.24
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$ROOT/.." && pwd)"
+NAMES=()
+FAILURES=0
+FAILED_NAMES=()
+NO_BWRAP=0
+NO_LANDLOCK=0
+MODE=verify
+ZERO_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
+
+usage() {
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+die() {
+  echo "get-artifacts: $*" >&2
+  exit 1
+}
+
+check_kit_version() {
+  local vfile="$ROOT/VERSION" v
+  [[ -f "$vfile" ]] || die "missing $vfile (companion VERSION stamp)"
+  v="$(tr -d '[:space:]' <"$vfile")"
+  [[ "$v" == "$LIBPIN_VERSION" ]] || die "VERSION mismatch: kit/VERSION=$v embedded=$LIBPIN_VERSION"
+}
+
+check_kit_version
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --no-bwrap) NO_BWRAP=1; shift ;;
+    --no-landlock) NO_LANDLOCK=1; shift ;;
+    --verify) MODE=verify; shift ;;
+    --record) MODE=record; shift ;;
+    --capabilities) echo record; exit 0 ;;
+    -*) echo "get-artifacts: unknown option $1" >&2; exit 2 ;;
+    *) NAMES+=("$1"); shift ;;
+  esac
+done
+
+if [[ "$NO_BWRAP" -eq 1 ]]; then
+  export LIBPIN_NO_BWRAP=1
+fi
+if [[ "$NO_LANDLOCK" -eq 1 ]]; then
+  export LIBPIN_NO_LANDLOCK=1
+fi
+
+pin_get_opt() {
+  local file="$1" key="$2" out rc=0
+  [[ -r "$file" ]] || { echo "get-artifacts: cannot read $file" >&2; return 2; }
+  out="$(python3 - "$file" "$key" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+key = sys.argv[2]
+if key not in data:
+    sys.exit(3)
+v = data[key]
+if isinstance(v, bool):
+    print("true" if v else "false")
+elif isinstance(v, list):
+    print("\n".join(str(x) for x in v))
+else:
+    print(v)
+PY
+)" && { printf '%s\n' "$out"; return 0; }
+  rc=$?
+  [[ "$rc" -eq 3 ]] && return 0
+  echo "get-artifacts: reading $key from $file failed (exit $rc)" >&2
+  return "$rc"
+}
+
+if [[ ${#NAMES[@]} -eq 0 ]]; then
+  for d in "$ROOT"/*/; do
+    [[ -f "${d}libpin.toml" ]] || continue
+    base="$(basename "$d")"
+    [[ "$base" == "tests" ]] && continue
+    def="$(pin_get_opt "${d}libpin.toml" default)" || exit 1
+    [[ "$def" == "false" ]] && continue
+    NAMES+=("$base")
+  done
+fi
+
+parse_artifacts() {
+  local pin="$1"
+  python3 - "$pin" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if "artifacts" in data:
+    print("get-artifacts: alias 'artifacts' is not supported; use [[artifact]]", file=sys.stderr)
+    sys.exit(2)
+entries = data.get("artifact")
+if entries is None:
+    entries = []
+if not isinstance(entries, list):
+    print("get-artifacts: artifact must be an array of tables", file=sys.stderr)
+    sys.exit(2)
+print(f"COUNT|{len(entries)}")
+for i, e in enumerate(entries):
+    if not isinstance(e, dict):
+        print(f"get-artifacts: [[artifact]] row {i} is not a table", file=sys.stderr)
+        sys.exit(2)
+    if "from_src" in e:
+        print("get-artifacts: from_src is not supported; use from =", file=sys.stderr)
+        sys.exit(2)
+    path = str(e.get("path") or "").strip()
+    frm = str(e.get("from") or "").strip()
+    if not path:
+        print(f"get-artifacts: [[artifact]] row {i} missing path", file=sys.stderr)
+        sys.exit(2)
+    if not frm:
+        print(f"get-artifacts: [[artifact]] row {i} missing from", file=sys.stderr)
+        sys.exit(2)
+    if "|" in path or "|" in frm:
+        print(f"get-artifacts: [[artifact]] row {i} path/from must not contain |", file=sys.stderr)
+        sys.exit(2)
+    if "pick" in e:
+        pick = str(e.get("pick") or "").strip()
+    else:
+        pick = ""
+    if "sha256" not in e:
+        sha = "MISSING"
+    else:
+        sha = str(e.get("sha256") or "").strip().lower()
+        if not sha or sha == "tbd":
+            print(f"get-artifacts: [[artifact]] row {i} sha256 is empty or TBD", file=sys.stderr)
+            sys.exit(2)
+    print(f"{path}|{frm}|{pick}|{sha}")
+PY
+}
+
+is_glob() {
+  [[ "$1" == *'*'* || "$1" == *'?'* || "$1" == *'['* ]]
+}
+
+resolve_dest() {
+  local lib_dir="$1" path="$2" dest dest_real root_real
+  if [[ "$path" == /* ]]; then
+    dest="$path"
+  elif [[ "$path" == app/* ]]; then
+    dest="$REPO_ROOT/$path"
+  else
+    dest="$lib_dir/$path"
+  fi
+  dest_real="$(realpath -m "$dest")"
+  root_real="$(realpath "$REPO_ROOT")"
+  case "$dest_real" in
+    "$root_real"|"$root_real"/*) ;;
+    *)
+      echo "get-artifacts: dest $path resolves outside the repo ($dest_real vs $root_real)" >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$dest_real"
+}
+
+pick_file() {
+  local pick="$1"
+  shift
+  local files=("$@")
+  [[ ${#files[@]} -eq 0 ]] && return 1
+  if [[ -z "$pick" ]]; then
+    if [[ ${#files[@]} -eq 1 ]]; then
+      echo "${files[0]}"
+      return 0
+    fi
+    echo "get-artifacts: omitted pick requires exactly one match, got ${#files[@]}: ${files[*]}" >&2
+    return 1
+  fi
+  case "$pick" in
+    sort)
+      printf '%s\n' "${files[@]}" | sort | tail -1
+      ;;
+    sort-n)
+      printf '%s\n' "${files[@]}" | sort -V | tail -1
+      ;;
+    newest)
+      local f best="" best_t=0 t
+      for f in "${files[@]}"; do
+        t=$(stat -c %Y "$f") || return 1
+        if [[ "$t" -ge "$best_t" ]]; then
+          best_t=$t
+          best=$f
+        fi
+      done
+      echo "$best"
+      ;;
+    *)
+      echo "get-artifacts: unknown pick=$pick (want newest|sort|sort-n, or omit for a single match)" >&2
+      return 1
+      ;;
+  esac
+}
+
+sha256_file() {
+  local out
+  out=$(sha256sum "$1") || return 1
+  printf '%s\n' "${out%% *}"
+}
+
+collect_one() {
+  local name="$1"
+  local dir="$ROOT/$name"
+  local pin="$dir/libpin.toml"
+  [[ -f "$pin" ]] || { echo "FAIL $name: no libpin.toml" >&2; return 1; }
+  echo "==> $name  get-artifacts"
+  local path from pick sha matches m chosen dest got rows
+  local any=0
+  local row_fail=0
+  local idx=-1
+  local parsed_count=""
+  rows=$(parse_artifacts "$pin") || { echo "FAIL $name: cannot parse $pin" >&2; return 1; }
+  while IFS='|' read -r path from pick sha; do
+    if [[ -z "$parsed_count" ]]; then
+      [[ "$path" == COUNT ]] || { echo "FAIL $name: artifact parser did not report COUNT" >&2; return 1; }
+      parsed_count="$from"
+      continue
+    fi
+    idx=$((idx + 1))
+    [[ -z "$path" ]] && continue
+    any=1
+    matches=()
+    if is_glob "$from"; then
+      shopt -s globstar nullglob
+      # shellcheck disable=SC2206
+      local expanded=( "$dir"/$from )
+      shopt -u globstar
+      for m in "${expanded[@]}"; do
+        [[ -f "$m" ]] && matches+=("$m")
+      done
+    else
+      if [[ -f "$dir/$from" ]]; then
+        matches+=("$dir/$from")
+      fi
+    fi
+    if [[ ${#matches[@]} -eq 0 ]]; then
+      echo "    FAIL: no file for from=$from" >&2
+      row_fail=1
+      continue
+    fi
+    if ! chosen="$(pick_file "$pick" "${matches[@]}")"; then
+      echo "    FAIL: cannot pick from ${matches[*]}" >&2
+      row_fail=1
+      continue
+    fi
+    got="$(sha256_file "$chosen")" || { row_fail=1; continue; }
+    if [[ "$sha" == "MISSING" || "$sha" == "$ZERO_SHA256" ]]; then
+      if [[ "$MODE" == record ]]; then
+        echo "    record sha256 $path: ${sha} -> $got"
+        printf 'ARTIFACT-SHA256\t%s\t%s\t%s\n' "$idx" "$sha" "$got"
+      else
+        echo "    FAIL sha256 $from: sha256 is required (got placeholder $sha; use fetch-deps build --record)" >&2
+        row_fail=1
+        continue
+      fi
+    elif [[ "$got" != "$sha" ]]; then
+      if [[ "$MODE" == record ]]; then
+        echo "    record sha256 $path: $sha -> $got"
+        printf 'ARTIFACT-SHA256\t%s\t%s\t%s\n' "$idx" "$sha" "$got"
+      else
+        echo "    FAIL sha256 $from: got $got want $sha (unchanged pin; to take new bytes use fetch-deps upgrade or fetch-deps build --record)" >&2
+        row_fail=1
+        continue
+      fi
+    fi
+    dest="$(resolve_dest "$dir" "$path")" || { row_fail=1; continue; }
+    mkdir -p "$(dirname "$dest")"
+    if [[ -e "$dest" && ! -w "$dest" ]]; then
+      chmod u+w "$dest" || { echo "    FAIL: chmod u+w $dest" >&2; row_fail=1; continue; }
+    fi
+    cp -a "$chosen" "$dest"
+    echo "    $chosen → $dest"
+  done <<< "$rows"
+
+  if [[ -z "$parsed_count" ]]; then
+    echo "    FAIL $name: no COUNT from parser" >&2
+    return 1
+  fi
+  printf 'ARTIFACT-COUNT\t%s\n' "$parsed_count"
+  if [[ "$any" -eq 0 ]]; then
+    echo "    (no [[artifact]] entries — nothing to copy)"
+  fi
+  if [[ "$row_fail" -ne 0 ]]; then
+    echo "    FAIL get-artifacts $name (one or more rows)" >&2
+    return 1
+  fi
+  echo "    OK get-artifacts $name"
+}
+
+if [[ ${#NAMES[@]} -eq 0 ]]; then
+  echo "get-artifacts: no libraries with libpin.toml" >&2
+  exit 2
+fi
+
+for n in "${NAMES[@]}"; do
+  rc=0
+  set +e
+  (
+    set -euo pipefail
+    collect_one "$n"
+  )
+  rc=$?
+  set -euo pipefail
+  if [[ $rc -ne 0 ]]; then
+    FAILURES=$((FAILURES + 1))
+    FAILED_NAMES+=("$n")
+  fi
+done
+if [[ ${#FAILED_NAMES[@]} -gt 0 ]]; then
+  echo "get-artifacts: failed: ${FAILED_NAMES[*]}" >&2
+fi
+exit "$FAILURES"
