@@ -1,40 +1,45 @@
 #!/usr/bin/env bash
-# third_party/fetch-deps — consumer-side pin / rw / upgrade materialize
-# Design: @@SANDBOX_PATH@@/research/third-party-fetch-deps-design-20260802.md
+# fetch-deps — consumer-side pin / rw / upgrade materialize
 #
-# Defaults simple:
+# Defaults:
 #   fetch-deps [name…]           # ro pin @ libpin.toml git_sha (patches, then chmod a-w)
-#   fetch-deps rw [name…]        # writable branch = VE branch, base = pin sha
+#   fetch-deps rw [name…]        # writable branch = work (override --branch)
 #   fetch-deps ro [name…]        # back to pin
 #   fetch-deps status [-v|-vv]
-#   fetch-deps refresh [name…]   # advance pin to library master tip (explicit)
+#   fetch-deps refresh [name…]   # advance pin along track_branch (git only)
 #   fetch-deps upgrade NAME --ref REF
 #   fetch-deps build [name…]     # run build[] then get-artifacts
+#   fetch-deps check [name…]     # host_repo, git_home leak, depends, moved tags
+#   fetch-deps outdated [name…]  # compare pins to upstream; record tip in status.local
 #
 # Pin file: third_party/<name>/libpin.toml
-# Transport (git pins): prefer linked worktree of $GIT_HOME/<lib> when host has pin
-#   commit; else HTTPS clone (git_https). SSH only with --allow-ssh.
-# Transport (non-git pins): [[source]] rows — HTTPS/HTTP download or local seed/file
-#   with required sha256. Never git@ / scp / SSH for source rows (even with --allow-ssh).
-# Sandbox: third_party/<lib>/… plus only $GIT_HOME/<lib>/.git (never whole GIT_HOME).
+# Transport: declared loud fallback (printed), never a silent swallow.
+#   usable host shortcut, else git_https if set, else git_ssh if set, else
+#   source_kind=seed-src. A failed git_https fetch does not retry git_ssh.
+#   Host is never mandatory when a remote URL is set. Permission/SSH failures
+#   print the exact command the owner can run (chmod/setfacl/ssh); the agent
+#   then uses the remote URL when present. Ambiguous sha on a readable host
+#   is a hard fail (do not network for a different commit).
+# Pins with default = false are omitted from the default NAME set.
 #
-# git_home=@@GIT_HOME@@ smudged from project.config; runtime export GIT_HOME.
-# Override: --git-home DIR. Unsubstituted token / missing host → network clone.
+# git_home= is smudged by consumers (lowercase LHS). --git-home DIR overrides.
+# A leftover @@…@@ token is always an error. Unset GIT_HOME skips the host
+# shortcut and uses the remote URL.
+# GIT_TERMINAL_PROMPT=0 so an agent never hangs on a credential prompt.
 #
-# Sandbox (optional; Linux):
-#   bubblewrap and/or Landlock via libpin-sandbox
-#   materialize (ro/rw)  → write under third_party/<lib>/ (+ host .git if linked)
-#   patches + build      → write under third_party/<lib>/src/
-#   get-artifacts        → write under third_party/<lib>/artifact/
-# Disable: LIBPIN_NO_BWRAP=1 LIBPIN_NO_LANDLOCK=1 or --no-bwrap / --no-landlock
+# Sandbox: bwrap + Landlock via libpin-sandbox, used when available
+#   (see docs/SANDBOX.md). --no-* disables one; --require-* stops if missing.
+#   Write surfaces:
+#     materialize + status.local  write → third_party/<lib>/  (mode=lib)
+#     patches                     write → third_party/<lib>/src/ only
+#     build steps                 write → third_party/<lib>/src/ only
+#     get-artifacts               no sandbox (destinations may be app/… under the repo root)
 #
 # Commands in detail:
 #   upgrade NAME --ref REF  try ref, build, collect artifacts, update libpin.toml
 #     (git_sha, git_describe and every changed [[artifact]] sha256; a pin with
 #     reproducible = true is built a second time and must give the same bytes)
 #   build   runs build[] from libpin.toml, then get-artifacts (artifacts must match sha256)
-#   --record: write the new [[artifact]] sha256 values into libpin.toml instead of
-#     failing on them (old -> new printed per row)
 #
 # libpin.toml = pin contract only (no checkout mode). Mode is status.local (gitignored).
 #
@@ -44,33 +49,37 @@
 #   path     destination under third_party/<lib>/src/
 #   sha256   required content hash (hex)
 #
-# Sandbox write surfaces (missing tools → unsandboxed, still correct):
-#   materialize + status.local  write → third_party/<lib>/  (mode=lib)
-#   patches                     write → third_party/<lib>/src/ only
-#   build steps                 write → third_party/<lib>/src/ only
-#   get-artifacts               write → third_party/<lib>/artifact/ only
-#   Landlock: mutation rights only (read/exec unrestricted). Stacks under bwrap.
-#   bubblewrap: single-level only (no nest). libpin-sandbox = bwrap outer + landlock inner.
+# Internal options (used by host-permission help, not listed in --help):
+#   --print-host-perm-suggestions ARGS…   (up to 8 args)
+#   --print-owner-host-perm ARGS…         (up to 3 args)
+#   --print-nofilter-git-config REPO      (exactly 1 arg)
+LIBPIN_VERSION=2026.10.24
 set -euo pipefail
+if [[ -z "${LIBPIN_INSIDE:-}" ]]; then
+  LIBPIN_INVOCATION=$(printf '%q ' "$0" "$@")
+  LIBPIN_INVOCATION="${LIBPIN_INVOCATION% }"
+  export LIBPIN_INVOCATION
+fi
+export GIT_TERMINAL_PROMPT=0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VE_ROOT="$(cd "$ROOT/.." && pwd)"
+REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 CMD=""
-ALLOW_SSH=0
 NO_BWRAP=0
 NO_LANDLOCK=0
-DEPTH=""
+REQUIRE_BWRAP=0
+REQUIRE_LANDLOCK=0
 BASE_REF=""
 BRANCH_OVERRIDE=""
 REF_UPGRADE=""
 RECORD=0
 VERBOSE=0
 NAMES=()
-FAILURES=0
-# Smudged LHS must be lowercase git_home= so filter-clean-config restores @@GIT_HOME@@.
-# (project.config key is git_home=; do not use GIT_HOME= for the stamped line.)
+FAILED_NAMES=()
+PRINT_ARGS=()
+# Smudged LHS must be lowercase git_home= so a consumer clean filter can restore the path.
+# Do not hard-code a machine path. --git-home overrides.
 git_home=@@GIT_HOME@@
-WORKTREE_SEARCH="${WORKTREE_SEARCH:-}"
 
 USAGE_LINE="usage: fetch-deps [-h] [COMMAND] [options] [NAME...]"
 usage() {
@@ -82,25 +91,26 @@ third_party/<name>/libpin.toml.
 
 commands:
   (none), ro     read-only checkout at the pinned commit or files
-  rw             writable branch at the pin (default: this checkout's branch)
+  rw             writable branch at the pin (default branch: work)
   status         show mode, HEAD, pin and dirty state (-v / -vv for more)
-  refresh        advance the pin to the library's master tip, then ro (git pins)
+  refresh        advance the pin along track_branch, then ro (git pins only)
   upgrade NAME   try --ref REF, build, collect artifacts, update libpin.toml
   build          run build[] from libpin.toml, then collect artifacts
+  check          validate host_repo, git_home leaks, depends and moved tags
+  outdated       compare pins to upstream; record the tip in status.local
 
 options:
-  -h, --help            show this help message and exit
-  --allow-ssh           permit git@ for git transport only
-  --git-home DIR        override the smudged git_home
-  --branch NAME         rw branch name
-  --base REF            rw base (default: the pinned git_sha)
-  --ref REF             upgrade source ref
-  --depth N             shallow clone depth (default: full)
-  --record              build: write new artifact sha256 values to libpin.toml
-  --worktree-search P   extra local roots (colon-separated)
-  --no-bwrap            do not use bubblewrap (or LIBPIN_NO_BWRAP=1)
-  --no-landlock         do not use Landlock (or LIBPIN_NO_LANDLOCK=1)
-  -v, -vv               status verbosity
+  -h, --help          show this help message and exit
+  --git-home DIR      override the smudged git_home
+  --branch NAME       rw/upgrade branch name (defaults: work / upgrade/<ref>)
+  --base REF          rw base (default: the pinned git_sha)
+  --ref REF           upgrade source ref
+  --record            build: write the new artifact sha256 values to libpin.toml
+  --no-bwrap          do not use bubblewrap (or LIBPIN_NO_BWRAP=1)
+  --no-landlock       do not use Landlock (or LIBPIN_NO_LANDLOCK=1)
+  --require-bwrap     stop if bubblewrap is not available
+  --require-landlock  stop if Landlock is not available (alias: --require-libpin)
+  -v, -vv             status verbosity
 
 Transport, non-git pins and sandbox write surfaces: the comment at the top of
 fetch-deps.
@@ -113,22 +123,66 @@ bad_option() {
   exit 2
 }
 
+die() {
+  echo "fetch-deps: $*" >&2
+  exit 1
+}
+
+check_kit_version() {
+  local vfile="$ROOT/VERSION" v
+  [[ -f "$vfile" ]] || die "missing $vfile (companion VERSION stamp)"
+  v="$(tr -d '[:space:]' <"$vfile")"
+  [[ "$v" == "$LIBPIN_VERSION" ]] || die "VERSION mismatch: kit/VERSION=$v embedded=$LIBPIN_VERSION"
+}
+
 # --- parse ---
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    ro|rw|status|refresh|upgrade|build)
+    ro|rw|status|refresh|upgrade|build|check|outdated)
       if [[ -z "$CMD" ]]; then CMD="$1"; shift; else NAMES+=("$1"); shift; fi ;;
-    --allow-ssh) ALLOW_SSH=1; shift ;;
     --no-bwrap) NO_BWRAP=1; shift ;;
     --no-landlock) NO_LANDLOCK=1; shift ;;
+    --require-bwrap) REQUIRE_BWRAP=1; shift ;;
+    --require-landlock|--require-libpin) REQUIRE_LANDLOCK=1; shift ;;
     --git-home) git_home="$2"; shift 2 ;;
     --branch) BRANCH_OVERRIDE="$2"; shift 2 ;;
     --base) BASE_REF="$2"; shift 2 ;;
     --ref) REF_UPGRADE="$2"; shift 2 ;;
-    --depth) DEPTH="$2"; shift 2 ;;
     --record) RECORD=1; shift ;;
-    --worktree-search) WORKTREE_SEARCH="$2"; shift 2 ;;
+    --print-host-perm-suggestions)
+      CMD=print-host-perm-suggestions
+      shift
+      PRINT_ARGS=()
+      n=0
+      while [[ $n -lt 8 && $# -gt 0 ]]; do
+        PRINT_ARGS+=("$1")
+        shift
+        n=$((n + 1))
+      done
+      ;;
+    --print-owner-host-perm)
+      CMD=print-owner-host-perm
+      shift
+      PRINT_ARGS=()
+      n=0
+      while [[ $n -lt 3 && $# -gt 0 ]]; do
+        PRINT_ARGS+=("$1")
+        shift
+        n=$((n + 1))
+      done
+      ;;
+    --print-nofilter-git-config)
+      CMD=print-nofilter-git-config
+      shift
+      PRINT_ARGS=()
+      n=0
+      while [[ $n -lt 1 && $# -gt 0 ]]; do
+        PRINT_ARGS+=("$1")
+        shift
+        n=$((n + 1))
+      done
+      ;;
     -vv) VERBOSE=2; shift ;;
     -v) VERBOSE=1; shift ;;
     --) shift; break ;;
@@ -136,22 +190,151 @@ while [[ $# -gt 0 ]]; do
     *) NAMES+=("$1"); shift ;;
   esac
 done
+
+check_kit_version
 while [[ $# -gt 0 ]]; do NAMES+=("$1"); shift; done
+
+if [[ "$CMD" == "print-host-perm-suggestions" ]]; then
+  M=$(( ${#PRINT_ARGS[@]} + ${#NAMES[@]} ))
+  if [[ "$M" -ne 8 ]]; then
+    echo "fetch-deps: --print-host-perm-suggestions takes exactly 8 arguments (got $M)" >&2
+    exit 2
+  fi
+fi
+if [[ "$CMD" == "print-owner-host-perm" ]]; then
+  M=$(( ${#PRINT_ARGS[@]} + ${#NAMES[@]} ))
+  if [[ "$M" -ne 3 ]]; then
+    echo "fetch-deps: --print-owner-host-perm takes exactly 3 arguments (got $M)" >&2
+    exit 2
+  fi
+fi
+if [[ "$CMD" == "print-nofilter-git-config" ]]; then
+  M=$(( ${#PRINT_ARGS[@]} + ${#NAMES[@]} ))
+  if [[ "$M" -ne 1 ]]; then
+    echo "fetch-deps: --print-nofilter-git-config takes exactly 1 argument (got $M)" >&2
+    exit 2
+  fi
+fi
 
 CMD="${CMD:-ro}"
 
-# Runtime export name (children / messages). Sourced from smudged git_home=.
 GIT_HOME="${git_home:-}"
 
-# Unsubstituted smudge token → no host (network clone only).
-if [[ -z "${GIT_HOME}" || "$GIT_HOME" == @@* || "$GIT_HOME" == *"@@"* ]]; then
-  if [[ -n "${GIT_HOME}" && "$GIT_HOME" == *"@@"* ]]; then
-    echo "fetch-deps: note: git_home still has smudge token ($GIT_HOME) — host clone disabled; using network" >&2
-  fi
-  GIT_HOME=""
-  git_home=""
+if [[ -n "$GIT_HOME" && "$GIT_HOME" == *"@@"* ]]; then
+  die "leftover smudge token in git_home ($GIT_HOME)"
 fi
 
+if [[ "$REQUIRE_BWRAP" -eq 1 && "$NO_BWRAP" -eq 1 ]]; then
+  echo "fetch-deps: --require-bwrap conflicts with --no-bwrap" >&2
+  exit 2
+fi
+if [[ "$REQUIRE_LANDLOCK" -eq 1 && "$NO_LANDLOCK" -eq 1 ]]; then
+  echo "fetch-deps: --require-landlock conflicts with --no-landlock" >&2
+  exit 2
+fi
+if [[ "$REQUIRE_BWRAP" -eq 1 && "${LIBPIN_NO_BWRAP:-0}" == "1" ]]; then
+  echo "fetch-deps: --require-bwrap conflicts with LIBPIN_NO_BWRAP=1" >&2
+  exit 2
+fi
+if [[ "$REQUIRE_LANDLOCK" -eq 1 && "${LIBPIN_NO_LANDLOCK:-0}" == "1" ]]; then
+  echo "fetch-deps: --require-landlock conflicts with LIBPIN_NO_LANDLOCK=1" >&2
+  exit 2
+fi
+
+BWRAP_STATE=available
+BWRAP_REASON=""
+LANDLOCK_STATE=available
+LANDLOCK_REASON=""
+
+if [[ "$NO_BWRAP" -eq 1 ]]; then
+  BWRAP_STATE=disabled
+  BWRAP_REASON="--no-bwrap"
+elif [[ "${LIBPIN_NO_BWRAP:-0}" == "1" ]]; then
+  NO_BWRAP=1
+  BWRAP_STATE=disabled
+  BWRAP_REASON="LIBPIN_NO_BWRAP=1"
+else
+  if ! command -v bwrap >/dev/null; then
+    BWRAP_STATE=unavailable
+    BWRAP_REASON="bwrap not found on PATH"
+  elif [[ ! -x "$ROOT/libpin-bwrap" ]]; then
+    BWRAP_STATE=unavailable
+    BWRAP_REASON="libpin-bwrap not executable"
+  else
+    bwrap_rc=0
+    bwrap_err="$(bwrap --ro-bind / / true 2>&1)" || bwrap_rc=$?
+    if [[ "$bwrap_rc" -ne 0 ]]; then
+      BWRAP_STATE=unavailable
+      bwrap_err="$(printf '%s' "$bwrap_err" | tr '\n' ' ')"
+      bwrap_err="${bwrap_err%" "}"
+      if [[ -n "$bwrap_err" ]]; then
+        BWRAP_REASON="$bwrap_err"
+      else
+        BWRAP_REASON="bwrap --ro-bind / / true exited $bwrap_rc"
+      fi
+    fi
+  fi
+fi
+
+if [[ "$NO_LANDLOCK" -eq 1 ]]; then
+  LANDLOCK_STATE=disabled
+  LANDLOCK_REASON="--no-landlock"
+elif [[ "${LIBPIN_NO_LANDLOCK:-0}" == "1" ]]; then
+  NO_LANDLOCK=1
+  LANDLOCK_STATE=disabled
+  LANDLOCK_REASON="LIBPIN_NO_LANDLOCK=1"
+else
+  if [[ ! -x "$ROOT/libpin-landlock" ]]; then
+    LANDLOCK_STATE=unavailable
+    LANDLOCK_REASON="libpin-landlock not executable"
+  else
+    ll_rc=0
+    ll_out="$("$ROOT/libpin-landlock" --status 2>&1)" || ll_rc=$?
+    if [[ "$ll_rc" -ne 0 ]]; then
+      LANDLOCK_STATE=unavailable
+      ll_out="$(printf '%s' "$ll_out" | tr '\n' ' ')"
+      ll_out="${ll_out%" "}"
+      if [[ -n "$ll_out" ]]; then
+        LANDLOCK_REASON="$ll_out"
+      else
+        LANDLOCK_REASON="libpin-landlock --status exited $ll_rc"
+      fi
+    else
+      LANDLOCK_REASON="${ll_out#available }"
+      LANDLOCK_REASON="${LANDLOCK_REASON/=/ }"
+    fi
+  fi
+fi
+
+if [[ "$REQUIRE_BWRAP" -eq 1 && "$BWRAP_STATE" != "available" ]]; then
+  die "bwrap required (--require-bwrap) but unavailable ($BWRAP_REASON)"
+fi
+if [[ "$REQUIRE_LANDLOCK" -eq 1 && "$LANDLOCK_STATE" != "available" ]]; then
+  die "Landlock required (--require-landlock) but unavailable ($LANDLOCK_REASON)"
+fi
+
+if [[ -z "${LIBPIN_INSIDE:-}" ]]; then
+  case "$BWRAP_STATE" in
+    disabled) echo "libpin: sandbox: bwrap disabled ($BWRAP_REASON)" >&2 ;;
+    unavailable) echo "libpin: sandbox: bwrap unavailable ($BWRAP_REASON); continuing without it" >&2 ;;
+    available) echo "libpin: sandbox: bwrap available; write confinement on" >&2 ;;
+  esac
+  case "$LANDLOCK_STATE" in
+    disabled) echo "libpin: sandbox: Landlock disabled ($LANDLOCK_REASON)" >&2 ;;
+    unavailable) echo "libpin: sandbox: Landlock unavailable ($LANDLOCK_REASON); continuing without it" >&2 ;;
+    available) echo "libpin: sandbox: Landlock available ($LANDLOCK_REASON); write confinement on" >&2 ;;
+  esac
+  if [[ "$BWRAP_STATE" != "available" && "$LANDLOCK_STATE" != "available" ]]; then
+    echo "libpin: sandbox: none active; pin writes are not confined" >&2
+  fi
+fi
+
+if [[ "$BWRAP_STATE" != "available" ]]; then
+  NO_BWRAP=1
+fi
+if [[ "$LANDLOCK_STATE" != "available" ]]; then
+  NO_LANDLOCK=1
+fi
 if [[ "$NO_BWRAP" -eq 1 ]]; then
   export LIBPIN_NO_BWRAP=1
 fi
@@ -160,125 +343,97 @@ if [[ "$NO_LANDLOCK" -eq 1 ]]; then
 fi
 export GIT_HOME
 
-# Optional Landlock + bwrap via libpin-sandbox (falls back to bare if neither works).
-# Host .git for this lib is auto-narrowed inside libpin-sandbox when GIT_HOME is set.
 sandbox_run() {
   local mode="$1" name="$2"
   shift 2
-  if [[ -x "$ROOT/libpin-sandbox" ]]; then
-    "$ROOT/libpin-sandbox" --mode "$mode" --lib "$name" -- "$@"
-  else
-    "$@"
-  fi
+  [[ -x "$ROOT/libpin-sandbox" ]] || die "libpin-sandbox not executable"
+  "$ROOT/libpin-sandbox" --mode "$mode" --lib "$name" -- "$@"
 }
 
-# Absolute env for sandbox re-entry. The sandbox wrappers exec by PATH lookup, and an empty
-# PATH entry (cwd) would find a project's own ./env script instead of env(1).
 ENV_BIN=/usr/bin/env
-[[ -x "$ENV_BIN" ]] || { echo "fetch-deps: $ENV_BIN not found (needed for sandbox re-entry)" >&2; exit 1; }
+[[ -x "$ENV_BIN" ]] || die "$ENV_BIN not found (needed for sandbox re-entry)"
 
-# Preserve GIT_HOME across single-level sandbox re-entry of this script.
-reenter_args() {
-  REENTER_GH=()
-  [[ -n "${GIT_HOME:-}" ]] && REENTER_GH=(--git-home "$GIT_HOME")
+reenter_self() {
+  local mode="$1" name="$2" cmd="$3"
+  local args=()
+  [[ -n "${GIT_HOME:-}" ]] && args+=(--git-home "$GIT_HOME")
+  [[ -n "$BRANCH_OVERRIDE" ]] && args+=(--branch "$BRANCH_OVERRIDE")
+  [[ -n "$BASE_REF" ]] && args+=(--base "$BASE_REF")
+  [[ -n "$REF_UPGRADE" ]] && args+=(--ref "$REF_UPGRADE")
+  [[ "$RECORD" -eq 1 ]] && args+=(--record)
+  [[ "$VERBOSE" -ge 2 ]] && args+=(-vv)
+  [[ "$VERBOSE" -eq 1 ]] && args+=(-v)
+  # Already inside bwrap: do not nest. Landlock stacks for src/artifact holes
+  # unless the caller asked for --no-landlock.
+  args+=(--no-bwrap)
+  [[ "$NO_LANDLOCK" -eq 1 ]] && args+=(--no-landlock)
+  sandbox_run "$mode" "$name" "$ENV_BIN" LIBPIN_INSIDE=1 \
+    "$ROOT/fetch-deps" "${args[@]}" "$cmd" "$name"
 }
-bwrap_lib() {
-  local name="$1"; shift
-  sandbox_run lib "$name" "$@"
+
+should_reenter() {
+  [[ -z "${LIBPIN_INSIDE:-}" && ( "$NO_BWRAP" -eq 0 || "$NO_LANDLOCK" -eq 0 ) ]]
 }
+
 bwrap_src() {
   local name="$1"; shift
   sandbox_run src "$name" "$@"
 }
-bwrap_artifact() {
-  local name="$1"; shift
-  sandbox_run artifact "$name" "$@"
-}
 
-if [[ "$CMD" != "status" && "$CMD" != "upgrade" && ${#NAMES[@]} -eq 0 ]]; then
-  for d in "$ROOT"/*/; do
-    [[ -f "${d}libpin.toml" ]] || continue
-    base="$(basename "$d")"
-    [[ "$base" == "rclone" || "$base" == "paddle" || "$base" == "example" ]] && continue
-    NAMES+=("$base")
-  done
-fi
-if [[ "$CMD" == "upgrade" ]]; then
-  [[ ${#NAMES[@]} -eq 1 ]] || { echo "upgrade needs exactly one NAME" >&2; exit 2; }
-  [[ -n "$REF_UPGRADE" ]] || { echo "upgrade needs --ref" >&2; exit 2; }
-fi
-if [[ ${#NAMES[@]} -eq 0 && "$CMD" != "status" ]]; then
-  echo "fetch-deps: no libraries with libpin.toml" >&2
-  exit 2
-fi
-if [[ "$CMD" == "status" && ${#NAMES[@]} -eq 0 ]]; then
-  for d in "$ROOT"/*/; do
-    [[ -f "${d}libpin.toml" ]] && NAMES+=("$(basename "$d")")
-  done
-fi
+pin_path() { echo "$ROOT/$1/libpin.toml"; }
+src_path() { echo "$ROOT/$1/src"; }
+status_path() { echo "$ROOT/$1/status.local"; }
 
-ve_branch() {
-  git -C "$VE_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"
-}
-
-# Read a top-level scalar from libpin.toml (or status.local key: value).
 pin_get() {
   local file="$1" key="$2"
   [[ -r "$file" ]] || return 1
   if [[ "$file" == *.toml ]]; then
     python3 - "$file" "$key" <<'PY'
 import sys
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
+import tomllib
 from pathlib import Path
 data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 key = sys.argv[2]
-v = data.get(key)
-if v is None:
-    sys.exit(3)  # key absent (pin_get_opt tells this apart from an error)
+if key not in data:
+    sys.exit(3)
+v = data[key]
 if isinstance(v, bool):
     print("true" if v else "false")
 elif isinstance(v, list):
-    # join for simple consumers; use pin_get_list for arrays
     print("\n".join(str(x) for x in v))
 else:
     print(v)
 PY
   else
-    # status.local still uses simple key: value
     sed -n "s/^${key}:[[:space:]]*//p" "$file" | head -1 | sed 's/^["'\'']//;s/["'\'']$//'
   fi
 }
 
-# Optional TOML key: prints the value, or nothing when the key is absent (exit 3 of
-# pin_get). An unreadable or unparsable pin is an error, never "absent".
 pin_get_opt() {
   local file="$1" key="$2" out rc=0
   [[ "$file" == *.toml ]] || { echo "fetch-deps: pin_get_opt needs a .toml pin, got $file" >&2; return 2; }
   [[ -r "$file" ]] || { echo "fetch-deps: cannot read $file" >&2; return 2; }
-  # rc from the assignment itself: after 'if …; fi' $? is 0, which hid every failure.
-  out="$(pin_get "$file" "$key")" || rc=$?
-  if [[ "$rc" -eq 0 ]]; then
-    printf '%s\n' "$out"
-    return 0
-  fi
+  out="$(pin_get "$file" "$key")" && { printf '%s\n' "$out"; return 0; }
+  rc=$?
   [[ "$rc" -eq 3 ]] && return 0
   echo "fetch-deps: reading $key from $file failed (exit $rc)" >&2
   return "$rc"
 }
 
-# Print build steps one per line (TOML build = ["...", ...]).
-# Missing key → default ./build. Explicit build = [] → no steps (file pins).
+pin_has_key() {
+  local file="$1" key="$2" rc=0
+  pin_get "$file" "$key" >/dev/null || rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  [[ "$rc" -eq 3 ]] && return 1
+  echo "fetch-deps: reading $key from $file failed (exit $rc)" >&2
+  return 2
+}
+
 pin_build_steps() {
   local file="$1"
   python3 - "$file" <<'PY'
 import sys
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
+import tomllib
 from pathlib import Path
 data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 if "build" not in data:
@@ -297,60 +452,696 @@ PY
 
 is_real_sha() {
   local s="${1:-}"
-  [[ -n "$s" && "$s" != "TBD" && "$s" != "null" && "$s" =~ ^[0-9a-fA-F]{7,40}$ ]]
+  [[ -n "$s" && "$s" != "TBD" && "$s" != "null" && "$s" =~ ^[0-9a-fA-F]{4,40}$ ]]
 }
 
-# True if path is a usable git work tree / repo (has .git file or dir).
-is_git_repo() {
-  local p="${1:-}"
-  [[ -n "$p" && ( -d "$p/.git" || -f "$p/.git" ) ]] && git -C "$p" rev-parse --git-dir >/dev/null 2>&1
+git_host() {
+  local host="$1"
+  shift
+  [[ "$host" == /* ]] || die "git_host: host path must be absolute: $host"
+  git -c "safe.directory=$host" -C "$host" "$@"
 }
 
-# Resolve host repo for lib name under GIT_HOME (or WORKTREE_SEARCH). Empty GIT_HOME → fail.
-local_repo_for() {
-  local name="$1" p
-  if [[ -n "${GIT_HOME}" ]]; then
-    p="$GIT_HOME/$name"
-    if is_git_repo "$p"; then
-      echo "$p"; return 0
-    fi
-    if [[ -e "$p" ]]; then
-      echo "    note: GIT_HOME host $p is not a valid git repo — ignoring" >&2
-    fi
+
+# Disable every filter.* configured on REPO except LFS, and skip host hooks,
+# so a checkout of src matches a network clone: tokens stay raw and smudge
+# scripts do not run. A linked worktree (or worktree add) inherits the host
+# repo's config and hooks, including a required manage-configs smudge and a
+# post-checkout hook that need a gitignored project.config the new tree does
+# not have. LFS stays enabled (its filter is not disabled).
+collect_nofilter_config() {
+  # $1 = name of an array to fill with -c key=val pairs; $2 = repo path.
+  local -n _nofilter_cfg="$1"
+  local repo="$2" key name
+  _nofilter_cfg=()
+  [[ -n "$repo" ]] || return 0
+  local out rc=0
+  out=$(git -c "safe.directory=$repo" -C "$repo" config --get-regexp '^filter\..*\.(smudge|required)$' 2>&1) && rc=0 || rc=$?
+  if [[ $rc -eq 1 && -z "$out" ]]; then
+    return 0
   fi
-  if [[ -n "$WORKTREE_SEARCH" ]]; then
-    local IFS=':'
-    for p in $WORKTREE_SEARCH; do
-      [[ -z "$p" ]] && continue
-      if is_git_repo "$p/$name"; then
-        echo "$p/$name"; return 0
+  if [[ $rc -ne 0 ]]; then
+    echo "    FAIL: git -C $repo config --get-regexp filter.* failed (rc=$rc): $out" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    key="${line%% *}"
+    name="${key#filter.}"
+    if [[ "$name" == *.smudge ]]; then
+      name="${name%.smudge}"
+      [[ "$name" == "lfs" ]] && continue
+      _nofilter_cfg+=(-c "$key=cat")
+    elif [[ "$name" == *.required ]]; then
+      name="${name%.required}"
+      [[ "$name" == "lfs" ]] && continue
+      _nofilter_cfg+=(-c "$key=false")
+    fi
+  done <<< "$out"
+}
+
+git_nofilter() {
+  local repo="$1"
+  shift
+  local -a cfg=()
+  collect_nofilter_config cfg "$repo" || return 1
+  git -c "safe.directory=$repo" -C "$repo" -c core.hooksPath=/dev/null "${cfg[@]}" "$@"
+}
+
+print_nofilter_git_config() {
+  local repo="$1"
+  local -a cfg=()
+  collect_nofilter_config cfg "$repo" || return 1
+  if [[ ${#cfg[@]} -eq 0 ]]; then
+    return 0
+  fi
+  local i
+  for ((i=0; i<${#cfg[@]}; i+=2)); do
+    printf '%s %s\n' "${cfg[$i]}" "${cfg[$((i+1))]}"
+  done | LC_ALL=C sort
+}
+
+
+# host_repo key is "set" only when present in TOML. Prints the value; rc 1 = absent, 2 = error.
+host_repo_set() {
+  local file out rc=0
+  file="$(pin_path "$1")"
+  out="$(pin_get "$file" host_repo)" && { printf '%s' "$out"; return 0; }
+  rc=$?
+  [[ "$rc" -eq 3 ]] && return 1
+  return 2
+}
+
+# Resolve host shortcut: rc 0 = path printed, 1 = no usable host (use remote),
+# 2 = pin config error (smudge / empty / absolute-under-GIT_HOME).
+local_repo_for() {
+  local name="$1" hrset=0 hr="" p gh_real hr_real
+  if hr="$(host_repo_set "$name")"; then
+    hrset=1
+  else
+    local rc=$?
+    [[ "$rc" -eq 1 ]] || return 2
+  fi
+
+  if [[ "$hrset" -eq 1 ]]; then
+    [[ -n "$hr" ]] || { echo "fetch-deps: FAIL $name: host_repo is empty" >&2; return 2; }
+    if [[ "$hr" == *"@@"* ]]; then
+      echo "fetch-deps: FAIL $name: leftover smudge token in host_repo ($hr)" >&2
+      return 2
+    fi
+    if [[ "$hr" == /* ]]; then
+      if [[ -n "${GIT_HOME:-}" ]]; then
+        gh_real="$(realpath -m "$GIT_HOME")"
+        hr_real="$(realpath -m "$hr")"
+        case "$hr_real" in
+          "$gh_real"|"$gh_real"/*)
+            echo "fetch-deps: FAIL $name: absolute host_repo $hr is under GIT_HOME ($GIT_HOME); use the name" >&2
+            return 2
+            ;;
+        esac
       fi
-    done
+      host_shortcut_from_path "$name" "$hr"
+      return $?
+    fi
+    if [[ -z "${GIT_HOME:-}" ]]; then
+      return 1
+    fi
+    host_shortcut_from_path "$name" "$GIT_HOME/$hr"
+    return $?
+  fi
+
+  if [[ -z "${GIT_HOME:-}" ]]; then
+    return 1
+  fi
+  p="$GIT_HOME/$name"
+  if [[ -e "$p" ]]; then
+    host_shortcut_from_path "$name" "$p"
+    return $?
   fi
   return 1
 }
 
-# Host usable for this pin SHA? Prints host path on success; reports and fails otherwise.
-local_repo_with_commit() {
-  local name="$1" sha="$2" host
-  if ! host="$(local_repo_for "$name")"; then
-    return 1
+abs_host_path() {
+  local p="$1"
+  [[ "$p" == /* ]] || p="$PWD/$p"
+  printf '%s' "$p"
+}
+
+print_rerun_line() {
+  if [[ -n "${LIBPIN_INVOCATION:-}" ]]; then
+    echo "  then: $LIBPIN_INVOCATION" >&2
+  else
+    echo "  then: original command could not be determined" >&2
   fi
-  if [[ -n "$sha" ]] && ! repo_has_commit "$host" "$sha"; then
-    echo "    note: host $host lacks commit $sha — will try network clone" >&2
-    return 1
-  fi
-  echo "$host"
+}
+
+# Split `stat -c '%U %G %a'` into owner, group, mode.
+split_stat_ugm() {
+  local _s_st="$1"
+  local -n _s_owner="$2" _s_group="$3" _s_mode="$4"
+  _s_mode="${_s_st##* }"
+  _s_st="${_s_st%"$_s_mode"}"
+  _s_st="${_s_st%"${_s_st##*[![:space:]]}"}"
+  _s_group="${_s_st##* }"
+  _s_owner="${_s_st%"$_s_group"}"
+  _s_owner="${_s_owner%"${_s_owner##*[![:space:]]}"}"
+}
+
+# Read gitdir: from a gitfile. rc 1 = no gitdir: line. rc 2 = NOSTAT via namerefs.
+# $2 = resolved gitdir nameref (success). $3/$4/$5 = status/component/error.
+read_gitdir_file() {
+  local _rg_file="$1" line rel dir rc=0 resolved
+  local -n _rg_gitdir="$2" _rg_status="$3" _rg_component="$4" _rg_error="$5"
+  dir="$(dirname "$_rg_file")"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      gitdir:*)
+        rel="${line#gitdir:}"
+        rel="${rel#"${rel%%[![:space:]]*}"}"
+        rel="${rel%"${rel##*[![:space:]]}"}"
+        [[ -n "$rel" ]] || return 1
+        if [[ "$rel" == /* ]]; then
+          _rg_gitdir="$rel"
+          return 0
+        fi
+        resolved="$(realpath -m "$dir/$rel" 2>&1)" || rc=$?
+        if [[ "$rc" -ne 0 ]]; then
+          _rg_status=NOSTAT
+          _rg_component="$dir/$rel"
+          _rg_error="$resolved"
+          return 2
+        fi
+        _rg_gitdir="$resolved"
+        return 0
+        ;;
+    esac
+  done < "$_rg_file"
+  return 1
+}
+
+# Walk components of an absolute path. Failure fills namerefs and returns 1.
+# Leaf is kind file if it is a file, else repo; strict prefixes are ancestor.
+# $2..$8 = status, component, error, kind, owner, group, mode.
+walk_path_components() {
+  local _walk_target="$1" accum="" rest part kind st rc
+  local _walk_own_n="$6" _walk_grp_n="$7" _walk_mode_n="$8"
+  local -n _walk_status="$2" _walk_component="$3" _walk_error="$4"
+  local -n _walk_kind="$5" _walk_owner="$6" _walk_group="$7" _walk_mode="$8"
+  rest="${_walk_target#/}"
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then
+      rest="${rest#*/}"
+    else
+      rest=""
+    fi
+    [[ -n "$part" ]] || continue
+    accum="$accum/$part"
+    if [[ ! -e "$accum" ]]; then
+      _walk_status=MISSING
+      _walk_component="$accum"
+      _walk_error=
+      return 1
+    fi
+    rc=0
+    st="$(stat -c '%U %G %a' "$accum" 2>&1)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      _walk_status=NOSTAT
+      _walk_component="$accum"
+      _walk_error="$st"
+      return 1
+    fi
+    if [[ "$accum" == "$_walk_target" ]]; then
+      if [[ -f "$accum" ]]; then
+        kind=file
+      else
+        kind=repo
+      fi
+    else
+      kind=ancestor
+    fi
+    case "$kind" in
+      ancestor)
+        if [[ ! -x "$accum" ]]; then
+          _walk_status=BLOCKED
+          _walk_component="$accum"
+          _walk_error=
+          _walk_kind=$kind
+          split_stat_ugm "$st" "$_walk_own_n" "$_walk_grp_n" "$_walk_mode_n"
+          return 1
+        fi
+        ;;
+      repo)
+        if [[ ! -r "$accum" || ! -x "$accum" ]]; then
+          _walk_status=BLOCKED
+          _walk_component="$accum"
+          _walk_error=
+          _walk_kind=$kind
+          split_stat_ugm "$st" "$_walk_own_n" "$_walk_grp_n" "$_walk_mode_n"
+          return 1
+        fi
+        ;;
+      file)
+        if [[ ! -r "$accum" ]]; then
+          _walk_status=BLOCKED
+          _walk_component="$accum"
+          _walk_error=
+          _walk_kind=$kind
+          split_stat_ugm "$st" "$_walk_own_n" "$_walk_grp_n" "$_walk_mode_n"
+          return 1
+        fi
+        ;;
+    esac
+  done
   return 0
 }
 
-pin_path() { echo "$ROOT/$1/libpin.toml"; }
-# legacy alias during transition
-lock_path() { pin_path "$1"; }
-src_path() { echo "$ROOT/$1/src"; }
-status_path() { echo "$ROOT/$1/status.local"; }
-# alias used by older call sites
-yaml_get() { pin_get "$@"; }
+# $2..$8 = status, component, error, kind, owner, group, mode.
+inspect_host_path() {
+  local _ih_path="$1"
+  local -n _ih_status="$2" _ih_component="$3" _ih_error="$4"
+  local -n _ih_kind="$5" _ih_owner="$6" _ih_group="$7" _ih_mode="$8"
+  local _ih_st_n="$2" _ih_comp_n="$3" _ih_err_n="$4"
+  local _ih_kind_n="$5" _ih_own_n="$6" _ih_grp_n="$7" _ih_mode_n="$8"
+  local checkout _ih_gitdir rc=0 gd_rc=0 st
+  _ih_status=OK
+  _ih_component=
+  _ih_error=
+  _ih_kind=
+  _ih_owner=
+  _ih_group=
+  _ih_mode=
+  checkout="$(abs_host_path "$_ih_path")"
+  walk_path_components "$checkout" "$_ih_st_n" "$_ih_comp_n" "$_ih_err_n" \
+    "$_ih_kind_n" "$_ih_own_n" "$_ih_grp_n" "$_ih_mode_n" || return 1
+  if [[ ! -e "$checkout/.git" ]]; then
+    _ih_status=NOTGIT
+    _ih_component="$checkout"
+    _ih_error=no.git
+    return 1
+  fi
+  if [[ -f "$checkout/.git" ]]; then
+    if [[ ! -r "$checkout/.git" ]]; then
+      rc=0
+      st="$(stat -c '%U %G %a' "$checkout/.git" 2>&1)" || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        _ih_status=NOSTAT
+        _ih_component="$checkout/.git"
+        _ih_error="$st"
+        return 1
+      fi
+      _ih_status=BLOCKED
+      _ih_kind=file
+      _ih_component="$checkout/.git"
+      _ih_error=
+      split_stat_ugm "$st" "$_ih_own_n" "$_ih_grp_n" "$_ih_mode_n"
+      return 1
+    fi
+    read_gitdir_file "$checkout/.git" _ih_gitdir "$_ih_st_n" "$_ih_comp_n" "$_ih_err_n" || gd_rc=$?
+    if [[ "$gd_rc" -eq 2 ]]; then
+      return 1
+    fi
+    if [[ "$gd_rc" -ne 0 ]]; then
+      _ih_status=NOTGIT
+      _ih_component="$checkout/.git"
+      _ih_error=nogitdir
+      return 1
+    fi
+  else
+    _ih_gitdir="$checkout/.git"
+  fi
+  walk_path_components "$_ih_gitdir" "$_ih_st_n" "$_ih_comp_n" "$_ih_err_n" \
+    "$_ih_kind_n" "$_ih_own_n" "$_ih_grp_n" "$_ih_mode_n" || return 1
+  _ih_status=OK
+  return 0
+}
+
+# rc 0 = usable git repo on stdout; 1 = skip shortcut (message already printed).
+host_shortcut_from_path() {
+  local name="$1" p="$2" rc=0 err
+  local hs_status="" hs_component="" hs_error="" hs_kind="" hs_owner="" hs_group="" hs_mode=""
+  p="$(abs_host_path "$p")"
+  inspect_host_path "$p" hs_status hs_component hs_error hs_kind hs_owner hs_group hs_mode || rc=$?
+  if [[ "$hs_status" != "OK" ]]; then
+    report_owner_host_perm "$p" "$name" ""
+    return 1
+  fi
+  rc=0
+  err="$(git -c "safe.directory=$p" -C "$p" rev-parse --git-dir 2>&1)" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    realpath "$p"
+    return 0
+  fi
+  if [[ "$err" == *"Permission denied"* || "$err" == *"dubious ownership"* ]]; then
+    echo "fetch-deps: git -C $p rev-parse --git-dir failed" >&2
+    report_owner_host_perm "$p" "$name" "$err"
+    return 1
+  fi
+  echo "fetch-deps: host shortcut $p exists but is not a git repo (git: $err); skipping it" >&2
+  return 1
+}
+
+# Pure: prints suggestion commands only. groups is one space-separated argument.
+host_perm_suggestions() {
+  local path="$1" kind="$2" owner="$3" group="$4" mode="$5" agent="$6" groups="$7" setfacl_ok="$8"
+  local oct gbits has_r=0 has_x=0 need_r=0 need_x=0 in_group=0 group_ok=1 g
+  oct="$mode"
+  while [[ ${#oct} -gt 3 ]]; do
+    oct="${oct:1}"
+  done
+  while [[ ${#oct} -lt 3 ]]; do
+    oct="0$oct"
+  done
+  gbits="${oct:1:1}"
+  [[ $((gbits & 4)) -ne 0 ]] && has_r=1
+  [[ $((gbits & 1)) -ne 0 ]] && has_x=1
+  case "$kind" in
+    ancestor) need_x=1 ;;
+    repo) need_r=1; need_x=1 ;;
+    file) need_r=1 ;;
+  esac
+  for g in $groups; do
+    [[ "$g" == "$group" ]] && in_group=1
+  done
+  [[ "$need_r" -eq 1 && "$has_r" -eq 0 ]] && group_ok=0
+  [[ "$need_x" -eq 1 && "$has_x" -eq 0 ]] && group_ok=0
+
+  if [[ "$group_ok" -eq 1 && "$in_group" -eq 0 ]]; then
+    echo "sudo usermod -aG $group $agent"
+    echo "new login or \`newgrp $group\`; restart the agent session"
+  elif [[ "$group_ok" -eq 0 ]]; then
+    case "$kind" in
+      ancestor) echo "chmod g+x $path" ;;
+      repo) echo "chmod -R g+rX $path" ;;
+      file) echo "chmod g+r $path" ;;
+    esac
+    if [[ "$in_group" -eq 0 ]]; then
+      echo "sudo usermod -aG $group $agent"
+      echo "new login or \`newgrp $group\`; restart the agent session"
+    fi
+  fi
+
+  if [[ "$setfacl_ok" == "1" ]]; then
+    case "$kind" in
+      ancestor) echo "setfacl -m u:${agent}:x $path" ;;
+      repo)
+        echo "setfacl -R -m u:${agent}:rX $path"
+        echo "setfacl -R -d -m u:${agent}:rX $path"
+        ;;
+      file) echo "setfacl -m u:${agent}:r $path" ;;
+    esac
+  else
+    echo "setfacl is not installed"
+  fi
+
+  echo "broad (every user)"
+  case "$kind" in
+    ancestor) echo "chmod a+x $path" ;;
+    repo) echo "chmod -R a+rX $path" ;;
+    file) echo "chmod a+r $path" ;;
+  esac
+}
+
+# Print how to inspect a component whose owner/group/mode could not be determined.
+# Commands are text; they are never run. Does not print the rerun line.
+report_nostat_how() {
+  local _ns_comp="$1" _ns_err="$2" rest part accum chain
+  echo "  component: $_ns_comp" >&2
+  echo "  $_ns_err" >&2
+  if command -v namei >/dev/null; then
+    echo "  namei -l $_ns_comp" >&2
+    return
+  fi
+  echo "  namei is not installed" >&2
+  chain="/"
+  rest="${_ns_comp#/}"
+  accum=""
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then
+      rest="${rest#*/}"
+    else
+      rest=""
+    fi
+    [[ -n "$part" ]] || continue
+    accum="$accum/$part"
+    chain="$chain $accum"
+  done
+  echo "  ls -ld $chain" >&2
+}
+
+report_owner_host_perm() {
+  local host="$1" name="$2" git_stderr="${3:-}"
+  local agent groups setfacl_ok=0 rc=0
+  local rp_status="" rp_component="" rp_error="" rp_kind="" rp_owner="" rp_group="" rp_mode=""
+  agent="$(id -un)"
+  groups="$(id -Gn)"
+  if command -v setfacl >/dev/null; then
+    setfacl_ok=1
+  fi
+  inspect_host_path "$host" rp_status rp_component rp_error rp_kind rp_owner rp_group rp_mode || rc=$?
+
+  case "$rp_status" in
+    BLOCKED)
+      echo "fetch-deps: host shortcut $host is not readable (you are $agent)" >&2
+      ;;
+    NOSTAT)
+      echo "fetch-deps: host shortcut $host: could not check access (you are $agent); offline shortcut skipped" >&2
+      ;;
+    MISSING)
+      echo "fetch-deps: host shortcut $host does not exist (you are $agent)" >&2
+      ;;
+    NOTGIT)
+      if [[ "$rp_error" == "nogitdir" ]]; then
+        echo "fetch-deps: host shortcut $host exists but is not a git repo ('.git' file has no gitdir: line)" >&2
+      else
+        echo "fetch-deps: host shortcut $host exists but is not a git repo (no .git)" >&2
+      fi
+      ;;
+    OK)
+      if [[ "$git_stderr" == *"dubious ownership"* ]]; then
+        echo "fetch-deps: host shortcut $host is readable but git refused it (dubious ownership) (you are $agent)" >&2
+      elif [[ -n "$git_stderr" ]]; then
+        echo "fetch-deps: host shortcut $host: git could not read it (you are $agent)" >&2
+      else
+        echo "fetch-deps: host shortcut $host is readable (you are $agent)" >&2
+      fi
+      ;;
+    *)
+      echo "fetch-deps: host shortcut $host inspect failed ($rp_status)" >&2
+      ;;
+  esac
+
+  if [[ "$rp_status" != "NOTGIT" ]]; then
+    echo "  Host is an optional offline shortcut. A git_https or git_ssh URL will be used when set." >&2
+  fi
+
+  case "$rp_status" in
+    BLOCKED)
+      echo "  blocking component: $rp_component (kind $rp_kind) owner=$rp_owner group=$rp_group mode=$rp_mode" >&2
+      echo "  owner ($rp_owner):" >&2
+      host_perm_suggestions "$rp_component" "$rp_kind" "$rp_owner" "$rp_group" "$rp_mode" "$agent" "$groups" "$setfacl_ok" | sed 's/^/  /' >&2
+      if [[ "$git_stderr" == *"dubious ownership"* ]]; then
+        echo "  fetch-deps already passes -c safe.directory=$host per call; do not edit global git config" >&2
+      fi
+      ;;
+    NOSTAT)
+      report_nostat_how "$rp_component" "$rp_error"
+      ;;
+    OK)
+      if [[ "$git_stderr" == *"dubious ownership"* ]]; then
+        echo "  path is readable by $agent; git reported dubious ownership; -c safe.directory=$host is already passed" >&2
+      fi
+      ;;
+  esac
+
+  if [[ -n "$git_stderr" ]]; then
+    echo "  $git_stderr" >&2
+  fi
+  print_rerun_line
+}
+
+is_ssh_url() {
+  local u="${1:-}"
+  [[ "$u" == git@*:* || "$u" == ssh://* ]]
+}
+
+# Sets SSH_USER SSH_HOST SSH_PORT from a git ssh URL.
+parse_ssh_url() {
+  local u="$1" auth
+  SSH_USER=""
+  SSH_HOST=""
+  SSH_PORT=""
+  if [[ "$u" == ssh://* ]]; then
+    u="${u#ssh://}"
+    auth="${u%%/*}"
+    if [[ "$auth" == *@* ]]; then
+      SSH_USER="${auth%%@*}"
+      auth="${auth#*@}"
+    fi
+    if [[ "$auth" == *:* && "${auth##*:}" =~ ^[0-9]+$ ]]; then
+      SSH_PORT="${auth##*:}"
+      SSH_HOST="${auth%:*}"
+    else
+      SSH_HOST="$auth"
+    fi
+  elif [[ "$u" == *@*:* ]]; then
+    SSH_USER="${u%%@*}"
+    auth="${u#*@}"
+    SSH_HOST="${auth%%:*}"
+  fi
+}
+
+ssh_key_name() {
+  if [[ -n "$SSH_PORT" ]]; then
+    printf '[%s]:%s' "$SSH_HOST" "$SSH_PORT"
+  else
+    printf '%s' "$SSH_HOST"
+  fi
+}
+
+report_owner_ssh() {
+  local url="$1" dest="$2" err="$3" who keyname rc=0 out target
+  who="$(id -un)"
+  parse_ssh_url "$url"
+  echo "fetch-deps: ssh to $url failed (you are $who)" >&2
+  [[ -n "$err" ]] && echo "  $err" >&2
+  if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+    echo "  SSH_AUTH_SOCK is unset" >&2
+  elif [[ -S "$SSH_AUTH_SOCK" ]]; then
+    echo "  SSH_AUTH_SOCK is set to $SSH_AUTH_SOCK and is a socket" >&2
+  else
+    echo "  SSH_AUTH_SOCK is set to $SSH_AUTH_SOCK but missing (e.g. hidden by sandbox tmpfs /tmp)" >&2
+  fi
+  if [[ -z "$SSH_USER" && "$url" == ssh://* ]]; then
+    echo "  ssh:// URL has no user; ssh will use $who" >&2
+  fi
+  target=""
+  if [[ -n "$SSH_USER" && -n "$SSH_HOST" ]]; then
+    target="${SSH_USER}@${SSH_HOST}"
+  elif [[ -n "$SSH_HOST" ]]; then
+    target="$SSH_HOST"
+  fi
+  if [[ -n "$target" && -n "$SSH_PORT" ]]; then
+    echo "  ssh -T -p $SSH_PORT $target" >&2
+  elif [[ -n "$target" ]]; then
+    echo "  ssh -T $target" >&2
+  fi
+  if [[ -n "$dest" ]]; then
+    echo "  git clone $url $dest" >&2
+  else
+    echo "  git clone $url" >&2
+  fi
+  print_rerun_line
+
+  keyname="$(ssh_key_name)"
+  if [[ "$err" == *"REMOTE HOST IDENTIFICATION HAS CHANGED"* ]]; then
+    echo "  ssh-keygen -R $keyname" >&2
+    echo "  ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts" >&2
+    echo "  host key changed, verify fingerprint before trusting" >&2
+  elif [[ "$err" == *"Host key verification failed"* || "$err" == *"host key is known"* ]]; then
+    echo "  this account (${who})'s known_hosts" >&2
+    rc=0
+    out="$(ssh-keygen -F "$keyname" 2>&1)" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      echo "  host key found in known_hosts" >&2
+    elif [[ "$rc" -eq 1 ]]; then
+      echo "  host key not found in known_hosts" >&2
+      echo "  ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts" >&2
+      echo "  verify the fingerprint first" >&2
+    else
+      echo "  ssh-keygen -F $keyname failed (exit $rc): $out" >&2
+    fi
+  fi
+}
+
+# Agents must not hang on a passphrase / host-key prompt. Override GIT_SSH_COMMAND if needed.
+prepare_ssh_transport() {
+  export GIT_TERMINAL_PROMPT=0
+  if [[ -z "${GIT_SSH_COMMAND:-}" && -z "${GIT_SSH:-}" ]]; then
+    export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10"
+  fi
+}
+
+# Prefer git_https (agents); git_ssh if that is the only remote. rc 1 = none.
+pin_remote_url() {
+  local lock https ssh
+  lock="$(pin_path "$1")"
+  https="$(pin_get_opt "$lock" git_https)" || exit 1
+  ssh="$(pin_get_opt "$lock" git_ssh)" || exit 1
+  [[ "$https" == "null" ]] && https=""
+  [[ "$ssh" == "null" ]] && ssh=""
+  if [[ -n "$https" ]]; then
+    printf '%s\n' "$https"
+    return 0
+  fi
+  if [[ -n "$ssh" ]]; then
+    printf '%s\n' "$ssh"
+    return 0
+  fi
+  return 1
+}
+
+repo_has_commit() {
+  local repo="$1" sha="$2" how="$3" err rc=0
+  if [[ "$how" == host ]]; then
+    err="$(git_host "$repo" cat-file -e "${sha}^{commit}" 2>&1)" || rc=$?
+  else
+    err="$(git -C "$repo" cat-file -e "${sha}^{commit}" 2>&1)" || rc=$?
+  fi
+  [[ "$rc" -eq 0 ]] && return 0
+  if [[ "$err" == *"dubious ownership"* || "$err" == *"Permission denied"* ]]; then
+    echo "fetch-deps: $err" >&2
+    return 2
+  fi
+  return 1
+}
+
+resolve_commit() {
+  local repo="$1" ref="$2" how="$3" out rc=0
+  if [[ "$how" == host ]]; then
+    out="$(git_host "$repo" rev-parse --verify "${ref}^{commit}" 2>&1)" || rc=$?
+  else
+    out="$(git -C "$repo" rev-parse --verify "${ref}^{commit}" 2>&1)" || rc=$?
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "fetch-deps: cannot resolve '$ref' in $repo: $out" >&2
+    if [[ "$out" == *"ambiguous"* ]]; then
+      echo "fetch-deps: sha '$ref' is ambiguous in $repo" >&2
+    fi
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+is_linked_worktree() {
+  [[ -f "${1:-}/.git" ]]
+}
+
+is_standalone_clone() {
+  local src="$1" top gitdir
+  [[ -d "$src/.git" ]] || return 1
+  top="$(git -C "$src" rev-parse --show-toplevel)"
+  [[ "$(realpath "$top")" == "$(realpath "$src")" ]] || return 1
+  gitdir="$(git -C "$src" rev-parse --git-dir)"
+  [[ -e "$gitdir/objects/info/alternates" ]] && return 1
+  return 0
+}
+
+assert_src_toplevel() {
+  local src="$1" top src_abs
+  [[ -d "$src/.git" || -f "$src/.git" ]] || {
+    echo "fetch-deps: $src is not a git checkout; refusing to record sha" >&2
+    return 1
+  }
+  src_abs="$(realpath -s "$src")"
+  top="$(git -C "$src" rev-parse --show-toplevel)"
+  [[ "$src_abs" == "$top" ]] || {
+    echo "fetch-deps: show-toplevel $top != src $src_abs (refusing to pin consumer HEAD)" >&2
+    return 1
+  }
+}
 
 write_status() {
   local name="$1" mode="$2" branch="${3:-}" head="${4:-}" extra="${5:-}"
@@ -362,82 +1153,16 @@ name: $name
 mode: $mode
 branch: $branch
 head: $head
-ve_branch: $(ve_branch)
 git_home: $GIT_HOME
 updated: $(date -Is)
 $extra
 EOF
-  set_mode_group "$sp"
 }
 
-# 664, group ai-code; changes only what differs and fails loudly (a file of another
-# user that is already right is left alone).
-set_mode_group() {
-  local f="$1" cur
-  cur="$(stat -c '%a %G %U' -- "$f")" || exit 1
-  if [[ "${cur%% *}" != 664 ]]; then
-    chmod 664 -- "$f" || { echo "fetch-deps: chmod 664 $f failed (now ${cur}; you are $(id -un))" >&2; exit 1; }
-  fi
-  cur="$(stat -c '%G' -- "$f")" || exit 1
-  if [[ "$cur" != ai-code ]]; then
-    chgrp ai-code -- "$f" || { echo "fetch-deps: chgrp ai-code $f failed (group $cur; you are $(id -un))" >&2; exit 1; }
-  fi
-}
-
-repo_has_commit() {
-  git -C "$1" cat-file -e "${2}^{commit}" 2>/dev/null
-}
-
-# Detach at pin sha and discard local mods so patches re-apply cleanly.
-# Keeps untracked build products (bin/, build/, android/.gradle*) for iterate.
-checkout_pin_clean() {
-  local src="$1" sha="$2"
-  git -C "$src" checkout --detach "$sha" 2>/dev/null || return 1
-  git -C "$src" reset --hard "$sha" 2>/dev/null || return 1
-  return 0
-}
-
-# Linked worktree: .git is a file pointing at host gitdir (outside third_party/).
-is_linked_worktree() {
-  [[ -f "${1:-}/.git" ]]
-}
-
-# Prefer git_https origin; never leave git@ as fetch URL unless --allow-ssh only path.
-set_origin_https() {
-  local src="$1" url="$2"
-  [[ -n "$url" && -d "$src" ]] || return 0
-  set_origin "$src" "$url"
-}
-
-# Point origin of a standalone src clone at url. A linked worktree shares the
-# library host's config, so its origin is the host's business: left alone.
-set_origin() {
-  local src="$1" url="$2" cur
-  if is_linked_worktree "$src"; then
-    return 0
-  fi
-  if cur="$(git -C "$src" config --get remote.origin.url)"; then
-    [[ "$cur" == "$url" ]] && return 0
-    git -C "$src" remote set-url origin "$url" || { echo "fetch-deps: git remote set-url origin $url in $src failed" >&2; exit 1; }
-  else
-    git -C "$src" remote add origin "$url" || { echo "fetch-deps: git remote add origin $url in $src failed" >&2; exit 1; }
-  fi
-}
-
-# Drop a linked worktree checkout and clear host registration when possible.
-remove_linked_worktree_src() {
-  local name="$1" src="$2" host
-  ensure_writable_tree "$src"
-  if host="$(local_repo_for "$name" 2>/dev/null)"; then
-    # Under the sandbox without LIBPIN_ALLOW_GIT_HOME the host's .git is read-only, so
-    # this can fail; rm -rf below still frees the pin path, and the message says what
-    # is left behind.
-    if ! git -C "$host" worktree remove --force "$src"; then
-      echo "fetch-deps: $host still lists worktree $src (git worktree remove failed above);" >&2
-      echo "  it is removed from disk next. Clear the entry later with: git -C $host worktree prune" >&2
-    fi
-  fi
-  rm -rf "$src"
+status_get() {
+  local sp="$1" key="$2"
+  [[ -f "$sp" ]] || return 1
+  sed -n "s/^${key}:[[:space:]]*//p" "$sp" | head -1
 }
 
 ensure_writable_tree() {
@@ -449,7 +1174,6 @@ ensure_writable_tree() {
 make_readonly_tree() {
   local src="$1"
   [[ -d "$src" ]] || return 0
-  # keep .git metadata writable for future fetch-deps
   local rc=0
   if [[ -d "$src/.git" ]]; then
     find "$src" -path "$src/.git" -prune -o -type f -exec chmod a-w {} + || rc=1
@@ -457,34 +1181,110 @@ make_readonly_tree() {
   elif [[ -f "$src/.git" ]]; then
     find "$src" -type f ! -name .git -exec chmod a-w {} + || rc=1
   else
-    # Non-git file pins: whole tree RO
     find "$src" -type f -exec chmod a-w {} + || rc=1
     find "$src" -type d -exec chmod u+rwx,go+rx {} + || rc=1
   fi
-  [[ "$rc" -eq 0 ]] || { echo "fetch-deps: making $src read-only failed (messages above; you are $(id -un))" >&2; exit 1; }
+  [[ "$rc" -eq 0 ]] || { echo "fetch-deps: making $src read-only failed (you are $(id -un))" >&2; exit 1; }
 }
 
-# True if libpin.toml has one or more [[source]] tables.
+# RO pin: sources a-w; build/ and bin/ stay writable so rebuilds can iterate.
+finish_ro_tree() {
+  local src="$1" scratch
+  make_readonly_tree "$src"
+  for scratch in "$src/build" "$src/bin"; do
+    [[ -e "$scratch" ]] || continue
+    chmod -R u+w -- "$scratch" || { echo "    FAIL: chmod -R u+w $scratch" >&2; exit 1; }
+  done
+}
+
+checkout_pin_clean() {
+  local src="$1" sha="$2"
+  git_nofilter "$src" checkout --detach "$sha"
+  git_nofilter "$src" reset --hard "$sha"
+}
+
+remove_bad_src() {
+  local name="$1" src="$2" host="${3:-}"
+  ensure_writable_tree "$src"
+  if is_linked_worktree "$src"; then
+    echo "    replacing linked-worktree src with a standalone clone"
+    if [[ -n "$host" ]]; then
+      echo "    leftover host metadata is acceptable until: git -C $host worktree prune" >&2
+    else
+      echo "    leftover host metadata is acceptable until: git -C <host> worktree prune" >&2
+    fi
+  elif [[ -e "$src" ]]; then
+    echo "    replacing src (not a reusable standalone clone)"
+  fi
+  rm -rf "$src"
+}
+
+ensure_remotes() {
+  local src="$1" host="${2:-}" origin="${3:-}" cur
+  if [[ -n "$origin" ]]; then
+    if cur="$(git -C "$src" config --get remote.origin.url)"; then
+      [[ "$cur" == "$origin" ]] || git -C "$src" remote set-url origin "$origin" || die "git remote set-url origin $origin in $src failed"
+    else
+      git -C "$src" remote add origin "$origin" || die "git remote add origin $origin in $src failed"
+    fi
+  fi
+  if [[ -n "$host" ]]; then
+    if cur="$(git -C "$src" config --get remote.host.url)"; then
+      [[ "$cur" == "$host" ]] || git -C "$src" remote set-url host "$host" || die "git remote set-url host $host in $src failed"
+    else
+      git -C "$src" remote add host "$host" || die "git remote add host $host in $src failed"
+    fi
+  fi
+}
+
+check_no_submodules_lfs() {
+  local src="$1" name="$2"
+  [[ -e "$src/.gitmodules" ]] && {
+    echo "fetch-deps: FAIL $name: source has .gitmodules (submodules are refused)" >&2
+    return 1
+  }
+  python3 - "$src" "$name" <<'PY'
+import sys
+from pathlib import Path
+src = Path(sys.argv[1])
+name = sys.argv[2]
+marker = "version https://git-lfs.github.com/spec/v1"
+for p in src.rglob("*"):
+    if not p.is_file():
+        continue
+    if ".git" in p.parts:
+        continue
+    try:
+        if p.stat().st_size > 1024:
+            continue
+        head = p.read_text(encoding="utf-8", errors="replace")[:200]
+    except OSError:
+        continue
+    if head.startswith(marker) or head.startswith("version https://git-lfs.github.com/spec/v1\n"):
+        print(f"fetch-deps: FAIL {name}: Git LFS pointer file {p.relative_to(src)}", file=sys.stderr)
+        sys.exit(1)
+PY
+}
+
 pin_has_sources() {
   local file="$1"
   python3 - "$file" <<'PY'
 import sys
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
+import tomllib
 from pathlib import Path
 data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 sys.exit(0 if data.get("source") else 1)
 PY
 }
 
-# True if pin is git-backed (usable git_sha or git remotes, or seed-src).
 pin_is_git() {
   local file="$1" sha https ssh kind
   kind="$(pin_get_opt "$file" source_kind)" || exit 1
-  if [[ "$kind" == "files" || "$kind" == "file" || "$kind" == "http" ]]; then
+  if [[ "$kind" == "files" ]]; then
     return 1
+  fi
+  if [[ "$kind" == "seed-src" ]]; then
+    return 0
   fi
   sha="$(pin_get_opt "$file" git_sha)" || exit 1
   if is_real_sha "$sha"; then
@@ -493,20 +1293,15 @@ pin_is_git() {
   https="$(pin_get_opt "$file" git_https)" || exit 1
   ssh="$(pin_get_opt "$file" git_ssh)" || exit 1
   [[ -n "$https" && "$https" != "null" ]] && return 0
-  [[ -n "$ssh" && "$ssh" != "null" && "$ssh" != "" ]] && return 0
+  [[ -n "$ssh" && "$ssh" != "null" ]] && return 0
   return 1
 }
 
-# Print [[source]] rows as: path|sha256|url|seed
-# Use | (not TAB): bash IFS tab is "whitespace" and collapses empty fields.
 pin_source_rows() {
   local file="$1"
   python3 - "$file" <<'PY'
 import sys
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
+import tomllib
 from pathlib import Path
 data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 for s in data.get("source") or []:
@@ -529,7 +1324,6 @@ for s in data.get("source") or []:
 PY
 }
 
-# Reject SSH / scp / git@ URLs for non-git source rows (never allowed).
 source_url_is_forbidden() {
   local u="$1"
   [[ -z "$u" ]] && return 1
@@ -543,8 +1337,6 @@ file_sha256() {
   sha256sum "$1" | awk '{print $1}'
 }
 
-# Download or copy one source row into dest path; verify sha256.
-# Args: name path sha256 url seed
 fetch_one_source() {
   local name="$1" relpath="$2" expect_sha="$3" url="$4" seed="$5"
   local pin_dir="$ROOT/$name"
@@ -555,8 +1347,6 @@ fetch_one_source() {
 
   expect_sha="$(echo "$expect_sha" | tr 'A-F' 'a-f')"
 
-  # Already present and hash-ok → skip. Stale cache: one re-fetch then hard fail
-  # (pin is content-addressed — we never loop forever waiting for a moving URL).
   local had_stale=0
   if [[ -f "$dest" ]]; then
     local have
@@ -575,7 +1365,6 @@ fetch_one_source() {
     return 1
   fi
 
-  # Prefer seed (pin-local), then file: URL, then http(s). Single attempt only.
   if [[ -n "$seed" ]]; then
     if [[ "$seed" = /* ]]; then
       resolved="$seed"
@@ -591,9 +1380,7 @@ fetch_one_source() {
   elif [[ -n "$url" ]]; then
     case "$url" in
       file:/*)
-        # file:///abs/path
         resolved="${url#file://}"
-        # file://localhost/path or file:///path
         [[ "$resolved" == localhost/* ]] && resolved="/${resolved#localhost/}"
         if [[ ! -f "$resolved" ]]; then
           echo "    FAIL: file URL not found: $resolved" >&2
@@ -603,7 +1390,6 @@ fetch_one_source() {
         cp -a "$resolved" "$dest"
         ;;
       file:*)
-        # file:relative under pin dir
         resolved="$pin_dir/${url#file:}"
         if [[ ! -f "$resolved" ]]; then
           echo "    FAIL: file: relative not found: $resolved" >&2
@@ -613,24 +1399,13 @@ fetch_one_source() {
         cp -a "$resolved" "$dest"
         ;;
       https://*|http://*)
+        command -v curl >/dev/null || { echo "    FAIL: curl required for $url" >&2; return 1; }
         # Download beside the destination (same dir, so mv is a rename); never /tmp.
         src_tmp="$(mktemp "$(dirname "$dest")/.$(basename "$dest").download.XXXXXX")" || { echo "    FAIL: cannot create a temp file beside $dest" >&2; return 1; }
         echo "    source fetch $url → $relpath"
-        if command -v curl >/dev/null 2>&1; then
-          if ! curl -fsSL --proto '=https,http' --proto-redir '=https,http' -o "$src_tmp" "$url"; then
-            rm -f "$src_tmp"
-            echo "    FAIL: curl download $url" >&2
-            return 1
-          fi
-        elif command -v wget >/dev/null 2>&1; then
-          if ! wget -q -O "$src_tmp" "$url"; then
-            rm -f "$src_tmp"
-            echo "    FAIL: wget download $url" >&2
-            return 1
-          fi
-        else
+        if ! curl -fsSL --proto '=https,http' --proto-redir '=https,http' -o "$src_tmp" "$url"; then
           rm -f "$src_tmp"
-          echo "    FAIL: need curl or wget for $url" >&2
+          echo "    FAIL: curl download $url" >&2
           return 1
         fi
         mv "$src_tmp" "$dest"
@@ -655,7 +1430,7 @@ fetch_one_source() {
     if [[ -n "$seed" ]]; then
       echo "      cause: seed/file content does not match pin; fix seed or update sha256" >&2
     elif [[ -n "$url" ]]; then
-      echo "      cause: URL body changed or wrong sha in pin; pin a new sha256 (do not wait for URL to revert)" >&2
+      echo "      cause: URL body changed or wrong sha in pin; pin a new sha256" >&2
     fi
     [[ "$had_stale" -eq 1 ]] && echo "      (cache was stale; one re-fetch still mismatched — not retrying again)" >&2
     rm -f "$dest"
@@ -665,10 +1440,9 @@ fetch_one_source() {
   return 0
 }
 
-# Materialize all [[source]] rows into third_party/<name>/src/
 materialize_sources() {
   local name="$1" lock relpath sha url seed n=0
-  lock="$(lock_path "$name")"
+  lock="$(pin_path "$name")"
   pin_has_sources "$lock" || return 0
   echo "    materialize [[source]] for $name"
   while IFS='|' read -r relpath sha url seed; do
@@ -684,306 +1458,439 @@ materialize_sources() {
   return 0
 }
 
+reject_file_pin_patches() {
+  local name="$1" lock="$2"
+  if pin_has_key "$lock" patches; then
+    echo "fetch-deps: FAIL $name: file pins cannot have a patches key" >&2
+    return 1
+  fi
+  if [[ -d "$ROOT/$name/patches" ]]; then
+    echo "fetch-deps: FAIL $name: file pins cannot have a patches/ directory" >&2
+    return 1
+  fi
+}
+
+list_patch_files() {
+  local name="$1" lock="$2"
+  python3 - "$lock" "$ROOT/$name" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+pin = Path(sys.argv[1])
+pin_dir = Path(sys.argv[2])
+data = tomllib.loads(pin.read_text(encoding="utf-8"))
+if "patches" in data:
+    items = data["patches"] or []
+    if isinstance(items, str):
+        items = [items]
+    for raw in items:
+        p = str(raw).strip()
+        if not p:
+            continue
+        if p.startswith("/") or ".." in Path(p).parts:
+            print(f"fetch-deps: FAIL patch path rejected: {p}", file=sys.stderr)
+            sys.exit(2)
+        print(str(pin_dir / p))
+    sys.exit(0)
+pdir = pin_dir / "patches"
+if not pdir.is_dir():
+    sys.exit(0)
+files = sorted([p for p in pdir.iterdir() if p.suffix in (".patch", ".diff") and p.is_file()], key=lambda p: p.name)
+for p in files:
+    print(str(p))
+PY
+}
+
 apply_patches() {
   local name="$1" src="$2" pin="$3"
-  local pdir="$ROOT/$name/patches"
-  [[ -d "$pdir" ]] || return 0
-  local f
-  shopt -s nullglob
-  for f in "$pdir"/*.patch "$pdir"/*.diff; do
-    [[ -f "$f" ]] || continue
+  local f created plist
+  plist="$(list_patch_files "$name" "$pin")" || return 1
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ -f "$f" ]] || { echo "    FAIL: patch not found: $f" >&2; return 1; }
     echo "    apply patch $(basename "$f")  [sandbox=src]"
-    # Files this patch creates may be left untracked by an earlier apply (reset --hard keeps untracked
-    # files); remove them so the patch applies again instead of failing with "already exists".
-    local created
     while IFS= read -r created; do
       [[ -n "$created" ]] || continue
-      if [[ -e "$src/$created" ]] && ! git -C "$src" ls-files --error-unmatch -- "$created" >/dev/null 2>&1; then
-        echo "    remove stale untracked $created (created by $(basename "$f"))"
-        rm -f -- "$src/$created"
+      if [[ -e "$src/$created" ]]; then
+        if [[ -z "$(git -C "$src" ls-files -- "$created")" ]]; then
+          echo "    remove stale untracked $created (created by $(basename "$f"))"
+          rm -f -- "$src/$created"
+        fi
       fi
-    done < <({ git -C "$src" apply --summary "$f" 2>/dev/null | sed -n 's/^ create mode [0-9]* //p'
-               # diff -ruN style new files have no "new file mode", only a first hunk at -0,0.
+    done < <({ git -C "$src" apply --summary "$f" | sed -n 's/^ create mode [0-9]* //p'
                awk '/^\+\+\+ /{p=$2; sub(/^b\//,"",p); next} /^@@ -0,0 /{if(p!=""){print p; p=""}} /^@@/{p=""}' "$f"; } | sort -u)
     if ! bwrap_src "$name" bash -c "cd $(printf %q "$src") && git apply --whitespace=nowarn $(printf %q "$f")"; then
       echo "    FAIL: patch $f" >&2
       return 1
     fi
-  done
-  shopt -u nullglob
+  done <<< "$plist"
   return 0
 }
 
-list_patch_files() {
-  local name="$1"
-  local pdir="$ROOT/$name/patches"
-  [[ -d "$pdir" ]] || return 0
-  shopt -s nullglob
-  local f
-  for f in "$pdir"/*.patch "$pdir"/*.diff; do
-    [[ -f "$f" ]] && echo "$f"
-  done
-  shopt -u nullglob
-}
-
-materialize_at_sha() {
-  local name="$1" sha="$2" src url_https url_ssh host
-  src="$(src_path "$name")"
-  url_https="$(yaml_get "$(lock_path "$name")" git_https || true)"
-  url_ssh="$(yaml_get "$(lock_path "$name")" git_ssh || true)"
-  [[ "$url_https" == "null" ]] && url_https=""
-  [[ "$url_ssh" == "null" ]] && url_ssh=""
-
-  # Local toy pins (seed-src, no remote) — always re-seed for a clean base before patches
-  if [[ -x "$ROOT/$name/seed-src" && -z "$url_https" && -z "$url_ssh" ]]; then
-    echo "    seed-src (no remote)"
-    ensure_writable_tree "$src"
-    rm -rf "$src"
-    ( cd "$ROOT/$name" && ./seed-src ) || return 1
-    return 0
+lookup_track_kind() {
+  local host="$1" track="$2" tag=0 branch=0
+  if git_host "$host" show-ref --verify --quiet "refs/tags/$track"; then
+    tag=1
   fi
-
-  ensure_writable_tree "$src"
-
-  # --- Prefer linked worktree of host repo (one object store) ---
-  if host="$(local_repo_with_commit "$name" "$sha")"; then
-    if is_linked_worktree "$src"; then
-      if repo_has_commit "$src" "$sha" && checkout_pin_clean "$src" "$sha"; then
-        echo "    linked worktree checkout @ $sha (host $host)"
-        return 0
-      fi
-      echo "    note: linked worktree cannot reach $sha — recreate" >&2
-      remove_linked_worktree_src "$name" "$src"
-    elif [[ -d "$src/.git" ]]; then
-      # Existing standalone: try local checkout first (no forced convert)
-      set_origin_https "$src" "$url_https"
-      if repo_has_commit "$src" "$sha" && checkout_pin_clean "$src" "$sha"; then
-        echo "    checkout existing standalone src @ $sha"
-        set_origin_https "$src" "$url_https"
-        return 0
-      fi
-      echo "    note: replacing standalone src with linked worktree from $host"
-      rm -rf "$src"
-    elif [[ -e "$src" ]]; then
-      rm -rf "$src"
-    fi
-    mkdir -p "$(dirname "$src")"
-    # A removed consumer tree can leave the host's registration for this exact path behind
-    # ("prunable"); git then refuses the add. Pruning it is the defined repair.
-    if git -C "$host" worktree list --porcelain | awk -v p="$src" '
-        /^worktree /{w=substr($0,10)} /^prunable/{if (w==p) f=1} END{exit !f}'; then
-      echo "    prune: $host has a dead worktree entry for $src (git worktree prune -v)"
-      git -C "$host" worktree prune -v || { echo "    FAIL: git -C $host worktree prune" >&2; return 1; }
-    fi
-    echo "    worktree add --detach $src @ $sha (from $host)"
-    local err
-    if err=$(git -C "$host" worktree add --detach "$src" "$sha" 2>&1); then
-      echo "    linked worktree OK @ $sha"
-      return 0
-    fi
-    echo "    FAIL: worktree add from host $host: $err" >&2
+  if git_host "$host" show-ref --verify --quiet "refs/heads/$track"; then
+    branch=1
+  fi
+  if [[ "$tag" -eq 1 && "$branch" -eq 1 ]]; then
+    echo "fetch-deps: track_branch $track is both a tag and a branch in $host" >&2
     return 1
   fi
-
-  # --- Existing standalone .git (no usable host) ---
-  if [[ -d "$src/.git" ]]; then
-    set_origin_https "$src" "$url_https"
-    if repo_has_commit "$src" "$sha" && checkout_pin_clean "$src" "$sha"; then
-      echo "    checkout existing src @ $sha (no network)"
-      set_origin_https "$src" "$url_https"
-      return 0
-    fi
-    # Network: HTTPS first (default). SSH only with --allow-ssh.
-    local u tries=()
-    [[ -n "$url_https" ]] && tries+=("$url_https")
-    [[ "$ALLOW_SSH" -eq 1 && -n "$url_ssh" ]] && tries+=("$url_ssh")
-    for u in "${tries[@]}"; do
-      echo "    fetch $u"
-      if [[ "$u" == https://* || "$u" == http://* ]]; then
-        set_origin_https "$src" "$u"
-      else
-        set_origin "$src" "$u"
-      fi
-      # Fetch the pinned sha; a server that refuses fetch-by-sha gets a full fetch.
-      # Both are shown; if neither brings the commit, the next URL is tried.
-      if ! git -C "$src" fetch origin "$sha"; then
-        echo "    fetch of $sha by id failed (above); fetching all refs from $u"
-        git -C "$src" fetch origin || echo "    fetch from $u failed (above)" >&2
-      fi
-      if repo_has_commit "$src" "$sha" && checkout_pin_clean "$src" "$sha"; then
-        set_origin_https "$src" "$url_https"
-        return 0
-      fi
-    done
-    echo "    FAIL: cannot obtain $sha" >&2
-    return 1
-  fi
-
-  # --- Fresh clone (no local host repo with the pin commit) ---
-  rm -rf "$src"
-  mkdir -p "$(dirname "$src")"
-  if [[ -n "${GIT_HOME}" ]] && ! local_repo_for "$name" >/dev/null; then
-    echo "    note: no valid host repo at \$GIT_HOME/$name — full clone from network" >&2
-  fi
-  local u
-  for u in $url_https; do
-    [[ -n "$u" ]] || continue
-    echo "    clone $u"
-    local depth_args=()
-    [[ -n "$DEPTH" ]] && depth_args=(--depth "$DEPTH")
-    if git clone "${depth_args[@]}" "$u" "$src" 2>/dev/null; then
-      if checkout_pin_clean "$src" "$sha" \
-        || { git -C "$src" fetch origin "$sha" 2>/dev/null && checkout_pin_clean "$src" "$sha"; }; then
-        set_origin_https "$src" "$url_https"
-        return 0
-      fi
-    fi
-    rm -rf "$src"
-  done
-  if [[ "$ALLOW_SSH" -eq 1 && -n "$url_ssh" ]]; then
-    echo "    clone $url_ssh"
-    if git clone "$url_ssh" "$src" 2>/dev/null; then
-      if checkout_pin_clean "$src" "$sha"; then
-        set_origin_https "$src" "$url_https"
-        return 0
-      fi
-    fi
-    rm -rf "$src"
-  fi
-  # Local-only toy pins (e.g. third_party/example) with no remote
-  if [[ -x "$ROOT/$name/seed-src" ]]; then
-    echo "    seed-src (no remote)"
-    rm -rf "$src"
-    ( cd "$ROOT/$name" && ./seed-src ) || return 1
+  if [[ "$tag" -eq 1 ]]; then
+    echo tag
     return 0
   fi
-  echo "    FAIL: materialize $name" >&2
+  if [[ "$branch" -eq 1 ]]; then
+    echo branch
+    return 0
+  fi
+  echo "fetch-deps: track_branch $track not found as refs/tags/$track or refs/heads/$track in $host" >&2
   return 1
 }
 
-resolve_pin_sha() {
-  local name="$1" lock sha
-  lock="$(lock_path "$name")"
-  sha="$(yaml_get "$lock" git_sha || true)"
-  if is_real_sha "$sha"; then
-    RESOLVED_SHA="$sha"
-    RESOLVED_DESCRIBE="$(yaml_get "$lock" git_describe || echo "$sha")"
-    return 0
+# stdout: "tag SHA" or "branch SHA"
+remote_ls_track() {
+  local url="$1" track="$2" name="$3" ls rc=0 nheads ntags tip kind
+  if is_ssh_url "$url"; then
+    prepare_ssh_transport
   fi
-  local host
-  if host="$(local_repo_for "$name")"; then
-    if [[ -d "$host/master/.git" || -f "$host/master/.git" ]]; then
-      RESOLVED_SHA="$(git -C "$host/master" rev-parse HEAD)"
-    else
-      RESOLVED_SHA="$(git -C "$host" rev-parse master 2>/dev/null || git -C "$host" rev-parse HEAD)"
+  rc=0
+  ls="$(git ls-remote "$url" "refs/heads/$track" "refs/tags/$track" "refs/tags/$track^{}" 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "fetch-deps: git ls-remote $url failed: $ls" >&2
+    if is_ssh_url "$url"; then
+      report_owner_ssh "$url" "$(src_path "$name")" "$ls"
     fi
-    RESOLVED_DESCRIBE="$(git -C "$host" describe --tags --long --always "$RESOLVED_SHA" 2>/dev/null || echo "$RESOLVED_SHA")"
-    return 0
+    return 1
   fi
-  return 1
+  nheads="$(printf '%s\n' "$ls" | awk -v r="refs/heads/$track" '$2==r{c++} END{print c+0}')"
+  ntags="$(printf '%s\n' "$ls" | awk -v r="refs/tags/$track" '$2==r{c++} END{print c+0}')"
+  if [[ "$nheads" -gt 0 && "$ntags" -gt 0 ]]; then
+    echo "fetch-deps: track_branch $track is both a tag and a branch on $url" >&2
+    return 1
+  fi
+  if [[ "$ntags" -gt 0 ]]; then
+    kind=tag
+    tip="$(printf '%s\n' "$ls" | awk -v r="refs/tags/$track^{}" '$2==r{print $1; found=1} END{if(found) exit 0; exit 1}')" \
+      || tip="$(printf '%s\n' "$ls" | awk -v r="refs/tags/$track" '$2==r{print $1; found=1} END{if(found) exit 0; exit 1}')"
+  elif [[ "$nheads" -gt 0 ]]; then
+    kind=branch
+    tip="$(printf '%s\n' "$ls" | awk -v r="refs/heads/$track" '$2==r{print $1; found=1} END{if(found) exit 0; exit 1}')"
+  else
+    echo "fetch-deps: track_branch $track not on $url" >&2
+    return 1
+  fi
+  [[ -n "$tip" ]] || { echo "fetch-deps: ls-remote $url had $track but no sha" >&2; return 1; }
+  printf '%s %s\n' "$kind" "$tip"
 }
 
 write_pin_sha() {
-  local pin="$1" sha="$2" describe="$3"
+  local pin="$1" sha="$2" describe="$3" src="${4:-}"
+  if [[ -n "$src" ]]; then
+    assert_src_toplevel "$src" || return 1
+  fi
   python3 - "$pin" "$sha" "$describe" <<'PY'
-import sys
+import os, re, sys
 from pathlib import Path
 path, sha, desc = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+for label, val in (("git_sha", sha), ("git_describe", desc)):
+    if any(c in val for c in '"\\\n'):
+        sys.exit(f"fetch-deps: {label} contains illegal characters")
 text = path.read_text(encoding="utf-8")
-import re
-text2, n1 = re.subn(r'(?m)^git_sha\s*=\s*".*"', f'git_sha = "{sha}"', text, count=1)
-text2, n2 = re.subn(r'(?m)^git_describe\s*=\s*".*"', f'git_describe = "{desc}"', text2, count=1)
-if n1 == 0:
-    text2 = f'git_sha = "{sha}"\n' + text2
-if n2 == 0:
-    text2 = text2.replace(f'git_sha = "{sha}"', f'git_sha = "{sha}"\ngit_describe = "{desc}"', 1)
-path.write_text(text2)
-PY
-  set_mode_group "$pin"
-}
-write_lock_sha() { write_pin_sha "$@"; }
+parts = re.split(r"(?m)^\[", text, maxsplit=1)
+head = parts[0]
+rest = "[" + parts[1] if len(parts) > 1 else ""
 
-offer_mainish_retarget() {
-  local name="$1" sha="$2" src host
-  src="$(src_path "$name")"
-  [[ -d "$src/.git" || -f "$src/.git" ]] || return 0
-  # list branches containing sha (local remotes)
-  local lines br
-  lines="$(git -C "$src" branch -a --contains "$sha" 2>/dev/null | sed 's/^[* ]*//' || true)"
-  [[ -n "$lines" ]] || return 0
-  local mainish=()
-  while IFS= read -r br; do
-    [[ -z "$br" ]] && continue
-    local low
-    low="$(echo "$br" | tr '[:upper:]' '[:lower:]')"
-    if [[ "$low" == *main* || "$low" == *master* ]]; then
-      mainish+=("$br")
+def repl_or_add(head, key, val):
+    pat = re.compile(r"(?m)^" + re.escape(key) + r"\s*=\s*.*$")
+    if pat.search(head):
+        return pat.sub(f'{key} = "{val}"', head, count=1)
+    stripped = head.rstrip()
+    return stripped + ("" if stripped.endswith("\n") or stripped == "" else "\n") + f'{key} = "{val}"\n'
+
+head = repl_or_add(head, "git_sha", sha)
+head = repl_or_add(head, "git_describe", desc)
+if not head.endswith("\n") and rest:
+    head += "\n"
+tmp = str(path) + ".tmp"
+Path(tmp).write_text(head + rest, encoding="utf-8")
+os.replace(tmp, path)
+PY
+}
+
+describe_at() {
+  local repo="$1" sha="$2" how="$3" desc
+  if [[ "$how" == host ]]; then
+    if desc="$(git_host "$repo" describe --tags --long --always "$sha")"; then
+      printf '%s\n' "$desc"
+      return 0
     fi
-  done <<< "$lines"
-  if [[ ${#mainish[@]} -gt 0 ]]; then
-    echo "    note: pin $sha is reachable from main-ish branch(es): ${mainish[*]}"
-    echo "    offer: if this was a feature branch pin that merged, update libpin.toml track_branch to a main-ish name (not automatic)."
+  else
+    if desc="$(git -C "$repo" describe --tags --long --always "$sha")"; then
+      printf '%s\n' "$desc"
+      return 0
+    fi
   fi
+  printf '%s\n' "$sha"
+}
+
+# rc 0 = done; 1 = hard fail; 3 = host unusable, caller should use remote.
+materialize_from_host() {
+  local name="$1" sha="$2" host="$3" src="$4" origin="$5" full err rc=0
+  if [[ ! -r "$host" || ! -x "$host" ]]; then
+    report_owner_host_perm "$host" "$name"
+    return 3
+  fi
+  rc=0
+  full="$(git_host "$host" rev-parse --verify "${sha}^{commit}" 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    if [[ "$full" == *"ambiguous"* ]]; then
+      echo "fetch-deps: cannot resolve '$sha' in host $host: $full" >&2
+      echo "fetch-deps: sha '$sha' is ambiguous in $host" >&2
+      return 1
+    fi
+    if [[ "$full" == *"Permission denied"* || "$full" == *"dubious ownership"* ]]; then
+      echo "fetch-deps: cannot resolve '$sha' in host $host" >&2
+      report_owner_host_perm "$host" "$name" "$full"
+      return 3
+    fi
+    echo "fetch-deps: cannot resolve '$sha' in host $host: $full" >&2
+    echo "fetch-deps: host $host does not have $sha; using remote if present" >&2
+    return 3
+  fi
+  if [[ -d "$src" ]] && is_standalone_clone "$src"; then
+    local has=0 hrc=0
+    repo_has_commit "$src" "$full" src && has=1 || hrc=$?
+    [[ "$hrc" -eq 2 ]] && return 1
+    if [[ "$has" -eq 1 ]]; then
+      echo "    reuse standalone src @ $full"
+      checkout_pin_clean "$src" "$full"
+      ensure_remotes "$src" "$host" "$origin"
+      check_no_submodules_lfs "$src" "$name" || return 1
+      return 0
+    fi
+    echo "    fetch $full from host into existing src"
+    if ! err="$(git -c "safe.directory=$host" -C "$src" fetch "$host" "$full" 2>&1)"; then
+      if [[ "$err" == *"Permission denied"* || "$err" == *"dubious ownership"* ]]; then
+        report_owner_host_perm "$host" "$name" "$err"
+        return 3
+      fi
+      echo "$err" >&2
+      echo "fetch-deps: FAIL $name: fetch $full from host $host failed" >&2
+      return 1
+    fi
+    checkout_pin_clean "$src" "$full"
+    ensure_remotes "$src" "$host" "$origin"
+    check_no_submodules_lfs "$src" "$name" || return 1
+    return 0
+  fi
+  if [[ -e "$src" ]]; then
+    remove_bad_src "$name" "$src" "$host"
+  fi
+  echo "    clone --no-hardlinks --no-checkout $host → $src"
+  if ! err="$(git -c "safe.directory=$host" clone --no-hardlinks --no-checkout "$host" "$src" 2>&1)"; then
+    if [[ "$err" == *"Permission denied"* || "$err" == *"dubious ownership"* ]]; then
+      report_owner_host_perm "$host" "$name" "$err"
+      return 3
+    fi
+    echo "$err" >&2
+    echo "fetch-deps: FAIL $name: clone from host $host failed" >&2
+    return 1
+  fi
+  git_nofilter "$src" checkout --detach "$full"
+  ensure_remotes "$src" "$host" "$origin"
+  check_no_submodules_lfs "$src" "$name" || return 1
+  echo "    checkout --detach $full (host $host)"
+  return 0
+}
+
+remote_fetch() {
+  local src="$1" url="$2" sha="$3" name="$4" err
+  if is_ssh_url "$url"; then
+    prepare_ssh_transport
+  fi
+  if ! err="$(git -C "$src" fetch origin "$sha" 2>&1)"; then
+    echo "$err" >&2
+    if is_ssh_url "$url" || [[ "$err" == *"Permission denied"* && "$err" == *"publickey"* ]]; then
+      report_owner_ssh "$url" "$src" "$err"
+    fi
+    echo "fetch-deps: FAIL $name: git fetch $url $sha failed" >&2
+    return 1
+  fi
+  return 0
+}
+
+materialize_from_remote() {
+  local name="$1" sha="$2" url="$3" src="$4" full
+  if [[ -d "$src" ]] && is_standalone_clone "$src"; then
+    local has=0 rc=0
+    repo_has_commit "$src" "$sha" src && has=1 || rc=$?
+    [[ "$rc" -eq 2 ]] && return 1
+    if [[ "$has" -eq 1 ]]; then
+      full="$(resolve_commit "$src" "$sha" src)" || return 1
+      echo "    reuse standalone src @ $full"
+      checkout_pin_clean "$src" "$full"
+      ensure_remotes "$src" "" "$url"
+      check_no_submodules_lfs "$src" "$name" || return 1
+      return 0
+    fi
+    echo "    fetch $sha from origin $url"
+    ensure_remotes "$src" "" "$url"
+    remote_fetch "$src" "$url" "$sha" "$name" || return 1
+    full="$(resolve_commit "$src" "$sha" src)" || return 1
+    checkout_pin_clean "$src" "$full"
+    check_no_submodules_lfs "$src" "$name" || return 1
+    return 0
+  fi
+  if [[ -e "$src" ]]; then
+    remove_bad_src "$name" "$src" ""
+  fi
+  mkdir -p "$src"
+  echo "    git init + fetch $sha from $url"
+  git -C "$src" init
+  git -C "$src" remote add origin "$url"
+  remote_fetch "$src" "$url" "$sha" "$name" || return 1
+  full="$(resolve_commit "$src" "$sha" src)" || return 1
+  git_nofilter "$src" checkout --detach "$full"
+  check_no_submodules_lfs "$src" "$name" || return 1
+  return 0
+}
+
+materialize_seed_src() {
+  local name="$1" src="$2"
+  [[ -x "$ROOT/$name/seed-src" ]] || {
+    echo "fetch-deps: FAIL $name: source_kind=seed-src but $ROOT/$name/seed-src is not executable" >&2
+    return 1
+  }
+  echo "    seed-src"
+  ensure_writable_tree "$src"
+  rm -rf "$src"
+  ( cd "$ROOT/$name" && ./seed-src ) || return 1
+  check_no_submodules_lfs "$src" "$name" || return 1
+  return 0
+}
+
+resolve_pin_sha_for() {
+  local name="$1" lock sha track host rc=0 kind url info
+  lock="$(pin_path "$name")"
+  sha="$(pin_get_opt "$lock" git_sha)" || exit 1
+  if is_real_sha "$sha"; then
+    RESOLVED_SHA="$sha"
+    RESOLVED_DESCRIBE="$(pin_get_opt "$lock" git_describe)" || exit 1
+    [[ -n "$RESOLVED_DESCRIBE" ]] || RESOLVED_DESCRIBE="$sha"
+    return 0
+  fi
+  track="$(pin_get_opt "$lock" track_branch)" || exit 1
+  [[ -n "$track" ]] || {
+    echo "fetch-deps: FAIL $name: no git_sha and no track_branch" >&2
+    return 1
+  }
+  host="$(local_repo_for "$name")" || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  if [[ "$rc" -eq 0 ]]; then
+    kind="$(lookup_track_kind "$host" "$track")" || return 1
+    if [[ "$kind" == tag ]]; then
+      RESOLVED_SHA="$(resolve_commit "$host" "refs/tags/$track" host)" || return 1
+    else
+      RESOLVED_SHA="$(resolve_commit "$host" "refs/heads/$track" host)" || return 1
+    fi
+    RESOLVED_DESCRIBE="$(describe_at "$host" "$RESOLVED_SHA" host)"
+    return 0
+  fi
+  url="$(pin_remote_url "$name")" || {
+    echo "fetch-deps: FAIL $name: no git_sha and no host or remote to resolve track_branch $track" >&2
+    return 1
+  }
+  info="$(remote_ls_track "$url" "$track" "$name")" || return 1
+  kind="${info%% *}"
+  RESOLVED_SHA="${info#* }"
+  RESOLVED_DESCRIBE="$RESOLVED_SHA"
+  echo "    track_branch $track ($kind) @ $RESOLVED_SHA from $url"
+  return 0
+}
+
+materialize_from_url_or_seed() {
+  local name="$1" sha="$2" src="$3" kind url
+  url="$(pin_remote_url "$name")" && {
+    echo "    remote $url"
+    materialize_from_remote "$name" "$sha" "$url" "$src"
+    return $?
+  }
+  kind="$(pin_get_opt "$(pin_path "$name")" source_kind)" || exit 1
+  if [[ "$kind" == "seed-src" ]]; then
+    materialize_seed_src "$name" "$src"
+    return $?
+  fi
+  echo "fetch-deps: FAIL $name: no usable host shortcut and no git_https/git_ssh (source_kind is not seed-src)" >&2
+  return 1
+}
+
+# Declared fallback, printed: host shortcut, else git_https, else git_ssh, else seed-src.
+materialize_git() {
+  local name="$1" sha="$2" src lock origin host rc=0 hrc=0
+  src="$(src_path "$name")"
+  lock="$(pin_path "$name")"
+  origin="$(pin_remote_url "$name")" || origin=""
+
+  host="$(local_repo_for "$name")" || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  if [[ "$rc" -eq 0 ]]; then
+    echo "    host $host (offline shortcut)"
+    hrc=0
+    materialize_from_host "$name" "$sha" "$host" "$src" "$origin" || hrc=$?
+    if [[ "$hrc" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$hrc" -ne 3 ]]; then
+      return 1
+    fi
+    echo "    host shortcut unusable; declared fallback to remote" >&2
+  fi
+  materialize_from_url_or_seed "$name" "$sha" "$src"
 }
 
 cmd_ro() {
   local name="$1"
-  # Single-level: re-enter self under lib sandbox (writes third_party/<lib>/ + host .git)
-  if [[ "${LIBPIN_NO_BWRAP:-0}" != "1" && -z "${LIBPIN_SANDBOX:-}" && -x "$ROOT/libpin-bwrap" ]]; then
+  if should_reenter; then
     echo "    [sandbox=lib $name]"
-    reenter_args
-    bwrap_lib "$name" "$ENV_BIN" LIBPIN_NO_BWRAP=1 LIBPIN_SANDBOX=lib ${GIT_HOME:+GIT_HOME="$GIT_HOME"} \
-      "$ROOT/fetch-deps" --no-bwrap "${REENTER_GH[@]}" ro "$name"
+    reenter_self lib "$name" ro
     return $?
   fi
-  local lock src sha kind="git"
-  lock="$(lock_path "$name")"
+  local lock src sha kind="git" need_rw
+  lock="$(pin_path "$name")"
   src="$(src_path "$name")"
   [[ -f "$lock" ]] || { echo "FAIL $name: no libpin.toml" >&2; return 1; }
   [[ -r "$lock" ]] || { echo "FAIL $name: cannot read libpin.toml" >&2; return 1; }
   echo "==> $name  mode=ro  GIT_HOME=$GIT_HOME"
 
-  # --- Non-git file pins ([[source]] only, or source_kind=files) ---
   if ! pin_is_git "$lock"; then
-    if ! pin_has_sources "$lock" && [[ ! -x "$ROOT/$name/seed-src" ]]; then
-      echo "    FAIL: non-git pin needs [[source]] rows or seed-src" >&2
+    reject_file_pin_patches "$name" "$lock" || return 1
+    if ! pin_has_sources "$lock"; then
+      echo "    FAIL: non-git pin needs [[source]] rows" >&2
       return 1
     fi
     kind="files"
     echo "    pin=files (non-git [[source]])"
     ensure_writable_tree "$src"
-    # Fresh-ish tree for pure file pins (keep if already hash-ok via fetch_one_source cache)
     mkdir -p "$src"
-    if pin_has_sources "$lock"; then
-      if ! materialize_sources "$name"; then return 1; fi
-    elif [[ -x "$ROOT/$name/seed-src" ]]; then
-      echo "    seed-src (no remote)"
-      rm -rf "$src"
-      ( cd "$ROOT/$name" && ./seed-src ) || return 1
-    fi
+    materialize_sources "$name" || return 1
     sha="files"
   else
-    # --- Git pins (optional extra [[source]] layered into src after checkout) ---
-    if ! resolve_pin_sha "$name"; then
-      if [[ -x "$ROOT/$name/seed-src" ]]; then
-        RESOLVED_SHA="seed"
-      else
-        echo "    FAIL: no git_sha in libpin.toml and no local host" >&2
-        return 1
-      fi
-    fi
+    resolve_pin_sha_for "$name" || return 1
     sha="$RESOLVED_SHA"
     echo "    pin=$sha"
-    if ! materialize_at_sha "$name" "$sha"; then return 1; fi
+    materialize_git "$name" "$sha" || return 1
     ensure_writable_tree "$src"
-    if ! apply_patches "$name" "$src" "$lock"; then return 1; fi
+    apply_patches "$name" "$src" "$lock" || return 1
     if pin_has_sources "$lock"; then
-      if ! materialize_sources "$name"; then return 1; fi
+      materialize_sources "$name" || return 1
     fi
   fi
 
-  local need_rw
-  need_rw="$(pin_get "$lock" requires_writable_src 2>/dev/null || echo false)"
+  need_rw="$(pin_get_opt "$lock" requires_writable_src)" || exit 1
   if [[ "$need_rw" == "true" || "$need_rw" == "yes" || "$need_rw" == "1" ]]; then
     write_status "$name" "ro" "" "$sha" "kind: $kind"$'\n'"readonly: false  # requires_writable_src"
     echo "    WRITABLE SRC (requires_writable_src)"
@@ -993,32 +1900,27 @@ cmd_ro() {
     echo "    READ-ONLY PIN: build scripts may chmod only build/bin dirs under src"
   fi
   if [[ "$kind" == "git" ]]; then
-    offer_mainish_retarget "$name" "$sha"
-    echo "    OK $name @ $(git -C "$src" rev-parse --short HEAD 2>/dev/null)"
+    echo "    OK $name @ $(git -C "$src" rev-parse --short HEAD)"
   else
-    echo "    OK $name (files pin, $(find "$src" -type f 2>/dev/null | wc -l) files)"
+    echo "    OK $name (files pin)"
   fi
 }
 
 cmd_rw() {
   local name="$1"
-  # lib sandbox + host .git for worktree add
-  if [[ "${LIBPIN_NO_BWRAP:-0}" != "1" && -z "${LIBPIN_SANDBOX:-}" && -x "$ROOT/libpin-bwrap" ]]; then
-    echo "    [sandbox=lib $name + host .git]"
-    reenter_args
-    bwrap_lib "$name" "$ENV_BIN" LIBPIN_NO_BWRAP=1 LIBPIN_SANDBOX=lib ${GIT_HOME:+GIT_HOME="$GIT_HOME"} \
-      "$ROOT/fetch-deps" --no-bwrap "${REENTER_GH[@]}" rw "$name"
+  if should_reenter; then
+    echo "    [sandbox=lib $name]"
+    reenter_self lib "$name" rw
     return $?
   fi
-  local lock src sha branch base host
-  lock="$(lock_path "$name")"
+  local lock src sha branch base host rc=0 https
+  lock="$(pin_path "$name")"
   src="$(src_path "$name")"
-  branch="${BRANCH_OVERRIDE:-$(ve_branch)}"
-  [[ "$branch" != "HEAD" && -n "$branch" ]] || branch="work"
+  branch="${BRANCH_OVERRIDE:-work}"
   echo "==> $name  mode=rw  branch=$branch  GIT_HOME=$GIT_HOME"
 
-  # File pins: materialize sources writable (no git branch)
   if ! pin_is_git "$lock"; then
+    reject_file_pin_patches "$name" "$lock" || return 1
     if pin_has_sources "$lock"; then
       mkdir -p "$src"
       ensure_writable_tree "$src"
@@ -1033,70 +1935,46 @@ cmd_rw() {
     return 1
   fi
 
-  if ! resolve_pin_sha "$name"; then
-    echo "    FAIL: need pin sha or local host for base" >&2
-    return 1
-  fi
+  resolve_pin_sha_for "$name" || return 1
   base="${BASE_REF:-$RESOLVED_SHA}"
-  # Prefer worktree from library host
-  if host="$(local_repo_for "$name")"; then
-    ensure_writable_tree "$src"
-    if [[ -d "$src" ]]; then
-      if git -C "$host" worktree list 2>/dev/null | grep -q "$src"; then
-        git -C "$host" worktree remove --force "$src" 2>/dev/null || rm -rf "$src"
-      else
-        rm -rf "$src"
-      fi
-    fi
-    if git -C "$host" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
-      # branch exists — try worktree add
-      if git -C "$host" worktree add "$src" "$branch" 2>/dev/null; then
-        echo "    worktree existing branch $branch"
-      else
-        echo "    FAIL: cannot worktree add $branch (already checked out elsewhere?). Use --branch other-name" >&2
-        return 1
-      fi
-    else
-      if git -C "$host" worktree add -b "$branch" "$src" "$base" 2>/dev/null; then
-        echo "    worktree new branch $branch @ $base"
-      else
-        echo "    worktree failed — clone fallback"
-        host=""
-      fi
-    fi
-  else
-    host=""
-  fi
-  if [[ -z "$host" || ! -d "$src" ]]; then
-    if ! materialize_at_sha "$name" "$base"; then return 1; fi
-    ensure_writable_tree "$src"
-    git -C "$src" checkout -B "$branch" "$base"
-    echo "    clone/branch $branch @ $base"
-  fi
+  materialize_git "$name" "$base" || return 1
   ensure_writable_tree "$src"
-  # A failed patch must stop here: building a half-patched tree gives wrong artifacts.
-  if ! apply_patches "$name" "$src" "$lock"; then
+  git_nofilter "$src" checkout -B "$branch" "$base"
+  echo "    branch $branch @ $base"
+  apply_patches "$name" "$src" "$lock" || {
     echo "    FAIL $name: patch did not apply; tree left as is, nothing built" >&2
     return 1
-  fi
+  }
   write_status "$name" "rw" "$branch" "$(git -C "$src" rev-parse HEAD)" "readonly: false"
-  echo "    RW: commits OK on branch $branch — open library PR before VE pin promote"
+  host=""
+  rc=0
+  host="$(local_repo_for "$name")" || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  if [[ "$rc" -eq 0 ]]; then
+    echo "    owner ($(stat -c '%U' "$host")): git -C $src push host HEAD:refs/heads/$branch"
+  fi
+  echo "    RW: commits stay in src until pushed to the host"
   echo "    OK $name @ $(git -C "$src" rev-parse --short HEAD) branch=$branch"
 }
 
 cmd_status() {
   local name="$1"
-  local lock src sp mode head locksha kind
-  lock="$(lock_path "$name")"
+  local lock src sp mode head locksha kind dirty="n" relpath sha url seed got
+  lock="$(pin_path "$name")"
   src="$(src_path "$name")"
   sp="$(status_path "$name")"
-  locksha="$(yaml_get "$lock" git_sha 2>/dev/null || echo "?")"
-  mode="?"; head="?"
-  [[ -f "$sp" ]] && mode="$(yaml_get "$sp" mode || echo "?")"
+  locksha="$(pin_get_opt "$lock" git_sha)" || exit 1
+  [[ -n "$locksha" ]] || locksha="?"
+  mode="?"
+  head="?"
+  if [[ -f "$sp" ]]; then
+    mode="$(status_get "$sp" mode)"
+    [[ -n "$mode" ]] || mode="?"
+  fi
   if pin_is_git "$lock"; then
     kind="git"
     if [[ -d "$src/.git" || -f "$src/.git" ]]; then
-      head="$(git -C "$src" rev-parse --short HEAD 2>/dev/null || echo "?")"
+      head="$(git -C "$src" rev-parse --short HEAD)"
     else
       head="(no src)"
     fi
@@ -1104,17 +1982,14 @@ cmd_status() {
     kind="files"
     locksha="files"
     if [[ -d "$src" ]]; then
-      head="files:$(find "$src" -type f 2>/dev/null | wc -l)"
+      head="files"
     else
       head="(no src)"
     fi
   fi
-  local dirty="n"
   if [[ "$kind" == "git" ]] && { [[ -d "$src/.git" ]] || [[ -f "$src/.git" ]]; }; then
-    if [[ -n "$(git -C "$src" status --porcelain 2>/dev/null)" ]]; then dirty="Y"; fi
+    if [[ -n "$(git -C "$src" status --porcelain)" ]]; then dirty="Y"; fi
   elif [[ "$kind" == "files" && -d "$src" ]] && pin_has_sources "$lock"; then
-    # dirty if any [[source]] path missing or hash mismatch
-    local relpath sha url seed got
     while IFS='|' read -r relpath sha url seed; do
       [[ -z "$relpath" ]] && continue
       if [[ ! -f "$src/$relpath" ]]; then dirty="Y"; break; fi
@@ -1127,10 +2002,10 @@ cmd_status() {
     [[ -f "$sp" ]] && sed 's/^/  /' "$sp"
     if [[ "$dirty" == "Y" && "$kind" == "git" ]]; then
       echo "  dirty files:"
-      git -C "$src" status --short 2>/dev/null | sed 's/^/    /' || true
+      git -C "$src" status --short | sed 's/^/    /'
     fi
     if [[ "$kind" == "git" && "$head" != "(no src)" && -n "$locksha" && "$locksha" != "?" ]]; then
-      if ! git -C "$src" rev-parse --verify "${locksha}^{commit}" >/dev/null 2>&1; then
+      if ! git -C "$src" rev-parse --verify "${locksha}^{commit}"; then
         echo "  issue: lock sha not in src"
       elif [[ "$(git -C "$src" rev-parse HEAD)" != "$(git -C "$src" rev-parse "$locksha")" ]]; then
         echo "  issue: HEAD != lock sha (ok if mode=rw)"
@@ -1153,50 +2028,106 @@ cmd_status() {
     fi
   fi
   if [[ "$VERBOSE" -ge 2 && "$kind" == "git" ]] && { [[ -d "$src/.git" ]] || [[ -f "$src/.git" ]]; }; then
-    git -C "$src" status 2>/dev/null | sed 's/^/  /' || true
+    git -C "$src" status | sed 's/^/  /'
   fi
 }
 
 cmd_refresh() {
-  local name="$1" host sha desc
-  echo "==> $name  refresh pin from library master tip"
-  if ! pin_is_git "$(lock_path "$name")"; then
+  local name="$1" host sha desc track kind pin_sha rc=0 src src_arg="" url info
+  if should_reenter; then
+    echo "    [sandbox=lib $name]"
+    reenter_self lib "$name" refresh
+    return $?
+  fi
+  echo "==> $name  refresh"
+  if ! pin_is_git "$(pin_path "$name")"; then
     echo "    FAIL: refresh is git-only; file pins bump sha256 in libpin.toml by hand" >&2
     return 1
   fi
-  if ! host="$(local_repo_for "$name")"; then
-    echo "    FAIL: no local host $GIT_HOME/$name" >&2
-    return 1
-  fi
-  if [[ -d "$host/master/.git" || -f "$host/master/.git" ]]; then
-    sha="$(git -C "$host/master" rev-parse HEAD)"
+  track="$(pin_get_opt "$(pin_path "$name")" track_branch)" || exit 1
+  [[ -n "$track" ]] || { echo "    FAIL: refresh needs track_branch" >&2; return 1; }
+  host="$(local_repo_for "$name")" || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  if [[ "$rc" -eq 0 ]]; then
+    kind="$(lookup_track_kind "$host" "$track")" || return 1
+    resolve_pin_sha_for "$name" || return 1
+    pin_sha="$(resolve_commit "$host" "$RESOLVED_SHA" host)" || return 1
+    if [[ "$kind" == tag ]]; then
+      sha="$(resolve_commit "$host" "refs/tags/$track" host)" || return 1
+      if [[ "$sha" != "$pin_sha" ]]; then
+        echo "    FAIL: tag moved: track_branch $track now $sha, pin is $pin_sha (use upgrade --ref)" >&2
+        return 1
+      fi
+      echo "    tag $track still at pin $pin_sha"
+      cmd_ro "$name"
+      return $?
+    fi
+    sha="$(resolve_commit "$host" "refs/heads/$track" host)" || return 1
+    desc="$(describe_at "$host" "$sha" host)"
   else
-    sha="$(git -C "$host" rev-parse master)"
+    url="$(pin_remote_url "$name")" || {
+      echo "    FAIL: refresh needs a host shortcut or git_https/git_ssh for $name" >&2
+      return 1
+    }
+    info="$(remote_ls_track "$url" "$track" "$name")" || return 1
+    kind="${info%% *}"
+    sha="${info#* }"
+    resolve_pin_sha_for "$name" || return 1
+    pin_sha="$RESOLVED_SHA"
+    if [[ "$kind" == tag ]]; then
+      if [[ "$sha" != "$pin_sha" ]]; then
+        echo "    FAIL: tag moved: track_branch $track now $sha, pin is $pin_sha (use upgrade --ref)" >&2
+        return 1
+      fi
+      echo "    tag $track still at pin $pin_sha"
+      cmd_ro "$name"
+      return $?
+    fi
+    desc="$sha"
   fi
-  desc="$(git -C "$host" describe --tags --long --always "$sha" 2>/dev/null || echo "$sha")"
-  write_lock_sha "$(lock_path "$name")" "$sha" "$desc"
-  echo "    lock → $sha"
+  src="$(src_path "$name")"
+  if [[ -d "$src/.git" || -f "$src/.git" ]]; then
+    src_arg="$src"
+  fi
+  write_pin_sha "$(pin_path "$name")" "$sha" "$desc" "$src_arg"
+  echo "    pin → $sha ($desc)"
   cmd_ro "$name"
 }
 
-# Write ARTIFACT-SHA256<TAB>index<TAB>old<TAB>new lines (from get-artifacts --record) into the
-# pin: row <index> of [[artifact]] must have exactly sha256 = "<old>". Atomic (tmp + rename).
 record_artifact_shas() {
   local pin="$1" records="$2"
   python3 - "$pin" "$records" <<'PY'
 import os, re, sys
 pin, records = sys.argv[1], sys.argv[2]
 recs = []
+count = None
 for line in records.splitlines():
     f = line.split("\t")
-    if f[0] == "ARTIFACT-SHA256" and len(f) == 4:
+    if f[0] == "ARTIFACT-COUNT" and len(f) == 2:
+        count = int(f[1])
+    elif f[0] == "ARTIFACT-SHA256" and len(f) == 4:
         recs.append((int(f[1]), f[2], f[3]))
 lines = open(pin, encoding="utf-8").read().split("\n")
 starts = [i for i, l in enumerate(lines) if l.strip() == "[[artifact]]"]
+if count is None:
+    sys.exit(f"fetch-deps: {pin}: get-artifacts did not report ARTIFACT-COUNT")
+if count != len(starts):
+    sys.exit(f"fetch-deps: {pin}: ARTIFACT-COUNT {count} != {len(starts)} [[artifact]] tables")
 for idx, old, new in recs:
     if idx >= len(starts):
-        sys.exit(f"fetch-deps: {pin}: no [[artifact]] row {idx} (rows are [[artifact]] tables)")
+        sys.exit(f"fetch-deps: {pin}: no [[artifact]] row {idx}")
     end = next((j for j in range(starts[idx] + 1, len(lines)) if re.match(r"^\s*\[", lines[j])), len(lines))
+    if old == "MISSING":
+        hits = [j for j in range(starts[idx] + 1, end) if re.match(r"\s*sha256\s*=", lines[j])]
+        if hits:
+            sys.exit(f"fetch-deps: {pin}: [[artifact]] row {idx} already has sha256 (parser said MISSING)")
+        insert_at = starts[idx] + 1
+        lines.insert(insert_at, f'sha256 = "{new}"')
+        for k, s in enumerate(starts):
+            if s >= insert_at:
+                starts[k] = s + 1
+        print(f"    pin row {idx}: inserted sha256 {new[:12]}…")
+        continue
     hits = [j for j in range(starts[idx] + 1, end) if re.fullmatch(r'\s*sha256\s*=\s*"' + re.escape(old) + r'"\s*', lines[j])]
     if len(hits) != 1:
         sys.exit(f"fetch-deps: {pin}: [[artifact]] row {idx} has no single sha256 = \"{old}\" line")
@@ -1213,28 +2144,24 @@ cmd_build() {
   local name="$1"
   local ga_mode="${2:-verify}"
   local dir="$ROOT/$name"
-  local lock src
-  lock="$(lock_path "$name")"
+  local lock src need_rw
+  lock="$(pin_path "$name")"
   src="$(src_path "$name")"
   echo "==> $name  build"
   if [[ ! -d "$src" ]]; then
     echo "    FAIL: no src — run fetch-deps first" >&2
     return 1
   fi
-  # Prefer RO sources: only unlock whole tree if pin requires it.
-  local need_rw
-  need_rw="$(pin_get "$lock" requires_writable_src 2>/dev/null || echo false)"
+  need_rw="$(pin_get_opt "$lock" requires_writable_src)" || exit 1
   if [[ "$need_rw" == "true" || "$need_rw" == "yes" || "$need_rw" == "1" ]]; then
     ensure_writable_tree "$src"
   fi
-  # Build steps: write only third_party/<lib>/src (single-level bwrap)
   run_build_cmd() {
     local bcmd="$1"
     echo "    run $bcmd  [sandbox=src]"
     bwrap_src "$name" bash -c "cd $(printf %q "$dir") && eval $(printf %q "$bcmd")"
   }
   local ran=0 bcmd
-  # pin_build_steps: missing build key defaults to ./build; explicit build=[] → none
   while IFS= read -r bcmd; do
     [[ -z "$bcmd" ]] && continue
     run_build_cmd "$bcmd" || { echo "    FAIL build: $bcmd" >&2; return 1; }
@@ -1243,23 +2170,20 @@ cmd_build() {
   if [[ "$ran" -eq 0 ]]; then
     echo "    no build steps — skip exec"
   fi
-  # Collect when [[artifact]] present (get-artifacts no-ops gracefully if none)
   if [[ -x "$ROOT/get-artifacts" ]]; then
-    if grep -q '\[\[artifact\]\]' "$lock" 2>/dev/null; then
-      echo "    get-artifacts --$ga_mode  [sandbox=artifact]"
+    if grep -q '\[\[artifact\]\]' "$lock"; then
+      echo "    get-artifacts --$ga_mode"
       local ga_out ga_flag=() caps
       if [[ "$ga_mode" == record ]]; then
-        # get-artifacts is per tree (not shared); an old copy has no --record.
         if ! caps=$("$ROOT/get-artifacts" --capabilities) || [[ "$caps" != record ]]; then
-          echo "    FAIL: $ROOT/get-artifacts has no --record (older copy); update it from orchestration-example third_party/get-artifacts" >&2
+          echo "    FAIL: $ROOT/get-artifacts has no --record (older copy)" >&2
           return 1
         fi
         ga_flag=(--record)
       fi
-      # verify is get-artifacts' default, so no flag is passed (older copies accept that too)
-      ga_out=$(bwrap_artifact "$name" "$ROOT/get-artifacts" --no-bwrap "${ga_flag[@]}" "$name") \
-        || { printf '%s\n' "$ga_out" | grep -v '^ARTIFACT-SHA256'; echo "    FAIL get-artifacts" >&2; return 1; }
-      printf '%s\n' "$ga_out" | grep -v '^ARTIFACT-SHA256' || [[ $? -eq 1 ]]
+      ga_out=$(LIBPIN_NO_BWRAP=1 LIBPIN_NO_LANDLOCK=1 "$ROOT/get-artifacts" --no-bwrap --no-landlock "${ga_flag[@]}" "$name") \
+        || { printf '%s\n' "$ga_out" | grep -v '^ARTIFACT-'; echo "    FAIL get-artifacts" >&2; return 1; }
+      printf '%s\n' "$ga_out" | grep -v '^ARTIFACT-' || [[ $? -eq 1 ]]
       if [[ "$ga_mode" == record ]]; then
         record_artifact_shas "$lock" "$ga_out" || { echo "    FAIL: could not record new sha256 values in $lock" >&2; return 1; }
       fi
@@ -1267,24 +2191,28 @@ cmd_build() {
       echo "    no [[artifact]] — skip get-artifacts"
     fi
   fi
-  # re-apply ro if status says ro (build dirs under src may stay rw — best-effort)
-  local mode
-  mode="$(yaml_get "$(status_path "$name")" mode 2>/dev/null || echo ro)"
+  local mode=""
+  if [[ -f "$(status_path "$name")" ]]; then
+    mode="$(status_get "$(status_path "$name")" mode)"
+  fi
+  [[ -n "$mode" ]] || mode="ro"
   if [[ "$mode" == "ro" && "$need_rw" != "true" ]]; then
-    make_readonly_tree "$src"
-    # Build scratch stays writable for iterate: build/, bin/, and for Android library
-    # pins (remotetable/extractmail) android/.gradle, android/*/build and the
-    # machine-local android/local.properties. Only those that exist.
-    local scratch
-    for scratch in "$src/build" "$src/bin" "$src/android/.gradle" "$src/android"/*/build "$src/android/local.properties"; do
-      [[ -e "$scratch" ]] || continue
-      chmod -R u+w -- "$scratch" || { echo "    FAIL: chmod -R u+w $scratch" >&2; exit 1; }
-    done
+    finish_ro_tree "$src"
   fi
   echo "    OK build $name"
 }
 
-# A fatal helper (exit 1) during an upgrade build must not leave the half-recorded pin.
+clean_src_for_rebuild() {
+  local src="$1"
+  git -C "$src" clean -xfd
+  local d
+  for d in "$src/build" "$src/bin"; do
+    if [[ -e "$d" ]]; then
+      rm -rf "$d"
+    fi
+  done
+}
+
 UPGRADE_LOCK="" UPGRADE_BACKUP=""
 restore_upgrade_pin() {
   [[ -n "$UPGRADE_BACKUP" && -f "$UPGRADE_BACKUP" ]] || return 0
@@ -1293,86 +2221,346 @@ restore_upgrade_pin() {
 }
 
 cmd_upgrade() {
-  local name="$1" ref="$REF_UPGRADE" src host sha
+  local name="$1" ref="$REF_UPGRADE" src host sha branch rc=0 lock backup repro desc
   echo "==> $name  upgrade --ref $ref"
-  if ! pin_is_git "$(lock_path "$name")"; then
+  if ! pin_is_git "$(pin_path "$name")"; then
     echo "    FAIL: upgrade is git-only; for file pins edit [[source]] url/sha256 then fetch-deps ro" >&2
     return 1
   fi
   src="$(src_path "$name")"
-  BRANCH_OVERRIDE="upgrade/${ref//\//-}-$(ve_branch)"
-  BASE_REF=""
-  # materialize ref
-  ensure_writable_tree "$src"
-  if host="$(local_repo_for "$name")"; then
-    rm -rf "$src"
-    git -C "$host" worktree add -b "$BRANCH_OVERRIDE" "$src" "$ref" 2>/dev/null \
-      || { git clone "$host" "$src"; git -C "$src" checkout -B "$BRANCH_OVERRIDE" "$ref"; }
-  else
-    local url
-    url="$(yaml_get "$(lock_path "$name")" git_https)"
-    rm -rf "$src"
-    git clone "$url" "$src"
-    git -C "$src" checkout -B "$BRANCH_OVERRIDE" "$ref"
+  branch="${BRANCH_OVERRIDE:-upgrade/$ref}"
+  if should_reenter; then
+    echo "    [sandbox=lib $name]"
+    reenter_self lib "$name" upgrade
+    return $?
   fi
+  materialize_git "$name" "$ref" || return 1
+  ensure_writable_tree "$src"
+  git_nofilter "$src" checkout -B "$branch" "$ref"
   sha="$(git -C "$src" rev-parse HEAD)"
-  write_status "$name" "rw" "$BRANCH_OVERRIDE" "$sha" "upgrade_ref: $ref"
-  if ! apply_patches "$name" "$src" "$(lock_path "$name")"; then
+  if ! apply_patches "$name" "$src" "$(pin_path "$name")"; then
     echo "    FAIL upgrade $name: patch did not apply at $sha; not building, lock unchanged" >&2
     return 1
   fi
-  # The new commit builds new bytes: record their sha256 (never check them against the old
-  # pin). The pin is restored if anything below fails.
-  local lock backup repro
-  lock="$(lock_path "$name")"
+  write_status "$name" "rw" "$branch" "$sha" "upgrade_ref: $ref"$'\n'"readonly: false"
+  host=""
+  rc=0
+  host="$(local_repo_for "$name")" || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  if [[ "$rc" -eq 0 ]]; then
+    echo "    owner ($(stat -c '%U' "$host")): git -C $src push host HEAD:refs/heads/$branch"
+  fi
+  lock="$(pin_path "$name")"
   backup="$(mktemp "$lock.before-upgrade.XXXXXX")"
   cp -p "$lock" "$backup"
   UPGRADE_LOCK="$lock" UPGRADE_BACKUP="$backup"
   trap restore_upgrade_pin EXIT
+  clean_src_for_rebuild "$src"
   if ! cmd_build "$name" record; then
     cp -p "$backup" "$lock"; rm -f "$backup"
-    echo "    FAIL upgrade $name: build failed at $sha; lock unchanged" >&2
+    UPGRADE_BACKUP=""
+    echo "    FAIL upgrade $name: build failed at $sha; lock unchanged; src branch $branch kept" >&2
     return 1
   fi
   repro="$(pin_get_opt "$lock" reproducible)" || exit 1
   if [[ "$repro" == "true" ]]; then
     echo "    reproducible = true: second build must give the recorded bytes"
+    clean_src_for_rebuild "$src"
     if ! cmd_build "$name" verify; then
       cp -p "$backup" "$lock"; rm -f "$backup"
-      echo "    FAIL upgrade $name: second build differs from the first (not reproducible); lock unchanged" >&2
+      UPGRADE_BACKUP=""
+      echo "    FAIL upgrade $name: second build differs from the first (not reproducible); lock unchanged; src branch $branch kept" >&2
       return 1
     fi
   fi
   rm -f "$backup"
   UPGRADE_BACKUP=""
   trap - EXIT
-  write_lock_sha "$(lock_path "$name")" "$sha" "$(git -C "$src" describe --tags --long --always HEAD 2>/dev/null || echo "$sha")"
-  echo "    upgraded pin to $sha — review artifact/ and commit on VE"
+  assert_src_toplevel "$src" || return 1
+  desc="$(describe_at "$src" "$sha" src)"
+  write_pin_sha "$lock" "$sha" "$desc" "$src"
+  git_nofilter "$src" checkout --detach "$sha"
+  git -C "$src" branch -D "$branch"
+  finish_ro_tree "$src"
+  write_status "$name" "ro" "" "$sha" "kind: git"$'\n'"readonly: true"
+  echo "    upgraded pin to $sha — review artifact/ and commit"
   echo "    OK upgrade $name"
 }
 
-# --- main ---
-echo "fetch-deps: cmd=$CMD GIT_HOME=$GIT_HOME allow_ssh=$ALLOW_SSH ve_branch=$(ve_branch)"
+toml_git_sha() {
+  python3 - "$1" <<'PY'
+import sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+v = data.get("git_sha")
+if v is None:
+    sys.exit(3)
+print(v)
+PY
+}
+
+check_depends() {
+  local name="$1" lock dep consumer_sha expected src host rc=0 pin_sha blob tmp
+  lock="$(pin_path "$name")"
+  pin_has_key "$lock" depends || return 0
+  resolve_pin_sha_for "$name" || return 1
+  pin_sha="$RESOLVED_SHA"
+  src="$(src_path "$name")"
+  host=""
+  rc=0
+  host="$(local_repo_for "$name")" || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  while IFS= read -r dep; do
+    [[ -n "$dep" ]] || continue
+    [[ -f "$(pin_path "$dep")" ]] || { echo "    FAIL $name: depends on $dep but $(pin_path "$dep") is missing" >&2; return 1; }
+    consumer_sha="$(pin_get_opt "$(pin_path "$dep")" git_sha)" || exit 1
+    [[ -n "$consumer_sha" ]] || { echo "    FAIL $name: dep $dep has no git_sha" >&2; return 1; }
+    blob=""
+    if [[ -f "$src/third_party/$dep/libpin.toml" ]]; then
+      blob="$src/third_party/$dep/libpin.toml"
+      expected="$(toml_git_sha "$blob")" || { echo "    FAIL $name: cannot read git_sha from $blob" >&2; return 1; }
+    elif [[ "$rc" -eq 0 ]]; then
+      # The host's pin is read into a variable (no temp file).
+      local dep_toml
+      if dep_toml="$(git_host "$host" show "${pin_sha}:third_party/${dep}/libpin.toml")"; then
+        expected="$(toml_git_sha <(printf '%s\n' "$dep_toml"))" || { echo "    FAIL $name: cannot read git_sha from host ${pin_sha}:third_party/${dep}/libpin.toml" >&2; return 1; }
+      else
+        echo "    FAIL $name: depends $dep: need host or src (no third_party/$dep/libpin.toml at $pin_sha)" >&2
+        return 1
+      fi
+    else
+      echo "    FAIL $name: depends $dep: need host or src" >&2
+      return 1
+    fi
+    local full_c full_e dep_host dep_rc=0
+    dep_host="$(local_repo_for "$dep")" || dep_rc=$?
+    [[ "$dep_rc" -eq 2 ]] && return 1
+    if [[ "$dep_rc" -eq 0 ]]; then
+      full_c="$(resolve_commit "$dep_host" "$consumer_sha" host)" || return 1
+      full_e="$(resolve_commit "$dep_host" "$expected" host)" || return 1
+    elif [[ -d "$(src_path "$dep")/.git" || -f "$(src_path "$dep")/.git" ]]; then
+      full_c="$(resolve_commit "$(src_path "$dep")" "$consumer_sha" src)" || return 1
+      full_e="$(resolve_commit "$(src_path "$dep")" "$expected" src)" || return 1
+    else
+      full_c="$consumer_sha"
+      full_e="$expected"
+    fi
+    if [[ "$full_c" != "$full_e" ]]; then
+      echo "    FAIL $name: depends $dep mismatch: this tree pins $full_c, $name@$pin_sha wants $full_e" >&2
+      return 1
+    fi
+    echo "    depends $dep OK ($full_c)"
+  done < <(pin_get "$lock" depends)
+}
+
+check_git_home_leak() {
+  local name="$1" lock
+  lock="$(pin_path "$name")"
+  if [[ -n "${GIT_HOME:-}" ]] && grep -F -- "$GIT_HOME" "$lock" >/dev/null; then
+    echo "    WARN $name: libpin.toml contains expanded git_home $GIT_HOME (clean filter did not run)" >&2
+    echo "    pre-commit: kit/hooks/pre-commit-git-home-leak" >&2
+    return 1
+  fi
+  return 0
+}
+
+cmd_check() {
+  local name="$1" lock track host rc=0 kind pin_sha tag_sha
+  echo "==> $name  check"
+  lock="$(pin_path "$name")"
+  [[ -f "$lock" ]] || { echo "FAIL $name: no libpin.toml" >&2; return 1; }
+  local leak=0
+  check_git_home_leak "$name" || leak=1
+  rc=0
+  host="$(local_repo_for "$name")" || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  if pin_is_git "$lock"; then
+    if [[ "$rc" -eq 0 ]]; then
+      echo "    host $host"
+      track="$(pin_get_opt "$lock" track_branch)" || exit 1
+      if [[ -n "$track" ]]; then
+        kind="$(lookup_track_kind "$host" "$track")" || return 1
+        if [[ "$kind" == tag ]]; then
+          resolve_pin_sha_for "$name" || return 1
+          pin_sha="$(resolve_commit "$host" "$RESOLVED_SHA" host)" || return 1
+          tag_sha="$(resolve_commit "$host" "refs/tags/$track" host)" || return 1
+          if [[ "$tag_sha" != "$pin_sha" ]]; then
+            echo "    FAIL: tag moved: track_branch $track now $tag_sha, pin is $pin_sha" >&2
+            return 1
+          fi
+          echo "    tag $track still at pin"
+        fi
+      fi
+    fi
+    check_depends "$name" || return 1
+  fi
+  if [[ "$leak" -ne 0 ]]; then
+    return 1
+  fi
+  echo "    OK check $name"
+}
+
+cmd_outdated() {
+  local name="$1" lock src sp host rc=0 track kind tip pin_sha last url info
+  if should_reenter; then
+    echo "    [sandbox=lib $name]"
+    reenter_self lib "$name" outdated
+    return $?
+  fi
+  echo "==> $name  outdated"
+  lock="$(pin_path "$name")"
+  if ! pin_is_git "$lock"; then
+    echo "    skip (not git)"
+    return 0
+  fi
+  src="$(src_path "$name")"
+  sp="$(status_path "$name")"
+  resolve_pin_sha_for "$name" || return 1
+  pin_sha="$RESOLVED_SHA"
+  track="$(pin_get_opt "$lock" track_branch)" || exit 1
+  host=""
+  rc=0
+  host="$(local_repo_for "$name")" || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  if [[ "$rc" -eq 0 ]]; then
+    pin_sha="$(resolve_commit "$host" "$pin_sha" host)" || return 1
+    if [[ -n "$track" ]]; then
+      kind="$(lookup_track_kind "$host" "$track")" || return 1
+      if [[ "$kind" == tag ]]; then
+        tip="$(resolve_commit "$host" "refs/tags/$track" host)" || return 1
+      else
+        tip="$(resolve_commit "$host" "refs/heads/$track" host)" || return 1
+      fi
+    else
+      tip="$(git_host "$host" rev-parse HEAD)"
+    fi
+  elif [[ -n "$track" ]] && url="$(pin_remote_url "$name")"; then
+    info="$(remote_ls_track "$url" "$track" "$name")" || return 1
+    kind="${info%% *}"
+    tip="${info#* }"
+  else
+    echo "    FAIL: cannot determine upstream (need host shortcut, or git_https/git_ssh + track_branch)" >&2
+    return 1
+  fi
+  last=""
+  if [[ -f "$sp" ]]; then
+    last="$(status_get "$sp" last_upstream)"
+  fi
+  if [[ "$tip" != "$pin_sha" ]]; then
+    if [[ -n "$last" && "$tip" != "$last" ]]; then
+      echo "    upstream moved since last check ($last → $tip); pin still $pin_sha"
+    elif [[ -n "$last" && "$tip" == "$last" ]]; then
+      echo "    still behind with no new movement (pin $pin_sha, upstream $tip)"
+    else
+      echo "    behind upstream $tip (pin $pin_sha); no previous check recorded"
+    fi
+  else
+    echo "    current with upstream $tip"
+  fi
+  local mode="" branch="" head=""
+  if [[ -f "$sp" ]]; then
+    mode="$(status_get "$sp" mode)"
+    branch="$(status_get "$sp" branch)"
+    head="$(status_get "$sp" head)"
+  fi
+  [[ -n "$mode" ]] || mode="?"
+  write_status "$name" "$mode" "$branch" "$head" "last_upstream: $tip"$'\n'"last_upstream_at: $(date -Is)"
+  echo "    recorded last_upstream $tip"
+}
+
+# --- test/debug printers (no pin work) ---
+if [[ "$CMD" == "print-host-perm-suggestions" ]]; then
+  host_perm_suggestions "${PRINT_ARGS[@]}"
+  exit 0
+fi
+if [[ "$CMD" == "print-owner-host-perm" ]]; then
+  report_owner_host_perm "${PRINT_ARGS[@]}"
+  exit 0
+fi
+if [[ "$CMD" == "print-nofilter-git-config" ]]; then
+  print_nofilter_git_config "${PRINT_ARGS[@]}"
+  exit 0
+fi
+
+# --- default names ---
+if [[ "$CMD" != "status" && "$CMD" != "upgrade" && ${#NAMES[@]} -eq 0 ]]; then
+  for d in "$ROOT"/*/; do
+    [[ -f "${d}libpin.toml" ]] || continue
+    base="$(basename "$d")"
+    [[ "$base" == "tests" ]] && continue
+    def="$(pin_get_opt "${d}libpin.toml" default)" || exit 1
+    [[ "$def" == "false" ]] && continue
+    NAMES+=("$base")
+  done
+fi
+if [[ "$CMD" == "upgrade" ]]; then
+  [[ ${#NAMES[@]} -eq 1 ]] || { echo "upgrade needs exactly one NAME" >&2; exit 2; }
+  [[ -n "$REF_UPGRADE" ]] || { echo "upgrade needs --ref" >&2; exit 2; }
+fi
+if [[ ${#NAMES[@]} -eq 0 && "$CMD" != "status" ]]; then
+  echo "fetch-deps: no libraries with libpin.toml" >&2
+  exit 2
+fi
+if [[ "$CMD" == "status" && ${#NAMES[@]} -eq 0 ]]; then
+  for d in "$ROOT"/*/; do
+    [[ -f "${d}libpin.toml" ]] && NAMES+=("$(basename "$d")")
+  done
+fi
+
+run_pin() {
+  local fn="$1" name="$2" rc=0
+  set +e
+  (
+    set -euo pipefail
+    "$fn" "$name"
+  )
+  rc=$?
+  set -euo pipefail
+  if [[ "$rc" -ne 0 ]]; then
+    FAILED_NAMES+=("$name")
+    echo "fetch-deps: FAIL $name (exit $rc)" >&2
+  fi
+}
+
+echo "fetch-deps: cmd=$CMD GIT_HOME=$GIT_HOME version=$LIBPIN_VERSION"
 
 case "$CMD" in
   status)
     for n in "${NAMES[@]}"; do cmd_status "$n"; done
     ;;
   ro)
-    for n in "${NAMES[@]}"; do cmd_ro "$n" || FAILURES=$((FAILURES+1)); done
+    for n in "${NAMES[@]}"; do run_pin cmd_ro "$n"; done
     ;;
   rw)
-    for n in "${NAMES[@]}"; do cmd_rw "$n" || FAILURES=$((FAILURES+1)); done
+    for n in "${NAMES[@]}"; do run_pin cmd_rw "$n"; done
     ;;
   refresh)
-    for n in "${NAMES[@]}"; do cmd_refresh "$n" || FAILURES=$((FAILURES+1)); done
+    for n in "${NAMES[@]}"; do run_pin cmd_refresh "$n"; done
     ;;
   build)
     if [[ "$RECORD" -eq 1 ]]; then _bm=record; else _bm=verify; fi
-    for n in "${NAMES[@]}"; do cmd_build "$n" "$_bm" || FAILURES=$((FAILURES+1)); done
+    for n in "${NAMES[@]}"; do
+      set +e
+      (
+        set -euo pipefail
+        cmd_build "$n" "$_bm"
+      )
+      rc=$?
+      set -euo pipefail
+      if [[ "$rc" -ne 0 ]]; then
+        FAILED_NAMES+=("$n")
+        echo "fetch-deps: FAIL $n (exit $rc)" >&2
+      fi
+    done
     ;;
   upgrade)
-    cmd_upgrade "${NAMES[0]}" || FAILURES=$((FAILURES+1))
+    run_pin cmd_upgrade "${NAMES[0]}"
+    ;;
+  check)
+    for n in "${NAMES[@]}"; do run_pin cmd_check "$n"; done
+    ;;
+  outdated)
+    for n in "${NAMES[@]}"; do run_pin cmd_outdated "$n"; done
     ;;
   *)
     echo "unknown command $CMD" >&2
@@ -1380,5 +2568,9 @@ case "$CMD" in
     ;;
 esac
 
-echo "fetch-deps done (failures=$FAILURES)."
-exit "$FAILURES"
+if [[ ${#FAILED_NAMES[@]} -gt 0 ]]; then
+  echo "fetch-deps done (failures=${#FAILED_NAMES[@]}): ${FAILED_NAMES[*]}" >&2
+  exit 1
+fi
+echo "fetch-deps done (failures=0)."
+exit 0
