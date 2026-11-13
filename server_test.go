@@ -39,7 +39,7 @@ func TestPersonalityData(t *testing.T) {
 	if p.Delimiter != "/" || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
 		t.Fatalf("personality fields: %+v", p)
 	}
-	want := strings.Fields("IMAP4rev1 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE INPROGRESS LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SASL-IR SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST AUTH=PLAIN AUTH=LOGIN LOGINDISABLED")
+	want := strings.Fields("IMAP4rev1 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE INPROGRESS LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SASL-IR SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST AUTH=PLAIN AUTH=LOGIN")
 	if strings.Join(p.PreLogin, " ") != strings.Join(want, " ") {
 		t.Fatalf("pre-login %#v", p.PreLogin)
 	}
@@ -47,7 +47,7 @@ func TestPersonalityData(t *testing.T) {
 	if strings.Join(p.PostLogin, " ") != strings.Join(post, " ") {
 		t.Fatalf("post-login %#v", p.PostLogin)
 	}
-	greet := "IMAP4rev1 ENABLE ID LITERAL+ SASL-IR AUTH=PLAIN AUTH=LOGIN LOGINDISABLED"
+	greet := "IMAP4rev1 ENABLE ID LITERAL+ SASL-IR AUTH=PLAIN AUTH=LOGIN"
 	if strings.Join(p.GreetingCaps, " ") != greet || listed(p.GreetingCaps, "SEARCH=FUZZY") || listed(p.GreetingCaps, "IMAP4rev2") {
 		t.Fatalf("greeting caps %#v", p.GreetingCaps)
 	}
@@ -167,12 +167,13 @@ func TestLogLines(t *testing.T) {
 
 func TestCleartextAuthAndCaps(t *testing.T) {
 	cert, key := writeCert(t)
-	_, bound := start(t, Config{
+	_, bound, cc := startCtrl(t, Config{
 		Listen:            "127.0.0.1:0",
 		ImplicitTLSListen: "127.0.0.1:0",
 		CertFile:          cert,
 		KeyFile:           key,
 	})
+	cc.call(map[string]any{"op": "set-login-disabled", "value": true}).ok(t)
 	cl := dial(t, bound.Listen)
 	pre := capsOf(cl.greeting)
 	requireCaps(t, pre, []string{"IMAP4rev1", "AUTH=PLAIN", "ENABLE", "LITERAL+", "SASL-IR", "STARTTLS", "LOGINDISABLED"})

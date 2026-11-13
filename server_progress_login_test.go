@@ -67,7 +67,7 @@ func TestInProgressAndLoginDisabledLists(t *testing.T) {
 				t.Fatalf("%s INPROGRESS is not before LITERAL+", e.Name())
 			}
 		}
-		loginDisabled := e.Name() == "cyrus-3137.json"
+		loginDisabled := false // no lab personality lists LOGINDISABLED; docker does not advertise it
 		if listed(p.GreetingCaps, "LOGINDISABLED") != loginDisabled || listed(p.PreLogin, "LOGINDISABLED") != loginDisabled || listed(p.PostLogin, "LOGINDISABLED") {
 			t.Fatalf("%s LOGINDISABLED greet %v pre %v post %v", e.Name(), p.GreetingCaps, listed(p.PreLogin, "LOGINDISABLED"), listed(p.PostLogin, "LOGINDISABLED"))
 		}
@@ -261,6 +261,7 @@ func TestLoginDisabledOnTheWire(t *testing.T) {
 		KeyFile:           key,
 		Personality:       "personalities/cyrus-3137.json",
 	})
+	cc.call(map[string]any{"op": "set-login-disabled", "value": true}).ok(t)
 	cl := dial(t, bound.Listen)
 	if !listed(capsOf(cl.greeting), "LOGINDISABLED") || listed(capsOf(cl.greeting), "INPROGRESS") {
 		t.Fatalf("greeting %q", cl.greeting)

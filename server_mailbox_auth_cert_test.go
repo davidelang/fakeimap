@@ -268,6 +268,7 @@ func TestAuthPolicy(t *testing.T) {
 
 	cert, key := writeCert(t)
 	_, bound, cc = startCtrl(t, Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key})
+	cc.call(map[string]any{"op": "set-login-disabled", "value": true}).ok(t)
 	cc.call(map[string]any{"op": "set-auth-policy", "fail_delay_ms": 200, "lockout_after": 1, "lockout_ms": 60000}).ok(t)
 	priv := dial(t, bound.Listen)
 	started = time.Now()
@@ -369,10 +370,15 @@ func TestReloadCert(t *testing.T) {
 	}
 	cc.call(map[string]any{"op": "reload-cert", "cert_file": certA, "key_file": keyA}).ok(t)
 	again := dial(t, bound.Listen)
-	if !strings.Contains(again.greeting, "LOGINDISABLED") || !strings.Contains(again.greeting, "STARTTLS") {
+	if strings.Contains(again.greeting, "LOGINDISABLED") || !strings.Contains(again.greeting, "STARTTLS") {
 		t.Fatalf("greeting after cert %q", again.greeting)
 	}
-	refused := again.cmd(`LOGIN demo secret`)
+	cc.call(map[string]any{"op": "set-login-disabled", "value": true}).ok(t)
+	forced := dial(t, bound.Listen)
+	if !strings.Contains(forced.greeting, "LOGINDISABLED") || !strings.Contains(forced.greeting, "STARTTLS") {
+		t.Fatalf("greeting after set-login-disabled %q", forced.greeting)
+	}
+	refused := forced.cmd(`LOGIN demo secret`)
 	if refused.status != "NO" || !strings.Contains(refused.tagLine, "[PRIVACYREQUIRED]") {
 		t.Fatalf("login after cert load %s", refused.tagLine)
 	}

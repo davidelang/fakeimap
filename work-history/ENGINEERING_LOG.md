@@ -1035,3 +1035,9 @@
 - .gitignore un-ignores third_party/VERSION (and the other kit tools where they were still ignored).
 - Pin tomls updated as needed for the new kit (example: source_kind=seed-src, default=false, sha256; heavy pins rclone/paddle/paddle-opt/opencv: default=false).
 
+
+## 2026-11-12 - drop LOGINDISABLED from the cyrus-3137 lab personality
+
+- The live docker lab Cyrus 3.13.7 server does not advertise `LOGINDISABLED`, and cleartext LOGIN succeeds.
+- Removed the token from `personalities/cyrus-3137.json` greeting and pre-login lists. No lab personality lists it. The capability stays implemented; tests force it with `set-login-disabled`.
+- `docs/facts/imap-server.md` and the list/wire tests were updated to match. `login_disabled_advisory` was not added.
