@@ -89,7 +89,7 @@ func TestMessageLimitToken(t *testing.T) {
 	if !capImplemented("MESSAGELIMIT=2") || !capImplemented("MESSAGELIMIT=1000000") {
 		t.Fatal("positive MESSAGELIMIT is not implemented")
 	}
-	for _, bad := range []string{"MESSAGELIMIT", "MESSAGELIMIT=0", "MESSAGELIMIT=10x", "MESSAGELIMIT=", "MESSAGELIMIT=12abc", "SAVELIMIT", "SAVELIMIT=2", "SAVELIMIT=1000000"} {
+	for _, bad := range []string{"MESSAGELIMIT", "MESSAGELIMIT=0", "MESSAGELIMIT=10x", "MESSAGELIMIT=", "MESSAGELIMIT=12abc", "SAVELIMIT", "SAVELIMIT=0", "SAVELIMIT=10x"} {
 		if capImplemented(bad) {
 			t.Fatalf("%s is implemented", bad)
 		}
@@ -124,18 +124,24 @@ func TestMessageLimitFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 		base := filepath.Base(f)
-		wantPost := base == "stalwart.json" || base == "stalwart-01625.json" || base == "stalwart-dev.json"
+		wantPost := base == "stalwart.json" || base == "stalwart-01625.json" || base == "stalwart-dev.json" || base == "stalwart-oauth.json"
 		if listed(p.PostLogin, "MESSAGELIMIT=1000000") != wantPost {
 			t.Fatalf("%s post-login MESSAGELIMIT=%v", base, !wantPost)
 		}
 		if listed(p.GreetingCaps, "MESSAGELIMIT=1000000") || listed(p.PreLogin, "MESSAGELIMIT=1000000") {
 			t.Fatalf("%s lists MESSAGELIMIT before login", base)
 		}
+		if listed(p.GreetingCaps, "SAVELIMIT=1000000") || listed(p.PreLogin, "SAVELIMIT=1000000") || listed(p.PostLogin, "SAVELIMIT=1000000") != wantPost {
+			t.Fatalf("%s SAVELIMIT placement", base)
+		}
 		for _, c := range append(append([]string{}, p.GreetingCaps...), append(p.PreLogin, p.PostLogin...)...) {
 			if strings.HasPrefix(strings.ToUpper(c), "MESSAGELIMIT") && c != "MESSAGELIMIT=1000000" {
 				t.Fatalf("%s lists %s", base, c)
 			}
-			if strings.HasPrefix(strings.ToUpper(c), "SAVELIMIT") {
+			if strings.HasPrefix(strings.ToUpper(c), "SAVELIMIT") && c != "SAVELIMIT=1000000" {
+				t.Fatalf("%s lists %s", base, c)
+			}
+			if c == "SAVELIMIT=1000000" && !wantPost {
 				t.Fatalf("%s lists %s", base, c)
 			}
 		}
@@ -153,7 +159,8 @@ func TestMessageLimitDocs(t *testing.T) {
 		"highest UIDs",
 		"[MESSAGELIMIT N UID]",
 		"[MESSAGELIMIT N]",
-		"SAVELIMIT` stays unimplemented",
+		"SAVELIMIT=<positive integer>",
+		"before `STARTTLS`",
 		"stalwart.json",
 		"stalwart-0155.json",
 		"UIDAFTER",
@@ -171,7 +178,7 @@ func TestMessageLimitDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := string(guide)
-	if !strings.Contains(g, "MESSAGELIMIT=<positive integer>") || !strings.Contains(g, "docs/facts/imap-server.md") || !strings.Contains(g, "SAVELIMIT` stays unimplemented") {
+	if !strings.Contains(g, "MESSAGELIMIT=<positive integer>") || !strings.Contains(g, "docs/facts/imap-server.md") || !strings.Contains(g, "SAVELIMIT=<positive integer>") {
 		t.Fatal("guide missing the short MESSAGELIMIT note")
 	}
 	offAt := strings.Index(g, "## Capabilities that stay off")

@@ -51,7 +51,7 @@ func TestProbeScriptEmptyDiff(t *testing.T) {
 
 func TestNormalizeDropsCausedNumbers(t *testing.T) {
 	lines := []string{
-		`* OK [CAPABILITY IMAP4rev1 IMAP4rev2] deadbeefdead Cyrus ready`,
+		`* OK [CAPABILITY IMAP4rev1 UIDBATCHES] deadbeefdead Cyrus ready`,
 		`* 1 EXISTS`,
 		`* 1 FETCH (UID 9 INTERNALDATE "01-Jan-2024 00:00:00 +0000" RFC822.SIZE 4)`,
 		`t7 OK [APPENDUID 42 9] APPEND completed`,
@@ -70,7 +70,7 @@ func TestNormalizeDropsCausedNumbers(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	gaps := collectGaps(lines)
-	if len(gaps.Capabilities) != 1 || gaps.Capabilities[0] != "IMAP4rev2" {
+	if len(gaps.Capabilities) != 1 || gaps.Capabilities[0] != "UIDBATCHES" {
 		t.Fatalf("gaps %+v", gaps)
 	}
 	if gaps.Commands == nil {

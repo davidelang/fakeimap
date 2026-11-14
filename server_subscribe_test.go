@@ -152,6 +152,7 @@ func TestSubscribe(t *testing.T) {
 	if got := listNames(ada.cmd(`LIST (SUBSCRIBED) "" "*"`).mustOK(t).untagged); !reflect.DeepEqual(got, []string{"INBOX"}) {
 		t.Fatalf("ada initial %v", got)
 	}
+	ada.cmd("CREATE Renamed").ok(t)
 	ada.cmd("SUBSCRIBE Renamed").ok(t)
 	if got := listNames(cl.cmd(`LSUB "" "*"`).mustOK(t).untagged); reflect.DeepEqual(got, []string{"INBOX"}) || !containsName(got, "Renamed") {
 		t.Fatalf("demo set changed by ada %v", got)

@@ -48,8 +48,8 @@ func TestBinaryPersonality(t *testing.T) {
 	if strings.Contains(text, "\"BINARY\"") {
 		t.Fatal("gaps still lists BINARY")
 	}
-	if !strings.Contains(text, "\"URLAUTH=BINARY\"") {
-		t.Fatal("gaps dropped URLAUTH=BINARY")
+	if strings.Contains(text, "\"URLAUTH=BINARY\"") {
+		t.Fatal("gaps still lists URLAUTH=BINARY")
 	}
 }
 

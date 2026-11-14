@@ -51,7 +51,7 @@ func TestCreateMailboxRaw(t *testing.T) {
 		if !strings.Contains(list, "{3}\r\na b") || strings.Contains(list, `"a b"`) {
 			t.Fatalf("spaced name %q", list)
 		}
-		if !strings.Contains(list, "{1}\r\n"+string(raw)) || !strings.Contains(list, utf) || strings.Contains(list, encodeMUTF7(utf)) {
+		if !strings.Contains(list, "{1}\r\n"+string(raw)) || !strings.Contains(list, utf) || strings.Contains(list, " "+encodeMUTF7(utf)) {
 			t.Fatalf("raw list %q", list)
 		}
 		cl.cmd("SUBSCRIBE PlainBox").mustOK(t)
@@ -83,8 +83,9 @@ func TestCreateMailboxRaw(t *testing.T) {
 	check(cl)
 	other := dial(t, bound.Listen)
 	other.cmd("LOGIN other secret").mustOK(t)
-	if !strings.Contains(strings.Join(other.cmd(`LIST "" "*"`).mustOK(t).untagged, "\n"), " PlainBox") {
-		t.Fatal("mailbox partitioned by user")
+	otherList := strings.Join(other.cmd(`LIST "" "*"`).mustOK(t).untagged, "\n")
+	if strings.Contains(otherList, " PlainBox") || !strings.Contains(otherList, "Other Users/demo/PlainBox") {
+		t.Fatalf("other user list %q", otherList)
 	}
 
 	cc.call(map[string]any{"op": "set-personality", "path": "personalities/utf8.json"}).ok(t)
@@ -120,7 +121,7 @@ func TestRawNameClearedOnReload(t *testing.T) {
 	before := dial(t, bound.Listen)
 	before.cmd("LOGIN demo secret").mustOK(t)
 	rawList := strings.Join(before.cmd(`LIST "" "*"`).mustOK(t).untagged, "\n")
-	if !strings.Contains(rawList, unicode) || strings.Contains(rawList, wire) {
+	if !strings.Contains(rawList, unicode) || strings.Contains(rawList, " "+wire) {
 		t.Fatalf("raw name before reset %q", rawList)
 	}
 	cc.call(map[string]any{"op": "reset"}).ok(t)

@@ -103,7 +103,20 @@ type ctrlRequest struct {
 	KeyFile      string          `json:"key_file"`
 	To           string          `json:"to"`
 	Recipient    string          `json:"recipient"`
-	Envid        string          `json:"envid"`
+	Envid           string          `json:"envid"`
+	Flags           []string        `json:"flags"`
+	InternalDate    string          `json:"internal_date"`
+	Seq             *int            `json:"seq"`
+	NewUIDValidity  *uint32         `json:"new_uidvalidity"`
+	ClientID        string          `json:"client_id"`
+	Scopes          []string        `json:"scopes"`
+	AccessSeconds   *int            `json:"access_seconds"`
+	RefreshSeconds  *int            `json:"refresh_seconds"`
+	TokenID         string          `json:"token_id"`
+	Kind            string          `json:"kind"`
+	URL             string          `json:"url"`
+	Secret          string          `json:"secret"`
+	RedirectURIs    []string        `json:"redirect_uris"`
 }
 
 func okResp(extra map[string]any) map[string]any {
@@ -152,22 +165,41 @@ func (s *Server) ctrl(req ctrlRequest) any {
 		}
 		return okResp(nil)
 	case "inject":
-		if req.Mailbox == "" || req.Raw == "" {
+		return s.ctrlInject(req)
+	case "arm-inject":
+		return s.ctrlArm(req)
+	case "issue":
+		return s.ctrlIssue(req)
+	case "list-tokens":
+		return okResp(map[string]any{"tokens": s.listTokens()})
+	case "revoke":
+		if req.TokenID == "" {
 			return errResp("missing field")
 		}
-		if req.User != "" && !s.store.hasAccount(req.User) {
-			return errResp("no such account")
-		}
-		_, uid, err := s.store.appendMsg(nil, req.Mailbox, nil, nil, []byte(req.Raw), s.frozenTime())
-		if err != nil {
+		if err := s.revokeToken(req.TokenID); err != nil {
 			return errResp(err.Error())
 		}
-		return okResp(map[string]any{"uid": uid})
+		return okResp(nil)
+	case "auth-log":
+		return okResp(map[string]any{"attempts": s.authLog()})
+	case "register-client":
+		if req.ClientID == "" || len(req.RedirectURIs) == 0 {
+			return errResp("missing field")
+		}
+		s.tok.addClient(req.ClientID, req.Secret, req.RedirectURIs)
+		return okResp(nil)
+	case "set-referral":
+		return s.ctrlReferral(req)
+	case "clear-referral":
+		s.mu.Lock()
+		s.refs = nil
+		s.mu.Unlock()
+		return okResp(nil)
 	case "list-mail":
 		if req.Mailbox == "" {
 			return errResp("missing field")
 		}
-		items, err := s.store.listMail(req.Mailbox)
+		items, err := s.store.listMail(req.User, req.Mailbox)
 		if err != nil {
 			return errResp(err.Error())
 		}
@@ -176,7 +208,7 @@ func (s *Server) ctrl(req ctrlRequest) any {
 		if req.Mailbox == "" || req.UID == nil {
 			return errResp("missing field")
 		}
-		b, err := s.store.fetchMail(req.Mailbox, *req.UID)
+		b, err := s.store.fetchMail(req.User, req.Mailbox, *req.UID)
 		if err != nil {
 			return errResp(err.Error())
 		}
@@ -239,7 +271,7 @@ func (s *Server) ctrl(req ctrlRequest) any {
 		if req.User != "" && !s.store.hasAccount(req.User) {
 			return errResp("no such account")
 		}
-		if err := s.store.createRaw(name); err != nil {
+		if err := s.store.createRaw(req.User, s.pers, name); err != nil {
 			return errResp(err.Error())
 		}
 		return okResp(nil)
@@ -336,6 +368,8 @@ func (s *Server) ctrlStatus() map[string]any {
 		"jmap":                s.bound.Jmap,
 		"jmap_tls":            s.bound.JmapTLS,
 		"sieve":               s.bound.Sieve,
+		"oauth":               s.bound.OAuth,
+		"oauth_tls":           s.bound.OAuthTLS,
 		"personality":         s.cfg.Personality,
 		"dataset":             s.cfg.Dataset,
 		"connections":         len(s.imap),
@@ -628,7 +662,8 @@ func canonDo(do string) (string, bool) {
 		"expired", "self_signed",
 		"reply", "bye", "idle_burst", "drop_literal", "rst_literal", "overquota", "expunge_mid",
 		"inprogress", "drop_after_354", "bounce",
-		"unauthorized", "server_fail", "drop_eventsource":
+		"unauthorized", "server_fail", "drop_eventsource",
+		"expired_token", "wrong_scope", "revoked_refresh", "invalid_grant", "slow_token":
 		return strings.ToLower(do), true
 	default:
 		return "", false
@@ -637,6 +672,8 @@ func canonDo(do string) (string, bool) {
 
 func smtpDoAllowed(do, proto string) bool {
 	switch do {
+	case "expired_token", "wrong_scope", "revoked_refresh", "invalid_grant", "slow_token":
+		return true
 	case "bounce", "drop_after_354":
 		return proto == "smtp"
 	case "unauthorized", "server_fail", "drop_eventsource":
@@ -661,6 +698,214 @@ func boundList(v []string) []string {
 		return []string{}
 	}
 	return v
+}
+
+func (s *Server) ctrlInject(req ctrlRequest) map[string]any {
+	if req.Mailbox == "" || req.Raw == "" {
+		return errResp("missing field")
+	}
+	if req.User != "" && !s.store.hasAccount(req.User) {
+		return errResp("no such account")
+	}
+	if req.Seq != nil && req.NewUIDValidity == nil {
+		return errResp("missing field")
+	}
+	when, err := parseInjectDate(req.InternalDate)
+	if err != nil {
+		return errResp(err.Error())
+	}
+	uid, err := s.deliverInject(req.User, req.Mailbox, req.Raw, req.Flags, when, req.Seq, req.NewUIDValidity)
+	if err != nil {
+		return errResp(err.Error())
+	}
+	return okResp(map[string]any{"uid": uid})
+}
+
+func parseInjectDate(s string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
+	t, err := parseIMAPDateTime(s)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, s)
+		if err != nil {
+			return nil, fmt.Errorf("bad time")
+		}
+	}
+	return &t, nil
+}
+
+func (s *Server) deliverInject(user, mailbox, raw string, flags []string, date *time.Time, seq *int, uidv *uint32) (uint32, error) {
+	uid, mb, renum, err := s.store.injectMsg(injectReq{
+		user: user, pers: s.pers, mailbox: mailbox, raw: []byte(raw),
+		flags: flags, date: date, seq: seq, uidv: uidv, frozen: s.frozenTime(),
+	})
+	if err != nil {
+		return 0, err
+	}
+	if renum && mb != nil {
+		s.closeUIDV(mb)
+	}
+	return uid, nil
+}
+
+func (s *Server) closeUIDV(mb *Mailbox) {
+	s.mu.Lock()
+	var hits []*session
+	for _, ses := range s.sessions {
+		if ses.box == mb {
+			hits = append(hits, ses)
+		}
+	}
+	s.mu.Unlock()
+	for _, ses := range hits {
+		s.store.deselect(ses)
+		_ = ses.sendLine("* OK [CLOSED] UIDVALIDITY changed")
+	}
+}
+
+func (s *Server) ctrlArm(req ctrlRequest) map[string]any {
+	if req.Command == "" || req.Mailbox == "" || req.Raw == "" {
+		return errResp("missing field")
+	}
+	if req.Seq != nil && req.NewUIDValidity == nil {
+		return errResp("missing field")
+	}
+	when, err := parseInjectDate(req.InternalDate)
+	if err != nil {
+		return errResp(err.Error())
+	}
+	a := &armedInject{
+		command: strings.ToUpper(req.Command), mailbox: req.Mailbox, raw: req.Raw,
+		user: req.User, flags: append([]string(nil), req.Flags...), date: when,
+		seq: req.Seq, uidv: req.NewUIDValidity,
+	}
+	if req.Conn != nil {
+		a.conn = *req.Conn
+	}
+	if req.Times != nil {
+		a.times = *req.Times
+	} else {
+		a.times = 1
+	}
+	s.mu.Lock()
+	s.arms = append(s.arms, a)
+	s.mu.Unlock()
+	return okResp(nil)
+}
+
+func (s *Server) fireArmed(ses *session, command string) {
+	s.mu.Lock()
+	var hit *armedInject
+	for _, a := range s.arms {
+		if a.spent {
+			continue
+		}
+		if a.conn != 0 && a.conn != ses.id {
+			continue
+		}
+		if !strings.EqualFold(a.command, command) {
+			continue
+		}
+		a.hits++
+		if a.times > 0 && a.hits < a.times {
+			continue
+		}
+		if a.times > 0 && a.hits > a.times {
+			a.spent = true
+			continue
+		}
+		if a.times > 0 {
+			a.spent = true
+		}
+		cp := *a
+		hit = &cp
+		break
+	}
+	s.mu.Unlock()
+	if hit == nil {
+		return
+	}
+	_, _ = s.deliverInject(hit.user, hit.mailbox, hit.raw, hit.flags, hit.date, hit.seq, hit.uidv)
+}
+
+func (s *Server) ctrlIssue(req ctrlRequest) map[string]any {
+	user := req.Username
+	if user == "" {
+		user = req.User
+	}
+	if user == "" {
+		return errResp("missing field")
+	}
+	var access, refresh time.Duration
+	if req.AccessSeconds != nil {
+		if *req.AccessSeconds <= 0 {
+			return errResp("missing field")
+		}
+		access = time.Duration(*req.AccessSeconds) * time.Second
+	}
+	if req.RefreshSeconds != nil {
+		if *req.RefreshSeconds <= 0 {
+			return errResp("missing field")
+		}
+		refresh = time.Duration(*req.RefreshSeconds) * time.Second
+	}
+	body, err := s.issueToken(user, req.ClientID, req.Scopes, access, refresh)
+	if err != nil {
+		return errResp(err.Error())
+	}
+	return okResp(body)
+}
+
+func (s *Server) ctrlReferral(req ctrlRequest) map[string]any {
+	kind := strings.ToLower(req.Kind)
+	if (kind != "login" && kind != "mailbox") || req.URL == "" {
+		return errResp("missing field")
+	}
+	if kind == "mailbox" && req.Mailbox == "" {
+		return errResp("missing field")
+	}
+	ref := &mailRef{kind: kind, url: req.URL, mailbox: req.Mailbox}
+	if req.Conn != nil {
+		ref.conn = *req.Conn
+	}
+	s.mu.Lock()
+	s.refs = append(s.refs, ref)
+	s.mu.Unlock()
+	return okResp(nil)
+}
+
+func (s *Server) loginReferral(conn int) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.refs {
+		if r.kind != "login" {
+			continue
+		}
+		if r.conn != 0 && r.conn != conn {
+			continue
+		}
+		return r.url, true
+	}
+	return "", false
+}
+
+func (s *Server) mailboxReferral(conn int, name string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.refs {
+		if r.kind != "mailbox" {
+			continue
+		}
+		if r.conn != 0 && r.conn != conn {
+			continue
+		}
+		if r.mailbox != "" && !strings.EqualFold(r.mailbox, name) {
+			continue
+		}
+		return r.url, true
+	}
+	return "", false
 }
 
 func (s *Server) injectDSN(req ctrlRequest) map[string]any {

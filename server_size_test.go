@@ -111,6 +111,7 @@ func TestStatusSizeLists(t *testing.T) {
 		"personalities/stalwart-01625.json",
 		"personalities/stalwart-dev.json",
 		"personalities/stalwart-0155.json",
+		"personalities/stalwart-oauth.json",
 	} {
 		check(file, "UNAUTHENTICATE", false, true)
 	}
@@ -135,7 +136,7 @@ func TestStatusSizeLists(t *testing.T) {
 	if strings.Contains(string(gaps), "STATUS=SIZE") {
 		t.Fatal("gaps still lists STATUS=SIZE")
 	}
-	for _, tok := range []string{"ACL", "URLAUTH"} {
+	for _, tok := range []string{"ACL", "URL-PARTIAL"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

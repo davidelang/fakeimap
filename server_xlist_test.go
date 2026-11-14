@@ -257,11 +257,11 @@ func TestXListXMoveAdvertised(t *testing.T) {
 		postNext string
 	}
 	for _, c := range []row{
-		{"personalities/cyrus-24.json", true, false, "SCAN", "SASL-IR", "SCAN", "COMPRESS=DEFLATE"},
+		{"personalities/cyrus-24.json", true, false, "SCAN", "SASL-IR", "SCAN", "URLAUTH"},
 		{"personalities/cyrus-25.json", true, true, "SCAN", "XMOVE", "SCAN", "XMOVE"},
-		{"personalities/cyrus-36.json", true, true, "THREAD=REFS", "XMOVE", "THREAD=REFS", "XMOVE"},
-		{"personalities/cyrus-3124.json", true, false, "THREAD=REFS", "AUTH=PLAIN", "THREAD=REFS", ""},
-		{"personalities/cyrus-3137.json", true, false, "THREAD=REFS", "AUTH=PLAIN", "THREAD=REFS", ""},
+		{"personalities/cyrus-36.json", true, true, "THREAD=REFS", "XMOVE", "X-CREATEDMODSEQ", "XMOVE"},
+		{"personalities/cyrus-3124.json", true, false, "THREAD=REFS", "AUTH=PLAIN", "X-CREATEDMODSEQ", ""},
+		{"personalities/cyrus-3137.json", true, false, "THREAD=REFS", "AUTH=PLAIN", "X-CREATEDMODSEQ", ""},
 		{"personalities/zimbra-883.json", true, false, "WITHIN", "AUTH=PLAIN", "WITHIN", ""},
 	} {
 		p, err := loadPersonality(c.file)
@@ -312,7 +312,7 @@ func TestXListXMoveAdvertised(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameCapSet(dropCap(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), sasl.PostLogin) {
+	if !sameCapSet(dropCyrusLab(cyrus.PostLogin), sasl.PostLogin) {
 		t.Fatal("sasl post-login set drifted from cyrus-3137")
 	}
 	allowXList := map[string]bool{
@@ -347,7 +347,7 @@ func TestXListXMoveAdvertised(t *testing.T) {
 	if strings.Contains(string(gaps), `"XLIST"`) || strings.Contains(string(gaps), `"XMOVE"`) {
 		t.Fatal("gaps lists XLIST or XMOVE")
 	}
-	for _, tok := range []string{"ACL", "URLAUTH=BINARY", "IMAP4rev2"} {
+	for _, tok := range []string{"ACL", "URL-PARTIAL", "CATENATE"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

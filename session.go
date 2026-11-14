@@ -465,6 +465,29 @@ func (s *session) messageLimit() (uint64, bool) {
 	return 0, false
 }
 
+func (s *session) saveLimit() (uint64, bool) {
+	for _, c := range s.caps() {
+		if n, ok := parseSaveLimit(c); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// copyLimit is the count ceiling for APPEND and COPY. MOVE keeps the
+// message limit. A smaller save limit replaces it for a copy or append.
+func (s *session) copyLimit(move bool) (uint64, bool) {
+	msg, hasMsg := s.messageLimit()
+	if move {
+		return msg, hasMsg
+	}
+	save, hasSave := s.saveLimit()
+	if hasSave && (!hasMsg || save < msg) {
+		return save, true
+	}
+	return msg, hasMsg
+}
+
 func messageLimitText(n uint64, uid uint32, withUID bool) string {
 	if withUID {
 		return fmt.Sprintf("[MESSAGELIMIT %d %d]", n, uid)
@@ -567,8 +590,10 @@ func (s *session) flush() error {
 			if err := s.sendLine(fmt.Sprintf("* %d EXISTS", e.exists)); err != nil {
 				return err
 			}
-			if err := s.sendLine(fmt.Sprintf("* %d RECENT", e.recent)); err != nil {
-				return err
+			if !s.on("IMAP4REV2") {
+				if err := s.sendLine(fmt.Sprintf("* %d RECENT", e.recent)); err != nil {
+					return err
+				}
 			}
 			if len(e.newUIDs) > 0 && len(newItems) > 0 {
 				if err := s.sendNewFetch(e.newUIDs, newItems); err != nil {
@@ -597,7 +622,7 @@ func (s *session) flush() error {
 				if gone[fe.uid] {
 					continue
 				}
-				if err := s.sendLine(s.flagsFetch(fe.seq, fe.flags, fe.uid, s.on("QRESYNC"), fe.modseq, s.on("CONDSTORE"))); err != nil {
+				if err := s.sendLine(s.flagsFetch(fe.seq, fe.flags, fe.uid, s.on("QRESYNC") || s.on("IMAP4REV2"), fe.modseq, s.on("CONDSTORE"))); err != nil {
 					return err
 				}
 			}
@@ -626,6 +651,9 @@ func (s *session) dispatch(cmd command) error {
 	case "NOOP":
 		return s.ok(cmd.tag, "NOOP completed")
 	case "CHECK":
+		if s.on("IMAP4REV2") {
+			return s.bad(cmd.tag, "unknown command")
+		}
 		if !s.srv.store.selected(s) {
 			return s.no(cmd.tag, "CHECK not selected")
 		}
@@ -822,8 +850,7 @@ func comparatorArgsOK(args []Token) bool {
 	return true
 }
 
-// cmdGenURLAuth recognizes GENURLAUTH. A valid pair list is tagged NO.
-// No URL is minted and the mailbox is not looked up.
+// cmdGenURLAuth mints one URL per rump and mechanism pair.
 func (s *session) cmdGenURLAuth(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
@@ -831,7 +858,18 @@ func (s *session) cmdGenURLAuth(cmd command) error {
 	if !genURLAuthArgsOK(cmd.args) {
 		return s.bad(cmd.tag, "GENURLAUTH syntax")
 	}
-	return s.no(cmd.tag, "not implemented")
+	for i := 0; i < len(cmd.args); i += 2 {
+		rump, _ := astring(cmd.args[i])
+		mech, _ := astring(cmd.args[i+1])
+		url, ok := s.srv.store.mintURL(s.user, s.pers, rump, mech)
+		if !ok {
+			return s.bad(cmd.tag, "GENURLAUTH syntax")
+		}
+		if err := s.sendLine("* GENURLAUTH " + imapString(url)); err != nil {
+			return err
+		}
+	}
+	return s.ok(cmd.tag, "GENURLAUTH completed")
 }
 
 func genURLAuthArgsOK(args []Token) bool {
@@ -843,37 +881,73 @@ func genURLAuthArgsOK(args []Token) bool {
 		if !ok || !urlRumpOK(rump) {
 			return false
 		}
-		if args[i+1].Kind != "atom" || !strings.EqualFold(args[i+1].Val, "INTERNAL") {
+		if args[i+1].Kind != "atom" {
+			return false
+		}
+		switch strings.ToUpper(args[i+1].Val) {
+		case "INTERNAL", "AUTHENTICATED", "ANONYMOUS":
+		default:
 			return false
 		}
 	}
 	return true
 }
 
-// cmdURLFetch recognizes URLFETCH before and after login. Valid arguments
-// are tagged NO. No literal and no key are returned.
+// cmdURLFetch returns stored bytes for each URL. Login is not required.
 func (s *session) cmdURLFetch(cmd command) error {
-	if !urlFetchArgsOK(cmd.args) {
+	items, ok := parseURLFetch(cmd.args)
+	if !ok {
 		return s.bad(cmd.tag, "URLFETCH syntax")
 	}
-	return s.no(cmd.tag, "not implemented")
-}
-
-func urlFetchArgsOK(args []Token) bool {
-	if len(args) == 0 {
-		return false
-	}
-	for _, t := range args {
-		u, ok := astring(t)
-		if !ok || !urlRumpOK(u) || !urlAuthAtomOK(u) {
-			return false
+	for _, it := range items {
+		if it.binary && !s.advertiseCap("URLAUTH=BINARY") {
+			return s.bad(cmd.tag, "URLFETCH syntax")
+		}
+		line := s.srv.store.urlFetchLine(it.url, it.binary)
+		if err := s.sendLine(line); err != nil {
+			return err
 		}
 	}
-	return true
+	return s.ok(cmd.tag, "URLFETCH completed")
 }
 
-// cmdResetKey recognizes RESETKEY. No argument, or one mailbox astring, is
-// tagged NO. The mailbox is not looked up and nothing is stored.
+type urlFetchItem struct {
+	url    string
+	binary bool
+}
+
+func parseURLFetch(args []Token) ([]urlFetchItem, bool) {
+	if len(args) == 0 {
+		return nil, false
+	}
+	var out []urlFetchItem
+	for i := 0; i < len(args); {
+		if args[i].Kind == "lparen" {
+			if i+3 >= len(args) || args[i+3].Kind != "rparen" {
+				return nil, false
+			}
+			u, ok := astring(args[i+1])
+			if !ok || args[i+2].Kind != "atom" || !strings.EqualFold(args[i+2].Val, "BINARY") {
+				return nil, false
+			}
+			if !urlRumpOK(u) || !urlAuthAtomOK(u) {
+				return nil, false
+			}
+			out = append(out, urlFetchItem{url: u, binary: true})
+			i += 4
+			continue
+		}
+		u, ok := astring(args[i])
+		if !ok || !urlRumpOK(u) || !urlAuthAtomOK(u) {
+			return nil, false
+		}
+		out = append(out, urlFetchItem{url: u})
+		i++
+	}
+	return out, true
+}
+
+// cmdResetKey bumps the mailbox generation so earlier URLs fetch as NIL.
 func (s *session) cmdResetKey(cmd command) error {
 	if !s.needAuth(cmd.tag) {
 		return nil
@@ -881,12 +955,21 @@ func (s *session) cmdResetKey(cmd command) error {
 	if len(cmd.args) > 1 {
 		return s.bad(cmd.tag, "RESETKEY syntax")
 	}
+	name := ""
 	if len(cmd.args) == 1 {
-		if _, ok := astring(cmd.args[0]); !ok {
+		var ok bool
+		name, ok = astring(cmd.args[0])
+		if !ok {
+			return s.bad(cmd.tag, "RESETKEY syntax")
+		}
+		var err error
+		name, err = s.boxIn(name)
+		if err != nil {
 			return s.bad(cmd.tag, "RESETKEY syntax")
 		}
 	}
-	return s.no(cmd.tag, "not implemented")
+	s.srv.store.resetURLKey(s.user, s.pers, name)
+	return s.ok(cmd.tag, "RESETKEY completed")
 }
 
 // urlRumpOK reports a url-rump that contains imap:// and /;UID= followed by
@@ -918,8 +1001,9 @@ func urlRumpOK(s string) bool {
 
 // urlAuthAtomOK reports ;URLAUTH= followed by one non-empty atom.
 func urlAuthAtomOK(s string) bool {
-	const mark = ";URLAUTH="
-	i := strings.Index(s, mark)
+	low := strings.ToLower(s)
+	const mark = ";urlauth="
+	i := strings.Index(low, mark)
 	if i < 0 {
 		return false
 	}
@@ -1097,6 +1181,9 @@ func (s *session) cmdLogin(cmd command) error {
 	if !ok1 || !ok2 {
 		return s.bad(cmd.tag, "LOGIN syntax")
 	}
+	if url, ok := s.srv.loginReferral(s.id); ok {
+		return s.no(cmd.tag, "[REFERRAL "+url+"] login referral")
+	}
 	if s.advertiseCap("LOGINDISABLED") {
 		return s.no(cmd.tag, "[PRIVACYREQUIRED] LOGIN disabled")
 	}
@@ -1124,6 +1211,9 @@ func (s *session) cmdAuth(cmd command) error {
 		}
 		hasIR = true
 	}
+	if url, ok := s.srv.loginReferral(s.id); ok {
+		return s.no(cmd.tag, "[REFERRAL "+url+"] login referral")
+	}
 	switch strings.ToUpper(mech) {
 	case "PLAIN":
 		return s.authPlain(cmd.tag, hasIR, ir)
@@ -1135,6 +1225,8 @@ func (s *session) cmdAuth(cmd command) error {
 		return s.authSCRAM(cmd.tag, strings.ToUpper(mech), hasIR, ir)
 	case "EXTERNAL":
 		return s.authExternal(cmd.tag, hasIR, ir)
+	case "OAUTHBEARER", "XOAUTH2":
+		return s.authBearer(cmd.tag, strings.ToUpper(mech), hasIR, ir)
 	default:
 		return s.no(cmd.tag, "AUTHENTICATE mechanism not available")
 	}
@@ -1205,6 +1297,8 @@ func (s *session) cmdEnable(cmd command) error {
 			add("UIDONLY")
 		case "OBJECTID+":
 			add("OBJECTID+")
+		case "IMAP4REV2":
+			add("IMAP4REV2")
 		}
 	}
 	if recognized {
@@ -1226,7 +1320,7 @@ func (s *session) boxIn(name string) (string, error) {
 	if s.srv.store.isRaw(name) {
 		return name, nil
 	}
-	if s.on("UTF8=ACCEPT") {
+	if s.on("UTF8=ACCEPT") || s.on("IMAP4REV2") {
 		if name != "" && !utf8.ValidString(name) {
 			return "", fmt.Errorf("bad mailbox name")
 		}
@@ -1238,7 +1332,7 @@ func (s *session) boxIn(name string) (string, error) {
 // boxOut turns a stored mailbox name into the form this connection speaks.
 // A raw name, and any name that is not valid UTF-8, is emitted unchanged.
 func (s *session) boxOut(name string) string {
-	if s.on("UTF8=ACCEPT") || s.srv.store.isRaw(name) || !utf8.ValidString(name) {
+	if s.on("UTF8=ACCEPT") || s.on("IMAP4REV2") || s.srv.store.isRaw(name) || !utf8.ValidString(name) {
 		return name
 	}
 	return encodeMUTF7(name)
@@ -1278,13 +1372,25 @@ func (s *session) cmdNamespace(cmd command) error {
 // quotaLine is the * QUOTA report. STORAGE is always present. MESSAGE is
 // present only when QUOTA=RES-MESSAGE is listed.
 func (s *session) quotaLine() string {
-	return s.quotaLineFrom(s.srv.store.quotaNow())
+	return s.quotaLineFrom(s.srv.store.quotaNow(s.user))
 }
 
 func (s *session) quotaLineFrom(q quotaSnap) string {
 	line := fmt.Sprintf("* QUOTA ROOT (STORAGE %d %d", q.storageUse, q.storageLim)
-	if s.advertiseCap("QUOTA=RES-MESSAGE") {
+	if s.advertiseCap("QUOTA=RES-MESSAGE") || s.advertiseCap("X-QUOTA=MESSAGE") {
 		line += fmt.Sprintf(" MESSAGE %d %d", q.messageUse, q.messageLim)
+	}
+	if s.advertiseCap("QUOTA=RES-ANNOTATION-STORAGE") {
+		line += fmt.Sprintf(" ANNOTATION-STORAGE 0 %d", q.annoLim)
+	}
+	if s.advertiseCap("QUOTA=RES-MAILBOX") {
+		line += fmt.Sprintf(" MAILBOX %d %d", q.mboxUse, q.mboxLim)
+	}
+	if s.advertiseCap("X-QUOTA=X-ANNOTATION-STORAGE") {
+		line += fmt.Sprintf(" X-ANNOTATION-STORAGE 0 %d", q.xAnnoLim)
+	}
+	if s.advertiseCap("X-QUOTA=X-NUM-FOLDERS") {
+		line += fmt.Sprintf(" X-NUM-FOLDERS %d %d", q.mboxUse, q.mboxLim)
 	}
 	return line + ")"
 }
@@ -1330,7 +1436,7 @@ func (s *session) cmdGetQuotaRoot(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "GETQUOTAROOT syntax")
 	}
-	cn, found := s.srv.store.canonicalBox(name)
+	cn, found := s.srv.store.canonicalBox(s.user, s.pers, name)
 	if !found {
 		return s.no(cmd.tag, "GETQUOTAROOT no such mailbox")
 	}
@@ -1416,7 +1522,7 @@ func (s *session) cmdSetQuota(cmd command) error {
 			return s.bad(cmd.tag, "SETQUOTA syntax")
 		}
 	}
-	if err := s.sendLine(s.quotaLineFrom(s.srv.store.applyQuota(setStorage, storage, setMessage, message))); err != nil {
+	if err := s.sendLine(s.quotaLineFrom(s.srv.store.applyQuota(s.user, setStorage, storage, setMessage, message))); err != nil {
 		return err
 	}
 	return s.ok(cmd.tag, "SETQUOTA completed")
@@ -1440,7 +1546,8 @@ func (s *session) cmdList(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, word+" syntax")
 	}
-	if parsed.extended && !s.advertiseCap("LIST-EXTENDED") {
+	rev2 := s.on("IMAP4REV2")
+	if parsed.extended && !s.advertiseCap("LIST-EXTENDED") && !rev2 {
 		return s.bad(cmd.tag, word+" syntax")
 	}
 	if parsed.children && !s.advertiseCap("CHILDREN") {
@@ -1449,7 +1556,10 @@ func (s *session) cmdList(cmd command) error {
 	if parsed.special && !s.advertiseCap("SPECIAL-USE") {
 		return s.bad(cmd.tag, word+" syntax")
 	}
-	if parsed.hasStatus && !s.advertiseCap("LIST-STATUS") {
+	if parsed.hasStatus && !s.advertiseCap("LIST-STATUS") && !rev2 {
+		return s.bad(cmd.tag, word+" syntax")
+	}
+	if parsed.myrights && !s.advertiseCap("LIST-MYRIGHTS") {
 		return s.bad(cmd.tag, word+" syntax")
 	}
 	ref, err := s.boxIn(parsed.ref)
@@ -1471,12 +1581,16 @@ func (s *session) cmdList(cmd command) error {
 		wantStatus:     parsed.hasStatus,
 		status:         parsed.status,
 		appendLimit:    s.appendLimitValue(),
-		statusSize:     s.advertiseCap("STATUS=SIZE"),
+		statusSize:     s.advertiseCap("STATUS=SIZE") || rev2,
 		user:           s.user,
 		subscribedOnly: parsed.subscribed,
 		markSubscribed: parsed.subscribed,
 		objectRFC:      s.rfcObject(),
 		objectPlus:     s.plusObject(),
+		pers:           s.pers,
+		myrights:       parsed.myrights && s.advertiseCap("LIST-MYRIGHTS"),
+		allowCreated:   s.advertiseCap("X-CREATEDMODSEQ"),
+		noRecent:       rev2,
 	}
 	entries, delim, _, err := s.srv.store.list(parsed.ref, parsed.pat, q)
 	if err != nil {
@@ -1501,6 +1615,11 @@ func (s *session) cmdList(cmd command) error {
 		}
 		if e.status != nil {
 			if err := s.sendLine(formatStatus(wn, e.status)); err != nil {
+				return err
+			}
+		}
+		if e.myrights {
+			if err := s.sendLine("* MYRIGHTS " + mailboxToken(wn, false) + " lrswipkxtecda"); err != nil {
 				return err
 			}
 		}
@@ -1534,7 +1653,7 @@ func (s *session) cmdScan(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "SCAN syntax")
 	}
-	entries, _, _, err := s.srv.store.list(ref, pat, listQuery{})
+	entries, _, _, err := s.srv.store.list(ref, pat, listQuery{user: s.user, pers: s.pers})
 	if err != nil {
 		return s.bad(cmd.tag, "SCAN syntax")
 	}
@@ -1571,7 +1690,7 @@ func (s *session) cmdLsub(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "LSUB syntax")
 	}
-	entries, delim, _, err := s.srv.store.list(ref, pat, listQuery{user: s.user, subscribedOnly: true})
+	entries, delim, _, err := s.srv.store.list(ref, pat, listQuery{user: s.user, pers: s.pers, subscribedOnly: true})
 	if err != nil {
 		return s.bad(cmd.tag, "LSUB syntax")
 	}
@@ -1602,7 +1721,7 @@ func (s *session) cmdSubscribe(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "SUBSCRIBE syntax")
 	}
-	if err := s.srv.store.subscribe(s.user, name); err != nil {
+	if err := s.srv.store.subscribe(s.user, s.pers, name); err != nil {
 		return s.no(cmd.tag, "SUBSCRIBE failed")
 	}
 	return s.ok(cmd.tag, "SUBSCRIBE completed")
@@ -1616,7 +1735,7 @@ func (s *session) cmdUnsubscribe(cmd command) error {
 	if err != nil {
 		return s.bad(cmd.tag, "UNSUBSCRIBE syntax")
 	}
-	if err := s.srv.store.unsubscribe(s.user, name); err != nil {
+	if err := s.srv.store.unsubscribe(s.user, s.pers, name); err != nil {
 		return s.no(cmd.tag, "UNSUBSCRIBE failed")
 	}
 	return s.ok(cmd.tag, "UNSUBSCRIBE completed")
@@ -1632,6 +1751,7 @@ type parsedList struct {
 	hasStatus   bool
 	status      []string
 	objectID    bool
+	myrights    bool
 }
 
 func twoAstrings(args []Token) bool {
@@ -1718,6 +1838,9 @@ func parseListArgs(args []Token) (parsedList, error) {
 		case "SPECIAL-USE":
 			p.special = true
 			i++
+		case "MYRIGHTS":
+			p.myrights = true
+			i++
 		case "STATUS":
 			i++
 			if i >= len(args) || args[i].Kind != "lparen" {
@@ -1793,7 +1916,7 @@ func (s *session) cmdStatus(cmd command) error {
 		}
 		items = append(items, t.Val)
 	}
-	cn, pairs, err := s.srv.store.status(name, items, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE"), s.rfcObject(), s.plusObject(), s.user)
+	cn, pairs, err := s.srv.store.status(name, items, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE"), s.rfcObject(), s.plusObject(), s.user, s.pers, s.advertiseCap("X-CREATEDMODSEQ"), s.on("IMAP4REV2"))
 	if err != nil {
 		if err.Error() == "bad status item" {
 			return s.bad(cmd.tag, "STATUS bad item")
@@ -1826,6 +1949,9 @@ func (s *session) cmdCreate(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, "CREATE failed")
 	}
+	if url, ok := s.srv.mailboxReferral(s.id, name); ok {
+		return s.no(cmd.tag, "[REFERRAL "+url+"] mailbox referral")
+	}
 	var uses []string
 	if len(cmd.args) > 1 {
 		if !s.advertiseCap("CREATE-SPECIAL-USE") {
@@ -1837,7 +1963,7 @@ func (s *session) cmdCreate(cmd command) error {
 			return s.bad(cmd.tag, "CREATE syntax")
 		}
 	}
-	id, err := s.srv.store.create(name, uses)
+	id, err := s.srv.store.create(s.user, s.pers, name, uses)
 	if err != nil {
 		return s.no(cmd.tag, "CREATE failed")
 	}
@@ -1877,6 +2003,9 @@ func (s *session) cmdDelete(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, "DELETE failed")
 	}
+	if url, ok := s.srv.mailboxReferral(s.id, name); ok {
+		return s.no(cmd.tag, "[REFERRAL "+url+"] mailbox referral")
+	}
 	if err := s.srv.store.delete(s, name); err != nil {
 		return s.no(cmd.tag, "DELETE failed")
 	}
@@ -1903,7 +2032,13 @@ func (s *session) cmdRename(cmd command) error {
 	if err != nil {
 		return s.no(cmd.tag, "RENAME failed")
 	}
-	id, err := s.srv.store.rename(a, b, s.rfcObject() || s.plusObject())
+	if url, ok := s.srv.mailboxReferral(s.id, a); ok {
+		return s.no(cmd.tag, "[REFERRAL "+url+"] mailbox referral")
+	}
+	if url, ok := s.srv.mailboxReferral(s.id, b); ok {
+		return s.no(cmd.tag, "[REFERRAL "+url+"] mailbox referral")
+	}
+	id, err := s.srv.store.rename(s.user, s.pers, a, b, s.rfcObject() || s.plusObject())
 	if err != nil {
 		return s.no(cmd.tag, "RENAME failed")
 	}
@@ -1927,6 +2062,9 @@ func (s *session) cmdSelect(cmd command) error {
 	name, err = s.boxIn(name)
 	if err != nil {
 		return s.no(cmd.tag, cmd.name+" no such mailbox")
+	}
+	if url, ok := s.srv.mailboxReferral(s.id, name); ok {
+		return s.no(cmd.tag, "[REFERRAL "+url+"] mailbox referral")
 	}
 	if cond || qr != nil {
 		if !s.advertiseCap("CONDSTORE") && !s.advertiseCap("QRESYNC") {
@@ -1975,7 +2113,7 @@ func (s *session) cmdSelect(cmd command) error {
 		}
 		s.enabled["CONDSTORE"] = struct{}{}
 	}
-	if info.closed && s.advertiseCap("QRESYNC") {
+	if info.closed && (s.advertiseCap("QRESYNC") || s.on("IMAP4REV2")) {
 		if err := s.sendLine("* OK [CLOSED] Ok"); err != nil {
 			return err
 		}
@@ -1996,11 +2134,28 @@ func (s *session) cmdSelect(cmd command) error {
 			return err
 		}
 	}
+	if s.on("IMAP4REV2") {
+		if err := s.sendSelectList(name); err != nil {
+			return err
+		}
+	}
 	mode := "READ-WRITE"
 	if info.readOnly {
 		mode = "READ-ONLY"
 	}
 	return s.sendLine(fmt.Sprintf("%s OK [%s] %s completed", cmd.tag, mode, cmd.name))
+}
+
+func (s *session) sendSelectList(name string) error {
+	flags, wire, ok := s.srv.store.oneListFlags(s.user, s.pers, name, s.advertiseCap("SPECIAL-USE"))
+	if !ok {
+		return nil
+	}
+	delim := "/"
+	if s.pers != nil && s.pers.Delimiter != "" {
+		delim = s.pers.Delimiter
+	}
+	return s.sendLine(fmt.Sprintf("* LIST %s %s %s", flags, imapString(delim), mailboxToken(s.boxOut(wire), false)))
 }
 
 type objectSel struct {
@@ -2119,6 +2274,9 @@ func (s *session) writeSelect(info selectInfo) error {
 	if s.pers.SelectFlags != "" {
 		flags = s.pers.SelectFlags
 	}
+	if s.on("IMAP4REV2") {
+		flags = dropRecentList(flags)
+	}
 	perm := `\Answered \Flagged \Deleted \Seen \Draft \*`
 	if s.pers.PermanentFlags != "" {
 		perm = s.pers.PermanentFlags
@@ -2137,9 +2295,12 @@ func (s *session) writeSelect(info selectInfo) error {
 		case "EXISTS":
 			line = fmt.Sprintf("* %d EXISTS", info.exists)
 		case "RECENT":
+			if s.on("IMAP4REV2") {
+				continue
+			}
 			line = fmt.Sprintf("* %d RECENT", info.recent)
 		case "UNSEEN":
-			if info.unseen <= 0 {
+			if s.on("IMAP4REV2") || info.unseen <= 0 {
 				continue
 			}
 			line = fmt.Sprintf("* OK [UNSEEN %d] First unseen", info.unseen)
@@ -2268,8 +2429,8 @@ func (s *session) cmdFetch(cmd command) error {
 	// FLAGS was not requested. One extra response carries \Seen,
 	// and UID only when this is a UID command or QRESYNC forces it.
 	// UIDONLY does not add that inner UID by itself.
-	seenUID := cmd.uid || s.on("QRESYNC")
-	if s.on("UIDONLY") {
+	seenUID := cmd.uid || s.on("QRESYNC") || s.on("IMAP4REV2")
+	if s.on("UIDONLY") && !s.on("IMAP4REV2") {
 		seenUID = s.on("QRESYNC") || itemListed(cmd.fetch, "UID")
 	}
 	if !s.pers.FetchSeenFlags && !itemListed(items, "FLAGS") {
@@ -2334,7 +2495,15 @@ func (s *session) formatFetch(sn fetchSnap, items []string) string {
 func (s *session) fetchItemText(item string, sn fetchSnap) string {
 	switch item {
 	case "FLAGS":
-		return "FLAGS " + sn.flags
+		flags := sn.flags
+		if s.on("IMAP4REV2") {
+			flags = dropRecentList(flags)
+		}
+		return "FLAGS " + flags
+	case "SNIPPET":
+		return "SNIPPET " + nstring(previewSnippet(sn.raw))
+	case "X-CREATEDMODSEQ":
+		return fmt.Sprintf("X-CREATEDMODSEQ %d", sn.created)
 	case "UID":
 		return fmt.Sprintf("UID %d", sn.uid)
 	case "INTERNALDATE":
@@ -2375,7 +2544,7 @@ func (s *session) fetchItemText(item string, sn fetchSnap) string {
 		return binarySizeText(item, sn.raw)
 	}
 	if isBinaryFetch(item) {
-		return binarySectionText(item, sn.raw)
+		return binarySectionText(item, sn.raw, s.on("IMAP4REV2"))
 	}
 	return item + " NIL"
 }
@@ -2393,7 +2562,7 @@ func binarySizeText(item string, raw []byte) string {
 	return fmt.Sprintf("%s %d", name, len(b))
 }
 
-func binarySectionText(item string, raw []byte) string {
+func binarySectionText(item string, raw []byte, eight bool) string {
 	section, partial, ok := binarySpec(item)
 	if !ok {
 		return "BINARY NIL"
@@ -2413,7 +2582,7 @@ func binarySectionText(item string, raw []byte) string {
 			return name + " NIL"
 		}
 	}
-	return name + " " + literal(b)
+	return name + " " + literalForm(b, eight)
 }
 
 func bodySection(item string, raw []byte, peekAsBody bool) string {
@@ -2516,8 +2685,8 @@ func (s *session) cmdStore(cmd command) error {
 	if err := s.sendCaughtContext(); err != nil {
 		return err
 	}
-	withUID := cmd.uid || s.on("QRESYNC")
-	if s.on("UIDONLY") {
+	withUID := cmd.uid || s.on("QRESYNC") || s.on("IMAP4REV2")
+	if s.on("UIDONLY") && !s.on("IMAP4REV2") {
 		withUID = s.on("QRESYNC")
 	}
 	withMod := s.on("CONDSTORE")
@@ -2535,7 +2704,29 @@ func (s *session) cmdStore(cmd command) error {
 	return s.ok(cmd.tag, "STORE completed")
 }
 
+func dropRecentList(list string) string {
+	open := strings.HasPrefix(list, "(")
+	inner := strings.TrimSuffix(strings.TrimPrefix(list, "("), ")")
+	var keep []string
+	for _, p := range strings.Fields(inner) {
+		if p != `\Recent` {
+			keep = append(keep, p)
+		}
+	}
+	body := strings.Join(keep, " ")
+	if open {
+		if body == "" {
+			return "()"
+		}
+		return "(" + body + ")"
+	}
+	return body
+}
+
 func (s *session) flagsFetch(seq uint32, flags string, uid uint32, withUID bool, modseq uint64, withModseq bool) string {
+	if s.on("IMAP4REV2") {
+		flags = dropRecentList(flags)
+	}
 	type piece struct {
 		rank int
 		text string
@@ -2911,6 +3102,13 @@ func (s *session) cmdSearch(cmd command) error {
 		}
 		return s.bad(cmd.tag, "SEARCH bad key")
 	}
+	if s.on("IMAP4REV2") && searchRev2Banned(keys) {
+		return s.bad(cmd.tag, "SEARCH bad key")
+	}
+	if s.on("IMAP4REV2") && !ret.on {
+		ret.on = true
+		ret.all = true
+	}
 	var reg *searchCtx
 	if ret.update {
 		reg = &searchCtx{tag: cmd.tag, uid: cmd.uid}
@@ -2952,6 +3150,19 @@ func (s *session) cmdSearch(cmd command) error {
 		return err
 	}
 	return s.ok(cmd.tag, done)
+}
+
+func searchRev2Banned(keys []searchKey) bool {
+	for _, k := range keys {
+		switch strings.ToUpper(k.op) {
+		case "NEW", "RECENT", "OLD":
+			return true
+		}
+		if searchRev2Banned(k.kids) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseFilterSpec reads one Sieve spec. A name is not looked up.
@@ -3359,7 +3570,7 @@ func (s *session) cmdAppend(cmd command) error {
 		return s.bad(cmd.tag, "APPEND syntax")
 	}
 	mbox, err = s.boxIn(mbox)
-	if err != nil || !s.srv.store.hasMailbox(mbox) {
+	if err != nil || !s.srv.store.hasMailbox(s.user, s.pers, mbox) {
 		return s.no(cmd.tag, "[TRYCREATE] APPEND no such mailbox")
 	}
 	for _, p := range parts {
@@ -3376,7 +3587,7 @@ func (s *session) cmdAppend(cmd command) error {
 			}
 		}
 	}
-	if n, ok := s.messageLimit(); ok && uint64(len(parts)) > n {
+	if n, ok := s.copyLimit(false); ok && uint64(len(parts)) > n {
 		return s.no(cmd.tag, messageLimitText(n, 0, false)+" APPEND exceeds limit")
 	}
 	uv, uids, err := s.srv.store.appendMsgs(s, mbox, parts, s.srv.frozenTime())
@@ -3410,7 +3621,7 @@ func (s *session) cmdReplace(cmd command) error {
 		return s.bad(cmd.tag, "REPLACE syntax")
 	}
 	mbox, err = s.boxIn(mbox)
-	if err != nil || !s.srv.store.hasMailbox(mbox) {
+	if err != nil || !s.srv.store.hasMailbox(s.user, s.pers, mbox) {
 		return s.no(cmd.tag, "[TRYCREATE] REPLACE no such mailbox")
 	}
 	for _, f := range part.flags {
@@ -3577,7 +3788,7 @@ func (s *session) cmdCopy(cmd command) error {
 		return s.no(cmd.tag, "[TRYCREATE] "+cmd.name+" no such mailbox")
 	}
 	limit := uint64(0)
-	if n, ok := s.messageLimit(); ok {
+	if n, ok := s.copyLimit(moveCmd(cmd.name)); ok {
 		limit = n
 	}
 	res, err := s.srv.store.copyMsgs(s, cmd.uid, set, dest, moveCmd(cmd.name), s.srv.frozenTime(), limit)

@@ -1041,3 +1041,8 @@
 - The live docker lab Cyrus 3.13.7 server does not advertise `LOGINDISABLED`, and cleartext LOGIN succeeds.
 - Removed the token from `personalities/cyrus-3137.json` greeting and pre-login lists. No lab personality lists it. The capability stays implemented; tests force it with `set-login-disabled`.
 - `docs/facts/imap-server.md` and the list/wire tests were updated to match. `login_disabled_advisory` was not added.
+
+## 2026-11-13 - Lab parity and OAuth
+
+- Implementing sandbox/plans/lab-parity-oauth-20261113-1912-plan.md on master.
+- Per-account mailbox trees, bearer tokens, loopback OAuth, IMAP4rev2, and lab capability tokens.

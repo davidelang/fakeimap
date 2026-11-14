@@ -39,16 +39,16 @@ func TestPersonalityData(t *testing.T) {
 	if p.Delimiter != "/" || !p.LogoutBye || p.Greeting == "" || len(p.FetchItemOrder) == 0 {
 		t.Fatalf("personality fields: %+v", p)
 	}
-	want := strings.Fields("IMAP4rev1 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE INPROGRESS LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SASL-IR SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST AUTH=PLAIN AUTH=LOGIN")
+	want := strings.Fields("IMAP4rev1 IMAP4rev2 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE INPROGRESS LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SASL-IR SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST AUTH=PLAIN AUTH=LOGIN")
 	if strings.Join(p.PreLogin, " ") != strings.Join(want, " ") {
 		t.Fatalf("pre-login %#v", p.PreLogin)
 	}
-	post := strings.Fields("IMAP4rev1 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE INPROGRESS LIST-EXTENDED LIST-STATUS LITERAL+ MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTASET REPLACE SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT WITHIN SORT=MODSEQ SORT=UID THREAD=REFS XLIST")
+	post := strings.Fields("IMAP4rev1 IMAP4REV2 APPENDLIMIT=2147483647 BINARY CHILDREN COMPRESS=DEFLATE CONDSTORE CREATE-SPECIAL-USE ENABLE ESEARCH ESORT ID IDLE INPROGRESS LIST-EXTENDED LIST-MYRIGHTS LIST-STATUS LITERAL+ MAILBOX-REFERRALS MOVE MULTIAPPEND MULTISEARCH NAMESPACE OBJECTID PARTIAL QRESYNC QUOTA QUOTA=RES-STORAGE QUOTA=RES-MESSAGE QUOTA=RES-ANNOTATION-STORAGE QUOTA=RES-MAILBOX QUOTASET REPLACE SAVEDATE SEARCH=FUZZY SEARCHRES SORT SORT=DISPLAY SPECIAL-USE STATUS=SIZE THREAD=ORDEREDSUBJECT THREAD=REFERENCES UIDONLY UIDPLUS UNSELECT URLAUTH URLAUTH=BINARY WITHIN SORT=MODSEQ SORT=UID THREAD=REFS X-CREATEDMODSEQ XLIST")
 	if strings.Join(p.PostLogin, " ") != strings.Join(post, " ") {
 		t.Fatalf("post-login %#v", p.PostLogin)
 	}
-	greet := "IMAP4rev1 ENABLE ID LITERAL+ SASL-IR AUTH=PLAIN AUTH=LOGIN"
-	if strings.Join(p.GreetingCaps, " ") != greet || listed(p.GreetingCaps, "SEARCH=FUZZY") || listed(p.GreetingCaps, "IMAP4rev2") {
+	greet := "IMAP4rev1 IMAP4rev2 ENABLE ID LITERAL+ SASL-IR AUTH=PLAIN AUTH=LOGIN"
+	if strings.Join(p.GreetingCaps, " ") != greet || listed(p.GreetingCaps, "SEARCH=FUZZY") || !listed(p.GreetingCaps, "IMAP4rev2") {
 		t.Fatalf("greeting caps %#v", p.GreetingCaps)
 	}
 	gapsRaw, err := os.ReadFile("personalities/cyrus-3137.gaps.json")
@@ -94,9 +94,14 @@ func TestPersonalityData(t *testing.T) {
 	if strings.Contains(string(gapsRaw), "SORT=MODSEQ") || strings.Contains(string(gapsRaw), "SORT=UID") {
 		t.Fatal("gaps still lists a sort extension")
 	}
-	for _, c := range []string{"ACL", "IMAP4rev2", "URLAUTH=BINARY"} {
+	for _, c := range []string{"ACL", "CATENATE", "URL-PARTIAL", "RIGHTS=kxten"} {
 		if !listed(gaps.Capabilities, c) {
 			t.Fatalf("gaps dropped %s", c)
+		}
+	}
+	for _, c := range []string{"IMAP4rev2", "URLAUTH", "URLAUTH=BINARY", "LIST-MYRIGHTS", "X-CREATEDMODSEQ"} {
+		if listed(gaps.Capabilities, c) {
+			t.Fatalf("gaps still lists %s", c)
 		}
 	}
 	for _, c := range append(append([]string{}, p.PreLogin...), p.PostLogin...) {
@@ -1015,6 +1020,18 @@ func (cl *imapClient) readTag(tag string) *reply {
 	rp := &reply{}
 	for {
 		rec := strings.TrimRight(cl.readRec(), "\r\n")
+		// A literal that ends the untagged line is followed immediately by the
+		// tag. readRec keeps that next line in the same record.
+		mark := "\r\n" + tag + " "
+		if i := strings.Index(rec, mark); i >= 0 {
+			tail := rec[i+len("\r\n"):]
+			if strings.HasPrefix(tail, tag+" OK ") || strings.HasPrefix(tail, tag+" NO ") || strings.HasPrefix(tail, tag+" BAD ") {
+				if i > 0 {
+					rp.untagged = append(rp.untagged, rec[:i])
+				}
+				rec = tail
+			}
+		}
 		if strings.HasPrefix(rec, tag+" ") {
 			rp.tagLine = rec
 			fs := strings.SplitN(rec, " ", 3)

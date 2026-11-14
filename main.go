@@ -26,6 +26,8 @@ type Bound struct {
 	Jmap              string   `json:"jmap,omitempty"`
 	JmapTLS           string   `json:"jmap_tls,omitempty"`
 	Sieve             string   `json:"sieve,omitempty"`
+	OAuth             string   `json:"oauth,omitempty"`
+	OAuthTLS          string   `json:"oauth_tls,omitempty"`
 }
 
 // Server is the loopback IMAP listener.
@@ -45,6 +47,11 @@ type Server struct {
 	jmapLn        net.Listener
 	jmapTLSLn     net.Listener
 	sieveLn       net.Listener
+	oauthLn       net.Listener
+	oauthTLSLn    net.Listener
+	tok           *tokenBook
+	arms          []*armedInject
+	refs          []*mailRef
 	stdout        io.Writer
 	logf          *os.File
 	logMu         sync.Mutex
@@ -106,7 +113,9 @@ func newServerFrom(cfg Config, stdout io.Writer) (*Server, error) {
 		ready:      make(chan struct{}),
 		quit:       make(chan struct{}),
 		sieveAccts: map[string]*sieveAcct{},
+		tok:        newTokenBook(),
 	}
+	srv.applyOAuthConfig()
 	srv.tlsCfg = &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
@@ -292,6 +301,20 @@ func (s *Server) Serve() error {
 			s.acceptJMAP(tls.NewListener(s.jmapTLSLn, s.tlsCfg))
 		}()
 	}
+	if s.oauthLn != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.acceptOAuth(s.oauthLn, false)
+		}()
+	}
+	if s.oauthTLSLn != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.acceptOAuth(s.oauthTLSLn, true)
+		}()
+	}
 	if s.sieveLn != nil {
 		wg.Add(1)
 		go func() {
@@ -371,7 +394,47 @@ func (s *Server) listen() error {
 		s.sieveLn = ln
 		s.bound.Sieve = ln.Addr().String()
 	}
+	if s.cfg.OauthListen != "" {
+		ln, err := net.Listen("tcp", s.cfg.OauthListen)
+		if err != nil {
+			return err
+		}
+		s.oauthLn = ln
+		s.bound.OAuth = ln.Addr().String()
+	}
+	if s.cfg.OauthTLSListen != "" {
+		ln, err := net.Listen("tcp", s.cfg.OauthTLSListen)
+		if err != nil {
+			return err
+		}
+		s.oauthTLSLn = ln
+		s.bound.OAuthTLS = ln.Addr().String()
+	}
 	return nil
+}
+
+func (s *Server) applyOAuthConfig() {
+	if s.tok == nil {
+		s.tok = newTokenBook()
+	}
+	if s.cfg.OauthRotateRefresh != nil {
+		s.tok.rotate = *s.cfg.OauthRotateRefresh
+	}
+	if s.cfg.OauthAccessSeconds > 0 {
+		s.tok.accessFor = time.Duration(s.cfg.OauthAccessSeconds) * time.Second
+	}
+	if s.cfg.OauthRefreshSeconds > 0 {
+		s.tok.refreshFor = time.Duration(s.cfg.OauthRefreshSeconds) * time.Second
+	}
+	if s.cfg.OauthCodeSeconds > 0 {
+		s.tok.codeFor = time.Duration(s.cfg.OauthCodeSeconds) * time.Second
+	}
+	for _, c := range s.cfg.OauthClients {
+		if c.ID == "" || len(c.Redirects) == 0 {
+			continue
+		}
+		s.tok.addClient(c.ID, c.Secret, c.Redirects)
+	}
 }
 
 func (s *Server) accept(ln net.Listener, implicit bool) {

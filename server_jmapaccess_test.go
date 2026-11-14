@@ -24,6 +24,7 @@ func TestJMAPAccessLists(t *testing.T) {
 		"stalwart.json":       true,
 		"stalwart-01625.json": true,
 		"stalwart-dev.json":   true,
+		"stalwart-oauth.json": true,
 	}
 	entries, err := os.ReadDir("personalities")
 	if err != nil {

@@ -98,6 +98,15 @@ func faultProto(f *fault) string {
 	return f.proto
 }
 
+func isTokenDo(do string) bool {
+	switch do {
+	case "expired_token", "wrong_scope", "revoked_refresh", "invalid_grant", "slow_token":
+		return true
+	default:
+		return false
+	}
+}
+
 func isCertDo(do string) bool {
 	switch do {
 	case "wrong_name", "expired", "self_signed":
@@ -128,7 +137,7 @@ func (s *Server) matchReplyFault(id int, command string) *fault {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, f := range s.faults {
-		if f.spent || isCertDo(f.do) || f.command == "" {
+		if f.spent || isCertDo(f.do) || isTokenDo(f.do) || f.command == "" {
 			continue
 		}
 		if faultProto(f) != "imap" {
@@ -177,7 +186,7 @@ func (s *Server) matchSMTPFault(id int, command string) *fault {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, f := range s.faults {
-		if f.spent || faultProto(f) != "smtp" || f.command == "" {
+		if f.spent || isTokenDo(f.do) || faultProto(f) != "smtp" || f.command == "" {
 			continue
 		}
 		if f.conn != 0 && f.conn != id {
@@ -367,6 +376,7 @@ func (s *session) itemRank(it string) int {
 func (s *session) runCommand(cmd command) error {
 	s.midDone = false
 	s.srv.logLine("command", s.id, joinCmd(cmd.tag, cmd.name, cmd.uid, cmd.args, cmd.fetch))
+	s.srv.fireArmed(s, cmd.name)
 	if err := s.flush(); err != nil {
 		return err
 	}

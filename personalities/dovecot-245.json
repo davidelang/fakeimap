@@ -3,6 +3,8 @@
   "delimiter": "/",
   "greeting_capabilities": [
     "IMAP4rev1",
+    "IMAP4rev2",
+    "LOGIN-REFERRALS",
     "ID",
     "ENABLE",
     "IDLE",
@@ -13,6 +15,8 @@
   ],
   "pre_login_capabilities": [
     "IMAP4rev1",
+    "IMAP4rev2",
+    "LOGIN-REFERRALS",
     "ID",
     "ENABLE",
     "IDLE",
@@ -23,7 +27,9 @@
   ],
   "post_login_capabilities": [
     "IMAP4rev1",
+    "IMAP4REV2",
     "SASL-IR",
+    "LOGIN-REFERRALS",
     "ID",
     "ENABLE",
     "IDLE",
@@ -49,6 +55,8 @@
     "BINARY",
     "MOVE",
     "REPLACE",
+    "SNIPPET=FUZZY",
+    "PREVIEW=FUZZY",
     "PREVIEW",
     "SPECIAL-USE",
     "STATUS=SIZE",

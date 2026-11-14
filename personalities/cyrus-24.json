@@ -46,6 +46,7 @@
     "ID",
     "ENABLE",
     "QUOTA",
+    "MAILBOX-REFERRALS",
     "NAMESPACE",
     "UIDPLUS",
     "UNSELECT",
@@ -64,6 +65,8 @@
     "QRESYNC",
     "SCAN",
     "XLIST",
+    "URLAUTH",
+    "URLAUTH=BINARY",
     "COMPRESS=DEFLATE",
     "IDLE"
   ],

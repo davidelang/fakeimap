@@ -62,7 +62,7 @@ func TestReplaceLists(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if listed(p.PreLogin, "REPLACE") || !betweenCaps(p.PostLogin, "REPLACE", "MOVE", "PREVIEW") {
+		if listed(p.PreLogin, "REPLACE") || !betweenCaps(p.PostLogin, "REPLACE", "MOVE", "SNIPPET=FUZZY") {
 			t.Fatalf("%s REPLACE position", file)
 		}
 	}

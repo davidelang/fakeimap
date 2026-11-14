@@ -36,7 +36,7 @@ func wantAuthFirst(t *testing.T, cl *imapClient, line string) {
 
 func assertNoACLToken(t *testing.T, caps []string, where string) {
 	t.Helper()
-	for _, tok := range []string{"ACL", "RIGHTS=kxten", "LIST-MYRIGHTS"} {
+	for _, tok := range []string{"ACL", "RIGHTS=kxten"} {
 		if listed(caps, tok) {
 			t.Fatalf("%s lists %s: %q", where, tok, caps)
 		}
@@ -44,17 +44,24 @@ func assertNoACLToken(t *testing.T, caps []string, where string) {
 }
 
 func TestACLSyntaxStub(t *testing.T) {
-	if capImplemented("ACL") || capImplemented("RIGHTS=kxten") || capImplemented("LIST-MYRIGHTS") {
-		t.Fatal("ACL family is implemented")
+	if capImplemented("ACL") || capImplemented("RIGHTS=kxten") || !capImplemented("LIST-MYRIGHTS") {
+		t.Fatal("ACL family capability map")
 	}
 	gaps, err := os.ReadFile("personalities/cyrus-3137.gaps.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tok := range []string{"ACL", "RIGHTS=kxten", "LIST-MYRIGHTS"} {
+	for _, tok := range []string{"ACL", "RIGHTS=kxten"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}
+	}
+	if strings.Contains(string(gaps), `"LIST-MYRIGHTS"`) {
+		t.Fatal("gaps still lists LIST-MYRIGHTS")
+	}
+	myrightsPost := map[string]bool{
+		"cyrus-25.json": true, "cyrus-36.json": true,
+		"cyrus-3124.json": true, "cyrus-3137.json": true,
 	}
 	entries, err := os.ReadDir("personalities")
 	if err != nil {
@@ -70,8 +77,12 @@ func TestACLSyntaxStub(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if p.listsCap("ACL") || p.listsCap("RIGHTS=kxten") || p.listsCap("LIST-MYRIGHTS") {
+		if p.listsCap("ACL") || p.listsCap("RIGHTS=kxten") {
 			t.Fatalf("%s lists an ACL token", path)
+		}
+		postMy := listed(p.PostLogin, "LIST-MYRIGHTS")
+		if listed(p.GreetingCaps, "LIST-MYRIGHTS") || listed(p.PreLogin, "LIST-MYRIGHTS") || postMy != myrightsPost[e.Name()] {
+			t.Fatalf("%s LIST-MYRIGHTS greet/pre/post", path)
 		}
 		files = append(files, path)
 	}
@@ -114,6 +125,9 @@ func TestACLSyntaxStub(t *testing.T) {
 		t.Fatalf("post capability %q", post.untagged)
 	}
 	assertNoACLToken(t, capsOf(post.untagged[0]), "post-login")
+	if !listed(capsOf(post.untagged[0]), "LIST-MYRIGHTS") {
+		t.Fatal("cyrus-3137 post-login omitted LIST-MYRIGHTS")
+	}
 
 	for _, line := range []string{
 		"SETACL INBOX anyone lr",
@@ -256,6 +270,10 @@ func TestACLSyntaxStub(t *testing.T) {
 			t.Fatalf("%s post %q", path, after.untagged)
 		}
 		assertNoACLToken(t, capsOf(after.untagged[0]), path+" post")
+		base := filepath.Base(path)
+		if listed(capsOf(after.untagged[0]), "LIST-MYRIGHTS") != myrightsPost[base] {
+			t.Fatalf("%s post LIST-MYRIGHTS", path)
+		}
 		wantACLStub(t, c, "MYRIGHTS INBOX")
 		wantACLBad(t, c, "GETACL")
 	}

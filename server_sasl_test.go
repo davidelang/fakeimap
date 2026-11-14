@@ -69,7 +69,7 @@ func TestSaslPersonality(t *testing.T) {
 		strings.Join(cyrus.SelectOrder, " ") != strings.Join(sasl.SelectOrder, " ") ||
 		strings.Join(cyrus.FlagOrder, " ") != strings.Join(sasl.FlagOrder, " ") ||
 		strings.Join(cyrus.FetchItemOrder, " ") != strings.Join(sasl.FetchItemOrder, " ") ||
-		!sameCapSet(dropCap(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), sasl.PostLogin) {
+		!sameCapSet(dropCyrusLab(cyrus.PostLogin), sasl.PostLogin) {
 		t.Fatalf("mailbox behavior drifted")
 	}
 	want := []string{"AUTH=LOGIN", "AUTH=CRAM-MD5", "AUTH=SCRAM-SHA-1", "AUTH=SCRAM-SHA-256", "AUTH=SCRAM-SHA-1-PLUS", "AUTH=SCRAM-SHA-256-PLUS", "AUTH=EXTERNAL"}
@@ -556,6 +556,18 @@ func TestAuthenticateExternal(t *testing.T) {
 func externalAuth(t *testing.T, cl *imapClient, cmd string) string {
 	t.Helper()
 	return cl.cmd(cmd).status
+}
+
+// dropCyrusLab removes tokens this plan adds only on the lab Cyrus files.
+func dropCyrusLab(caps []string) []string {
+	for _, tok := range []string{
+		"SEARCH=FUZZY", "INPROGRESS", "IMAP4REV2", "URLAUTH", "URLAUTH=BINARY",
+		"LIST-MYRIGHTS", "MAILBOX-REFERRALS", "QUOTA=RES-ANNOTATION-STORAGE",
+		"QUOTA=RES-MAILBOX", "X-CREATEDMODSEQ",
+	} {
+		caps = dropCap(caps, tok)
+	}
+	return caps
 }
 
 func newTestCA(t *testing.T) (*x509.Certificate, *ecdsa.PrivateKey, string) {

@@ -3,6 +3,7 @@
   "delimiter": ".",
   "greeting_capabilities": [],
   "pre_login_capabilities": [
+    "IMAP4",
     "IMAP4rev1",
     "QUOTA",
     "LITERAL+",
@@ -19,6 +20,7 @@
     "IDLE"
   ],
   "post_login_capabilities": [
+    "IMAP4",
     "IMAP4rev1",
     "QUOTA",
     "LITERAL+",

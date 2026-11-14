@@ -215,6 +215,10 @@ type Mailbox struct {
 	special       []string
 	jmapID        string // stable for the process; not the IMAP UID
 	st            *Store
+	owner         string // personal account; empty on the shared tree
+	shared        bool
+	createdModseq uint64
+	urlGen        uint64
 }
 
 func (mb *Mailbox) bump(m *Message) uint64 {
@@ -310,6 +314,13 @@ type Store struct {
 	watchers     []*session                 // sessions with a NOTIFY registration
 	ctxWatch     []*session                 // sessions with a SEARCH UPDATE context
 	rawNames     sync.Map                   // mailbox keys whose wire form is the raw bytes
+	acctOrder    []string
+	trees        map[string]*boxTree // accounts other than the first
+	shared       *boxTree
+	annoLimit    uint64
+	mboxLimit    uint64
+	xAnnoLimit   uint64
+	urls         map[string]*urlRec
 }
 
 const (
@@ -324,6 +335,10 @@ type quotaSnap struct {
 	messageUse uint64
 	storageLim uint64
 	messageLim uint64
+	annoLim    uint64
+	mboxUse    uint64
+	mboxLim    uint64
+	xAnnoLim   uint64
 }
 
 // jmapChange is one email id change at the session state after it happened.
@@ -445,16 +460,16 @@ func (st *Store) findThread(msgID string, extra *Mailbox) string {
 	if tid := scan(extra); tid != "" {
 		return tid
 	}
-	for _, name := range st.order {
-		mb := st.boxes[name]
-		if mb == extra {
-			continue
+	found := ""
+	st.walkOwner(extra, func(name string, mb *Mailbox) {
+		if found != "" || mb == extra {
+			return
 		}
-		if tid := scan(mb); tid != "" {
-			return tid
+		if got := scan(mb); got != "" {
+			found = got
 		}
-	}
-	return ""
+	})
+	return found
 }
 
 // validObjectID is one to 255 letters, digits, underscores, or hyphens.
@@ -561,14 +576,11 @@ type selectInfo struct {
 func (st *Store) selectBox(s *session, name string, readOnly bool, qr *qresyncSel) (selectInfo, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil {
-		return selectInfo{}, err
-	}
-	mb := st.boxes[cn]
-	if mb == nil {
+	res, err := st.resolveName(s.user, s.pers, name)
+	if err != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
 		return selectInfo{}, fmt.Errorf("no mailbox")
 	}
+	mb := res.sl.boxes[res.key]
 	closed := s.box != nil
 	st.detachLocked(s)
 	info := selectInfo{
@@ -690,6 +702,7 @@ type listEntry struct {
 	name      string
 	status    [][2]string
 	mailboxID string
+	myrights  bool
 }
 
 // listQuery is the extended LIST this server honors. A two-argument LIST
@@ -708,6 +721,10 @@ type listQuery struct {
 	markSubscribed bool
 	objectRFC      bool
 	objectPlus     bool
+	pers           *Personality
+	myrights       bool
+	allowCreated   bool
+	noRecent       bool
 }
 
 func canonPattern(pat, delim string) string {
@@ -780,11 +797,34 @@ func formatListFlags(child string, special []string) string {
 	return "(" + strings.Join(parts, " ") + ")"
 }
 
+// oneListFlags is the LIST flag list and wire name for one stored mailbox.
+func (st *Store) oneListFlags(user string, pers *Personality, name string, showSpecial bool) (string, string, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	res, err := st.resolveName(user, pers, name)
+	if err != nil || res.virtual || res.sl == nil {
+		return "", "", false
+	}
+	mb := res.sl.boxes[res.key]
+	if mb == nil {
+		return "", "", false
+	}
+	var spec []string
+	if showSpecial {
+		spec = mb.special
+	}
+	wire := res.wire
+	if wire == "" {
+		wire = res.key
+	}
+	return formatListFlags(childFlag(res.sl.order, res.key, st.delim), spec), wire, true
+}
+
 func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if q.wantStatus {
-		if _, err := statusPairs(nil, q.status, q.appendLimit, q.statusSize, q.objectRFC, q.objectPlus, q.user); err != nil {
+		if _, err := statusPairs(nil, q.status, q.appendLimit, q.statusSize, q.objectRFC, q.objectPlus, q.user, q.allowCreated, q.noRecent); err != nil {
 			return nil, "", false, err
 		}
 	}
@@ -805,8 +845,13 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 	}
 	full = canonPattern(full, st.delim)
 	var out []listEntry
-	for _, name := range st.order {
-		mb := st.boxes[name]
+	have := map[string]bool{}
+	sl := st.slotUser(q.user)
+	for _, name := range sl.order {
+		mb := sl.boxes[name]
+		if mb == nil {
+			continue
+		}
 		if q.specialOnly && len(mb.special) == 0 {
 			continue
 		}
@@ -816,14 +861,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 		if !wildMatch(name, full, st.delim) {
 			continue
 		}
-		flags := `\HasNoChildren`
-		pref := name + st.delim
-		for _, other := range st.order {
-			if strings.HasPrefix(other, pref) {
-				flags = `\HasChildren`
-				break
-			}
-		}
+		flags := childFlag(sl.order, name, st.delim)
 		var spec []string
 		if q.showSpecial {
 			spec = mb.special
@@ -831,7 +869,7 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 		var pairs [][2]string
 		if q.wantStatus {
 			var err error
-			pairs, err = statusPairs(mb, q.status, q.appendLimit, q.statusSize, q.objectRFC, q.objectPlus, q.user)
+			pairs, err = statusPairs(mb, q.status, q.appendLimit, q.statusSize, q.objectRFC, q.objectPlus, q.user, q.allowCreated, q.noRecent)
 			if err != nil {
 				return nil, "", false, err
 			}
@@ -843,39 +881,52 @@ func (st *Store) list(ref, pat string, q listQuery) ([]listEntry, string, bool, 
 		if q.markSubscribed {
 			flagText = strings.TrimSuffix(flagText, ")") + ` \Subscribed)`
 		}
-		out = append(out, listEntry{flags: flagText, name: name, status: pairs, mailboxID: mb.jmapID})
+		have[name] = true
+		out = append(out, listEntry{
+			flags: flagText, name: name, status: pairs, mailboxID: mb.jmapID,
+			myrights: q.myrights,
+		})
 	}
+	out = append(out, st.listExtras(q.user, q.pers, full, q, have)...)
 	return out, st.delim, false, nil
 }
 
 // subscribe adds an existing mailbox to the account's set.
-func (st *Store) subscribe(user, name string) error {
+func (st *Store) subscribe(user string, pers *Personality, name string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
+	res, err := st.resolveName(user, pers, name)
 	if err != nil {
 		return err
 	}
-	if st.boxes[cn] == nil {
+	if res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
 		return fmt.Errorf("no mailbox")
 	}
+	key := res.key
+	if res.other || res.shared {
+		key = res.wire
+	}
 	st.ensureSub(user)
-	st.subs[user][cn] = true
-	st.fanBox("sub", cn, user)
+	st.subs[user][key] = true
+	st.fanBox("sub", key, user)
 	return nil
 }
 
 // unsubscribe removes a name. A name that was not subscribed is still success.
-func (st *Store) unsubscribe(user, name string) error {
+func (st *Store) unsubscribe(user string, pers *Personality, name string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
+	res, err := st.resolveName(user, pers, name)
 	if err != nil {
 		return err
 	}
-	st.fanBox("unsub", cn, user)
+	key := res.key
+	if res.other || res.shared {
+		key = res.wire
+	}
+	st.fanBox("unsub", key, user)
 	if st.subs[user] != nil {
-		delete(st.subs[user], cn)
+		delete(st.subs[user], key)
 	}
 	return nil
 }
@@ -999,22 +1050,19 @@ func (st *Store) seedSubs() {
 	}
 }
 
-func (st *Store) status(name string, items []string, appendLimit uint64, statusSize, objectRFC, objectPlus bool, account string) (string, [][2]string, error) {
+func (st *Store) status(name string, items []string, appendLimit uint64, statusSize, objectRFC, objectPlus bool, account string, pers *Personality, allowCreated, noRecent bool) (string, [][2]string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil {
-		return "", nil, err
-	}
-	mb := st.boxes[cn]
-	if mb == nil {
+	res, err := st.resolveName(account, pers, name)
+	if err != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
 		return "", nil, fmt.Errorf("no mailbox")
 	}
-	out, err := statusPairs(mb, items, appendLimit, statusSize, objectRFC, objectPlus, account)
+	mb := res.sl.boxes[res.key]
+	out, err := statusPairs(mb, items, appendLimit, statusSize, objectRFC, objectPlus, account, allowCreated, noRecent)
 	if err != nil {
 		return "", nil, err
 	}
-	return cn, out, nil
+	return res.wire, out, nil
 }
 
 // statusPairs reads one mailbox. A nil mailbox only checks the item names.
@@ -1022,7 +1070,7 @@ func (st *Store) status(name string, items []string, appendLimit uint64, statusS
 // is not on the list in effect. Zero is not a valid limit. statusSize is
 // whether that list includes STATUS=SIZE. SIZE is the sum of RFC822 sizes
 // still in the mailbox, including \Deleted until EXPUNGE.
-func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize, objectRFC, objectPlus bool, account string) ([][2]string, error) {
+func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize, objectRFC, objectPlus bool, account string, allowCreated, noRecent bool) ([][2]string, error) {
 	var out [][2]string
 	for _, it := range items {
 		name := strings.ToUpper(it)
@@ -1059,6 +1107,17 @@ func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize, ob
 			out = append(out, [2]string{name, "(" + imapAtom(id) + ")"})
 			continue
 		}
+		if name == "X-CREATEDMODSEQ" {
+			if !allowCreated {
+				return nil, fmt.Errorf("bad status item")
+			}
+			v := uint64(0)
+			if mb != nil {
+				v = mb.createdModseq
+			}
+			out = append(out, [2]string{name, strconv.FormatUint(v, 10)})
+			continue
+		}
 		if name == "OBJECTID" {
 			if !objectPlus {
 				return nil, fmt.Errorf("bad status item")
@@ -1077,6 +1136,9 @@ func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize, ob
 				v = uint32(len(mb.msgs))
 			}
 		case "RECENT":
+			if noRecent {
+				return nil, fmt.Errorf("bad status item")
+			}
 			if mb != nil {
 				v = uint32(mb.recentCount())
 			}
@@ -1129,24 +1191,17 @@ func canonSpecialUses(in []string) ([]string, error) {
 }
 
 func (st *Store) specialOwned(flag string) bool {
-	for _, mb := range st.boxes {
-		for _, f := range mb.special {
-			if f == flag {
-				return true
-			}
-		}
-	}
-	return false
+	return st.specialIn(st.boxes, flag)
 }
 
-func (st *Store) create(name string, uses []string) (string, error) {
-	return st.createMailbox(name, uses, false)
+func (st *Store) create(user string, pers *Personality, name string, uses []string) (string, error) {
+	return st.createMailbox(user, pers, name, uses, false)
 }
 
 // createRaw stores name as the mailbox key, including invalid UTF-8.
 // LIST, LSUB, and STATUS emit those bytes unchanged.
-func (st *Store) createRaw(name string) error {
-	_, err := st.createMailbox(name, nil, true)
+func (st *Store) createRaw(user string, pers *Personality, name string) error {
+	_, err := st.createMailbox(user, pers, name, nil, true)
 	return err
 }
 
@@ -1163,14 +1218,14 @@ func (st *Store) moveRaw(old, neu string) {
 	st.rawNames.Store(neu, true)
 }
 
-func (st *Store) createMailbox(name string, uses []string, raw bool) (string, error) {
+func (st *Store) createMailbox(user string, pers *Personality, name string, uses []string, raw bool) (string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil {
+	res, err := st.resolveName(user, pers, name)
+	if err != nil || res.virtual || res.sl == nil {
 		return "", err
 	}
-	if _, ok := st.boxes[cn]; ok {
+	if res.sl.boxes[res.key] != nil {
 		return "", fmt.Errorf("exists")
 	}
 	special, err := canonSpecialUses(uses)
@@ -1178,38 +1233,71 @@ func (st *Store) createMailbox(name string, uses []string, raw bool) (string, er
 		return "", err
 	}
 	for _, u := range special {
-		if st.specialOwned(u) {
+		if st.specialIn(res.sl.boxes, u) {
 			return "", fmt.Errorf("use conflict")
 		}
 	}
-	mb := &Mailbox{name: cn, uidValidity: st.allocUIDV(), uidNext: 1, special: special, st: st}
+	owner := user
+	if owner == "" {
+		owner = st.primaryUser()
+	}
+	if res.other {
+		owner = st.ownerOf(nil)
+		// the slot is the target account; owner is that account
+		if !res.shared {
+			owner = ""
+		}
+	}
+	mb := &Mailbox{
+		name: res.key, uidValidity: st.allocUIDV(), uidNext: 1, special: special,
+		st: st, shared: res.shared, urlGen: 1,
+	}
+	if res.shared {
+		mb.owner = ""
+	} else if res.other {
+		// slotUser already selected the named account; recover it from the wire.
+		mb.owner = otherAccount(pers, res.wire)
+	} else {
+		mb.owner = owner
+	}
+	mb.createdModseq = mb.highestModseq
 	st.stampBox(mb)
-	st.boxes[cn] = mb
-	st.order = append(st.order, cn)
+	res.sl.boxes[res.key] = mb
+	res.sl.order = append(res.sl.order, res.key)
+	res.sl.save()
 	if raw {
-		st.rawNames.Store(cn, true)
+		st.rawNames.Store(res.key, true)
 	}
 	st.touch()
-	st.fanBox("create", cn, "")
+	st.fanBox("create", res.wire, "")
 	return mb.jmapID, nil
+}
+
+func otherAccount(p *Personality, wire string) string {
+	_, acct, _, _, ok := splitOther(p, wire)
+	if !ok {
+		return ""
+	}
+	return acct
 }
 
 func (st *Store) delete(s *session, name string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil {
-		return err
+	res, err := st.resolveName(s.user, s.pers, name)
+	if err != nil || res.virtual || res.sl == nil {
+		return fmt.Errorf("no mailbox")
 	}
-	if cn == "INBOX" {
+	cn := res.key
+	if cn == "INBOX" && !res.shared {
 		return fmt.Errorf("cannot delete INBOX")
 	}
-	mb := st.boxes[cn]
+	mb := res.sl.boxes[cn]
 	if mb == nil {
 		return fmt.Errorf("no mailbox")
 	}
 	pref := cn + st.delim
-	for _, other := range st.order {
+	for _, other := range res.sl.order {
 		if strings.HasPrefix(other, pref) {
 			return fmt.Errorf("has children")
 		}
@@ -1231,34 +1319,43 @@ func (st *Store) delete(s *session, name string) error {
 	if len(mb.msgs) == 0 {
 		st.touch()
 	}
-	delete(st.boxes, cn)
+	delete(res.sl.boxes, cn)
 	st.rawNames.Delete(cn)
-	order := st.order[:0]
-	for _, n := range st.order {
+	order := res.sl.order[:0]
+	for _, n := range res.sl.order {
 		if n != cn {
 			order = append(order, n)
 		}
 	}
-	st.order = order
-	st.fanBox("delete", cn, "")
+	res.sl.order = order
+	res.sl.save()
+	st.fanBox("delete", res.wire, "")
 	for _, set := range st.subs {
 		delete(set, cn)
+		delete(set, res.wire)
 	}
 	return nil
 }
 
-func (st *Store) rename(oldName, newName string, moveInbox bool) (string, error) {
+func (st *Store) rename(user string, pers *Personality, oldName, newName string, moveInbox bool) (string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	oldC, err := st.canon(oldName)
-	if err != nil {
+	oldR, err := st.resolveName(user, pers, oldName)
+	if err != nil || oldR.virtual || oldR.sl == nil || oldR.sl.boxes[oldR.key] == nil {
+		return "", fmt.Errorf("no mailbox")
+	}
+	newR, err := st.resolveName(user, pers, newName)
+	if err != nil || newR.virtual || newR.sl == nil {
 		return "", err
 	}
-	newC, err := st.canon(newName)
-	if err != nil {
-		return "", err
+	oldC := oldR.key
+	newC := newR.key
+	src := oldR.sl
+	dst := newR.sl
+	if src.id != dst.id {
+		return st.renameAcross(src, dst, oldC, newC)
 	}
-	if st.boxes[oldC] == nil {
+	if src.boxes[oldC] == nil {
 		return "", fmt.Errorf("no mailbox")
 	}
 	// RENAME INBOX INBOX stays NO for every personality. A different
@@ -1267,15 +1364,49 @@ func (st *Store) rename(oldName, newName string, moveInbox bool) (string, error)
 		return "", fmt.Errorf("cannot rename INBOX")
 	}
 	if oldC == newC {
-		return st.boxes[oldC].jmapID, nil
+		return src.boxes[oldC].jmapID, nil
 	}
-	if oldC == "INBOX" {
-		return st.renameInboxLocked(newC)
+	if oldC == "INBOX" && !oldR.shared {
+		return st.renameInboxLocked(src, newC)
 	}
+	id, err := st.renameWithin(src, oldC, newC)
+	src.save()
+	return id, err
+}
+
+func (st *Store) renameAcross(src, dst *treeSlot, oldC, newC string) (string, error) {
+	if dst.boxes[newC] != nil {
+		return "", fmt.Errorf("exists")
+	}
+	mb := src.boxes[oldC]
+	if mb == nil {
+		return "", fmt.Errorf("no mailbox")
+	}
+	delete(src.boxes, oldC)
+	order := src.order[:0]
+	for _, n := range src.order {
+		if n != oldC {
+			order = append(order, n)
+		}
+	}
+	src.order = order
+	mb.name = newC
+	dst.boxes[newC] = mb
+	dst.order = append(dst.order, newC)
+	src.save()
+	dst.save()
+	st.moveRaw(oldC, newC)
+	st.fanBox("rename-old", oldC, "")
+	st.fanBox("rename-new", newC, "")
+	st.touch()
+	return mb.jmapID, nil
+}
+
+func (st *Store) renameWithin(src *treeSlot, oldC, newC string) (string, error) {
 	type pair struct{ old, neu string }
 	var moves []pair
 	pref := oldC + st.delim
-	for _, name := range st.order {
+	for _, name := range src.order {
 		if name == oldC {
 			moves = append(moves, pair{name, newC})
 		} else if strings.HasPrefix(name, pref) {
@@ -1287,28 +1418,28 @@ func (st *Store) rename(oldName, newName string, moveInbox bool) (string, error)
 		moving[mv.old] = true
 	}
 	for _, mv := range moves {
-		if _, ok := st.boxes[mv.neu]; ok && !moving[mv.neu] {
+		if _, ok := src.boxes[mv.neu]; ok && !moving[mv.neu] {
 			return "", fmt.Errorf("exists")
 		}
 	}
-	neuBoxes := make(map[string]*Mailbox, len(st.boxes))
-	for k, v := range st.boxes {
+	neuBoxes := make(map[string]*Mailbox, len(src.boxes))
+	for k, v := range src.boxes {
 		if !moving[k] {
 			neuBoxes[k] = v
 		}
 	}
 	rewritten := map[string]string{}
 	for _, mv := range moves {
-		mb := st.boxes[mv.old]
+		mb := src.boxes[mv.old]
 		mb.name = mv.neu
 		neuBoxes[mv.neu] = mb
 		rewritten[mv.old] = mv.neu
 		st.moveRaw(mv.old, mv.neu)
 	}
-	st.boxes = neuBoxes
-	for i, name := range st.order {
+	src.boxes = neuBoxes
+	for i, name := range src.order {
 		if n, ok := rewritten[name]; ok {
-			st.order[i] = n
+			src.order[i] = n
 		}
 	}
 	for _, mv := range moves {
@@ -1329,7 +1460,7 @@ func (st *Store) rename(oldName, newName string, moveInbox bool) (string, error)
 		st.fanBox("rename-new", mv.neu, "")
 	}
 	st.touch()
-	if mb := st.boxes[newC]; mb != nil {
+	if mb := src.boxes[newC]; mb != nil {
 		return mb.jmapID, nil
 	}
 	return "", nil
@@ -1337,22 +1468,23 @@ func (st *Store) rename(oldName, newName string, moveInbox bool) (string, error)
 
 // renameInboxLocked moves INBOX's messages and MAILBOXID to newC and leaves
 // a new empty INBOX. Inferior names stay. Caller holds st.mu.
-func (st *Store) renameInboxLocked(newC string) (string, error) {
-	if st.boxes[newC] != nil {
+func (st *Store) renameInboxLocked(src *treeSlot, newC string) (string, error) {
+	if src.boxes[newC] != nil {
 		return "", fmt.Errorf("exists")
 	}
-	old := st.boxes["INBOX"]
+	old := src.boxes["INBOX"]
 	if old == nil {
 		return "", fmt.Errorf("no mailbox")
 	}
 	id := old.jmapID
 	old.name = newC
-	st.boxes[newC] = old
+	src.boxes[newC] = old
 	st.moveRaw("INBOX", newC)
-	nb := &Mailbox{name: "INBOX", uidValidity: st.allocUIDV(), uidNext: 1, st: st}
+	nb := &Mailbox{name: "INBOX", uidValidity: st.allocUIDV(), uidNext: 1, st: st, owner: old.owner, urlGen: 1}
 	st.stampBox(nb)
-	st.boxes["INBOX"] = nb
-	st.order = append(st.order, newC)
+	src.boxes["INBOX"] = nb
+	src.order = append(src.order, newC)
+	src.save()
 	st.fanBox("rename-old", "INBOX", "")
 	st.fanBox("rename-new", newC, "")
 	st.touch()
@@ -1540,6 +1672,7 @@ type fetchSnap struct {
 	seenEvent uint64
 	emailID   string
 	threadID  string
+	created   uint64
 }
 
 func (st *Store) fetch(s *session, uidMode bool, addUID bool, set *seqSet, items []string, changedSince *uint64, limit uint64) ([]fetchSnap, []string, uint32, bool, error) {
@@ -1548,7 +1681,7 @@ func (st *Store) fetch(s *session, uidMode bool, addUID bool, set *seqSet, items
 	if s.box == nil {
 		return nil, nil, 0, false, fmt.Errorf("not selected")
 	}
-	expanded, err := expandFetch(items, addUID, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"), s.rfcObject(), s.plusObject())
+	expanded, err := expandFetch(items, addUID, s.advertiseCap("BINARY") || s.on("IMAP4REV2"), s.advertiseCap("PREVIEW") || s.advertiseCap("SNIPPET=FUZZY"), s.advertiseCap("SAVEDATE"), s.rfcObject(), s.plusObject(), s.advertiseCap("X-CREATEDMODSEQ"))
 	if err != nil {
 		return nil, nil, 0, false, err
 	}
@@ -1603,6 +1736,7 @@ func (st *Store) fetch(s *session, uidMode bool, addUID bool, set *seqSet, items
 			seq: seq, uid: m.uid, modseq: m.modseq, flags: formatFlags(m, s.pers.FlagOrder),
 			internal: m.internal, saved: m.saved, size: m.size, raw: raw,
 			seenEvent: seenEvent, emailID: m.jmapID, threadID: m.threadID,
+			created: mb.createdModseq,
 		})
 	}
 	return snaps, expanded, lowest, limited, nil
@@ -1673,7 +1807,7 @@ func itemListed(items []string, name string) bool {
 	return false
 }
 
-func expandFetch(items []string, uidMode bool, binary, preview, savedate, emailID, objectID bool) ([]string, error) {
+func expandFetch(items []string, uidMode bool, binary, preview, savedate, emailID, objectID, created bool) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
 	var add func(string) error
@@ -1687,7 +1821,7 @@ func expandFetch(items []string, uidMode bool, binary, preview, savedate, emailI
 		case "FULL":
 			return addAll([]string{"FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY"}, add)
 		}
-		if !knownFetch(u, binary, preview, savedate, emailID, objectID) {
+		if !knownFetch(u, binary, preview, savedate, emailID, objectID, created) {
 			return fmt.Errorf("bad fetch item")
 		}
 		key := u
@@ -1723,13 +1857,15 @@ func addAll(items []string, add func(string) error) error {
 	return nil
 }
 
-func knownFetch(u string, binary, preview, savedate, emailID, objectID bool) bool {
+func knownFetch(u string, binary, preview, savedate, emailID, objectID, created bool) bool {
 	switch u {
 	case "FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY", "BODYSTRUCTURE",
 		"RFC822", "RFC822.HEADER", "RFC822.TEXT", "MODSEQ":
 		return true
-	case "PREVIEW":
+	case "PREVIEW", "SNIPPET":
 		return preview
+	case "X-CREATEDMODSEQ":
+		return created
 	case "SAVEDATE":
 		return savedate
 	case "EMAILID", "THREADID":
@@ -1889,11 +2025,7 @@ func (st *Store) propagateObjectFlags(selected *Mailbox, src *Message, op string
 	shared := flagsExcept(flags, `\Deleted`, `\Recent`)
 	var snaps []storeSnap
 	var last uint64
-	for _, name := range st.order {
-		mb := st.boxes[name]
-		if mb == nil {
-			continue
-		}
+	st.walkOwner(selected, func(name string, mb *Mailbox) {
 		for i, m := range mb.msgs {
 			if m == src || m.jmapID != src.jmapID || skip[m] {
 				continue
@@ -1935,7 +2067,7 @@ func (st *Store) propagateObjectFlags(selected *Mailbox, src *Message, op string
 				snaps = append(snaps, storeSnap{seq: uint32(i + 1), uid: m.uid, modseq: m.modseq, flags: formatted})
 			}
 		}
-	}
+	})
 	return snaps, last
 }
 
@@ -2629,24 +2761,25 @@ type sourceHit struct {
 func (st *Store) searchSource(user, source, root string, keys []searchKey) ([]sourceHit, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	sl := st.slotUser(user)
 	var names []string
 	switch source {
 	case "SUBSCRIBED":
 		set := st.subs[user]
-		for _, name := range st.order {
+		for _, name := range sl.order {
 			if set[name] {
 				names = append(names, name)
 			}
 		}
 	case "PERSONAL":
-		names = append(names, st.order...)
+		names = append(names, sl.order...)
 	case "SUBTREE":
 		cn, err := st.canon(root)
-		if err != nil || st.boxes[cn] == nil {
+		if err != nil || sl.boxes[cn] == nil {
 			return nil, fmt.Errorf("missing")
 		}
 		pref := cn + st.delim
-		for _, name := range st.order {
+		for _, name := range sl.order {
 			if name == cn || strings.HasPrefix(name, pref) {
 				names = append(names, name)
 			}
@@ -2656,7 +2789,7 @@ func (st *Store) searchSource(user, source, root string, keys []searchKey) ([]so
 	}
 	var out []sourceHit
 	for _, name := range names {
-		mb := st.boxes[name]
+		mb := sl.boxes[name]
 		uids := searchUIDs(mb, keys)
 		if len(uids) == 0 {
 			continue
@@ -3071,20 +3204,30 @@ func (st *Store) expungeUID(s *session, uid uint32) bool {
 	return true
 }
 
-func (st *Store) hasMailbox(name string) bool {
+func (st *Store) hasMailbox(user string, pers *Personality, name string) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil {
+	res, err := st.resolveName(user, pers, name)
+	if err != nil || res.virtual || res.sl == nil {
 		return false
 	}
-	return st.boxes[cn] != nil
+	return res.sl.boxes[res.key] != nil
 }
 
 func (st *Store) appendMsg(s *session, name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, uint32, error) {
+	user := ""
+	var pers *Personality
+	if s != nil {
+		user = s.user
+		pers = s.pers
+	}
+	return st.appendAs(user, pers, name, flags, date, raw, frozen)
+}
+
+func (st *Store) appendAs(user string, pers *Personality, name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, uint32, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	uv, m, err := st.appendLocked(name, flags, date, raw, frozen)
+	uv, m, err := st.appendLocked(user, pers, name, flags, date, raw, frozen)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -3103,11 +3246,8 @@ type appendPart struct {
 func (st *Store) appendMsgs(s *session, name string, parts []appendPart, frozen *time.Time) (uint32, []uint32, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil {
-		return 0, nil, err
-	}
-	if st.boxes[cn] == nil {
+	res, err := st.resolveName(s.user, s.pers, name)
+	if err != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
 		return 0, nil, fmt.Errorf("no mailbox")
 	}
 	for _, p := range parts {
@@ -3121,7 +3261,7 @@ func (st *Store) appendMsgs(s *session, name string, parts []appendPart, frozen 
 	var uv uint32
 	for _, p := range parts {
 		var m *Message
-		uv, m, err = st.appendLocked(name, p.flags, p.date, p.raw, frozen)
+		uv, m, err = st.appendLocked(s.user, s.pers, name, p.flags, p.date, p.raw, frozen)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -3138,11 +3278,8 @@ func (st *Store) replaceMsg(s *session, uidMode bool, num uint32, star bool, des
 	if s.box == nil {
 		return 0, 0, fmt.Errorf("not selected")
 	}
-	cn, err := st.canon(dest)
-	if err != nil {
-		return 0, 0, err
-	}
-	if st.boxes[cn] == nil {
+	res, err := st.resolveName(s.user, s.pers, dest)
+	if err != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
 		return 0, 0, fmt.Errorf("no mailbox")
 	}
 	for _, f := range flags {
@@ -3159,7 +3296,7 @@ func (st *Store) replaceMsg(s *session, uidMode bool, num uint32, star bool, des
 	}
 	goneID := hit.jmapID
 	st.expungeLocked(s.box, hit)
-	uv, m, err := st.appendLocked(dest, flags, date, raw, frozen)
+	uv, m, err := st.appendLocked(s.user, s.pers, dest, flags, date, raw, frozen)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -3199,15 +3336,15 @@ func saveClock(frozen *time.Time) time.Time {
 }
 
 // appendLocked appends one message. Caller holds st.mu.
-func (st *Store) appendLocked(name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, *Message, error) {
-	cn, err := st.canon(name)
-	if err != nil {
+func (st *Store) appendLocked(user string, pers *Personality, name string, flags []string, date *time.Time, raw []byte, frozen *time.Time) (uint32, *Message, error) {
+	res, err := st.resolveName(user, pers, name)
+	if err != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
+		if err == nil {
+			err = fmt.Errorf("no mailbox")
+		}
 		return 0, nil, err
 	}
-	mb := st.boxes[cn]
-	if mb == nil {
-		return 0, nil, fmt.Errorf("no mailbox")
-	}
+	mb := res.sl.boxes[res.key]
 	for _, f := range flags {
 		if _, ok := canonFlag(f); !ok {
 			return 0, nil, fmt.Errorf("bad flag")
@@ -3295,14 +3432,11 @@ func (st *Store) copyMsgs(s *session, uidMode bool, set *seqSet, dest string, mo
 	if move && s.readonly {
 		return copyResult{}, fmt.Errorf("read-only")
 	}
-	cn, err := st.canon(dest)
-	if err != nil {
-		return copyResult{}, err
-	}
-	dst := st.boxes[cn]
-	if dst == nil {
+	placed, err := st.resolveName(s.user, s.pers, dest)
+	if err != nil || placed.virtual || placed.sl == nil || placed.sl.boxes[placed.key] == nil {
 		return copyResult{}, fmt.Errorf("no mailbox")
 	}
+	dst := placed.sl.boxes[placed.key]
 	src := s.box
 	set, err = st.resolveDollar(s, uidMode, set)
 	if err != nil {
@@ -3571,13 +3705,13 @@ func (st *Store) generatedBodiesStored() int {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	n := 0
-	for _, mb := range st.boxes {
+	st.walkAll(func(name string, mb *Mailbox) {
 		for _, m := range mb.msgs {
 			if m.generated && m.raw != nil {
 				n++
 			}
 		}
-	}
+	})
 	return n
 }
 
@@ -3593,11 +3727,14 @@ func (st *Store) mailboxLen(name string) int {
 
 type datasetFile struct {
 	Accounts []struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username      string   `json:"username"`
+		Password      string   `json:"password"`
+		Subscriptions []string `json:"subscriptions,omitempty"`
 	} `json:"accounts"`
-	Mailboxes []struct {
+	Subscriptions []string `json:"subscriptions,omitempty"`
+	Mailboxes     []struct {
 		Name        string `json:"name"`
+		Account     string `json:"account,omitempty"`
 		UIDValidity uint32 `json:"uid_validity"`
 		Messages    []struct {
 			File         string   `json:"file"`
@@ -3640,26 +3777,38 @@ func loadStore(dir, delim string) (*Store, error) {
 		blobs:        map[string]*jmapBlob{},
 		quotaStorage: quotaStorageStart,
 		quotaMessage: quotaMessageStart,
+		mboxLimit:    1000000,
 	}
 	for _, a := range df.Accounts {
 		if a.Username == "" {
 			return nil, fmt.Errorf("dataset %s: empty username", dir)
 		}
+		if _, ok := st.accounts[a.Username]; ok {
+			return nil, fmt.Errorf("dataset %s: duplicate username", dir)
+		}
 		st.accounts[a.Username] = a.Password
+		st.acctOrder = append(st.acctOrder, a.Username)
 	}
 	for _, mbj := range df.Mailboxes {
 		name, err := st.canon(mbj.Name)
 		if err != nil {
 			return nil, err
 		}
-		if _, ok := st.boxes[name]; ok {
-			return nil, fmt.Errorf("dataset %s: duplicate mailbox %s", dir, name)
+		owner := mbj.Account
+		if owner == "" {
+			owner = st.primaryUser()
+		}
+		if _, ok := st.accounts[owner]; !ok {
+			return nil, fmt.Errorf("dataset %s: unknown account %s", dir, owner)
 		}
 		mb := &Mailbox{
-			name:        name,
-			uidValidity: st.noteUIDV(mbj.UIDValidity),
-			uidNext:     1,
-			st:          st,
+			name:          name,
+			uidValidity:   st.noteUIDV(mbj.UIDValidity),
+			uidNext:       1,
+			st:            st,
+			owner:         owner,
+			createdModseq: 1,
+			urlGen:        1,
 		}
 		st.stampBox(mb)
 		for _, mj := range mbj.Messages {
@@ -3736,16 +3885,28 @@ func loadStore(dir, delim string) (*Store, error) {
 		if err != nil {
 			return nil, fmt.Errorf("dataset %s: bad special_use on %s", dir, name)
 		}
+		tree := st.slotUser(owner)
 		for _, u := range special {
-			if st.specialOwned(u) {
+			if st.specialIn(tree.boxes, u) {
 				return nil, fmt.Errorf("dataset %s: special_use %s already used", dir, u)
 			}
 		}
 		mb.special = special
-		st.boxes[name] = mb
-		st.order = append(st.order, name)
+		if err := st.putBox(owner, mb); err != nil {
+			return nil, fmt.Errorf("dataset %s: %w", dir, err)
+		}
 	}
-	st.seedSubs()
+	for _, user := range st.acctOrder {
+		st.ensureInbox(user)
+	}
+	if len(df.Subscriptions) > 0 && len(st.acctOrder) > 0 {
+		st.applySubs(st.acctOrder[0], df.Subscriptions)
+	}
+	for _, a := range df.Accounts {
+		if a.Subscriptions != nil {
+			st.applySubs(a.Username, a.Subscriptions)
+		}
+	}
 	st.jmapState = 1
 	return st, nil
 }
@@ -3769,31 +3930,63 @@ func (st *Store) become(neu *Store) {
 	st.subs = neu.subs
 	st.quotaStorage = neu.quotaStorage
 	st.quotaMessage = neu.quotaMessage
+	st.acctOrder = neu.acctOrder
+	st.trees = neu.trees
+	st.shared = neu.shared
+	st.annoLimit = neu.annoLimit
+	st.mboxLimit = neu.mboxLimit
+	st.xAnnoLimit = neu.xAnnoLimit
+	st.urls = neu.urls
+	st.retarget(st)
 	st.rawNames.Clear()
 	st.pokeJMAPState()
 }
 
-// canonicalBox returns the stored mailbox name. A missing or illegal
-// name is not a mailbox.
-func (st *Store) canonicalBox(name string) (string, bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil || st.boxes[cn] == nil {
-		return "", false
+func (st *Store) retarget(live *Store) {
+	fix := func(mb *Mailbox) {
+		if mb != nil {
+			mb.st = live
+		}
 	}
-	return cn, true
+	for _, mb := range st.boxes {
+		fix(mb)
+	}
+	for _, t := range st.trees {
+		if t == nil {
+			continue
+		}
+		for _, mb := range t.boxes {
+			fix(mb)
+		}
+	}
+	if st.shared != nil {
+		for _, mb := range st.shared.boxes {
+			fix(mb)
+		}
+	}
 }
 
-func (st *Store) quotaNow() quotaSnap {
+// canonicalBox returns the stored mailbox name. A missing or illegal
+// name is not a mailbox.
+func (st *Store) canonicalBox(user string, pers *Personality, name string) (string, bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.quotaSnapLocked()
+	res, err := st.resolveName(user, pers, name)
+	if err != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
+		return "", false
+	}
+	return res.wire, true
+}
+
+func (st *Store) quotaNow(user string) quotaSnap {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.quotaSnapLocked(user)
 }
 
 // applyQuota changes the limits whose set flag is true. Caller has already
 // rejected a bad resource list, so a false flag leaves that limit alone.
-func (st *Store) applyQuota(setStorage bool, storage uint64, setMessage bool, message uint64) quotaSnap {
+func (st *Store) applyQuota(user string, setStorage bool, storage uint64, setMessage bool, message uint64) quotaSnap {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if setStorage {
@@ -3802,25 +3995,36 @@ func (st *Store) applyQuota(setStorage bool, storage uint64, setMessage bool, me
 	if setMessage {
 		st.quotaMessage = message
 	}
-	return st.quotaSnapLocked()
+	return st.quotaSnapLocked(user)
 }
 
 // quotaSnapLocked sums every message in the store, including \Deleted.
 // Caller holds st.mu.
-func (st *Store) quotaSnapLocked() quotaSnap {
+func (st *Store) quotaSnapLocked(user string) quotaSnap {
 	var bytes int64
 	var n uint64
-	for _, mb := range st.boxes {
+	var boxes uint64
+	st.walkPersonal(user, func(name string, mb *Mailbox) {
+		boxes++
 		for _, m := range mb.msgs {
 			bytes += int64(m.size)
 			n++
 		}
+	})
+	anno := st.annoLimit
+	mboxLim := st.mboxLimit
+	if mboxLim == 0 {
+		mboxLim = 1000000
 	}
 	return quotaSnap{
 		storageUse: uint64((bytes + 1023) / 1024),
 		messageUse: n,
 		storageLim: st.quotaStorage,
 		messageLim: st.quotaMessage,
+		annoLim:    anno,
+		mboxUse:    boxes,
+		mboxLim:    mboxLim,
+		xAnnoLim:   st.xAnnoLimit,
 	}
 }
 
@@ -3849,7 +4053,8 @@ func (st *Store) addAccount(user, pass string) error {
 		return fmt.Errorf("duplicate username")
 	}
 	st.accounts[user] = pass
-	st.seedSubs()
+	st.acctOrder = append(st.acctOrder, user)
+	st.ensureInbox(user)
 	return nil
 }
 
@@ -3859,17 +4064,14 @@ type mailListItem struct {
 	Size  int      `json:"size"`
 }
 
-func (st *Store) listMail(name string) ([]mailListItem, error) {
+func (st *Store) listMail(user, name string) ([]mailListItem, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil {
-		return nil, err
-	}
-	mb := st.boxes[cn]
-	if mb == nil {
+	res, err := st.resolveName(user, nil, name)
+	if err != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
 		return nil, fmt.Errorf("no mailbox")
 	}
+	mb := res.sl.boxes[res.key]
 	out := make([]mailListItem, 0, len(mb.msgs))
 	for _, m := range mb.msgs {
 		flags := flagNames(m, nil)
@@ -3881,17 +4083,14 @@ func (st *Store) listMail(name string) ([]mailListItem, error) {
 	return out, nil
 }
 
-func (st *Store) fetchMail(name string, uid uint32) ([]byte, error) {
+func (st *Store) fetchMail(user, name string, uid uint32) ([]byte, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	cn, err := st.canon(name)
-	if err != nil {
-		return nil, err
-	}
-	mb := st.boxes[cn]
-	if mb == nil {
+	res, err := st.resolveName(user, nil, name)
+	if err != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
 		return nil, fmt.Errorf("no mailbox")
 	}
+	mb := res.sl.boxes[res.key]
 	for _, m := range mb.msgs {
 		if m.uid == uid {
 			return append([]byte(nil), m.bytes()...), nil
@@ -3934,28 +4133,30 @@ func (st *Store) mailboxByObject(id string) (string, bool) {
 }
 
 func (st *Store) mailboxByJMAP(id string) *Mailbox {
-	for _, name := range st.order {
-		mb := st.boxes[name]
-		if mb != nil && mb.jmapID == id {
-			return mb
+	var found *Mailbox
+	st.walkAll(func(name string, mb *Mailbox) {
+		if found == nil && mb.jmapID == id {
+			found = mb
 		}
-	}
-	return nil
+	})
+	return found
 }
 
 func (st *Store) messageByJMAP(id string) (*Mailbox, *Message) {
-	for _, name := range st.order {
-		mb := st.boxes[name]
-		if mb == nil {
-			continue
+	var box *Mailbox
+	var msg *Message
+	st.walkAll(func(name string, mb *Mailbox) {
+		if msg != nil {
+			return
 		}
 		for _, m := range mb.msgs {
 			if m.jmapID == id {
-				return mb, m
+				box, msg = mb, m
+				return
 			}
 		}
-	}
-	return nil, nil
+	})
+	return box, msg
 }
 
 func (st *Store) messageRFC822(id string) ([]byte, bool) {
@@ -3999,7 +4200,7 @@ func (st *Store) importJMAP(account string, items []jmapImport, frozen *time.Tim
 	}
 	created := map[string]any{}
 	for _, it := range batch {
-		_, m, err := st.appendLocked(it.name, it.item.flags, it.item.when, it.raw, frozen)
+		_, m, err := st.appendLocked(account, nil, it.name, it.item.flags, it.item.when, it.raw, frozen)
 		if err != nil {
 			return "", "", nil, "invalidArguments"
 		}
@@ -4021,17 +4222,13 @@ type jmapLocated struct {
 
 func (st *Store) locateJMAP(id string) []jmapLocated {
 	var out []jmapLocated
-	for _, name := range st.order {
-		mb := st.boxes[name]
-		if mb == nil {
-			continue
-		}
+	st.walkAll(func(name string, mb *Mailbox) {
 		for i, m := range mb.msgs {
 			if m.jmapID == id {
 				out = append(out, jmapLocated{mb: mb, m: m, seq: uint32(i + 1)})
 			}
 		}
-	}
+	})
 	return out
 }
 
@@ -4178,17 +4375,21 @@ func (st *Store) noteCopyGone(id string, except *Message, skip *Mailbox) {
 	if id == "" {
 		return
 	}
-	for _, name := range st.order {
-		mb := st.boxes[name]
-		if mb == nil || mb == skip {
-			continue
+	found := false
+	st.walkAll(func(name string, mb *Mailbox) {
+		if found || mb == skip {
+			return
 		}
 		for _, m := range mb.msgs {
 			if m != except && m.jmapID == id {
-				st.noteMail("updated", id)
+				found = true
 				return
 			}
 		}
+	})
+	if found {
+		st.noteMail("updated", id)
+		return
 	}
 	st.noteMail("destroyed", id)
 }

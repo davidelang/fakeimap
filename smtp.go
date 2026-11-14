@@ -71,6 +71,7 @@ type smtpConn struct {
 	bw       *bufio.Writer
 	id       int
 	authed   bool
+	user     string
 	secure   bool
 	dsn      bool
 	suppress bool
@@ -378,7 +379,7 @@ func (sc *smtpConn) applySMTPFault(verb, arg string, f *fault) error {
 func (sc *smtpConn) ehloLines() []string {
 	lines := []string{"fakeimap"}
 	if sc.srv.cfg.smtpAuthRequired() {
-		lines = append(lines, "AUTH PLAIN LOGIN")
+		lines = append(lines, "AUTH "+sc.authMechList())
 	}
 	lines = append(lines,
 		"8BITMIME",
@@ -423,6 +424,17 @@ func (sc *smtpConn) cmdStartTLS(arg string) error {
 	return nil
 }
 
+func (sc *smtpConn) authMechList() string {
+	mechs := []string{"PLAIN", "LOGIN"}
+	if sc.srv.pers != nil && sc.srv.pers.lists("AUTH=OAUTHBEARER") {
+		mechs = append(mechs, "OAUTHBEARER")
+	}
+	if sc.srv.pers != nil && sc.srv.pers.lists("AUTH=XOAUTH2") {
+		mechs = append(mechs, "XOAUTH2")
+	}
+	return strings.Join(mechs, " ")
+}
+
 func (sc *smtpConn) cmdAuth(arg string) error {
 	if sc.authed {
 		return sc.reply(503, "5.5.1 already authenticated")
@@ -435,11 +447,93 @@ func (sc *smtpConn) cmdAuth(arg string) error {
 		return sc.authPlain(hasRest, rest)
 	case "LOGIN":
 		return sc.authLogin(hasRest, rest)
+	case "OAUTHBEARER", "XOAUTH2":
+		if sc.srv.pers == nil || !sc.srv.pers.lists("AUTH="+mech) {
+			return sc.reply(504, "5.5.4 unrecognized authentication type")
+		}
+		return sc.authBearer(mech, hasRest, rest)
 	case "":
 		return sc.reply(501, "5.5.4 mechanism required")
 	default:
 		return sc.reply(504, "5.5.4 unrecognized authentication type")
 	}
+}
+
+func (sc *smtpConn) authBearer(mech string, hasRest bool, rest string) error {
+	var raw []byte
+	if hasRest {
+		var err error
+		raw, err = decodeSASL(rest)
+		if err != nil {
+			return sc.reply(535, "5.7.8 authentication failed")
+		}
+	} else {
+		if err := sc.cont(""); err != nil {
+			return err
+		}
+		line, tooLong, err := readSMTPLine(sc.br, smtpCmdMax)
+		if err != nil {
+			return err
+		}
+		if tooLong {
+			return sc.reply(500, "5.5.2 line too long")
+		}
+		raw, err = decodeSASL(strings.TrimSpace(line))
+		if err != nil {
+			return sc.reply(535, "5.7.8 authentication failed")
+		}
+	}
+	var user, token string
+	var ok bool
+	if mech == "OAUTHBEARER" {
+		user, token, ok = parseOAuthBearer(raw)
+	} else {
+		user, token, ok = parseXOAuth2(raw)
+	}
+	fail := "invalid"
+	var scopes []string
+	bound := ""
+	if ok {
+		res := sc.srv.checkBearer(token, "smtp", sc.id)
+		bound = res.user
+		scopes = res.scopes
+		fail = res.fail
+		if fail == "" && ((mech == "XOAUTH2" && user != bound) || (mech == "OAUTHBEARER" && user != "" && user != bound)) {
+			fail = "invalid"
+		}
+		if fail == "" {
+			sc.user = bound
+			sc.authed = true
+			sc.srv.logAttempt("smtp", mech, bound, "ok")
+			return sc.reply(235, "2.7.0 authentication successful")
+		}
+	}
+	who := user
+	if who == "" {
+		who = bound
+	}
+	sc.srv.logAttempt("smtp", mech, who, fail)
+	if mech == "XOAUTH2" {
+		if err := sc.cont(""); err != nil {
+			return err
+		}
+	} else {
+		st := "invalid_token"
+		if fail == "scope" {
+			st = "insufficient_scope"
+		}
+		if err := sc.cont(sc.srv.bearerContinue(st, scopes)); err != nil {
+			return err
+		}
+	}
+	_, tooLong, err := readSMTPLine(sc.br, smtpCmdMax)
+	if err != nil {
+		return err
+	}
+	if tooLong {
+		return sc.reply(500, "5.5.2 line too long")
+	}
+	return sc.reply(535, "5.7.8 authentication failed")
 }
 
 func (sc *smtpConn) authPlain(hasRest bool, rest string) error {
@@ -473,6 +567,7 @@ func (sc *smtpConn) authPlain(hasRest bool, rest string) error {
 	if !ok || !sc.srv.store.check(user, pass) {
 		return sc.reply(535, "5.7.8 authentication failed")
 	}
+	sc.user = user
 	sc.authed = true
 	return sc.reply(235, "2.7.0 authentication successful")
 }
@@ -525,6 +620,7 @@ func (sc *smtpConn) authLogin(hasRest bool, rest string) error {
 	if !sc.srv.store.check(user, string(raw)) {
 		return sc.reply(535, "5.7.8 authentication failed")
 	}
+	sc.user = user
 	sc.authed = true
 	return sc.reply(235, "2.7.0 authentication successful")
 }
@@ -689,7 +785,7 @@ func (sc *smtpConn) cmdData(bounce bool) error {
 	if tooLong {
 		return sc.reply(500, "5.5.2 line too long")
 	}
-	if err := sc.srv.acceptMail(from, recips, raw, meta); err != nil {
+	if err := sc.srv.acceptMail(sc.user, from, recips, raw, meta); err != nil {
 		return sc.reply(451, "4.3.0 delivery failed")
 	}
 	if bounce {
@@ -722,7 +818,7 @@ type smtpMeta struct {
 // message to INBOX once. Any other recipient is accepted and not stored.
 // list-smtp and wait-smtp see the same record either caller produces.
 // A caller that cleared deliver on every recipient stores nothing.
-func (s *Server) acceptMail(from string, rcpts []smtpRcpt, raw []byte, meta smtpMeta) error {
+func (s *Server) acceptMail(user, from string, rcpts []smtpRcpt, raw []byte, meta smtpMeta) error {
 	views := make([]smtpRcptView, len(rcpts))
 	deliver := false
 	for i, r := range rcpts {
@@ -734,7 +830,7 @@ func (s *Server) acceptMail(from string, rcpts []smtpRcpt, raw []byte, meta smtp
 		views[i] = smtpRcptView{Address: r.addr, Result: result, Notify: r.notify, Orcpt: r.orcpt}
 	}
 	if deliver {
-		if _, _, err := s.store.appendMsg(nil, "INBOX", nil, nil, raw, s.frozenTime()); err != nil {
+		if _, _, err := s.store.appendAs(user, s.pers, "INBOX", nil, nil, raw, s.frozenTime()); err != nil {
 			return err
 		}
 	}
@@ -761,7 +857,11 @@ func (s *Server) deliverFailureReports(from, envid string, rcpts []smtpRcpt) err
 			continue
 		}
 		raw := deliveryReport("failed", r.addr, envid)
-		if _, _, err := s.store.appendMsg(nil, "INBOX", nil, nil, raw, s.frozenTime()); err != nil {
+		local := from
+		if i := strings.LastIndex(from, "@"); i >= 0 {
+			local = from[:i]
+		}
+		if _, _, err := s.store.appendAs(local, s.pers, "INBOX", nil, nil, raw, s.frozenTime()); err != nil {
 			return err
 		}
 	}

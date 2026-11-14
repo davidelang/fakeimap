@@ -33,11 +33,11 @@ func TestScan(t *testing.T) {
 	}
 
 	one := cl.cmd(`SCAN "" "*" "generated"`).mustOK(t)
-	if strings.Join(one.untagged, "\n") != "* SCAN INBOX/Generated" {
+	if strings.Join(one.untagged, "\n") != "* SCAN INBOX/Generated\n* SCAN ~demo/INBOX/Generated" {
 		t.Fatalf("name filter %q", one.untagged)
 	}
 	same := cl.cmd(`SCAN "" "*" "GENERATED"`).mustOK(t)
-	if strings.Join(same.untagged, "\n") != "* SCAN INBOX/Generated" {
+	if strings.Join(same.untagged, "\n") != "* SCAN INBOX/Generated\n* SCAN ~demo/INBOX/Generated" {
 		t.Fatalf("case %q", same.untagged)
 	}
 	text := cl.cmd(`SCAN "" "*" "Alice"`).mustOK(t)
@@ -75,11 +75,11 @@ func TestScan(t *testing.T) {
 	if len(cl.cmd(`SCAN "" "Notes" "scan-low"`).mustOK(t).untagged) != 0 {
 		t.Fatal("mailbox name missed and message text matched")
 	}
-	wantScan := "* SCAN \"Scan Me\"\n* SCAN scan-low"
+	wantScan := "* SCAN \"Scan Me\"\n* SCAN scan-low\n* SCAN \"~demo/Scan Me\"\n* SCAN ~demo/scan-low"
 	if strings.Join(cl.cmd(`SCAN "" "*" "scan"`).mustOK(t).untagged, "\n") != wantScan {
 		t.Fatal("order or atom form")
 	}
-	all := "* SCAN INBOX\n* SCAN INBOX/Generated\n* SCAN \"Scan Me\"\n* SCAN scan-low\n* SCAN Notes"
+	all := "* SCAN INBOX\n* SCAN INBOX/Generated\n* SCAN \"Scan Me\"\n* SCAN scan-low\n* SCAN Notes\n* SCAN ~demo\n* SCAN ~demo/INBOX\n* SCAN ~demo/INBOX/Generated\n* SCAN \"~demo/Scan Me\"\n* SCAN ~demo/scan-low\n* SCAN ~demo/Notes"
 	if strings.Join(cl.cmd(`SCAN "" "*" ""`).mustOK(t).untagged, "\n") != all {
 		t.Fatalf("empty string %q", cl.cmd(`SCAN "" "*" ""`).untagged)
 	}

@@ -55,7 +55,7 @@ func TestUIDONLYLists(t *testing.T) {
 	}
 	both := []string{"cyrus-3124.json", "cyrus-3137.json"}
 	postOnly := []string{"sasl.json"}
-	stal := []string{"stalwart.json", "stalwart-01625.json", "stalwart-dev.json"}
+	stal := []string{"stalwart.json", "stalwart-01625.json", "stalwart-dev.json", "stalwart-oauth.json"}
 	allow := map[string]bool{}
 	for _, name := range append(append(append([]string{}, both...), postOnly...), stal...) {
 		allow[name] = true
@@ -80,7 +80,7 @@ func TestUIDONLYLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameCapSet(dropCap(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), sasl.PostLogin) {
+	if !sameCapSet(dropCyrusLab(cyrus.PostLogin), sasl.PostLogin) {
 		t.Fatal("sasl post-login set drifted from cyrus-3137")
 	}
 	for _, name := range stal {
@@ -127,9 +127,14 @@ func TestUIDONLYLists(t *testing.T) {
 	if strings.Contains(gapsText, "UIDONLY") {
 		t.Fatal("gaps still lists UIDONLY")
 	}
-	for _, keep := range []string{"ACL", "UIDBATCHES", "IMAP4rev2", "URLAUTH", "X-SIEVE-MAILBOX"} {
+	for _, keep := range []string{"ACL", "UIDBATCHES", "URL-PARTIAL", "X-SIEVE-MAILBOX"} {
 		if !strings.Contains(gapsText, `"`+keep+`"`) {
 			t.Fatalf("gaps dropped %s", keep)
+		}
+	}
+	for _, gone := range []string{"IMAP4rev2", "URLAUTH"} {
+		if strings.Contains(gapsText, `"`+gone+`"`) {
+			t.Fatalf("gaps still lists %s", gone)
 		}
 	}
 	facts, err := os.ReadFile("docs/facts/imap-server.md")

@@ -4,7 +4,8 @@
   "greeting_capabilities": [
     "IMAP4REV1",
     "LITERAL+",
-    "SASL-IR"
+    "SASL-IR",
+    "LOGIN-REFERRALS"
   ],
   "pre_login_capabilities": [
     "IMAP4REV1",
@@ -22,7 +23,8 @@
     "THREAD=REFERENCES",
     "THREAD=ORDEREDSUBJECT",
     "MULTIAPPEND",
-    "SASL-IR"
+    "SASL-IR",
+    "LOGIN-REFERRALS"
   ],
   "post_login_capabilities": [
     "IMAP4REV1",
@@ -31,6 +33,7 @@
     "UIDPLUS",
     "NAMESPACE",
     "CHILDREN",
+    "MAILBOX-REFERRALS",
     "BINARY",
     "UNSELECT",
     "ESEARCH",
@@ -41,6 +44,7 @@
     "THREAD=ORDEREDSUBJECT",
     "MULTIAPPEND",
     "SASL-IR",
+    "LOGIN-REFERRALS",
     "STARTTLS"
   ],
   "personal_namespaces": [

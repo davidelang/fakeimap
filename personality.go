@@ -122,10 +122,28 @@ var implementedCaps = map[string]struct{}{
 	"AUTH=SCRAM-SHA-256":      {},
 	"AUTH=SCRAM-SHA-1-PLUS":   {},
 	"AUTH=SCRAM-SHA-256-PLUS": {},
-	"AUTH=EXTERNAL":           {},
-	"JMAPACCESS":              {},
-	"LOGINDISABLED":           {},
-	"STARTTLS":                {},
+	"AUTH=EXTERNAL":                 {},
+	"AUTH=OAUTHBEARER":              {},
+	"AUTH=XOAUTH2":                  {},
+	"IMAP4":                         {},
+	"IMAP4REV2":                     {},
+	"URLAUTH":                       {},
+	"URLAUTH=BINARY":                {},
+	"LIST-MYRIGHTS":                 {},
+	"LOGIN-REFERRALS":               {},
+	"MAILBOX-REFERRALS":             {},
+	"QUOTA=RES-ANNOTATION-STORAGE":  {},
+	"QUOTA=RES-MAILBOX":             {},
+	"X-QUOTA=STORAGE":               {},
+	"X-QUOTA=MESSAGE":               {},
+	"X-QUOTA=X-ANNOTATION-STORAGE":  {},
+	"X-QUOTA=X-NUM-FOLDERS":         {},
+	"X-CREATEDMODSEQ":               {},
+	"SNIPPET=FUZZY":                 {},
+	"PREVIEW=FUZZY":                 {},
+	"JMAPACCESS":                    {},
+	"LOGINDISABLED":                 {},
+	"STARTTLS":                      {},
 }
 
 // listsCap reports whether any capability list names it.
@@ -166,6 +184,9 @@ func capImplemented(name string) bool {
 		return true
 	}
 	if _, ok := parseMessageLimit(name); ok {
+		return true
+	}
+	if _, ok := parseSaveLimit(name); ok {
 		return true
 	}
 	_, ok := implementedCaps[strings.ToUpper(name)]
@@ -212,12 +233,32 @@ func parseMessageLimit(name string) (uint64, bool) {
 	return n, true
 }
 
+// parseSaveLimit accepts only SAVELIMIT=<positive integer>. A bare token,
+// zero, a non-numeric suffix, and a value that does not fit in uint64 are
+// not this token.
+func parseSaveLimit(name string) (uint64, bool) {
+	rest, ok := strings.CutPrefix(strings.ToUpper(name), "SAVELIMIT=")
+	if !ok || rest == "" {
+		return 0, false
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(rest, 10, 64)
+	if err != nil || n == 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 // advertise filters the personality list. STARTTLS is added only on a
 // cleartext connection that still has a certificate and has not started TLS.
 // JMAPACCESS is kept only when a JMAP listener is bound. LOGINDISABLED is
 // kept only on cleartext when a certificate is loaded, unless loginDisabled
-// forces it. IMAP4rev2, I18NLEVEL=1, URLAUTH, and URLAUTH=BINARY are dropped
-// by name after the implemented-capability check.
+// forces it. I18NLEVEL=1 and URL-PARTIAL are dropped by name after the
+// implemented-capability check.
 func (p *Personality) advertise(postLogin, secure, hasCert, jmap bool) []string {
 	return p.advertiseLogin(postLogin, secure, hasCert, jmap, nil)
 }
@@ -253,8 +294,8 @@ func (p *Personality) advertiseList(src []string, postLogin, secure, hasCert, jm
 		if !capImplemented(c) {
 			continue
 		}
-		// Dropped by name so the token stays off even if implementedCaps gains it.
-		if strings.EqualFold(c, "IMAP4rev2") || strings.EqualFold(c, "I18NLEVEL=1") || strings.EqualFold(c, "URLAUTH") || strings.EqualFold(c, "URLAUTH=BINARY") {
+		// Dropped by name so these tokens stay off even if implementedCaps gains them.
+		if strings.EqualFold(c, "I18NLEVEL=1") || strings.EqualFold(c, "URL-PARTIAL") {
 			continue
 		}
 		if strings.EqualFold(c, "LOGINDISABLED") && !keepLoginDisabled(secure, hasCert, loginDisabled) {

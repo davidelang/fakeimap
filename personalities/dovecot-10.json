@@ -13,6 +13,7 @@
     "IDLE",
     "CHILDREN",
     "NAMESPACE",
+    "LOGIN-REFERRALS",
     "AUTH=PLAIN",
     "AUTH=LOGIN"
   ],
@@ -26,7 +27,8 @@
     "LITERAL+",
     "IDLE",
     "CHILDREN",
-    "NAMESPACE"
+    "NAMESPACE",
+    "LOGIN-REFERRALS"
   ],
   "logout_bye": true,
   "select_flags": "\\Answered \\Flagged \\Deleted \\Seen \\Draft",

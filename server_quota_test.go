@@ -39,8 +39,8 @@ func TestQuotaReport(t *testing.T) {
 			t.Fatalf("%s is not implemented", c)
 		}
 	}
-	if capImplemented("QUOTA=RES-ANNOTATION-STORAGE") || capImplemented("QUOTA=RES-MAILBOX") {
-		t.Fatal("annotation storage or mailbox count is implemented")
+	if !capImplemented("QUOTA=RES-ANNOTATION-STORAGE") || !capImplemented("QUOTA=RES-MAILBOX") {
+		t.Fatal("annotation storage or mailbox count is not implemented")
 	}
 	dir := emptyQuotaDataset(t)
 	pers := quotaPers(t, "QUOTA", "QUOTA=RES-STORAGE", "QUOTA=RES-MESSAGE", "QUOTASET")
@@ -246,6 +246,7 @@ func TestQuotaLists(t *testing.T) {
 		{"personalities/courier-50.json", []string{"greet", "pre", "post"}, one, []string{"SORT", "SORT", "SORT"}, []string{"IDLE", "IDLE", "IDLE"}},
 		{"personalities/courier-606.json", []string{"greet", "pre", "post"}, one, []string{"SORT", "SORT", "SORT"}, []string{"IDLE", "IDLE", "IDLE"}},
 		{"personalities/stalwart.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "UIDONLY"}},
+		{"personalities/stalwart-oauth.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "UIDONLY"}},
 		{"personalities/stalwart-01625.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "UIDONLY"}},
 		{"personalities/stalwart-dev.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "UIDONLY"}},
 		{"personalities/stalwart-0155.json", []string{"", "", "post"}, two, []string{"", "", "PREVIEW"}, []string{"", "", "STARTTLS"}},
@@ -260,9 +261,12 @@ func TestQuotaLists(t *testing.T) {
 		}
 		lists := [][]string{p.GreetingCaps, p.PreLogin, p.PostLogin}
 		names := []string{"greeting", "pre-login", "post-login"}
+		labQuota := strings.Contains(c.file, "cyrus-3124") || strings.Contains(c.file, "cyrus-3137")
 		for _, tok := range []string{"QUOTA", "QUOTA=RES-STORAGE", "QUOTA=RES-MESSAGE", "QUOTASET", "QUOTA=RES-ANNOTATION-STORAGE", "QUOTA=RES-MAILBOX"} {
 			seen := listed(p.GreetingCaps, tok) || listed(p.PreLogin, tok) || listed(p.PostLogin, tok)
-			if seen != containsStr(c.toks, tok) {
+			postOnly := tok == "QUOTA=RES-ANNOTATION-STORAGE" || tok == "QUOTA=RES-MAILBOX"
+			wantSeen := containsStr(c.toks, tok) || (postOnly && labQuota)
+			if seen != wantSeen {
 				t.Fatalf("%s token %s present=%v", c.file, tok, seen)
 			}
 		}
@@ -275,14 +279,22 @@ func TestQuotaLists(t *testing.T) {
 				}
 				continue
 			}
+			toks := c.toks
+			next := c.next[i]
+			if labQuota && names[i] == "post-login" {
+				toks = []string{"QUOTA", "QUOTA=RES-STORAGE", "QUOTA=RES-MESSAGE", "QUOTA=RES-ANNOTATION-STORAGE", "QUOTA=RES-MAILBOX", "QUOTASET"}
+			}
+			if (strings.Contains(c.file, "cyrus-24") || strings.Contains(c.file, "cyrus-25")) && names[i] == "post-login" {
+				next = "MAILBOX-REFERRALS"
+			}
 			at := capAt(list, c.prev[i])
-			for n, tok := range c.toks {
+			for n, tok := range toks {
 				if capAt(list, tok) != at+1+n {
 					t.Fatalf("%s %s %s not at %d after %s", c.file, names[i], tok, n, c.prev[i])
 				}
 			}
-			if capAt(list, c.next[i]) != at+1+len(c.toks) {
-				t.Fatalf("%s %s next is not %s", c.file, names[i], c.next[i])
+			if capAt(list, next) != at+1+len(toks) {
+				t.Fatalf("%s %s next is not %s", c.file, names[i], next)
 			}
 		}
 	}
@@ -294,7 +306,7 @@ func TestQuotaLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameCapSet(dropCap(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), sasl.PostLogin) {
+	if !sameCapSet(dropCyrusLab(cyrus.PostLogin), sasl.PostLogin) {
 		t.Fatal("sasl post-login set drifted from cyrus-3137")
 	}
 	matches, err := filepath.Glob("personalities/*.json")
@@ -326,9 +338,14 @@ func TestQuotaLists(t *testing.T) {
 			t.Fatalf("gaps still lists %s", tok)
 		}
 	}
-	for _, tok := range []string{"QUOTA=RES-ANNOTATION-STORAGE", "QUOTA=RES-MAILBOX", "ACL", "IMAP4rev2"} {
+	for _, tok := range []string{"ACL", "URL-PARTIAL", "CATENATE"} {
 		if !strings.Contains(text, `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
+		}
+	}
+	for _, tok := range []string{"QUOTA=RES-ANNOTATION-STORAGE", "QUOTA=RES-MAILBOX", "IMAP4rev2"} {
+		if strings.Contains(text, `"`+tok+`"`) {
+			t.Fatalf("gaps still lists %s", tok)
 		}
 	}
 }

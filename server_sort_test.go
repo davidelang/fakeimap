@@ -440,7 +440,7 @@ func TestSortExtensionFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameCapSet(dropCap(dropCap(cyrus.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), sasl.PostLogin) {
+	if !sameCapSet(dropCyrusLab(cyrus.PostLogin), sasl.PostLogin) {
 		t.Fatal("sasl post-login set drifted from cyrus-3137")
 	}
 	allow := map[string]bool{
@@ -472,7 +472,7 @@ func TestSortExtensionFiles(t *testing.T) {
 	if strings.Contains(string(gaps), "SORT=MODSEQ") || strings.Contains(string(gaps), "SORT=UID") {
 		t.Fatal("gaps still lists a sort extension")
 	}
-	for _, tok := range []string{"ACL", "URLAUTH", "URLAUTH=BINARY", "IMAP4rev2"} {
+	for _, tok := range []string{"ACL", "URL-PARTIAL", "CATENATE"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

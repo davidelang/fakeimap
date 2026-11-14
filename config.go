@@ -24,9 +24,22 @@ type Config struct {
 	SmtpTLSListen     smtpListenList `json:"smtp_tls_listen,omitempty"`
 	SmtpAuthRequired  *bool          `json:"smtp_auth_required,omitempty"`
 	SmtpSize          int            `json:"smtp_size,omitempty"`
-	JmapListen        string         `json:"jmap_listen"`
-	JmapTLSListen     string         `json:"jmap_tls_listen"`
-	SieveListen       string         `json:"sieve_listen"`
+	JmapListen         string         `json:"jmap_listen"`
+	JmapTLSListen      string         `json:"jmap_tls_listen"`
+	SieveListen        string         `json:"sieve_listen"`
+	OauthListen        string         `json:"oauth_listen"`
+	OauthTLSListen     string         `json:"oauth_tls_listen"`
+	OauthRotateRefresh *bool          `json:"oauth_rotate_refresh,omitempty"`
+	OauthAccessSeconds int            `json:"oauth_access_seconds,omitempty"`
+	OauthRefreshSeconds int           `json:"oauth_refresh_seconds,omitempty"`
+	OauthCodeSeconds   int            `json:"oauth_code_seconds,omitempty"`
+	OauthClients       []oauthClientJSON `json:"oauth_clients,omitempty"`
+}
+
+type oauthClientJSON struct {
+	ID        string   `json:"id"`
+	Secret    string   `json:"secret,omitempty"`
+	Redirects []string `json:"redirect_uris"`
 }
 
 // smtpListener is one SMTP bind. Addr is host:port.
@@ -166,6 +179,12 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg.JmapTLSListen != "" && (cfg.CertFile == "" || cfg.KeyFile == "") {
 		return Config{}, fmt.Errorf("config %s: JMAP TLS needs cert_file and key_file", path)
+	}
+	if cfg.OauthTLSListen != "" && (cfg.CertFile == "" || cfg.KeyFile == "") {
+		return Config{}, fmt.Errorf("config %s: OAuth TLS needs cert_file and key_file", path)
+	}
+	if cfg.OauthAccessSeconds < 0 || cfg.OauthRefreshSeconds < 0 || cfg.OauthCodeSeconds < 0 {
+		return Config{}, fmt.Errorf("config %s: oauth lifetime must be positive", path)
 	}
 	if len(cfg.SmtpTLSListen) > 0 && (cfg.CertFile == "" || cfg.KeyFile == "") {
 		return Config{}, fmt.Errorf("config %s: SMTP TLS needs cert_file and key_file", path)

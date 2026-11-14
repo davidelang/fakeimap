@@ -61,11 +61,15 @@ func (s *Server) acceptJMAP(ln net.Listener) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if s.stalwartSessionGate() && (path == jmapWellKnown || path == "/jmap/session") {
+		s.serveStalwartSession(w, r, path)
+		return
+	}
 	user, ok := s.jmapUser(w, r)
 	if !ok {
 		return
 	}
-	path := r.URL.Path
 	switch {
 	case path == jmapWellKnown:
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -221,7 +225,66 @@ func (s *Server) jmapEventSource(w http.ResponseWriter, r *http.Request, user st
 	}
 }
 
+func personalityBase(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		path = path[i+1:]
+	}
+	return strings.TrimSuffix(path, ".json")
+}
+
+func (s *Server) stalwartSessionGate() bool {
+	switch personalityBase(s.cfg.Personality) {
+	case "stalwart", "stalwart-0155", "stalwart-01625", "stalwart-dev", "stalwart-oauth":
+		return true
+	}
+	return false
+}
+
+func (s *Server) serveStalwartSession(w http.ResponseWriter, r *http.Request, path string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if path == jmapWellKnown {
+		w.Header().Set("Location", "/jmap/session")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+		return
+	}
+	if h := strings.TrimSpace(r.Header.Get("Authorization")); h != "" {
+		user, ok := s.jmapUser(w, r)
+		if !ok {
+			return
+		}
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		s.writeJMAPSession(w, user)
+		return
+	}
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	s.writeJMAPSessionAnon(w)
+}
+
 func (s *Server) jmapUser(w http.ResponseWriter, r *http.Request) (string, bool) {
+	h := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(h, "Bearer ") {
+		token := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		res := s.checkBearer(token, "jmap", 0)
+		if res.fail != "" || res.user == "" {
+			w.Header().Add("WWW-Authenticate", `Bearer realm="jmap"`)
+			w.Header().Add("WWW-Authenticate", `Basic realm="jmap"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return "", false
+		}
+		return res.user, true
+	}
 	user, pass, ok := r.BasicAuth()
 	if !ok || user == "" || !s.store.check(user, pass) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="jmap"`)
@@ -231,40 +294,55 @@ func (s *Server) jmapUser(w http.ResponseWriter, r *http.Request) (string, bool)
 	return user, true
 }
 
-func (s *Server) writeJMAPSession(w http.ResponseWriter, user string) {
+func (s *Server) jmapSessionDoc(user string, anon bool) map[string]any {
 	capObj := func() map[string]any { return map[string]any{} }
-	body := map[string]any{
-		"capabilities": map[string]any{
-			jmapCore:       capObj(),
-			jmapMail:       capObj(),
-			jmapSubmission: capObj(),
-		},
-		"accounts": map[string]any{
-			user: map[string]any{
-				"name":       user,
-				"isPersonal": true,
-				"isReadOnly": false,
-				"accountCapabilities": map[string]any{
-					jmapCore:       capObj(),
-					jmapMail:       capObj(),
-					jmapSubmission: capObj(),
-				},
+	caps := map[string]any{
+		jmapCore:       capObj(),
+		jmapMail:       capObj(),
+		jmapSubmission: capObj(),
+	}
+	accounts := map[string]any{}
+	primary := map[string]any{}
+	username := ""
+	if !anon {
+		username = user
+		accounts[user] = map[string]any{
+			"name":       user,
+			"isPersonal": true,
+			"isReadOnly": false,
+			"accountCapabilities": map[string]any{
+				jmapCore:       capObj(),
+				jmapMail:       capObj(),
+				jmapSubmission: capObj(),
 			},
-		},
-		"primaryAccounts": map[string]any{
+		}
+		primary = map[string]any{
 			jmapCore:       user,
 			jmapMail:       user,
 			jmapSubmission: user,
-		},
-		"username":       user,
-		"apiUrl":         jmapAPIPath,
-		"downloadUrl":    "/jmap/download/{accountId}/{blobId}/{name}?accept={type}",
-		"uploadUrl":      "/jmap/upload/{accountId}/",
-		"eventSourceUrl": "/jmap/eventsource/?types={types}&closeafter={closeafter}&ping={ping}",
-		"state":          s.store.jmapStateText(),
+		}
 	}
+	return map[string]any{
+		"capabilities":    caps,
+		"accounts":        accounts,
+		"primaryAccounts": primary,
+		"username":        username,
+		"apiUrl":          jmapAPIPath,
+		"downloadUrl":     "/jmap/download/{accountId}/{blobId}/{name}?accept={type}",
+		"uploadUrl":       "/jmap/upload/{accountId}/",
+		"eventSourceUrl":  "/jmap/eventsource/?types={types}&closeafter={closeafter}&ping={ping}",
+		"state":           s.store.jmapStateText(),
+	}
+}
+
+func (s *Server) writeJMAPSession(w http.ResponseWriter, user string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(body)
+	_ = json.NewEncoder(w).Encode(s.jmapSessionDoc(user, false))
+}
+
+func (s *Server) writeJMAPSessionAnon(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.jmapSessionDoc("", true))
 }
 
 func jmapProblem(w http.ResponseWriter, status int, typ string) {
@@ -1041,12 +1119,13 @@ type mbSnap struct {
 	sortOrder  int
 }
 
-func (st *Store) jmapMailboxSnaps() (string, []mbSnap) {
+func (st *Store) jmapMailboxSnaps(user string) (string, []mbSnap) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	out := make([]mbSnap, 0, len(st.order))
-	for i, name := range st.order {
-		mb := st.boxes[name]
+	sl := st.slotUser(user)
+	out := make([]mbSnap, 0, len(sl.order))
+	for i, name := range sl.order {
+		mb := sl.boxes[name]
 		if mb == nil {
 			continue
 		}
@@ -1059,7 +1138,7 @@ func (st *Store) jmapMailboxSnaps() (string, []mbSnap) {
 			sortOrder:  i,
 		}
 		if pn, ok := parentMailboxName(name, st.delim); ok {
-			if p := st.boxes[pn]; p != nil {
+			if p := sl.boxes[pn]; p != nil {
 				snap.parent = p.jmapID
 				snap.parentNull = false
 			}
@@ -1137,7 +1216,7 @@ func (s *Server) jmapMailboxGet(user string, args map[string]any) (map[string]an
 	if typ != "" {
 		return nil, typ
 	}
-	state, snaps := s.store.jmapMailboxSnaps()
+	state, snaps := s.store.jmapMailboxSnaps(user)
 	var want []string
 	all := true
 	if raw, ok := args["ids"]; ok && raw != nil {
@@ -1248,7 +1327,7 @@ func (s *Server) jmapMailboxQuery(user string, args map[string]any) (map[string]
 	if typ != "" {
 		return nil, typ
 	}
-	state, snaps := s.store.jmapMailboxSnaps()
+	state, snaps := s.store.jmapMailboxSnaps(user)
 	var rows []mbSnap
 	for _, snap := range snaps {
 		if match(snap) {
@@ -1431,13 +1510,14 @@ type emSnap struct {
 	raw       []byte
 }
 
-func (st *Store) jmapEmailHeads() (string, []emHead, map[string]bool) {
+func (st *Store) jmapEmailHeads(user string) (string, []emHead, map[string]bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var out []emHead
 	boxes := map[string]bool{}
-	for _, name := range st.order {
-		mb := st.boxes[name]
+	sl := st.slotUser(user)
+	for _, name := range sl.order {
+		mb := sl.boxes[name]
 		if mb == nil {
 			continue
 		}
@@ -1454,13 +1534,14 @@ func (st *Store) jmapEmailHeads() (string, []emHead, map[string]bool) {
 	return strconv.FormatUint(st.jmapState, 10), out, boxes
 }
 
-func (st *Store) jmapEmailSnaps(ids []string, all bool) (string, []emSnap, []string) {
+func (st *Store) jmapEmailSnaps(user string, ids []string, all bool) (string, []emSnap, []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var order []emSnap
 	index := map[string]int{}
-	for _, name := range st.order {
-		mb := st.boxes[name]
+	sl := st.slotUser(user)
+	for _, name := range sl.order {
+		mb := sl.boxes[name]
 		if mb == nil {
 			continue
 		}
@@ -1572,7 +1653,7 @@ func (s *Server) jmapEmailQuery(user string, args map[string]any) (map[string]an
 	if _, ok := args["anchor"]; ok {
 		return nil, "invalidArguments"
 	}
-	state, heads, boxes := s.store.jmapEmailHeads()
+	state, heads, boxes := s.store.jmapEmailHeads(user)
 	if !boxes[boxID] {
 		return nil, "invalidArguments"
 	}
@@ -1724,7 +1805,7 @@ func (s *Server) jmapEmailGet(user string, args map[string]any) (map[string]any,
 			return nil, typ
 		}
 	}
-	state, snaps, missing := s.store.jmapEmailSnaps(ids, all)
+	state, snaps, missing := s.store.jmapEmailSnaps(user, ids, all)
 	var list []any
 	for _, snap := range snaps {
 		list = append(list, emailJSON(snap, props, bodyProps, fetchAll, fetchText, fetchHTML, maxBytes, hasMax))
@@ -2311,7 +2392,7 @@ func (s *Server) jmapSubmissionSet(user string, args map[string]any, callID stri
 		if identityID == "" {
 			identityID = ident
 		}
-		_, snaps, missing := s.store.jmapEmailSnaps([]string{emailID}, false)
+		_, snaps, missing := s.store.jmapEmailSnaps(user, []string{emailID}, false)
 		if len(snaps) == 0 || len(missing) > 0 {
 			notCreated[cid] = map[string]any{"type": "notFound"}
 			continue
@@ -2320,7 +2401,7 @@ func (s *Server) jmapSubmissionSet(user string, args map[string]any, callID stri
 		for i, addr := range rcpts {
 			env[i] = smtpRcpt{addr: addr, deliver: s.smtpDelivers(addr)}
 		}
-		if err := s.acceptMail(from, env, snaps[0].raw, smtpMeta{}); err != nil {
+		if err := s.acceptMail(user, from, env, snaps[0].raw, smtpMeta{}); err != nil {
 			notCreated[cid] = map[string]any{"type": "serverFail"}
 			continue
 		}

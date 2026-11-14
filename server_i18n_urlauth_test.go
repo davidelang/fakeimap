@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,12 +13,6 @@ func wantNotImpl(t *testing.T, cl *imapClient, line string) {
 	if rp.status != "NO" || rp.text != "not implemented" || len(rp.untagged) != 0 || strings.Contains(rp.tagLine, "[") || strings.Contains(rp.tagLine, "{") {
 		t.Fatalf("%q -> %s %q untagged %q", line, rp.status, rp.text, rp.untagged)
 	}
-	upper := strings.ToUpper(strings.Join(rp.untagged, " ") + " " + rp.tagLine)
-	for _, word := range []string{"COMPARATOR", "GENURLAUTH", "URLFETCH", "RESETKEY"} {
-		if strings.Contains(upper, word) {
-			t.Fatalf("%q leaked %s in %s", line, word, rp.tagLine)
-		}
-	}
 }
 
 func wantBadNotImpl(t *testing.T, cl *imapClient, line string) {
@@ -30,37 +23,40 @@ func wantBadNotImpl(t *testing.T, cl *imapClient, line string) {
 	}
 }
 
-func assertNoURLAuthTokens(t *testing.T, caps []string, where string) {
-	t.Helper()
-	for _, tok := range []string{"I18NLEVEL=1", "URLAUTH", "URLAUTH=BINARY", "URL-PARTIAL"} {
-		if listed(caps, tok) {
-			t.Fatalf("%s lists %s: %q", where, tok, caps)
-		}
-	}
-}
-
-func TestI18NURLAUTHStub(t *testing.T) {
-	for _, name := range []string{"I18NLEVEL=1", "URLAUTH", "URLAUTH=BINARY", "URL-PARTIAL"} {
-		if _, ok := implementedCaps[strings.ToUpper(name)]; ok || capImplemented(name) {
-			t.Fatalf("%s is implemented", name)
-		}
+func TestI18NURLAUTH(t *testing.T) {
+	if !capImplemented("URLAUTH") || !capImplemented("URLAUTH=BINARY") || capImplemented("I18NLEVEL=1") || capImplemented("URL-PARTIAL") {
+		t.Fatal("URLAUTH capability map")
 	}
 	gaps, err := os.ReadFile("personalities/cyrus-3137.gaps.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tok := range []string{"URL-PARTIAL", "URLAUTH", "URLAUTH=BINARY"} {
-		if !strings.Contains(string(gaps), `"`+tok+`"`) {
-			t.Fatalf("gaps dropped %s", tok)
+	if !strings.Contains(string(gaps), `"URL-PARTIAL"`) || !strings.Contains(string(gaps), `"I18NLEVEL=1"`) && !strings.Contains(string(gaps), "I18NLEVEL") {
+		if !strings.Contains(string(gaps), `"URL-PARTIAL"`) {
+			t.Fatal("gaps dropped URL-PARTIAL")
 		}
+	}
+	if !strings.Contains(string(gaps), `"URL-PARTIAL"`) {
+		t.Fatal("gaps dropped URL-PARTIAL")
+	}
+	for _, tok := range []string{"URLAUTH", "URLAUTH=BINARY"} {
+		if strings.Contains(string(gaps), `"`+tok+`"`) {
+			t.Fatalf("gaps still lists %s", tok)
+		}
+	}
+	urlPost := map[string][2]string{
+		"cyrus-24.json":   {"XLIST", "URLAUTH=BINARY"},
+		"cyrus-25.json":   {"CREATE-SPECIAL-USE", "URLAUTH=BINARY"},
+		"cyrus-36.json":   {"UNSELECT", "URLAUTH=BINARY"},
+		"cyrus-3124.json": {"UNSELECT", "URLAUTH=BINARY"},
+		"cyrus-3137.json": {"UNSELECT", "URLAUTH=BINARY"},
 	}
 	entries, err := os.ReadDir("personalities")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var files []string
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || strings.Contains(e.Name(), "gaps") {
 			continue
 		}
 		path := filepath.Join("personalities", e.Name())
@@ -68,32 +64,103 @@ func TestI18NURLAUTHStub(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if e.Name() == "cyrus-3137.gaps.json" {
-			continue
-		}
-		for _, tok := range []string{"I18NLEVEL=1", "URLAUTH", "URLAUTH=BINARY"} {
-			if strings.Contains(string(raw), tok) {
-				t.Fatalf("%s gained %s", path, tok)
-			}
+		if strings.Contains(string(raw), "I18NLEVEL=1") || strings.Contains(string(raw), "URL-PARTIAL") {
+			t.Fatalf("%s gained a dropped token", path)
 		}
 		p, err := loadPersonality(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if p.listsCap("I18NLEVEL=1") || p.listsCap("URLAUTH") || p.listsCap("URLAUTH=BINARY") || p.listsCap("URL-PARTIAL") {
+		if p.listsCap("I18NLEVEL=1") || p.listsCap("URL-PARTIAL") {
 			t.Fatalf("%s lists a filtered token", path)
 		}
-		files = append(files, path)
-	}
-	if len(files) < 2 {
-		t.Fatal("expected personality files")
+		neighbors, want := urlPost[e.Name()]
+		has := listed(p.PostLogin, "URLAUTH") && listed(p.PostLogin, "URLAUTH=BINARY")
+		if listed(p.GreetingCaps, "URLAUTH") || listed(p.PreLogin, "URLAUTH") || listed(p.GreetingCaps, "URLAUTH=BINARY") || listed(p.PreLogin, "URLAUTH=BINARY") || has != want {
+			t.Fatalf("%s URLAUTH lists", path)
+		}
+		if want && (!betweenCaps(p.PostLogin, "URLAUTH", neighbors[0], "URLAUTH=BINARY") || capNext(p.PostLogin, "URLAUTH=BINARY") != neighbors[1] && neighbors[1] != "URLAUTH=BINARY") {
+			if !betweenCaps(p.PostLogin, "URLAUTH", neighbors[0], "URLAUTH=BINARY") {
+				t.Fatalf("%s URLAUTH neighbors %v", path, p.PostLogin)
+			}
+		}
 	}
 
-	facts, err := os.ReadFile("docs/facts/imap-server.md")
+	base, err := loadPersonality("personalities/cyrus-22.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	factText := string(facts)
+	src := append(append([]string{}, base.PostLogin...), "I18NLEVEL=1", "URL-PARTIAL", "URLAUTH")
+	got := base.advertiseList(src, true, false, false, false, nil)
+	if listed(got, "I18NLEVEL=1") || listed(got, "URL-PARTIAL") || !listed(got, "URLAUTH") {
+		t.Fatalf("advertiseList %v", got)
+	}
+
+	_, bound := start(t, Config{Listen: "127.0.0.1:0", Personality: "personalities/cyrus-3137.json"})
+	early := dial(t, bound.Listen)
+	if listed(capsOf(early.greeting), "URLAUTH") || listed(capsOf(early.cmd("CAPABILITY").mustOK(t).untagged[0]), "URLAUTH") {
+		t.Fatal("URLAUTH before login")
+	}
+	rump := "imap://demo@localhost/INBOX/;UID=1"
+	for _, line := range []string{
+		"COMPARATOR i;octet",
+		"GENURLAUTH " + rump + " INTERNAL",
+		"GENURLAUTH " + rump + " ANONYMOUS",
+		"RESETKEY",
+	} {
+		wantAuthFirst(t, early, line)
+	}
+	unknown := `URLFETCH "imap://demo@localhost/INBOX/;UID=1;URLAUTH=submit+demo"`
+	earlyFetch := early.cmd(unknown).mustOK(t)
+	if len(earlyFetch.untagged) != 1 || !strings.Contains(earlyFetch.untagged[0], " NIL") {
+		t.Fatalf("URLFETCH before login %q", earlyFetch.untagged)
+	}
+	wantBadNotImpl(t, early, `URLFETCH "imap://demo@localhost/INBOX/;UID=1"`)
+
+	cl := dial(t, bound.Listen)
+	cl.cmd("LOGIN demo secret").mustOK(t)
+	post := capsOf(cl.cmd("CAPABILITY").mustOK(t).untagged[0])
+	if !listed(post, "URLAUTH") || !listed(post, "URLAUTH=BINARY") || listed(post, "I18NLEVEL=1") || listed(post, "URL-PARTIAL") {
+		t.Fatalf("post %v", post)
+	}
+	cl.cmd("SELECT INBOX").mustOK(t)
+	gen := cl.cmd("GENURLAUTH " + rump + " ANONYMOUS").mustOK(t)
+	if len(gen.untagged) != 1 || !strings.Contains(gen.untagged[0], "* GENURLAUTH ") || !strings.Contains(strings.ToLower(gen.untagged[0]), ";urlauth=anonymous:") {
+		t.Fatalf("GENURLAUTH %q", gen.untagged)
+	}
+	url := strings.Trim(gen.untagged[0][len("* GENURLAUTH "):], `"`)
+	fetched := cl.cmd("URLFETCH \"" + url + "\"").mustOK(t)
+	if len(fetched.untagged) != 1 || strings.HasSuffix(strings.TrimSpace(fetched.untagged[0]), " NIL") {
+		t.Fatalf("URLFETCH %q", fetched.untagged)
+	}
+	missing := cl.cmd(`URLFETCH "imap://h/box/;UID=7;URLAUTH=user"`).mustOK(t)
+	if len(missing.untagged) != 1 || !strings.Contains(missing.untagged[0], " NIL") {
+		t.Fatalf("unknown URL %q", missing.untagged)
+	}
+	cl.cmd("RESETKEY").mustOK(t)
+	afterReset := cl.cmd("URLFETCH \"" + url + "\"").mustOK(t)
+	if len(afterReset.untagged) != 1 || !strings.Contains(afterReset.untagged[0], " NIL") {
+		t.Fatalf("after RESETKEY %q", afterReset.untagged)
+	}
+	wantNotImpl(t, cl, "COMPARATOR i;octet")
+	for _, line := range []string{
+		"GENURLAUTH",
+		"GENURLAUTH " + rump,
+		`GENURLAUTH "` + rump + `" "INTERNAL"`,
+		`GENURLAUTH "nope" INTERNAL`,
+		"URLFETCH",
+		"RESETKEY INBOX extra",
+	} {
+		wantBadNotImpl(t, cl, line)
+	}
+	uid := dial(t, bound.Listen)
+	uid.cmd("LOGIN demo secret").mustOK(t)
+	rp := uid.cmd("UID GENURLAUTH " + rump + " INTERNAL")
+	if rp.status != "BAD" || rp.text != "syntax error" {
+		t.Fatalf("UID GENURLAUTH %s %q", rp.status, rp.text)
+	}
+
+	facts := string(mustRead(t, "docs/facts/imap-server.md"))
 	for _, phrase := range []string{
 		"COMPARATOR",
 		"GENURLAUTH",
@@ -111,255 +178,23 @@ func TestI18NURLAUTHStub(t *testing.T) {
 		"URL-PARTIAL` stays unimplemented",
 		"cyrus-3137.gaps.json",
 	} {
-		if !strings.Contains(factText, phrase) {
+		if !strings.Contains(facts, phrase) {
 			t.Fatalf("facts missing %q", phrase)
 		}
 	}
-	guideRaw, err := os.ReadFile("docs/guide.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	guide := string(guideRaw)
+	guide := string(mustRead(t, "docs/guide.md"))
 	off := strings.Index(guide, "## Capabilities that stay off")
 	if off < 0 {
 		t.Fatal("guide missing stay-off section")
 	}
 	stay := guide[off:]
-	if !strings.Contains(stay, "URLAUTH") || !strings.Contains(stay, "URLAUTH=BINARY") || !strings.Contains(stay, "URL-PARTIAL") {
-		t.Fatal("stay-off dropped URLAUTH")
+	if !strings.Contains(stay, "I18NLEVEL=1") || !strings.Contains(stay, "URL-PARTIAL") {
+		t.Fatal("stay-off dropped a filtered token")
 	}
 	if !strings.Contains(guide[:off], "`COMPARATOR`") || !strings.Contains(guide[:off], "`GENURLAUTH`") || !strings.Contains(guide[:off], "`URLFETCH`") || !strings.Contains(guide[:off], "`RESETKEY`") || !strings.Contains(guide[:off], "not implemented") || !strings.Contains(guide[:off], "docs/facts/imap-server.md") {
 		t.Fatal("guide missing the short URLAUTH note")
 	}
 	if strings.Contains(guide, "/;UID=") || strings.Contains(guide, "url-rump") || strings.Contains(guide, ";URLAUTH=") {
 		t.Fatal("guide pastes the facts file")
-	}
-
-	for _, name := range []string{"I18NLEVEL=1", "URLAUTH", "URLAUTH=BINARY"} {
-		implementedCaps[strings.ToUpper(name)] = struct{}{}
-	}
-	t.Cleanup(func() {
-		for _, name := range []string{"I18NLEVEL=1", "URLAUTH", "URLAUTH=BINARY"} {
-			delete(implementedCaps, strings.ToUpper(name))
-		}
-	})
-	if !capImplemented("URLAUTH") || capImplemented("URL-PARTIAL") {
-		t.Fatal("capability map setup")
-	}
-	base, err := loadPersonality("personalities/cyrus-3137.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	greetSrc := append([]string{}, base.GreetingCaps...)
-	preSrc := append([]string{}, base.PreLogin...)
-	postSrc := append([]string{}, base.PostLogin...)
-	wantGreet := strings.Join(base.advertiseList(greetSrc, false, false, false, false, nil), " ")
-	wantPre := strings.Join(base.advertiseList(preSrc, false, false, false, false, nil), " ")
-	wantPost := strings.Join(base.advertiseList(postSrc, true, false, false, false, nil), " ")
-	base.GreetingCaps = append(append([]string{}, greetSrc...), "I18NLEVEL=1", "URLAUTH", "URLAUTH=BINARY", "URL-PARTIAL")
-	base.PreLogin = append(append([]string{}, preSrc...), "i18nlevel=1", "urlauth", "URLAUTH=BINARY")
-	base.PostLogin = append(append([]string{}, postSrc...), "I18NLEVEL=1", "URLAUTH", "Urlauth=Binary", "URL-PARTIAL")
-	for _, spec := range []struct {
-		src       []string
-		postLogin bool
-		want      string
-	}{
-		{base.GreetingCaps, false, wantGreet},
-		{base.PreLogin, false, wantPre},
-		{base.PostLogin, true, wantPost},
-	} {
-		got := base.advertiseList(spec.src, spec.postLogin, false, false, false, nil)
-		assertNoURLAuthTokens(t, got, "advertiseList")
-		if strings.Join(got, " ") != spec.want {
-			t.Fatalf("advertiseList %v -> %v want %s", spec.src, got, spec.want)
-		}
-	}
-	b, err := json.Marshal(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "p.json")
-	if err := os.WriteFile(path, b, 0644); err != nil {
-		t.Fatal(err)
-	}
-	_, filtered := start(t, Config{Listen: "127.0.0.1:0", Personality: path})
-	fcl := dial(t, filtered.Listen)
-	assertNoURLAuthTokens(t, capsOf(fcl.greeting), "greeting")
-	if strings.Join(capsOf(fcl.greeting), " ") != wantGreet {
-		t.Fatalf("greeting %q", fcl.greeting)
-	}
-	pre := fcl.cmd("CAPABILITY").mustOK(t)
-	if len(pre.untagged) != 1 {
-		t.Fatalf("pre-login %q", pre.untagged)
-	}
-	assertNoURLAuthTokens(t, capsOf(pre.untagged[0]), "pre-login")
-	if strings.Join(capsOf(pre.untagged[0]), " ") != wantPre {
-		t.Fatalf("pre-login %q", pre.untagged[0])
-	}
-	login := fcl.cmd("LOGIN demo secret").mustOK(t)
-	assertNoURLAuthTokens(t, capsOf(login.tagLine), "login")
-	post := fcl.cmd("CAPABILITY").mustOK(t)
-	if len(post.untagged) != 1 {
-		t.Fatalf("post-login %q", post.untagged)
-	}
-	assertNoURLAuthTokens(t, capsOf(post.untagged[0]), "post-login")
-	if strings.Join(capsOf(post.untagged[0]), " ") != wantPost {
-		t.Fatalf("post-login %q", post.untagged[0])
-	}
-	for _, line := range []string{"ENABLE I18NLEVEL=1", "ENABLE URLAUTH", "ENABLE URLAUTH=BINARY"} {
-		rp := fcl.cmd(line).mustOK(t)
-		joined := strings.ToUpper(strings.Join(rp.untagged, " "))
-		if len(rp.untagged) != 0 || strings.Contains(joined, "I18NLEVEL") || strings.Contains(joined, "URLAUTH") {
-			t.Fatalf("%s %q %q", line, rp.tagLine, rp.untagged)
-		}
-	}
-	mixed := fcl.cmd("ENABLE I18NLEVEL=1 URLAUTH CONDSTORE").mustOK(t)
-	joined := strings.ToUpper(strings.Join(mixed.untagged, " "))
-	if len(mixed.untagged) != 1 || joined != "* ENABLED CONDSTORE" || strings.Contains(joined, "I18NLEVEL") || strings.Contains(joined, "URLAUTH") {
-		t.Fatalf("mixed ENABLE %q", mixed.untagged)
-	}
-
-	_, bound := start(t, Config{Listen: "127.0.0.1:0"})
-	early := dial(t, bound.Listen)
-	assertNoURLAuthTokens(t, capsOf(early.greeting), "cyrus greeting")
-	assertNoURLAuthTokens(t, capsOf(early.cmd("CAPABILITY").mustOK(t).untagged[0]), "cyrus pre")
-	for _, line := range []string{
-		"COMPARATOR",
-		"COMPARATOR ()",
-		"COMPARATOR i;octet",
-		"GENURLAUTH",
-		`GENURLAUTH "imap://h/box/;UID=1" ANONYMOUS`,
-		"RESETKEY",
-		"RESETKEY INBOX extra",
-	} {
-		wantAuthFirst(t, early, line)
-	}
-	wantNotImpl(t, early, `URLFETCH "imap://demo@localhost/INBOX/;UID=1;URLAUTH=submit+demo"`)
-	wantNotImpl(t, early, "urlfetch imap://h/box/;UID=7;URLAUTH=user")
-	wantBadNotImpl(t, early, `URLFETCH "imap://demo@localhost/INBOX/;UID=1"`)
-	wantBadNotImpl(t, early, "URLFETCH")
-	early.cmd("LOGIN demo secret").mustOK(t)
-	assertNoURLAuthTokens(t, capsOf(early.cmd("CAPABILITY").mustOK(t).untagged[0]), "cyrus post")
-
-	cl := dial(t, bound.Listen)
-	cl.cmd("LOGIN demo secret").mustOK(t)
-	cl.cmd("SELECT INBOX").mustOK(t)
-	searchBefore := append([]string(nil), cl.cmd("SEARCH ALL").mustOK(t).untagged...)
-	sortBefore := append([]string(nil), cl.cmd("SORT (ARRIVAL) UTF-8 ALL").mustOK(t).untagged...)
-	flagsBefore := append([]string(nil), cl.cmd("FETCH 1:* (UID FLAGS)").mustOK(t).untagged...)
-	statusBefore := append([]string(nil), cl.cmd("STATUS INBOX (MESSAGES UIDNEXT UNSEEN)").mustOK(t).untagged...)
-	listBefore := append([]string(nil), cl.cmd(`LIST "" "*"`).mustOK(t).untagged...)
-
-	rump := "imap://demo@localhost/INBOX/;UID=1"
-	rump2 := "imap://demo@localhost/Sent/;UID=42;UIDVALIDITY=9"
-	fetch1 := rump + ";URLAUTH=submit+demo"
-	fetch2 := "imap://h/box/;UID=7;URLAUTH=user"
-	for _, line := range []string{
-		"COMPARATOR i;octet",
-		`COMPARATOR "i;unicode-casemap"`,
-		"COMPARATOR (i;octet \"i;ascii-casemap\")",
-		"COMPARATOR (" + imapLit("i;octet") + ")",
-		"comparator (i;octet)",
-		"GENURLAUTH " + rump + " INTERNAL",
-		"GENURLAUTH " + imapLit(rump) + " INTERNAL",
-		`GENURLAUTH "` + rump + `" INTERNAL "` + rump2 + `" internal`,
-		"URLFETCH " + fetch1,
-		"URLFETCH " + imapLit(fetch1) + " " + fetch2,
-		"RESETKEY",
-		"RESETKEY NoSuchURLBox",
-		`RESETKEY "No Such Box"`,
-		"RESETKEY " + imapLit("MissingLitBox"),
-	} {
-		wantNotImpl(t, cl, line)
-	}
-	for _, line := range []string{
-		"COMPARATOR",
-		"COMPARATOR ()",
-		"COMPARATOR (",
-		"COMPARATOR (i;octet",
-		"COMPARATOR i;octet i;ascii-casemap",
-		"COMPARATOR ((i;octet))",
-		`COMPARATOR ("i;octet" (b))`,
-		"GENURLAUTH",
-		"GENURLAUTH " + rump,
-		"GENURLAUTH " + rump + " ANONYMOUS",
-		`GENURLAUTH "` + rump + `" "INTERNAL"`,
-		`GENURLAUTH "nope" INTERNAL`,
-		`GENURLAUTH "imap://h/box/;UID=0" INTERNAL`,
-		`GENURLAUTH "imap://h/box" INTERNAL`,
-		`GENURLAUTH "IMAP://h/box/;UID=1" INTERNAL`,
-		`GENURLAUTH "imap://h/box/;uid=1" INTERNAL`,
-		"URLFETCH",
-		`URLFETCH "imap://h/box/;UID=1"`,
-		`URLFETCH "` + fetch1 + `" "http://h/;UID=1;URLAUTH=a"`,
-		`URLFETCH "imap://h/b/;UID=0;URLAUTH=a"`,
-		`URLFETCH "imap://h/b/;UID=1;URLAUTH="`,
-		`URLFETCH "imap://h/b/;UID=1;URLAUTH=]"`,
-		"RESETKEY INBOX extra",
-		"RESETKEY (INBOX)",
-	} {
-		wantBadNotImpl(t, cl, line)
-	}
-	searchAfter := cl.cmd("SEARCH ALL").mustOK(t).untagged
-	sortAfter := cl.cmd("SORT (ARRIVAL) UTF-8 ALL").mustOK(t).untagged
-	flagsAfter := cl.cmd("FETCH 1:* (UID FLAGS)").mustOK(t).untagged
-	statusAfter := cl.cmd("STATUS INBOX (MESSAGES UIDNEXT UNSEEN)").mustOK(t).untagged
-	listAfter := cl.cmd(`LIST "" "*"`).mustOK(t).untagged
-	if strings.Join(searchAfter, "\n") != strings.Join(searchBefore, "\n") {
-		t.Fatalf("SEARCH changed %q -> %q", searchBefore, searchAfter)
-	}
-	if strings.Join(sortAfter, "\n") != strings.Join(sortBefore, "\n") {
-		t.Fatalf("SORT changed %q -> %q", sortBefore, sortAfter)
-	}
-	if strings.Join(flagsAfter, "\n") != strings.Join(flagsBefore, "\n") {
-		t.Fatalf("flags changed %q -> %q", flagsBefore, flagsAfter)
-	}
-	if strings.Join(statusAfter, "\n") != strings.Join(statusBefore, "\n") {
-		t.Fatalf("status changed %q -> %q", statusBefore, statusAfter)
-	}
-	if strings.Join(listAfter, "\n") != strings.Join(listBefore, "\n") {
-		t.Fatalf("mailboxes changed %q -> %q", listBefore, listAfter)
-	}
-	for _, ln := range listAfter {
-		if strings.Contains(ln, "NoSuchURLBox") || strings.Contains(ln, "No Such Box") || strings.Contains(ln, "MissingLitBox") {
-			t.Fatalf("lookup created %s", ln)
-		}
-	}
-
-	for _, line := range []string{
-		"UID COMPARATOR i;octet",
-		"UID GENURLAUTH " + rump + " INTERNAL",
-		"UID URLFETCH " + fetch1,
-		"UID RESETKEY",
-	} {
-		uid := dial(t, bound.Listen)
-		uid.cmd("LOGIN demo secret").mustOK(t)
-		rp := uid.cmd(line)
-		if rp.status != "BAD" || rp.text != "syntax error" || strings.Contains(rp.text, "not implemented") {
-			t.Fatalf("%s -> %s %q", line, rp.status, rp.text)
-		}
-	}
-
-	for _, path := range files {
-		_, one := start(t, Config{Listen: "127.0.0.1:0", Personality: path})
-		c := dial(t, one.Listen)
-		assertNoURLAuthTokens(t, capsOf(c.greeting), path+" greeting")
-		before := c.cmd("CAPABILITY").mustOK(t)
-		if len(before.untagged) != 1 {
-			t.Fatalf("%s pre %q", path, before.untagged)
-		}
-		assertNoURLAuthTokens(t, capsOf(before.untagged[0]), path+" pre")
-		wantAuthFirst(t, c, "COMPARATOR i;octet")
-		wantAuthFirst(t, c, "GENURLAUTH "+rump+" INTERNAL")
-		wantAuthFirst(t, c, "RESETKEY")
-		wantNotImpl(t, c, "URLFETCH "+fetch1)
-		c.cmd("LOGIN demo secret").mustOK(t)
-		after := c.cmd("CAPABILITY").mustOK(t)
-		if len(after.untagged) != 1 {
-			t.Fatalf("%s post %q", path, after.untagged)
-		}
-		assertNoURLAuthTokens(t, capsOf(after.untagged[0]), path+" post")
-		wantNotImpl(t, c, "COMPARATOR (i;octet)")
-		wantNotImpl(t, c, "RESETKEY MissingBox")
 	}
 }

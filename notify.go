@@ -417,7 +417,7 @@ func notifyEventsOK(g notifyGroup) bool {
 
 // prepareNotify checks status items and fetch items the way STATUS and FETCH do.
 func (s *session) prepareNotify(reg *notifyReg) error {
-	if _, err := statusPairs(nil, reg.status, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE"), s.rfcObject(), s.plusObject(), s.user); err != nil {
+	if _, err := statusPairs(nil, reg.status, s.appendLimitValue(), s.advertiseCap("STATUS=SIZE"), s.rfcObject(), s.plusObject(), s.user, s.advertiseCap("X-CREATEDMODSEQ"), s.on("IMAP4REV2")); err != nil {
 		return err
 	}
 	modseq := false
@@ -427,7 +427,7 @@ func (s *session) prepareNotify(reg *notifyReg) error {
 		if !ok || len(ev.fetch) == 0 {
 			continue
 		}
-		expanded, err := expandFetch(ev.fetch, false, s.advertiseCap("BINARY"), s.advertiseCap("PREVIEW"), s.advertiseCap("SAVEDATE"), s.rfcObject(), s.plusObject())
+		expanded, err := expandFetch(ev.fetch, false, s.advertiseCap("BINARY") || s.on("IMAP4REV2"), s.advertiseCap("PREVIEW") || s.advertiseCap("SNIPPET=FUZZY"), s.advertiseCap("SAVEDATE"), s.rfcObject(), s.plusObject(), s.advertiseCap("X-CREATEDMODSEQ"))
 		if err != nil {
 			return err
 		}
@@ -520,8 +520,12 @@ func (st *Store) selectedNewItems(s *session) []string {
 	return append([]string(nil), ev.fetch...)
 }
 
-func (st *Store) listFlagsLocked(name string, showSpecial bool) (string, bool) {
-	mb := st.boxes[name]
+func (st *Store) listFlagsLocked(user string, pers *Personality, name string, showSpecial bool) (string, bool) {
+	res, err := st.resolveName(user, pers, name)
+	if err != nil || res.virtual || res.sl == nil {
+		return "", false
+	}
+	mb := res.sl.boxes[res.key]
 	if mb == nil {
 		return "", false
 	}
@@ -642,11 +646,12 @@ func (st *Store) notifyLines(s *session) []string {
 				continue
 			}
 			statusSent[n.name] = true
-			mb := st.boxes[n.name]
-			if mb == nil {
+			res, rerr := st.resolveName(s.user, s.pers, n.name)
+			if rerr != nil || res.virtual || res.sl == nil || res.sl.boxes[res.key] == nil {
 				continue
 			}
-			pairs, err := statusPairs(mb, s.notify.status, limit, withSize, s.rfcObject(), s.plusObject(), s.user)
+			mb := res.sl.boxes[res.key]
+			pairs, err := statusPairs(mb, s.notify.status, limit, withSize, s.rfcObject(), s.plusObject(), s.user, s.advertiseCap("X-CREATEDMODSEQ"), s.on("IMAP4REV2"))
 			if err != nil || len(pairs) == 0 {
 				continue
 			}
@@ -655,7 +660,7 @@ func (st *Store) notifyLines(s *session) []string {
 			if _, has := g.events["MailboxName"]; !has {
 				continue
 			}
-			flags, ok := st.listFlagsLocked(n.name, showSpecial)
+			flags, ok := st.listFlagsLocked(s.user, s.pers, n.name, showSpecial)
 			if !ok {
 				continue
 			}
@@ -669,7 +674,7 @@ func (st *Store) notifyLines(s *session) []string {
 			if _, has := g.events["SubscriptionChange"]; !has {
 				continue
 			}
-			flags, ok := st.listFlagsLocked(n.name, showSpecial)
+			flags, ok := st.listFlagsLocked(s.user, s.pers, n.name, showSpecial)
 			if !ok {
 				continue
 			}

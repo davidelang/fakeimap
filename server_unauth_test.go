@@ -19,6 +19,7 @@ func TestUnauthenticate(t *testing.T) {
 		"stalwart-0155.json":  true,
 		"stalwart-01625.json": true,
 		"stalwart-dev.json":   true,
+		"stalwart-oauth.json": true,
 	}
 	entries, err := os.ReadDir("personalities")
 	if err != nil {

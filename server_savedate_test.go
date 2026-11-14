@@ -247,7 +247,7 @@ func TestSavedateLists(t *testing.T) {
 	after("personalities/sasl.json", "pre-login", saslPers.PreLogin, "QRESYNC", false)
 	after("personalities/sasl.json", "post-login", saslPers.PostLogin, "REPLACE", true)
 
-	if !sameCapSet(dropCap(dropCap(c3137.PostLogin, "SEARCH=FUZZY"), "INPROGRESS"), saslPers.PostLogin) {
+	if !sameCapSet(dropCyrusLab(c3137.PostLogin), saslPers.PostLogin) {
 		t.Fatal("sasl post-login set drifted from cyrus-3137")
 	}
 
@@ -275,7 +275,7 @@ func TestSavedateLists(t *testing.T) {
 	if strings.Contains(string(gaps), "SAVEDATE") {
 		t.Fatal("gaps still lists SAVEDATE")
 	}
-	for _, tok := range []string{"ACL", "URLAUTH"} {
+	for _, tok := range []string{"ACL", "URL-PARTIAL"} {
 		if !strings.Contains(string(gaps), `"`+tok+`"`) {
 			t.Fatalf("gaps dropped %s", tok)
 		}

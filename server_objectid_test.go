@@ -25,6 +25,7 @@ func TestObjectIDPersonalities(t *testing.T) {
 		"stalwart.json":       {"STATUS=SIZE", "PREVIEW"},
 		"stalwart-01625.json": {"STATUS=SIZE", "PREVIEW"},
 		"stalwart-dev.json":   {"STATUS=SIZE", "PREVIEW"},
+		"stalwart-oauth.json": {"STATUS=SIZE", "PREVIEW"},
 	}
 	greetings := map[string]string{
 		"cyrus-36.json":       "localhost Cyrus IMAP 3.6.1-Debian-3.6.1-4+deb12u5 server ready",
@@ -35,6 +36,7 @@ func TestObjectIDPersonalities(t *testing.T) {
 		"stalwart-01625.json": "Stalwart IMAP4rev2 at your service.",
 		"stalwart-dev.json":   "Stalwart IMAP4rev2 at your service.",
 		"stalwart-0155.json":  "Stalwart IMAP4rev2 at your service.",
+		"stalwart-oauth.json": "Stalwart IMAP4rev2 at your service.",
 	}
 	entries, err := os.ReadDir("personalities")
 	if err != nil {

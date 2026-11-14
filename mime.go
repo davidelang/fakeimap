@@ -101,6 +101,15 @@ func nstring(s string) string {
 }
 
 func literal(b []byte) string {
+	return literalForm(b, false)
+}
+
+// literalForm is a synchronizing literal. eight writes ~{n} when the
+// decoded bytes contain a NUL.
+func literalForm(b []byte, eight bool) string {
+	if eight && bytes.Contains(b, []byte{0}) {
+		return fmt.Sprintf("~{%d}\r\n%s", len(b), string(b))
+	}
 	return fmt.Sprintf("{%d}\r\n%s", len(b), string(b))
 }
 
