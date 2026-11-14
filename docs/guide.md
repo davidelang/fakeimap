@@ -14,7 +14,7 @@ fakeimap <config.json>
 
 The one argument is the config path. Paths inside the config are relative to the process working directory, not to the config file.
 
-Before accept, the process writes one JSON object to stdout and flushes it. The object names the listeners that bound: `listen`, `implicit_tls_listen`, `control`, `smtp`, `smtp_listeners`, `smtp_tls`, `smtp_tls_listeners`, `jmap`, `jmap_tls`, and `sieve`. A configured port of `0` is the bound ephemeral port. `smtp` and `smtp_tls` are the first bind of each kind. The fields are defined in `docs/facts/imap-server.md`.
+Before accept, the process writes one JSON object to stdout and flushes it. The object names the listeners that bound: `listen`, `implicit_tls_listen`, `control`, `smtp`, `smtp_listeners`, `smtp_tls`, `smtp_tls_listeners`, `jmap`, `jmap_tls`, `sieve`, `oauth`, and `oauth_tls`. A configured port of `0` is the bound ephemeral port. `smtp` and `smtp_tls` are the first bind of each kind. The fields are defined in `docs/facts/imap-server.md`. The OAuth routes and the token rules are in that file.
 
 A short harness reads that object, writes one `arm-fault` line to the mode-0600 control socket, and writes `reset`:
 
@@ -54,8 +54,15 @@ Each key is defined in `docs/facts/imap-server.md`. Summary:
 - `jmap_listen` — `host:port` cleartext HTTP JMAP. Empty or omitted: not bound. Port `0`: ephemeral. It does not speak TLS.
 - `jmap_tls_listen` — `host:port` JMAP with TLS from the first byte. Empty or omitted: not bound. Port `0`: ephemeral.
 - `sieve_listen` — `host:port` ManageSieve. Empty or omitted: not bound. Port `0`: ephemeral.
+- `oauth_listen` — `host:port` cleartext HTTP OAuth. Empty or omitted: not bound. Port `0`: ephemeral.
+- `oauth_tls_listen` — `host:port` OAuth with TLS from the first byte. Empty or omitted: not bound. Port `0`: ephemeral.
+- `oauth_access_seconds`, `oauth_refresh_seconds`, `oauth_code_seconds` — lifetimes for an access token, a refresh token, and an authorization code.
+- `oauth_rotate_refresh` — whether a refresh rotates the refresh token.
+- `oauth_clients` — optional clients.
 
-At least one IMAP listener is required (`listen` or `implicit_tls_listen`). `smtp_listen`, `smtp_tls_listen`, `jmap_listen`, `jmap_tls_listen`, and `sieve_listen` do not satisfy that. Implicit TLS, `jmap_tls_listen`, and `smtp_tls_listen` require `cert_file` and `key_file` together. Setting one of those two files without the other is a config error.
+`oauth_listen` and `oauth_tls_listen` do not satisfy the required IMAP listener. The routes and the token rules are in `docs/facts/imap-server.md`.
+
+At least one IMAP listener is required (`listen` or `implicit_tls_listen`). `smtp_listen`, `smtp_tls_listen`, `jmap_listen`, `jmap_tls_listen`, `sieve_listen`, `oauth_listen`, and `oauth_tls_listen` do not satisfy that. Implicit TLS, `jmap_tls_listen`, `smtp_tls_listen`, and `oauth_tls_listen` require `cert_file` and `key_file` together. Setting one of those two files without the other is a config error.
 
 Example, cleartext only, no certificate:
 
@@ -82,10 +89,11 @@ An empty `op` is `missing field`. Any other `op` is `unknown op`.
 | `set-personality` | `path` | loads that personality file |
 | `set-dataset` | `path` | loads that dataset directory |
 | `disconnect` | `conn` | closes that IMAP connection |
-| `inject` | `mailbox`, `raw`; optional `user` | appends the message; returns `uid`. A non-empty `user` must name an account |
-| `list-mail` | `mailbox` | messages in that mailbox |
-| `fetch-mail` | `mailbox`, `uid` | `rfc822` is base64 |
-| `accounts` | none lists `usernames`; `username` and `password` together add one | |
+| `inject` | `mailbox`, `raw`; optional `user`, `flags`, `internal_date`, `seq`, `new_uidvalidity` | appends the message; returns `uid`. A non-empty `user` must name an account |
+| `arm-inject` | `command` and the same mailbox fields as `inject`; optional `conn`, `times` | see `docs/facts/imap-server.md` |
+| `list-mail` | `mailbox`; optional `user` | messages in that mailbox |
+| `fetch-mail` | `mailbox`, `uid`; optional `user` | `rfc822` is base64 |
+| `accounts` | none lists `usernames`; `username` and `password` together add one | the new account's mailbox tree is an empty subscribed `INBOX` |
 | `freeze-clock` | `time` as RFC3339 | later dates use that instant |
 | `thaw-clock` | none | the clock runs again |
 | `arm-fault` | see below | returns `id` |
@@ -96,11 +104,20 @@ An empty `op` is `missing field`. Any other `op` is `unknown op`.
 | `set-auth-policy` | optional `fail_delay_ms`, `lockout_after`, `lockout_ms` | see `docs/facts/imap-server.md` |
 | `clear-auth-policy` | none | see `docs/facts/imap-server.md` |
 | `reload-cert` | optional `cert_file` and `key_file`, both or neither | see `docs/facts/imap-server.md` |
+| `issue` | `username` or `user` | see `docs/facts/imap-server.md` |
+| `list-tokens` | none | see `docs/facts/imap-server.md` |
+| `revoke` | `token_id` | see `docs/facts/imap-server.md` |
+| `auth-log` | none | see `docs/facts/imap-server.md` |
+| `set-referral` | `kind`, `url`; optional `mailbox`, `conn` | see `docs/facts/imap-server.md` |
+| `clear-referral` | none | see `docs/facts/imap-server.md` |
+| `register-client` | `client_id`, `secret`, `redirect_uris` | see `docs/facts/imap-server.md` |
 | `inject-dsn` | `code` `delivered` or `failed`; optional `to`, `recipient`, `envid`, `raw` | see `docs/facts/imap-server.md` |
 | `list-smtp` | none | accepted SMTP messages |
 | `wait-smtp` | `count` | zero returns immediately. A positive count also needs `timeout_ms`. A timeout is `ok` false |
 
-`status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `smtp_listeners`, `smtp_tls`, `smtp_tls_listeners`, `jmap`, `jmap_tls`, and `sieve`. `smtp` is the first cleartext SMTP bind. `smtp_tls` is the first implicit SMTP TLS bind. `jmap`, `jmap_tls`, and `sieve` are the bound `host:port`, or `""` when that listener is not up. The lists and the recorded SMTP fields are in `docs/facts/imap-server.md`.
+An omitted `user` on `inject`, `list-mail`, and `fetch-mail` is the first dataset account. The field details stay in `docs/facts/imap-server.md`.
+
+`status` includes `listen`, `implicit_tls_listen`, `control`, `smtp`, `smtp_listeners`, `smtp_tls`, `smtp_tls_listeners`, `jmap`, `jmap_tls`, `sieve`, `oauth`, and `oauth_tls`. `smtp` is the first cleartext SMTP bind. `smtp_tls` is the first implicit SMTP TLS bind. `jmap`, `jmap_tls`, `sieve`, `oauth`, and `oauth_tls` are the bound `host:port`, or `""` when that listener is not up. The lists, the recorded SMTP fields, and the OAuth routes and token rules are in `docs/facts/imap-server.md`.
 
 Example:
 
@@ -145,6 +162,7 @@ Reply faults run in `runCommand` before the command handler. The certificate fau
 - `reply`, `bye`, `idle_burst`, `drop_literal`, `rst_literal`, `overquota`, `expunge_mid`, and `inprogress` are named here. What each one does, and what the `bye` op does, is in `docs/facts/imap-server.md`.
 - `proto` defaults to `imap`. `proto` `smtp` applies `close`, `rst`, `half_close`, `silent`, `delay`, `raw`, `reply`, `drop_after_354`, `bounce`, and `overquota` to the named SMTP verb. An IMAP fault does not match an SMTP command. The SMTP rules are in `docs/facts/imap-server.md`.
 - `unauthorized`, `server_fail`, and `drop_eventsource` are `proto` `jmap` faults. `proto` `sieve` `reply` forces `NO` on `CHECKSCRIPT` and `PUTSCRIPT`. The effects are in `docs/facts/imap-server.md`.
+- `expired_token`, `wrong_scope`, `revoked_refresh`, `invalid_grant`, and `slow_token` are named here. `expired_token` is distinct from TLS `expired`. What each one does is in `docs/facts/imap-server.md`.
 
 An unknown `do` is `unknown fault`. A missing required field is `missing field`.
 
@@ -226,7 +244,7 @@ The fixture files `sasl`, `condstore`, `list`, `esearch`, `compress`, `sort`, `u
 
 `SEARCHRES`, when listed, saves the full match of `RETURN (SAVE)` as UIDs and lets `$` stand for that set. `SELECT` and `EXAMINE` make `$` empty, and an empty `$` is a valid `FETCH` that sends no `FETCH` line. The `SAVE` rules and the files that list the token are in `docs/facts/imap-server.md`.
 
-`GETQUOTA` and `GETQUOTAROOT` report one shared root, `ROOT`. `STORAGE` is the store's RFC822 size in 1024-octet units, rounded up, and `MESSAGE` is the message count when `QUOTA=RES-MESSAGE` is listed. The limits start at 1048576 and 1000000. `SETQUOTA` changes them when `QUOTASET` is listed. Which files list each token, and the reply rules, are in `docs/facts/imap-server.md`.
+`GETQUOTA` and `GETQUOTAROOT` report one root, `ROOT`. `STORAGE` is the sum of RFC822 sizes in the authenticated account's own tree, in 1024-octet units, rounded up. Messages in the shared tree are not in that sum. `MESSAGE` is the message count when `QUOTA=RES-MESSAGE` is listed. The `STORAGE` and `MESSAGE` limits stay one pair on the server, so a `SETQUOTA` from one connection is what the next connection reads. The limits start at 1048576 and 1000000. `SETQUOTA` changes them when `QUOTASET` is listed. Which files list each token, and the reply rules, are in `docs/facts/imap-server.md`.
 
 `SETACL`, `DELETEACL`, `GETACL`, `LISTRIGHTS`, and `MYRIGHTS` are recognized on every personality. Before login each is tagged `NO` `must authenticate first`. After login a command with valid arguments is tagged `NO` `valid syntax not implemented`, and nothing is stored. Invalid arguments are tagged `BAD`. `ACL` is not advertised. The argument rules are in `docs/facts/imap-server.md`.
 
@@ -238,11 +256,14 @@ The fixture files `sasl`, `condstore`, `list`, `esearch`, `compress`, `sort`, `u
 
 `dataset.json` keys, as `docs/facts/imap-server.md` defines them:
 
-- `accounts` — objects with `username` and `password`.
-- `mailboxes` — objects with `name`, optional `uid_validity`, optional `messages`, optional `generated`, optional `special_use`.
-- `messages` — objects with `file` (path relative to the dataset directory), `flags`, and `internal_date` (`02-Jan-2006 15:04:05 -0700`).
+- `accounts` — objects with `username` and `password`, and optional `subscriptions`.
+- `subscriptions` — optional on an account, or once on the file. The file list applies to the first account.
+- `mailboxes` — objects with `name`, optional `account`, optional `uid_validity`, optional `messages`, optional `generated`, optional `special_use`.
+- `messages` — objects with `file`, `flags`, and `internal_date` (`02-Jan-2006 15:04:05 -0700`).
 - `generated` — `count`, `seed`, `from`, `to`, `subject`, `start` (same date form), `step_seconds`.
 - `special_use` — optional array of special-use flags on that mailbox. A flag belongs to at most one mailbox.
+
+A password in `accounts` is what `LOGIN`, `AUTHENTICATE`, SMTP `AUTH`, JMAP Basic, and ManageSieve `AUTHENTICATE` check. A message `file` is the RFC822 bytes, relative to the dataset directory. A mailbox may set `account`. The control ops `accounts` and `inject` add an account and a message while the server is running. Other-user names and the shared tree are in `docs/facts/imap-server.md`.
 
 An overlaid message is the `.eml` file. A generated mailbox keeps a header index (`from`, `to`, `subject`, `date`, `size`, `flags`) and builds RFC822 bytes from the seed and the generation id when a command needs them. Those bytes are not kept on the message.
 
@@ -259,6 +280,8 @@ SMTP cleartext listeners and the implicit TLS listener, the EHLO list, the recor
 `jmap_listen` is cleartext HTTP. It does not speak TLS. `jmap_tls_listen` speaks TLS from the first byte on the same routes, reports the bound address as `jmap_tls`, allows port `0`, and leaves session URLs as paths. An empty or omitted address is not bound. Setting it without a certificate is a config error. Method behavior is in `docs/facts/imap-server.md`.
 
 ManageSieve stores scripts and does not execute them. `CHECKSCRIPT` and `PUTSCRIPT` reject a script outside the small command list. The checker is in `docs/facts/imap-server.md`. Its `STARTTLS` is listed only when a certificate is loaded. `STARTTLS` returns `OK`, and the next greeting has no `STARTTLS`.
+
+The OAuth listener is `oauth_listen` (cleartext HTTP) or `oauth_tls_listen` (TLS from the first byte). Neither satisfies the required IMAP listener. The routes and the token rules are in `docs/facts/imap-server.md`.
 
 ## Log and clock
 

@@ -1046,3 +1046,9 @@
 
 - Implementing sandbox/plans/lab-parity-oauth-20261113-1912-plan.md on master.
 - Per-account mailbox trees, bearer tokens, loopback OAuth, IMAP4rev2, and lab capability tokens.
+
+## 2026-11-14 - Docs for accounts, mail, and the remaining ops
+
+- Approved plan: sandbox/plans/docs-accounts-and-ops-20261114-1538-plan.md
+- Work: guide names the OAuth config keys, listeners, control ops, and dataset password and message rules, and points at the facts file. Facts dataset keys and the QUOTA STORAGE sentence match the store.
+- First action per standard-plan-compliance-block.md: ./orch/exec-preflight
