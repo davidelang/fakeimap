@@ -444,23 +444,22 @@ func (s *session) authBearer(tag, mech string, hasIR bool, ir string) error {
 		who = bound
 	}
 	s.srv.logAttempt("imap", mech, who, fail)
-	if strings.EqualFold(mech, "XOAUTH2") {
-		if _, err := s.saslRead(""); err != nil {
-			return s.authErr(tag, err)
-		}
-	} else {
-		st := "invalid_token"
-		if fail == "scope" {
-			st = "insufficient_scope"
-		}
-		if _, err := s.saslRead(s.srv.bearerContinue(st, scopes)); err != nil {
-			return s.authErr(tag, err)
-		}
+	st := "invalid_token"
+	if fail == "scope" {
+		st = "insufficient_scope"
+	}
+	if _, err := s.saslRead(s.srv.bearerContinue(st, scopes)); err != nil {
+		return s.authErr(tag, err)
 	}
 	return s.no(tag, "[AUTHENTICATIONFAILED] AUTHENTICATE failed")
 }
 
+// readInitial uses a SASL-IR initial response, including "=" for empty.
+// Without SASL-IR it always sends "+" and reads one line.
 func (s *session) readInitial(hasIR bool, ir string) ([]byte, error) {
+	if !s.advertiseCap("SASL-IR") {
+		hasIR = false
+	}
 	b64 := ir
 	if !hasIR {
 		var err error

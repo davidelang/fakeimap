@@ -1154,6 +1154,18 @@ func statusPairs(mb *Mailbox, items []string, appendLimit uint64, statusSize, ob
 			if mb != nil {
 				v = uint32(mb.unseenCount())
 			}
+		case "DELETED":
+			// ENABLE IMAP4rev2 is the noRecent flag. DELETED counts \Deleted.
+			if !noRecent {
+				return nil, fmt.Errorf("bad status item")
+			}
+			if mb != nil {
+				for _, m := range mb.msgs {
+					if m.has(`\Deleted`) {
+						v++
+					}
+				}
+			}
 		default:
 			return nil, fmt.Errorf("bad status item")
 		}

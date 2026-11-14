@@ -142,6 +142,27 @@ func TestIMAP4rev2Advertised(t *testing.T) {
 	if rp := cl.cmd("CHECK"); rp.status != "BAD" || !strings.Contains(rp.text, "unknown command") {
 		t.Fatalf("CHECK %s %q", rp.status, rp.text)
 	}
+	if before := plain.cmd("STATUS INBOX (DELETED)"); before.status != "BAD" || !strings.Contains(before.text, "bad item") {
+		t.Fatalf("STATUS DELETED before ENABLE %s %q", before.status, before.text)
+	}
+	cl.cmd(`STORE 1:* +FLAGS (\Deleted)`).mustOK(t)
+	deleted := cl.cmd("STATUS INBOX (DELETED)").mustOK(t)
+	if len(deleted.untagged) != 1 || !strings.Contains(deleted.untagged[0], "DELETED 2") {
+		t.Fatalf("STATUS DELETED %q", deleted.untagged)
+	}
+	if rp := cl.cmd("STATUS INBOX (RECENT)"); rp.status != "BAD" || !strings.Contains(rp.text, "bad item") {
+		t.Fatalf("STATUS RECENT after ENABLE %s %q", rp.status, rp.text)
+	}
+	lst := cl.cmd(`LIST "" "INBOX" RETURN (STATUS (DELETED))`).mustOK(t)
+	sawDeleted := false
+	for _, u := range lst.untagged {
+		if strings.Contains(u, "DELETED 2") {
+			sawDeleted = true
+		}
+	}
+	if !sawDeleted {
+		t.Fatalf("LIST STATUS DELETED %q", lst.untagged)
+	}
 
 	facts, err := os.ReadFile("docs/facts/imap-server.md")
 	if err != nil {

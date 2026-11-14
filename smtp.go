@@ -513,18 +513,12 @@ func (sc *smtpConn) authBearer(mech string, hasRest bool, rest string) error {
 		who = bound
 	}
 	sc.srv.logAttempt("smtp", mech, who, fail)
-	if mech == "XOAUTH2" {
-		if err := sc.cont(""); err != nil {
-			return err
-		}
-	} else {
-		st := "invalid_token"
-		if fail == "scope" {
-			st = "insufficient_scope"
-		}
-		if err := sc.cont(sc.srv.bearerContinue(st, scopes)); err != nil {
-			return err
-		}
+	st := "invalid_token"
+	if fail == "scope" {
+		st = "insufficient_scope"
+	}
+	if err := sc.cont(sc.srv.bearerContinue(st, scopes)); err != nil {
+		return err
 	}
 	_, tooLong, err := readSMTPLine(sc.br, smtpCmdMax)
 	if err != nil {
