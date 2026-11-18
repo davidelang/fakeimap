@@ -1,0 +1,282 @@
+#!/bin/bash
+# setup-project
+# ONE-TIME PERMISSION STAMP / bootstrap for permissions model.
+# This is a stamp: copy the emitted artifacts + stampable files (set-*-perms,
+# project.config.example, filter-*-config, .gitattributes snippets, etc.) into a
+# target project ONCE. After stamping, the target project OWNS the files with
+# no permanent back-references to the source orchestration tree or any other project.
+# Walks user through: users (emit only, NEVER auto), config, filters, hook, perms, sandbox.
+# Mechanism not policy: flexible for dirs + unzip skeleton.
+# Sandbox only mode: all work here; manual apply later.
+# Always use absolute sandbox path for writes.
+# Language-agnostic: adapt for any project layout; do not assume app/ paths.
+#
+# Machine paths: stamped @@ tokens + project.config (manage-configs clean/smudge).
+# Runtime sandbox is always relative to this worktree (SCRIPT_DIR / git toplevel).
+
+set -euo pipefail
+
+USAGE_LINE="usage: ./setup-project [-h]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+One-time permission stamp for this tree.
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./setup-project.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "setup-project: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
+
+# Stamped defaults (smudge replaces @@…@@ from project.config)
+sandbox_path=@@SANDBOX_PATH@@
+git_home=@@GIT_HOME@@
+primary_user=@@PRIMARY_USER@@
+grok_bin_default=@@GROK_BIN_DEFAULT@@
+planning_user=@@PLANNING_USER@@
+coder_user=@@CODER_USER@@
+orchestrator_user=@@ORCHESTRATOR_USER@@
+code_group=@@CODE_GROUP@@
+sandbox_group=@@SANDBOX_GROUP@@
+shared_group=@@SHARED_GROUP@@
+
+if [ -f project.config ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    [[ "$line" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]] || continue
+    # shellcheck disable=SC2163
+    export "$line"
+  done < project.config || true
+fi
+
+_expand_path() {
+  local p="$1"
+  p="${p/#\~/$HOME}"
+  if [[ "$p" == *'$HOME'* ]]; then
+    p="${p//\$HOME/$HOME}"
+  fi
+  printf '%s' "$p"
+}
+
+# Resolve values; fall back if still unsmudged tokens
+_unsmudged() { [[ -z "${1:-}" || "$1" == @@* ]]; }
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+SANDBOX_REL="${sandbox_dir:-${sandbox_path:-}}"
+if _unsmudged "$SANDBOX_REL"; then
+  if [[ -d "$PROJECT_ROOT/dev-ai-interaction" || -L "$PROJECT_ROOT/dev-ai-interaction" ]]; then
+    SANDBOX_REL="dev-ai-interaction"
+  elif [[ -d "$PROJECT_ROOT/sandbox" || -L "$PROJECT_ROOT/sandbox" ]]; then
+    SANDBOX_REL="sandbox"
+  else
+    echo "Error: project.config sandbox_dir/sandbox_path is unset and no sandbox directory exists." >&2
+    exit 1
+  fi
+fi
+if [[ "$SANDBOX_REL" = /* ]]; then
+  SANDBOX="$SANDBOX_REL"
+else
+  SANDBOX="$PROJECT_ROOT/$SANDBOX_REL"
+fi
+
+CONFIG_EXAMPLE="$SANDBOX/project.config.example"
+# Prefer tree-root project.config for live edits; sandbox copy is stamp staging.
+CONFIG_REAL="$PROJECT_ROOT/project.config"
+EXEC_DIR="$SANDBOX/permissions-bootstrap-execution"
+mkdir -p "$EXEC_DIR" 2>/dev/null || true
+
+PRIMARY_USER="${primary_user:-}"
+_unsmudged "$PRIMARY_USER" && PRIMARY_USER="$(id -un)"
+PLANNING_USER="${planning_user:-ai-planner}"
+_unsmudged "$PLANNING_USER" && PLANNING_USER=ai-planner
+CODER_USER="${coder_user:-ai-coder}"
+_unsmudged "$CODER_USER" && CODER_USER=ai-coder
+ORCHESTRATOR_USER="${orchestrator_user:-ai-orchestrator}"
+_unsmudged "$ORCHESTRATOR_USER" && ORCHESTRATOR_USER=ai-orchestrator
+CODE_GROUP="${code_group:-ai-code}"
+_unsmudged "$CODE_GROUP" && CODE_GROUP=ai-code
+SANDBOX_GROUP="${sandbox_group:-ai-sandbox}"
+_unsmudged "$SANDBOX_GROUP" && SANDBOX_GROUP=ai-sandbox
+SHARED_GROUP="${shared_group:-ai-shared}"
+_unsmudged "$SHARED_GROUP" && SHARED_GROUP=ai-shared
+
+GIT_HOME_VAL="${git_home:-}"
+_unsmudged "$GIT_HOME_VAL" && GIT_HOME_VAL=""
+GROK_BIN_VAL="${grok_bin_default:-}"
+_unsmudged "$GROK_BIN_VAL" && GROK_BIN_VAL="\@@GROK_BIN_DEFAULT@@"
+GROK_BIN_VAL="$(_expand_path "$GROK_BIN_VAL")"
+
+echo "=== setup-project: Unix Permissions Bootstrap (sandbox-only, ONE-TIME STAMP) ==="
+echo "Project root: $PROJECT_ROOT"
+echo "Sandbox:      $SANDBOX"
+echo "All artifacts prepared in $EXEC_DIR for manual apply to trees."
+echo "This is a ONE-TIME stamp. Target project owns the resulting files thereafter."
+echo "Never auto-executes user creation."
+
+# 1. Users (emit only) — expand real values at runtime so committed body stays tokenized via assignments above
+echo ""
+echo "=== Step 1: Unix users/groups (EMIT ONLY - review and run manually as root) ==="
+cat <<USERCMDS
+# Recommended (adjust names from project.config):
+groupadd ${CODE_GROUP} || true
+groupadd ${SANDBOX_GROUP} || true
+groupadd ${SHARED_GROUP} || true
+useradd -m -g ${SANDBOX_GROUP} ${PLANNING_USER} || true
+useradd -m -g ${CODE_GROUP} ${CODER_USER} || true
+useradd -m -g ${CODE_GROUP} -G ${SHARED_GROUP} ${ORCHESTRATOR_USER} || true
+usermod -aG ${CODE_GROUP} ${ORCHESTRATOR_USER} || true
+usermod -aG ${CODE_GROUP},${SHARED_GROUP} ${PLANNING_USER} || true
+usermod -aG ${SANDBOX_GROUP},${SHARED_GROUP} ${CODER_USER} || true
+usermod -aG ${SANDBOX_GROUP} ${ORCHESTRATOR_USER} || true
+# Add the primary human/developer user to ${CODE_GROUP}
+usermod -aG ${CODE_GROUP} ${PRIMARY_USER} || true
+echo "Users created (if not exist)."
+echo "IMPORTANT: If you are ${PRIMARY_USER} (or the developer), run 'newgrp ${CODE_GROUP}' or log out/in so your current shell sees the group."
+
+# Git safe.directory (critical for modern git >= 2.35.2)
+# Git refuses to operate in a repo "owned by someone else" unless the path is whitelisted.
+# Use the wildcard form so any subdirectory, worktree, or sandbox created under the project is trusted.
+# These must be executed as each relevant user (the human + the ai-* users).
+echo "# For each user who will use git in this project (run the command as that user):"
+echo "git config --global --add safe.directory '${PROJECT_ROOT}/*'"
+echo ""
+echo "# Examples (as root you can use sudo -u):"
+echo "#   sudo -u ${PRIMARY_USER}            git config --global --add safe.directory '${PROJECT_ROOT}/*'"
+echo "#   sudo -u ${ORCHESTRATOR_USER}  git config --global --add safe.directory '${PROJECT_ROOT}/*'"
+echo "#   sudo -u ${CODER_USER}         git config --global --add safe.directory '${PROJECT_ROOT}/*'"
+echo "#   sudo -u ${PLANNING_USER}       git config --global --add safe.directory '${PROJECT_ROOT}/*'"
+echo ""
+echo "This wildcard is the recommended form because it will automatically cover any future worktrees or sandboxes."
+echo "# STAMP NOTE: These paths are for the CURRENT project. When stamping a different"
+echo "# clone/project, replace the paths with the target's root. The stamped files become"
+echo "# owned by the target; no link back to this orchestration source is required."
+
+# Passwordless sudo for launchers (so no password prompt for sudo -u ai-*)
+# DOCUMENTATION ONLY — setup-project does not write sudoers. Run as root:
+echo "# Run as root to set up passwordless sudo:"
+echo "cat > /etc/sudoers.d/vehicle-permissions << 'EOF'"
+echo "${PRIMARY_USER} ALL=(${PLANNING_USER},${CODER_USER},${ORCHESTRATOR_USER}) NOPASSWD: ${GROK_BIN_VAL}"
+echo "EOF"
+echo "chmod 440 /etc/sudoers.d/vehicle-permissions"
+echo "visudo -c   # validate"
+echo "Review and run the sudoers setup above as root. Then no password for sudo in launchers."
+echo "# ONE-TIME STAMP: After applying to the target tree, the permission files (set-*-perms etc.)"
+echo "# are owned by that tree. Edit the generated sudoers for the actual target location."
+USERCMDS
+echo "Review above. Do NOT run automatically."
+
+# As a convenience, configure safe.directory for the *current* user right now
+# (the human running the bootstrap). We compute the current git root + wildcard.
+# STAMP: this auto-add is a helper for the running user on this tree; when stamping
+# a brand new independent project, the receiver will run equivalent for their paths.
+CURRENT_USER=$(id -un)
+git config --global --add safe.directory "$PROJECT_ROOT/*" 2>/dev/null || true
+echo "Automatically added safe.directory wildcard for current user ($CURRENT_USER) on $PROJECT_ROOT/*"
+echo "You still need to do the equivalent for the ai-* users (see the USERCMDS above, adapting the path for the target project)."
+
+# 2. Config
+echo ""
+echo "=== Step 2: Config ==="
+if [ ! -f "$CONFIG_REAL" ]; then
+  # Prefer tree example; fall back to sandbox staging copy
+  EXAMPLE_SRC="$PROJECT_ROOT/project.config.example"
+  if [ ! -f "$EXAMPLE_SRC" ] && [ -f "$CONFIG_EXAMPLE" ]; then
+    EXAMPLE_SRC="$CONFIG_EXAMPLE"
+  fi
+  if [ -f "$EXAMPLE_SRC" ]; then
+    cp "$EXAMPLE_SRC" "$CONFIG_REAL"
+    echo "Created $CONFIG_REAL from example. EDIT IT NOW with real values."
+    echo "  Required absolute: git_home=  (e.g. /home/you/git — NOT ~/git)"
+    echo "  Also set: sandbox_path=, users/groups, *_bin paths."
+    echo "Then re-run this or filters will warn."
+  else
+    echo "ERROR: No example. Create $CONFIG_REAL manually."
+  fi
+else
+  echo "$CONFIG_REAL exists."
+fi
+
+# 3. Git filters (manage-configs)
+echo ""
+echo "=== Step 3: Activate filters (run in tree root) ==="
+cat <<'FILTERS'
+./orch/install-merge-drivers.sh   # merge drivers + manage-configs filter (required=true)
+./orch/verify-smudge --fix        # re-smudge filtered files; fails loudly if any stay unsmudged
+FILTERS
+
+# 4. .gitattributes (prepared in staged)
+echo "See staged/.gitattributes.add for the entries to merge."
+
+# 5. Hook (post-checkout)
+echo ""
+echo "=== Step 4: Post-checkout hook (prepared) ==="
+echo "Install .git/hooks/post-checkout that calls set-*-perms and verifies filters."
+echo "Template in staged/post-checkout-hook.txt"
+
+# 6. Sandbox
+echo ""
+echo "=== Step 5: Sandbox setup ==="
+if [ -f "$CONFIG_REAL" ]; then
+  # shellcheck disable=SC1090
+  . <(grep -E '^(sandbox_path|sandbox_dir|sandbox_special_paths)=' "$CONFIG_REAL" | sed 's/^/export /') || true
+  SR="${sandbox_dir:-${sandbox_path:-$SANDBOX_REL}}"
+  if [ -n "${SR:-}" ]; then
+    if [[ "$SR" = /* ]]; then
+      SD="$SR"
+    else
+      SD="$PROJECT_ROOT/$SR"
+    fi
+    mkdir -p "$SD"
+    echo "Sandbox dir ensured: $SD"
+    if [ -n "${sandbox_special_paths:-}" ]; then
+      IFS=',' read -r -a _sp <<< "$sandbox_special_paths"
+      for p in "${_sp[@]}"; do
+        p="${p#"${p%%[![:space:]]*}"}"
+        p="${p%"${p##*[![:space:]]}"}"
+        [ -n "$p" ] && mkdir -p "$SD/$p"
+      done
+    fi
+    if [ ! -d "$SD/.git" ]; then
+      (cd "$SD" && git init) || echo "git init skipped or failed"
+    else
+      echo "Sandbox already has .git (from skeleton zip?)"
+    fi
+  fi
+fi
+
+# 7. Perms
+echo ""
+echo "=== Step 6: Apply perms ==="
+echo "Run (with sudo if needed): ./fix-perms"
+echo "Prepared in staged/"
+
+# 8. Skeleton unzip (general mechanism)
+echo ""
+echo "=== Step 7: Skeleton (if declared in config) ==="
+echo "Unzip support prepared. Example: unzip skeleton.zip -d $SANDBOX_REL"
+
+echo ""
+echo "=== Bootstrap complete in sandbox. ==="
+echo "All files in $EXEC_DIR/staged/ ready for ONE-TIME manual copy into the TARGET project tree."
+echo "After copy, the stamped files (fix-perms, setup-project, filters, .gitattributes, project.config*, enable-full-orchestration.sh*) are OWNED by the target project."
+echo "No permanent reference back to the stamp source is needed or created for other projects."
+echo "Then apply (users, sudoers, filters, perms, hooks)."
+echo "In the stamped tree run ./enable-full-orchestration.sh (or --apply after review) to opt into full layout from plain master."
+echo "Adapt paths for the target tree location. Re-run any project steps after apply."
+
+# Log
+if [ -d "$EXEC_DIR" ]; then
+  echo "setup-project ran at $(date)" >> "$EXEC_DIR/setup-project.log"
+fi

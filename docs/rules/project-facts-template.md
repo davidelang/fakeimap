@@ -9,9 +9,10 @@ This is shared knowledge for every agent working on the project: a map of what i
 - Before editing TODO.md, ENGINEERING_LOG.md, or this file: use `./orch/todo-append`, `./orch/todo-close`, `./orch/append-to-engineering-log`. To read them: `./orch/todo-open`, `./orch/englog-recent`; never read ENGINEERING_LOG.md whole.
 
 ## Build and commit
-- **Build type:** android-gradle | command | none
+- **Build type:** android-gradle | ios-hybrid | makefile | command | none
 - **Standard build:** debug
 - **Test build:** qa | instrumentation:<variant> | none
+- **Unit tests:** testDebugUnitTest (android-gradle, optional; default `test`; build_app runs them first on every build)
 - Build: `./build_app --standard` (add `--test` unless Test build is none; never `--play`).
 
 ## Testing

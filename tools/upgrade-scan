@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# upgrade-scan: show what changed in grok since the rules were last reviewed.
+# Prints installed version, the last reviewed version (tools/upgrade-map.tsv), and
+# changelog lines mentioning the features in tools/upgrade-map.tsv.
+set -uo pipefail
+USAGE_LINE="usage: ./tools/upgrade-scan [-h]"
+usage() {
+  cat <<EOF
+$USAGE_LINE
+
+Show installed and reviewed versions and changelog lines for tools/upgrade-map.tsv.
+
+options:
+  -h, --help  show this help message and exit
+
+Details: the comment at the top of ./tools/upgrade-scan.
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -[A-Za-z-]*) echo "$USAGE_LINE" >&2; echo "upgrade-scan: error: unrecognized option: $1" >&2; exit 2 ;;
+esac
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+map="$here/tools/upgrade-map.tsv"
+ver="$(grok --version 2>/dev/null | head -1 || echo unknown)"
+echo "installed: $ver"
+echo "reviewed:  $(awk -F'\t' '$1=="reviewed"{print $2}' "$map")"
+cl=""
+for c in "$HOME/.grok/CHANGELOG.md" "$HOME/.grok/changelog.md"; do [ -f "$c" ] && cl="$c" && break; done
+[ -z "$cl" ] && { echo "no local changelog; read the upstream release notes"; exit 0; }
+awk -F'\t' '$1!="reviewed" && $1!="cursor_reviewed" && $1!~/^#/ && $1!~/^cursor:/ && NF>=2 {print $1"\t"$2}' "$map" | while IFS=$'\t' read -r kw probe; do
+  n=$(grep -ci -- "$kw" "$cl" || true)
+  [ "$n" -gt 0 ] && echo "changelog mentions '$kw' ($n) -> recheck probes/$probe"
+done
+
+# ---- cursor-agent ----
+cbin="${CURSOR_BIN:-$HOME/git/cursor/bin/cursor-agent}"
+if [ -x "$cbin" ]; then
+  echo "cursor-agent installed: $("$cbin" --version 2>/dev/null | head -1)  reviewed: $(awk -F'\t' '$1=="cursor_reviewed"{print $2}' "$map")"
+  echo "agent link: $(readlink "$HOME/.local/bin/agent" 2>/dev/null || echo none)  (must stay the grok link)"
+  ccl="$(curl -fsS --max-time 20 https://cursor.com/docs/cli/changelog.md 2>/dev/null || true)"
+  if [ -n "$ccl" ]; then
+    awk -F'\t' '$1~/^cursor:/{sub(/^cursor:/,"",$1); print $1"\t"$2}' "$map" | while IFS=$'\t' read -r kw probe; do
+      n=$(printf '%s' "$ccl" | grep -ci -- "$kw" || true)
+      [ "$n" -gt 0 ] && echo "cursor changelog mentions '$kw' ($n) -> recheck probes/$probe"
+    done
+  else
+    echo "cursor changelog not reachable; read cursor.com/docs/cli/changelog"
+  fi
+fi
+exit 0

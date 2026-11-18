@@ -1,0 +1,26 @@
+# keyword<TAB>probe (relative to probes/). Row "reviewed<TAB><version>" = last reviewed grok version.
+# 2026-11-10: local changelog covered 1.0.71-1.0.77 only. 1.0.53-1.0.70 were not in that file.
+reviewed	1.0.77
+AGENTS.md	general/agents-md-first-message.md
+compact	general/agents-md-first-message.md
+--rules	general/rules-flag.md
+hook	general/hooks-events.md
+additionalContext	general/hooks-events.md
+context	general/context-window.md
+effort	general/reasoning-effort.md
+skills	general/skills-disabled.md
+roles	general/subagent-roles.md
+# cursor-agent rows: keyword<TAB>probe, scanned against the cursor CLI changelog
+cursor_reviewed	2026.10.01-e373342
+cursor:AGENTS.md	general/cursor-rule-loading.md
+cursor:rules	general/cursor-rule-loading.md
+cursor:hook	general/cursor-hook-fields.md
+cursor:sessionStart	general/cursor-hook-fields.md
+cursor:background	protected/20261013-cursor-background-watch-dies.md
+cursor:shell	protected/20261013-cursor-background-watch-dies.md
+cursor:model	general/cursor-models.md
+cursor:sandbox	general/cursor-sandbox.md
+cursor:install	protected/20261013-cursor-installer-deletes-agent-link.md
+cursor:update	protected/20261013-cursor-installer-deletes-agent-link.md
+role card	protected/20261013-planner-edits-code.md
+plan mode	protected/20261013-planner-edits-code.md

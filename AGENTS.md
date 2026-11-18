@@ -29,6 +29,12 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - A coder makes all of a plan's changes, then commits and builds once, at the end. A plan is too large when that coder cannot implement it and keeps retrying under the Retry rules; report it so it can be split into smaller steps. The size of the change, the number of files touched, and the length of the plan are not reasons to split.
 - Cite `standard-plan-compliance-block.md` by path. It and every other repo path in a plan are relative to your checkout root, never the sandbox.
 
+## Scratch
+- `/tmp` and `/var/tmp` are a ram disk. Do not create files or directories there, and do not leave a run's files behind.
+- Notes, probes, and one-off files go in the sandbox (`project.config` `sandbox_dir`). Remove them before the turn ends.
+- A test script uses `tools/scratch-dir NAME` and removes that directory in an EXIT trap, including when the test fails. Set `GIT_CEILING_DIRECTORIES` to that directory's parent before `git init` inside it.
+- Code under test that needs a temporary directory gets `TMPDIR` set to a directory the test removes. JVM tests also get `-Djava.io.tmpdir` set to that directory (`java.io.tmpdir` does not follow `TMPDIR`). Do not call `mktemp`, `tempfile`, or `createTempDirectory` against the default directory.
+
 ## Facts
 - `project-facts.md` is a trigger index: before touching or doing X, read Y. Follow its triggers.
 - After a compaction, re-read `project-facts.md` before relying on it.

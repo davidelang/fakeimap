@@ -49,6 +49,10 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ -z "$BRANCH" ] || [ "$BRANCH" = HEAD ]; then
+    echo "ERROR: this checkout is detached; the builds tag is 'builds' on master and '<branch>/builds' on any other branch. Check out a branch and retry." >&2
+    exit 1
+fi
 
 if [ "$BRANCH" = "master" ]; then
     TAG="builds"
