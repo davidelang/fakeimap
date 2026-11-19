@@ -22,4 +22,4 @@ Changing this section needs David's OK (master-merge asks).
 ## Worktree: <name>
 Testing override: device=<id or none> emulator=<yes/no>.
 
-Coder children follow `roles/coder.md`. A plan line `Review: diff` adds one reviewer. Do not put a child sequence in this file.
+Coder children follow `roles/coder.md`. A plan line `Review: diff` adds one fresh reviewer child. Do not put a child sequence in this file.
