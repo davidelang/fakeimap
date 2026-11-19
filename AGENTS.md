@@ -41,8 +41,8 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - Files David names in chat (screenshots etc.) are in the sandbox (`project.config` `sandbox_dir`, `@@SANDBOX_PATH@@/`; same dir from any worktree): read `<sandbox>/<name>` directly. No ls/find. If it is not there, say so and ask; don't search.
 
 ## Channel
-- To join a channel, run the `/channel <diag path> <node>` skill: it runs `third_party/agent-coordination-tickets/artifact/channel-arm <diag> <node> --whatineedtoknow`, and you follow that output; it has every step for your agent tool.
-- Use them only when David explicitly directs you to and names the plan or node. Never look for inbox or channel files on your own.
+- To join a channel, run the `/channel <node>` skill: it runs `third_party/agent-coordination-tickets/artifact/channel-arm <node> --whatineedtoknow`, and you follow that output; it has every step for your agent tool. `/channel <diag path> <node>` still passes the plan.
+- Use them only when David explicitly directs you to and names the node (and optionally the plan). Never look for inbox or channel files on your own.
 
 ## Ending a turn
 The last line of every planner, coder, and executor turn is `STATUS: SUCCESS|FAIL|BLOCKED|NEEDS-INPUT|WORKING <short note>`.
