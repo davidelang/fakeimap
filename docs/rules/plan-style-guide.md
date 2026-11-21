@@ -37,9 +37,9 @@ Do not nag humans about stale DRAFT after they ordered execute — hygiene-fix o
 
 ## Scope of one plan
 
-- One plan per file set or behavior area. Put all pending related work (several roadmap items, a cleanup series, follow-ups in the same files) into that one plan, as ordered phases.
-- Split only when the file sets do not overlap, or when one item's result changes another item's design. A plan is too large when a coder cannot implement it and keeps retrying under the Retry rules in `AGENTS.md`; that is when it is split into smaller steps. The size of the change, the number of files touched, and the length of the plan are not reasons to split.
-- Do not write a successor plan whose files overlap a plan that has not landed. Write it after that plan lands, from the current tree.
+- After a design or review that names several changes, write every plan for that work in the same session, before sending any of them. Each extra plan costs a full build and about 700k tokens. A plan written after the context is compacted has lost part of the design.
+- Fewer plans is better. Put several features, roadmap items, and follow-ups into one plan as ordered phases, including work whose files do not overlap. Stop combining when a coder would lose track and retry the implementation because the plan confused it. That is when a plan is too large. The size of the change, the number of files touched, and the length of the plan are not reasons to split.
+- Send one plan at a time. Before sending it, re-read the current tree and anything David has said since the plan was written. Revise the plan when landed code or those instructions change what it should say. Plans from one session may touch the same files. The check before send is what updates a later plan after an earlier one lands.
 
 ## Structure
 
@@ -79,6 +79,7 @@ Callers, routes, `NavHost` arguments, and tests of a changed name are part of th
 - Research assignments in the execute contract (`grep expandDiagnoseMany`, “unless a native-null path lacks it”)
 - Optional extra sites (“and oriented energy if it walks a seed that small”)
 - Multi-plan LANDED audit tables inside the next feature plan
+- A separate plan per feature, written only after the previous plan's coder finishes
 - Device forensics novels in the execution contract
 - Commit or build steps inside phases (the STANDARD BLOCK commits and builds once, at the end)
 - Restating landed behavior or "keep" rules from earlier plans (cite the spec, policy doc, or test by path)

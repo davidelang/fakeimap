@@ -24,9 +24,18 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - Any other failure counts. Each approach gets an original plus two fixups. Then reset with `./orch/reset-to-builds.sh` (or `--head` for uncommitted junk) and start a new original. Not during a `/prepare-local-pr` history rewrite: there a red build revises the rewrite plan.
 - After the third reset, stop, report under the sandbox `implementation-failure-logs/`, and wait.
 
+## Audit
+- A coder or an executor appends one JSON object, as one line, to `<sandbox>/auditlogs/<branch>.jsonl`. `<branch>` is the Current Branch in `AGENT_CONTEXT.md` (the long name from `setup_agent.sh`, such as `feature-x`), not the Agent ID (`agent-N`). A `/` in that name becomes `--` in the file name. Create `auditlogs/` if it is missing.
+- Write a line when a counted retry starts, when a reviewer `FAIL` starts a fix, when a reset starts, and when a turn ends `FAIL`, `BLOCKED`, or `NEEDS-INPUT`. One problem, one line. A typo-class fix writes nothing. A `SUCCESS` turn writes nothing.
+- Fields: `ts` (UTC), `worktree` (that same branch name, unsanitized), `role`, `plan` (repo-relative path, or empty), `kind` (`retry`, `needs-input`, `blocked`, `review-fail`, `reset`), `cause` (`plan`, `rule`, `code`, `tool`, `unknown`), `note` (one line on what went wrong, not a transcript). A `reset` note names the `implementation-failure-logs/` path.
+- Append only. Do not rewrite earlier lines. The file stays in the sandbox. Do not commit it. The lines are how later audits find patterns and revise directions.
+
 ## Plans
 - Sandbox `plans/<kebab>-YYYYMMDD-HHMM-plan.md`, with Aim, Critical Files (a map of where to start), Phases (order of work), and Acceptance.
-- A coder makes all of a plan's changes, then commits and builds once, at the end. A plan is too large when that coder cannot implement it and keeps retrying under the Retry rules; report it so it can be split into smaller steps. The size of the change, the number of files touched, and the length of the plan are not reasons to split.
+- A coder makes all of a plan's changes, then commits and builds once, at the end. Each plan is one build and one review.
+- After a design or review that names several changes, write every plan for that work in the same session, before sending any of them. A plan written after the context is compacted has lost part of the design.
+- Send one plan at a time. Before sending it, re-read the current tree and anything David has said since it was written. Revise it when landed code or those instructions change what it should say.
+- Fewer plans is better. Keep combining work until a coder would lose track and retry the implementation because the plan confused it. That is when a plan is too large: report it so it can be split. The size of the change, the number of files touched, and the length of the plan are not reasons to split.
 - Cite `standard-plan-compliance-block.md` by path. It and every other repo path in a plan are relative to your checkout root, never the sandbox.
 
 ## Scratch

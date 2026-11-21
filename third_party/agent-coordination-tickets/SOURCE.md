@@ -4,13 +4,14 @@ Channel programs for passing one file from one agent to the next.
 
 | | |
 |--|--|
-| **Upstream** | `davidelang/agent-coordination-tickets` @ `a42642c4368b5246f259e4c818a429647aade68e` (`master`) |
+| **Upstream** | `davidelang/agent-coordination-tickets` @ `7eb1f645265edcd3baaf1212853c144aac20ce38` (`master`) |
 | **Profile** | Source plus one build step: `go build` of `src/go/channel` (static, stdlib only, reproducible); the result is committed as `artifact/channel` (sha256 in libpin.toml). |
 | **Host clone** | `/home/dlang/git/agent-coordination-tickets` |
 
 Agents run only the committed `artifact/channel`, through its links `artifact/channel-setup`, `-arm`, `-send`,
-`-ping` and `-status`, from the repo root; they never need `src/`. To join a channel an agent runs
-`artifact/channel-arm <diag> <node> --whatineedtoknow` (the `/channel` skill) and follows its output.
+`-ping`, `-status` and `-rebind`, from the repo root; they never need `src/`. To join a channel an agent runs
+`artifact/channel-arm <node> --whatineedtoknow` (the `/channel` skill; `/channel <diag> <node>` still passes the plan)
+and follows its output. After `/new`, `/channel rebind` runs `artifact/channel-rebind`.
 `src/bin/channel` (POSIX sh) and `src/bin/channel.py` are alternative implementations of the same tool, kept in
 step by the connector's tests; agents do not run them. Consumers do not rerun the connector's tests when bumping this pin.
 

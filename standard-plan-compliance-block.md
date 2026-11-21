@@ -5,3 +5,4 @@
 - Pin bump (the plan changes only `third_party/<lib>/{libpin.toml,SOURCE.md}`): one phase. `third_party/fetch-deps refresh <lib>`, then `build <lib>`; `status <lib>` shows the new sha; then one commit and build (project-facts.md path). No lib tests, no preflight, no engineering-log entry.
 - Before handoff, re-read the plan once and check every Acceptance line. Finish anything missing. If you cannot, set Status **BLOCKED** and end with `STATUS: BLOCKED needs replan`.
 - On success, set Status **CODE LANDED** and end with `STATUS: SUCCESS ready to test (tag <tag>)`.
+- A counted retry, and a turn that ends `FAIL`, `BLOCKED`, or `NEEDS-INPUT`, appends one line as `AGENTS.md` Audit says. A typo-class fix does not.
