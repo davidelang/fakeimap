@@ -1,0 +1,7 @@
+Run one check again for an approved plan and report the result. Do not change, commit or reset anything.
+
+Plan: {{PLAN}}
+Check to run: {{CHECK}}
+Worktree (your cwd): {{WORKTREE}}
+{{ADDENDUM}}
+Report the command and its result. End with exactly one STATUS line: STATUS: SUCCESS if the check passed, otherwise STATUS: FAILURE <reason>.

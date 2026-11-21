@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# dispatch-launch-hook: the launch hook run-script-grok-{coder,reviewer,tester} give the
+# pinned dispatcher (-l). The dispatcher calls
+#   dispatch-launch-hook --role ROLE --access read-write|read-only --job-dir DIR --worktree DIR -- AGENT-ARGV...
+# and this runs AGENT-ARGV for that role:
+#   user      project.config <role>_user (executor/tester: coder_user, reviewer: planning_user)
+#   Landlock  orch/agent-landlock --role <role>_landlock (executor/tester: coder, reviewer: planner)
+#   program   grok / cursor-agent / agy -> grok_bin_default / cursor_bin / antigravity_bin
+#   grok      --model / --reasoning-effort from roles.config when the dispatcher set none;
+#             context=500k (anything but 256k) -> GROK_HOME = a per-user config home made by
+#             orch/grok-context-home under <sandbox_dir>/grok-home/<user>/ctx-<tokens>
+#   cwd       the worktree, umask 002
+# stdout is the agent's stdout (the dispatcher parses it); notes go to stderr.
+# DISPATCH_HOOK_AS_ME=1 (run-script-grok-* -U): run as the current user, no sudo (tests).
+set -euo pipefail
+DC_PROG=dispatch-launch-hook
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=/dev/null
+DISPATCH_FUNCS_ONLY=1 . "$ROOT/.grok/lib/grok-dispatch-common.sh"
+
+parsed=$(getopt -n "$DC_PROG" -o r:a:j:w:h -l role:,access:,job-dir:,worktree:,help -- "$@") \
+  || { echo "usage: $DC_PROG --role ROLE --access ACCESS --job-dir DIR --worktree DIR -- ARGV..." >&2; exit 2; }
+eval set -- "$parsed"
+role=""; access=""; jobdir=""; wt=""
+while true; do
+  case "$1" in
+    -r|--role) role="$2"; shift 2 ;;
+    -a|--access) access="$2"; shift 2 ;;
+    -j|--job-dir) jobdir="$2"; shift 2 ;;
+    -w|--worktree) wt="$2"; shift 2 ;;
+    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift; break ;;
+  esac
+done
+[[ -n "$role" && -n "$wt" ]] || dc_die "--role and --worktree are required"
+[[ $# -gt 0 ]] || dc_die "no agent command after --"
+[[ -d "$wt" ]] || dc_die "worktree not found: $wt"
+argv=("$@")
+
+dc_load_project_config "$ROOT"
+dc_role_map "$role"
+sandbox="$(dc_sandbox_dir "$ROOT")"
+
+prog="${argv[0]##*/}"
+case "$prog" in
+  grok) argv[0]="$(dc_cfg grok_bin_default)" ;;
+  cursor-agent) argv[0]="$(dc_cfg cursor_bin)" ;;
+  agy) argv[0]="$(dc_cfg antigravity_bin)" ;;
+esac
+[[ -x "${argv[0]}" ]] || dc_die "agent program not executable: ${argv[0]} (project.config)"
+
+self="$(id -un)"
+as_me=0
+[[ "${DISPATCH_HOOK_AS_ME:-}" == 1 || "$DC_USER" == "$self" ]] && as_me=1
+run_user="$DC_USER"; [[ $as_me == 1 ]] && run_user="$self"
+
+# as_user CMD...: run CMD as the role's user (directly when that is us).
+as_user() {
+  if [[ $as_me == 1 ]]; then "$@"; else sudo -n -u "$run_user" -- "$@"; fi
+}
+
+gh=""
+envs=(GIT_HOME="$(dc_cfg git_home)" ROLE_KEY="$DC_LANDLOCK" DISPATCH_ROLE="$role" DISPATCH_ACCESS="$access")
+if [[ "$prog" == grok ]]; then
+  model="$(dc_role_cfg "$ROOT" "$role" model)"
+  effort="$(dc_role_cfg "$ROOT" "$role" effort)"
+  have_model=0; have_effort=0
+  for a in "${argv[@]}"; do
+    case "$a" in --model|-m) have_model=1 ;; --reasoning-effort|--effort) have_effort=1 ;; esac
+  done
+  [[ $have_model == 0 && -n "$model" ]] && argv+=(--model "$model")
+  [[ $have_effort == 0 && -n "$effort" ]] && argv+=(--reasoning-effort "$effort")
+  ctx="$(dc_context_tokens "$(dc_role_cfg "$ROOT" "$role" context)")"
+  if [[ -n "$ctx" && "$ctx" != 256000 ]]; then
+    gh="$sandbox/grok-home/$run_user/ctx-$ctx"
+    as_user "$ROOT/orch/grok-context-home" --dir "$gh" --context "$ctx" --model "${model:-grok-4.7}" >/dev/null
+    envs+=(GROK_HOME="$gh")
+  fi
+fi
+
+landlock=("$ROOT/orch/agent-landlock" --role "$DC_LANDLOCK" --worktree "$wt" --)
+[[ -f "${landlock[0]}" ]] || dc_die "missing ${landlock[0]}; refusing to start an agent without Landlock"
+
+echo "$DC_PROG: role=$role access=$access user=$run_user landlock=$DC_LANDLOCK grok_home=${gh:-default} job=$jobdir" >&2
+if [[ $as_me == 1 ]]; then
+  cd "$wt"; umask 002
+  exec env "${envs[@]}" "${landlock[@]}" "${argv[@]}"
+fi
+exec sudo -n -u "$run_user" -- env "${envs[@]}" \
+  bash -c 'cd "$1" && umask 002 && shift && exec "$@"' bash "$wt" "${landlock[@]}" "${argv[@]}"

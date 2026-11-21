@@ -45,6 +45,16 @@ shared run-grok-coder
 shared run-grok-master
 shared run-grok-orchestrator
 shared run-grok-planner
+# Headless dispatcher wrappers (pinned artifact/dispatch/dispatch + orch/dispatch-launch-hook)
+shared run-script-grok-coder
+shared run-script-grok-reviewer
+shared run-script-grok-tester
+shared .grok/lib/grok-dispatch-common.sh
+shared orch/dispatch-launch-hook
+shared orch/grok-context-home
+shared docs/dispatch-wrappers.md
+shared docs/dispatch-wrappers.example.dispatch
+shared docs/dispatch-executor-addendum.md
 shared run-cursor
 shared run-cursor-coder
 shared run-cursor-master
@@ -106,6 +116,7 @@ shared third_party/libpin-landlock
 shared third_party/agent-coordination-tickets/libpin.toml
 shared third_party/agent-coordination-tickets/SOURCE.md
 shared third_party/agent-coordination-tickets/artifact/*
+shared third_party/agent-coordination-tickets/artifact/dispatch/**
 
 opt run-antigravity
 opt run-antigravity-master

@@ -1,0 +1,10 @@
+Review this commit range against its plan. You are a fresh session, read-only and report-only.
+
+Plan: {{PLAN}}
+Commit range: {{RANGE}}
+Worktree (your cwd): {{WORKTREE}}
+
+Check the diff of exactly that range (git diff {{RANGE}}) against the plan's Aim and Acceptance. List each finding on its own short line.
+If the range is empty or invalid, end with STATUS: BLOCKED no commit range.
+{{ADDENDUM}}
+Your reply is the verdict; the dispatcher saves it to {{VERDICT_FILE}}. Do not write that file yourself. Last line: STATUS: PASS or STATUS: FAIL.

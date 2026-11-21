@@ -1,0 +1,10 @@
+#!/bin/bash
+# run-script-grok-coder: headless dispatcher for the executor role (no project rules here).
+# Shared body: .grok/lib/grok-dispatch-common.sh. Agents start through orch/dispatch-launch-hook.
+set -euo pipefail
+GROK_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export GROK_LAUNCHER_DIR
+WRAPPER_ROLE=coder
+# shellcheck source=/dev/null
+source "$GROK_LAUNCHER_DIR/.grok/lib/grok-dispatch-common.sh"
+dispatch_wrapper_main "$@"

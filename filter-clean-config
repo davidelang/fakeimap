@@ -313,6 +313,9 @@ content=$(cat)
 
 if [[ "$filename" == *.sh \
    || "$filename" == *run-grok* \
+   || "$filename" == *run-script-grok* \
+   || "$filename" == *dispatch-launch-hook* \
+   || "$filename" == *grok-context-home* \
    || "$filename" == *run-antigravity* \
    || "$filename" == *setup* \
    || "$filename" == *filter* \

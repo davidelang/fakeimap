@@ -1,0 +1,10 @@
+Implement this approved plan. You are a fresh session; there is no earlier conversation to rely on.
+
+Plan: {{PLAN}}
+Start from: {{FROM_STEP}}
+Worktree (your cwd): {{WORKTREE}}
+HEAD before you start (do not reset it): {{RECORDED_HEAD}}
+
+Read the plan first and follow it. Commit your work.
+{{ADDENDUM}}
+End with exactly one STATUS line as your last line (SUCCESS, FAILURE <reason>, BLOCKED <reason>, NEEDS-INPUT <reason>).

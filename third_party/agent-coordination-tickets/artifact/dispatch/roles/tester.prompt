@@ -1,0 +1,7 @@
+Run the checks for this plan and commit range and report. You are a fresh session and change nothing.
+
+Plan: {{PLAN}}
+Commit range: {{RANGE}}
+Worktree (your cwd): {{WORKTREE}}
+{{ADDENDUM}}
+Your reply is the report; the dispatcher saves it to {{VERDICT_FILE}}. Last line: STATUS: PASS, STATUS: FAIL, or STATUS: BLOCKED <reason>.

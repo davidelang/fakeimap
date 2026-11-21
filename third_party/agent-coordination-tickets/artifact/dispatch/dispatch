@@ -1,0 +1,476 @@
+#!/usr/bin/env bash
+# dispatch: a headless channel node. For each message it starts one fresh
+# agent (no resume) through a launch hook, checks the result, runs the
+# blocking reviews, and replies on the channel. See dispatch/README.md.
+set -euo pipefail
+PROG=${0##*/}
+HERE=$(CDPATH='' cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
+# shellcheck source=lib/common.sh
+. "$HERE/lib/common.sh"
+
+usage() {
+  cat <<'U'
+usage: dispatch -d DIAG -r ROLE [-l HOOK] [options]
+       dispatch -d DIAG -r executor -p PLAN [-f STEP] [options]     (one job, no channel)
+       dispatch -d DIAG -r reviewer|tester -p PLAN -R A..B [options] (one review, no channel)
+
+Headless channel node that launches one fresh agent per job through a
+launch hook. Never prompts. With neither -p nor -1 it watches the node's
+inbox (channel-arm) and handles each message in turn.
+
+Required:
+  -d, --diag FILE          channel plan (diag). No default: the run-* wrapper finds it.
+  -r, --role ROLE          executor | reviewer | tester
+  -l, --launch CMD         launch hook (or 'launch=' in the sidecar / diag)
+
+Job:
+  -p, --plan FILE          run one job directly, no channel
+  -f, --from-step STEP     executor: step to start from (default: the beginning)
+  -R, --range A..B         reviewer/tester: commit range to review
+  -1, --once               handle the oldest inbox message, then exit
+  -N, --node NAME          channel node this process serves (default: '<role>.node')
+  -C, --worktree DIR       git worktree the agent works in (default: toplevel of $PWD)
+
+Agent:
+  -b, --backend NAME       grok-build (default) | cursor | antigravity | grokbot-webhook
+  -m, --model ID           model passed to the backend
+  -e, --effort LEVEL       reasoning effort passed to the backend
+  -t, --max-turns N        turn cap per agent run
+  -T, --timeout SEC        wall-clock cap per agent run (0 = none)
+  -u, --rules FILE         role card for this role (default dispatch/roles/ROLE.md)
+  -k, --rounds N           executor: review rounds before giving up (default 3)
+  -w, --review-launch CMD  launch hook for the reviews an executor runs
+                           (default: 'reviewer.launch', else the same hook)
+
+Other:
+  -s, --sidecar FILE       settings file (default DIAG.dispatch when it exists)
+  -c, --channel PATH       channel program (default 'channel' on PATH)
+  -L, --log-dir DIR        job logs (default DIAGDIR/dispatch/NODE-or-ROLE)
+  -n, --dry-run            print settings and the first launch; start and send nothing
+  -v, --verbose            more output; agent output is also copied to stdout
+  -h, --help               this help
+
+The hook is called as
+  HOOK --role ROLE --access read-write|read-only --job-dir DIR --worktree DIR -- AGENT-ARGV...
+and must run AGENT-ARGV (as the right user, under the right landlock, with
+the right config home). Exit: 0 done/PASS, 1 not done/FAIL, 2 usage or
+setup error, 3 a direct review produced no verdict.
+U
+}
+
+# ---------------------------------------------------------------- options
+ROLE=""; DIAG=""; SIDECAR=""; PLAN=""; FROM_STEP=""; RANGE_ARG=""; ONCE=0
+DRY=0; VERBOSE=0; WORKTREE=""; REVIEW_LAUNCH=""; LOG_DIR=""
+parsed=$(getopt -n "$PROG" -o d:r:l:p:f:R:1N:C:b:m:e:t:T:u:k:w:s:c:L:nvh \
+  -l diag:,role:,launch:,plan:,from-step:,range:,once,node:,worktree:,backend:,model:,effort:,max-turns:,timeout:,rules:,rounds:,review-launch:,sidecar:,channel:,log-dir:,dry-run,verbose,help \
+  -- "$@") || { echo "usage: dispatch -d DIAG -r ROLE [-l HOOK] [options]  (-h for help)" >&2; exit 2; }
+eval set -- "$parsed"
+while true; do
+  case "$1" in
+    -d|--diag) DIAG="$2"; shift 2 ;;
+    -r|--role) ROLE="$2"; shift 2 ;;
+    -l|--launch) CFG_CLI[launch]="$2"; shift 2 ;;
+    -p|--plan) PLAN="$2"; shift 2 ;;
+    -f|--from-step) FROM_STEP="$2"; shift 2 ;;
+    -R|--range) RANGE_ARG="$2"; shift 2 ;;
+    -1|--once) ONCE=1; shift ;;
+    -N|--node) CFG_CLI[node]="$2"; shift 2 ;;
+    -C|--worktree) WORKTREE="$2"; shift 2 ;;
+    -b|--backend) CFG_CLI[backend]="$2"; shift 2 ;;
+    -m|--model) CFG_CLI[model]="$2"; shift 2 ;;
+    -e|--effort) CFG_CLI[effort]="$2"; shift 2 ;;
+    -t|--max-turns) CFG_CLI[max_turns]="$2"; shift 2 ;;
+    -T|--timeout) CFG_CLI[timeout]="$2"; shift 2 ;;
+    -u|--rules) CFG_CLI[rules]=$(readlink -f -- "$2"); shift 2 ;;
+    -k|--rounds) CFG_CLI[rounds]="$2"; shift 2 ;;
+    -w|--review-launch) REVIEW_LAUNCH="$2"; shift 2 ;;
+    -s|--sidecar) SIDECAR="$2"; shift 2 ;;
+    -c|--channel) CFG_CLI[channel]="$2"; shift 2 ;;
+    -L|--log-dir) LOG_DIR="$2"; shift 2 ;;
+    -n|--dry-run) DRY=1; shift ;;
+    -v|--verbose) VERBOSE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+  esac
+done
+[[ $# -eq 0 ]] || die "unexpected argument: $1 (-h for help)"
+
+[[ -n "$DIAG" ]] || die "no diag: pass -d/--diag FILE (the run-* wrapper finds the standard one)"
+[[ -f "$DIAG" ]] || die "diag not found: $DIAG"
+DIAG=$(readlink -f -- "$DIAG")
+case "$ROLE" in
+  executor|reviewer|tester) ;;
+  "") die "no role: pass -r/--role executor|reviewer|tester" ;;
+  *) die "unknown role '$ROLE' (executor|reviewer|tester)" ;;
+esac
+if [[ -n "$PLAN" ]]; then [[ -f "$PLAN" ]] || die "plan not found: $PLAN"; PLAN=$(readlink -f -- "$PLAN"); fi
+[[ -n "$PLAN" && $ONCE == 1 ]] && die "-p/--plan and -1/--once do not go together"
+[[ -n "$RANGE_ARG" && "$ROLE" == executor ]] && die "-R/--range is for reviewer/tester"
+[[ -n "$PLAN" && "$ROLE" != executor && -z "$RANGE_ARG" ]] && die "$ROLE with -p/--plan needs -R/--range A..B"
+
+if [[ -z "$WORKTREE" ]]; then
+  WORKTREE=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git worktree; cd there or pass -C/--worktree DIR"
+fi
+WORKTREE=$(readlink -f -- "$WORKTREE")
+git -C "$WORKTREE" rev-parse --git-dir >/dev/null 2>&1 || die "not a git worktree: $WORKTREE"
+
+# ----------------------------------------------------------------- config
+for r in executor reviewer tester; do load_role_conf "$r"; done
+load_diag_comments "$DIAG"
+if [[ -z "$SIDECAR" && -f "$DIAG.dispatch" ]]; then SIDECAR="$DIAG.dispatch"; fi
+if [[ -n "$SIDECAR" ]]; then
+  [[ -f "$SIDECAR" ]] || die "sidecar not found: $SIDECAR"
+  SIDECAR=$(readlink -f -- "$SIDECAR")
+  load_kv "$SIDECAR" CFG_SIDE
+fi
+
+NODE=$(cfg "$ROLE" node "")
+CHAN=$(cfg "$ROLE" channel channel)
+LAUNCH=$(cfg "$ROLE" launch "")
+[[ -n "$LAUNCH" ]] || die "no launch hook: pass -l/--launch CMD or set 'launch=' (or '$ROLE.launch=') in the sidecar"
+if [[ -z "$PLAN" ]]; then
+  [[ -n "$NODE" ]] || die "watch/--once needs a node: pass -N/--node NAME or set '$ROLE.node='"
+  INBOX=$(diag_node_path "$DIAG" "$NODE")
+  [[ -n "$INBOX" ]] || die "node '$NODE' is not in $DIAG"
+fi
+if [[ -z "$LOG_DIR" ]]; then LOG_DIR="$(dirname -- "$DIAG")/dispatch/${NODE:-$ROLE}"; fi
+mkdir -p "$LOG_DIR"
+LOG_DIR=$(readlink -f -- "$LOG_DIR")
+
+mapfile -t REVIEWS < <(if [[ "$ROLE" == executor ]]; then review_names; fi)
+
+show_settings() {
+  local n
+  say "dispatch role=$ROLE diag=$DIAG sidecar=${SIDECAR:-none}"
+  say "  worktree=$WORKTREE node=${NODE:-none} inbox=${INBOX:-none} channel=$CHAN"
+  say "  launch=$LAUNCH backend=$(cfg "$ROLE" backend grok-build) model=$(cfg "$ROLE" model '') effort=$(cfg "$ROLE" effort '') max_turns=$(cfg "$ROLE" max_turns 80) timeout=$(cfg "$ROLE" timeout 0)"
+  say "  rules=$(cfg "$ROLE" rules '') logs=$LOG_DIR"
+  if [[ "$ROLE" == executor ]]; then
+    say "  rounds=$(cfg executor rounds 3) require_commit=$(cfg executor require_commit yes) done_tag=$(cfg executor done_tag '')"
+    for n in "${REVIEWS[@]}"; do
+      local rr; rr=$(cfg "$ROLE" role reviewer "$n")
+      say "  review $n: role=$rr enabled=$(cfg "$rr" enabled yes "$n") blocking=$(cfg "$rr" blocking yes "$n") mode=$(cfg "$rr" mode in-process "$n") backend=$(cfg "$rr" backend grok-build "$n") rules=$(cfg "$rr" rules '' "$n")"
+    done
+  fi
+}
+
+# ----------------------------------------------------------- agent launch
+# run_agent ROLE REVIEW JOBDIR PROMPTFILE
+# Sets A_RC (hook exit), A_TEXT (file with the agent's final text), A_COST.
+run_agent() {
+  local role="$1" review="$2" dir="$3" prompt="$4" backend hook access rules tmo
+  backend=$(cfg "$role" backend grok-build "$review")
+  [[ -f "$HERE/backends/$backend.sh" ]] || die "unknown backend '$backend'"
+  # shellcheck source=/dev/null
+  . "$HERE/backends/$backend.sh"
+  rules=$(cfg "$role" rules "" "$review")
+  [[ -f "$rules" ]] || die "role card not found for $role: '$rules' (role rules are always passed)"
+  access=$(cfg "$role" access read-only "$review")
+  B_PROMPT_FILE="$prompt"; B_RULES_FILE="$rules"; B_WORKTREE="$WORKTREE"; B_JOB_DIR="$dir"
+  B_MODEL=$(cfg "$role" model "" "$review"); B_EFFORT=$(cfg "$role" effort "" "$review")
+  B_MAX_TURNS=$(cfg "$role" max_turns 80 "$review"); B_ACCESS="$access"
+  B_AGENT_BIN=$(cfg "$role" agent_bin "" "$review")
+  B_ROLE="$role"
+  BACKEND_ARGV=()
+  backend_argv || die "backend $backend could not build a command"
+  if [[ -n "$review" ]]; then
+    hook="${REVIEW_LAUNCH:-$(cfg "$role" launch "$LAUNCH" "$review")}"
+  else
+    hook="$LAUNCH"
+  fi
+  local -a H cmd
+  read -r -a H <<<"$hook"
+  cmd=("${H[@]}" --role "$role" --access "$access" --job-dir "$dir" --worktree "$WORKTREE" -- "${BACKEND_ARGV[@]}")
+  tmo=$(cfg "$role" timeout 0 "$review")
+  [[ "$tmo" =~ ^[0-9]+$ && "$tmo" -gt 0 ]] && cmd=(timeout -k 30 "$tmo" "${cmd[@]}")
+  printf '%q ' "${cmd[@]}" >"$dir/argv.txt"; echo >>"$dir/argv.txt"
+  A_TEXT="$dir/result.txt"; A_COST=""; A_RC=0
+  if [[ $DRY == 1 ]]; then
+    say "DRY-RUN $role${review:+ ($review)}: would run (argv in $dir/argv.txt):"
+    local a prev="" out=""
+    for a in "${cmd[@]}"; do
+      if [[ "$prev" == --rules ]]; then out+="'<role card $rules>' "; else out+="$(printf '%q' "$a") "; fi
+      prev="$a"
+    done
+    printf '%s\n' "$out"
+    : >"$A_TEXT"; return 0
+  fi
+  say "START $role${review:+ ($review)} backend=$backend log=$dir"
+  set +e
+  if [[ $VERBOSE == 1 ]]; then
+    DISPATCH_ROLE="$role" DISPATCH_ACCESS="$access" DISPATCH_JOB_DIR="$dir" DISPATCH_WORKTREE="$WORKTREE" \
+      "${cmd[@]}" </dev/null 2>"$dir/agent.err" | tee "$dir/agent.out"
+  else
+    DISPATCH_ROLE="$role" DISPATCH_ACCESS="$access" DISPATCH_JOB_DIR="$dir" DISPATCH_WORKTREE="$WORKTREE" \
+      "${cmd[@]}" </dev/null 2>"$dir/agent.err" | tee "$dir/agent.out" >/dev/null
+  fi
+  A_RC=${PIPESTATUS[0]}
+  set -e
+  backend_text "$dir/agent.out" >"$A_TEXT" 2>/dev/null || cp "$dir/agent.out" "$A_TEXT"
+  # A backend without a cost field (cursor, antigravity) leaves A_COST empty; the reason is in cost.err.
+  if ! A_COST=$(backend_cost "$dir/agent.out" 2>"$dir/cost.err"); then A_COST=""; fi
+  say "END $role${review:+ ($review)} rc=$A_RC cost=${A_COST:-?}"
+  printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$role${review:+:$review}" "$A_RC" "${A_COST:-?}" >>"$LOG_DIR/costs.tsv"
+}
+
+# ---------------------------------------------------------------- reviews
+# run_review NAME DIR PLAN RANGE -> V_STATUS PASS|FAIL|ERROR, V_FILE, V_REASON
+run_review() {
+  local name="$1" dir="$2" plan="$3" range="$4" role h0 d0 st
+  role=$(cfg "$ROLE" role reviewer "$name"); [[ -z "$name" ]] && role="$ROLE"
+  mkdir -p "$dir"
+  V_FILE="$dir/verdict.txt"; V_STATUS=ERROR; V_REASON=""
+  TV=([PLAN]="$plan" [RANGE]="$range" [VERDICT_FILE]="$V_FILE" [WORKTREE]="$WORKTREE" [ADDENDUM]="")
+  local add; add=$(cfg "$role" addendum "" "$name"); [[ -n "$add" && -f "$add" ]] && TV[ADDENDUM]=$(<"$add")
+  local tmpl; tmpl=$(cfg "$role" prompt "" "$name")
+  [[ -f "$tmpl" ]] || die "prompt template not found for $role: '$tmpl'"
+  render "$tmpl" "$dir/prompt.txt"
+  h0=$(git_head); d0=$(git_dirty)
+  run_agent "$role" "$name" "$dir" "$dir/prompt.txt"
+  [[ $DRY == 1 ]] && { V_STATUS=PASS; V_REASON="dry run"; return 0; }
+  cp "$A_TEXT" "$V_FILE"
+  if [[ "$(git_head)" != "$h0" || "$(git_dirty)" != "$d0" ]]; then
+    V_REASON="the $role changed the worktree (read-only role)"; return 0
+  fi
+  if [[ $A_RC -ne 0 && $A_RC -ne 124 ]] && ! last_status "$A_TEXT" >/dev/null; then
+    V_REASON="$role agent exited $A_RC with no STATUS line (see $dir/agent.err)"; return 0
+  fi
+  if ! st=$(last_status "$A_TEXT"); then
+    V_REASON="$role gave no STATUS line"; return 0
+  fi
+  case "${st%%$'\t'*}" in
+    PASS) V_STATUS=PASS ;;
+    FAIL) V_STATUS=FAIL; V_REASON="${st#*$'\t'}" ;;
+    *) V_REASON="$role STATUS: $st" ;;
+  esac
+}
+
+# ---------------------------------------------------------- executor job
+# check_done START_HEAD -> D_KIND complete|failure|blocked, D_REASON
+check_done() {
+  local start="$1" st word rest tag head
+  if [[ $A_RC -eq 124 ]]; then D_KIND=failure; D_REASON="agent timed out"; return; fi
+  if ! st=$(last_status "$A_TEXT"); then
+    D_KIND=failure; D_REASON="no STATUS line (agent rc=$A_RC); treated as not done"; return
+  fi
+  word="${st%%$'\t'*}"; rest="${st#*$'\t'}"
+  case "$word" in
+    SUCCESS|COMPLETE|DONE) ;;
+    BLOCKED) D_KIND=blocked; D_REASON="${rest:-blocked}"; return ;;
+    NEEDS-INPUT) D_KIND=blocked; D_REASON="NEEDS-INPUT ${rest}"; return ;;
+    *) D_KIND=failure; D_REASON="$word ${rest}"; return ;;
+  esac
+  head=$(git_head)
+  if [[ "$(cfg executor require_commit yes)" == yes && "$head" == "$start" ]]; then
+    D_KIND=failure; D_REASON="STATUS: $word but no new commit; treated as not done"; return
+  fi
+  tag=$(cfg executor done_tag "")
+  if [[ -n "$tag" && "$(tag_commit "$tag")" != "$head" ]]; then
+    D_KIND=failure; D_REASON="STATUS: $word but tag '$tag' is not on HEAD ${head:0:12}; treated as not done"; return
+  fi
+  D_KIND=complete; D_REASON=""
+}
+
+# run_executor_job PLAN FROM_STEP JOBDIR -> J_KIND, J_REASON
+run_executor_job() {
+  local plan="$1" step="${2:-the beginning}" job="$3" before round=1 rounds dir start tmpl n
+  local verdict_file="" verdict_text="" failed rr
+  before=$(git_head); rounds=$(cfg executor rounds 3)
+  printf 'plan=%s\nfrom_step=%s\nrecorded_head=%s\n' "$plan" "$step" "$before" >"$job/job.txt"
+  while true; do
+    dir="$job/r$round-executor"; mkdir -p "$dir"
+    TV=([PLAN]="$plan" [FROM_STEP]="$step" [RECORDED_HEAD]="$before" [RANGE]="$before..HEAD"
+        [ROUND]="$round" [VERDICT_FILE]="$verdict_file" [VERDICT]="$verdict_text" [WORKTREE]="$WORKTREE" [ADDENDUM]="")
+    local add; add=$(cfg executor addendum ""); [[ -n "$add" && -f "$add" ]] && TV[ADDENDUM]=$(<"$add")
+    if [[ $round -eq 1 ]]; then tmpl=$(cfg executor prompt ""); else tmpl=$(cfg executor fix_prompt ""); fi
+    [[ -f "$tmpl" ]] || die "executor prompt template not found: '$tmpl'"
+    render "$tmpl" "$dir/prompt.txt"
+    start=$(git_head)
+    run_agent executor "" "$dir" "$dir/prompt.txt"
+    if [[ $DRY == 1 ]]; then D_KIND=complete; else check_done "$start"; fi
+    if [[ "$D_KIND" != complete ]]; then J_KIND="$D_KIND"; J_REASON="round $round: $D_REASON"; return; fi
+    failed=""
+    for n in "${REVIEWS[@]}"; do
+      rr=$(cfg executor role reviewer "$n")
+      [[ "$(cfg "$rr" enabled yes "$n")" == yes && "$(cfg "$rr" blocking yes "$n")" == yes ]] || continue
+      [[ "$(cfg "$rr" mode in-process "$n")" == in-process ]] || { say "WARNING review $n: a blocking review must be in-process in v1; skipped"; continue; }
+      run_review "$n" "$job/r$round-review-$n" "$plan" "$before..$(git_head)"
+      say "REVIEW $n round $round: $V_STATUS ${V_REASON}"
+      case "$V_STATUS" in
+        PASS) ;;
+        FAIL) failed="$n"; break ;;
+        *) J_KIND=failure; J_REASON="review $n: $V_REASON (verdict $V_FILE)"; return ;;
+      esac
+    done
+    [[ $DRY == 1 ]] && { J_KIND=complete; J_REASON="dry run"; return; }
+    if [[ -z "$failed" ]]; then J_KIND=complete; J_REASON="range $before..$(git_head)"; return; fi
+    if [[ $round -ge $rounds ]]; then
+      J_KIND=failure; J_REASON="review $failed still FAIL after $round rounds (verdict $V_FILE)"; return
+    fi
+    verdict_file="$V_FILE"; verdict_text=$(<"$V_FILE")
+    round=$((round + 1))
+  done
+}
+
+# non-blocking reviews: started after COMPLETE, never waited for by the reply
+start_nonblocking() {
+  local plan="$1" range="$2" job="$3" reply_to="$4" n rr mode
+  for n in "${REVIEWS[@]}"; do
+    rr=$(cfg executor role reviewer "$n")
+    [[ "$(cfg "$rr" enabled yes "$n")" == yes && "$(cfg "$rr" blocking yes "$n")" == no ]] || continue
+    mode=$(cfg "$rr" mode in-process "$n")
+    if [[ "$mode" == channel ]]; then
+      local node verb; node=$(cfg "$rr" node "" "$n"); verb=$(cfg "$rr" verb "" "$n")
+      [[ -n "$node" && -n "$verb" ]] || { say "WARNING review $n: mode=channel needs node= and verb="; continue; }
+      declare -gA F=([PLAN]="$plan" [RANGE]="$range" [ACTION]="$verb" [REASON]="review $n")
+      send_reply "$verb" "$node" "$job/review-$n-request.txt" || true
+      continue
+    fi
+    (
+      run_review "$n" "$job/nonblocking-$n" "$plan" "$range"
+      say "REVIEW $n (non-blocking): $V_STATUS ${V_REASON}"
+      local fv; fv=$(cfg "$rr" on_fail_verb "" "$n")
+      if [[ "$V_STATUS" != PASS && -n "$fv" && -n "$reply_to" ]]; then
+        declare -gA F=([PLAN]="$plan" [RANGE]="$range" [STATUS]="$V_STATUS" [REASON]="review $n: $V_STATUS $V_REASON (verdict $V_FILE)" [RESPONDING-TO]="none")
+        send_reply "$fv" "$reply_to" "$job/nonblocking-$n/reply.txt" || true
+      fi
+    ) >>"$job/nonblocking.log" 2>&1 &
+    say "started non-blocking review $n (pid $!, log $job/nonblocking.log)"
+  done
+}
+
+# ---------------------------------------------------------------- channel
+# send_reply VERB DEST BODYFILE   (fields from F)
+send_reply() {
+  local verb="$1" dest="$2" body="$3"
+  fill_body "$DIAG" "$verb" "$body" || { say "ERROR no 'message $verb' block in $DIAG; nothing sent"; return 1; }
+  if [[ $DRY == 1 ]]; then say "DRY-RUN would send $verb to $dest:"; cat "$body"; return 0; fi
+  say "SEND $verb -> $dest"
+  "$CHAN" --send "$DIAG" "$NODE" "$dest" "$verb" "$body"
+}
+
+handle_message() {
+  local file="$1" base action job claimed kind verb
+  [[ -f "$file" ]] || { vlog "gone before it was handled: $file"; return 0; }
+  parse_message "$file"
+  base=$(basename -- "$file")
+  action="${MF[ACTION]:-$M_VERB}"
+  say "MESSAGE $base from=${M_FROM:-?} verb=${M_VERB:-?} action=$action"
+  if [[ "$M_VERB" == PING || ( -n "${MF[NONCE]:-}" && -z "${MF[ACTION]:-}" && "$M_VERB" != PONG ) ]]; then
+    [[ $DRY == 1 ]] && { say "DRY-RUN would answer PONG"; return 0; }
+    "$CHAN" --send "$DIAG" "$NODE" "$M_FROM" PONG -m "NONCE: ${MF[NONCE]:-}" || say "WARNING PONG failed"
+    rm -f -- "$file"; return 0
+  fi
+  [[ "$M_VERB" == PONG ]] && { rm -f -- "$file"; return 0; }
+  if [[ $DRY == 1 ]]; then
+    claimed="$file"
+  else
+    claimed="$INBOX/claimed/$base"; mkdir -p "$INBOX/claimed"; mv -- "$file" "$claimed"
+  fi
+  job="$LOG_DIR/$(date +%Y%m%d-%H%M%S)-${action}"; mkdir -p "$job"; cp -- "$claimed" "$job/message.txt"
+  declare -gA F=([PLAN]="${MF[PLAN]:-none}" [RESPONDING-TO]="$claimed" [RANGE]="${MF[RANGE]:-none}")
+  if [[ "$ROLE" == executor ]]; then
+    case "$action" in
+      IMPLEMENT|RESUME)
+        if [[ -z "${MF[PLAN]:-}" || ! -f "${MF[PLAN]}" ]]; then
+          kind=blocked; J_REASON="plan not found: ${MF[PLAN]:-none}"
+        else
+          run_executor_job "${MF[PLAN]}" "${MF[FROM-STEP]:-}" "$job"; kind="$J_KIND"
+        fi ;;
+      PROVIDE-EVIDENCE)
+        local dir="$job/r1-evidence" t; mkdir -p "$dir"
+        TV=([PLAN]="${MF[PLAN]:-none}" [CHECK]="${MF[CHECK]:-none}" [WORKTREE]="$WORKTREE" [ADDENDUM]="")
+        t=$(cfg executor evidence_prompt ""); render "$t" "$dir/prompt.txt"
+        local h0; h0=$(git_head)
+        run_agent executor "" "$dir" "$dir/prompt.txt"
+        local st; st=$(last_status "$A_TEXT" || true)
+        if [[ "${st%%$'\t'*}" == SUCCESS && "$(git_head)" == "$h0" ]]; then kind=complete; J_REASON="evidence in $A_TEXT"
+        else kind=failure; J_REASON="evidence: ${st:-no STATUS line} (see $A_TEXT)"; fi ;;
+      STOP) kind=stopped; J_REASON="no job running (jobs run one at a time; a STOP is read between jobs)" ;;
+      *) kind=failure; J_REASON="the dispatcher does not handle '$action'" ;;
+    esac
+    verb=$(cfg executor "reply.$kind" "")
+    F[REASON]="$J_REASON"; F[STATUS]="${verb:-$kind}"
+  else
+    if [[ -z "${MF[RANGE]:-}" ]]; then
+      V_STATUS=ERROR; V_REASON="message has no RANGE"; V_FILE=none
+    else
+      run_review "" "$job/review" "${MF[PLAN]:-none}" "${MF[RANGE]}"
+    fi
+    kind=$(tr '[:upper:]' '[:lower:]' <<<"$V_STATUS")
+    verb=$(cfg "$ROLE" "reply.$kind" "")
+    F[STATUS]="$V_STATUS"; F[REASON]="${V_REASON:-$V_STATUS}"; F[VERDICT]="$V_FILE"; F[VERDICT-FILE]="$V_FILE"
+  fi
+  say "RESULT $kind ${F[REASON]}"
+  if [[ -n "$verb" && -n "$M_FROM" ]]; then
+    if send_reply "$verb" "$M_FROM" "$job/reply.txt"; then
+      [[ $DRY == 1 ]] || rm -f -- "$claimed"
+    else
+      say "ERROR reply not sent; message left in $claimed"
+    fi
+  else
+    say "WARNING no reply verb for '$kind' ($ROLE.reply.$kind) or no sender; message left in $claimed"
+  fi
+  if [[ "$ROLE" == executor && "$kind" == complete && $DRY == 0 ]]; then
+    start_nonblocking "${MF[PLAN]}" "$(sed -n 's/^recorded_head=//p' "$job/job.txt")..$(git_head)" "$job" "$M_FROM"
+  fi
+  [[ "$kind" == complete || "$kind" == pass ]]
+}
+
+oldest_message() {
+  find "$INBOX" -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | head -1 | cut -d' ' -f2-
+}
+
+# ------------------------------------------------------------------- main
+show_settings
+
+if [[ -n "$PLAN" ]]; then
+  job="$LOG_DIR/$(date +%Y%m%d-%H%M%S)-direct"; mkdir -p "$job"
+  if [[ "$ROLE" == executor ]]; then
+    run_executor_job "$PLAN" "$FROM_STEP" "$job"
+    say "RESULT $J_KIND $J_REASON"
+    if [[ "$J_KIND" == complete && $DRY == 0 ]]; then
+      start_nonblocking "$PLAN" "$(sed -n 's/^recorded_head=//p' "$job/job.txt")..$(git_head)" "$job" ""
+      wait
+    fi
+    [[ "$J_KIND" == complete ]] && exit 0 || exit 1
+  fi
+  run_review "" "$job/review" "$PLAN" "$RANGE_ARG"
+  say "RESULT $V_STATUS ${V_REASON} verdict=$V_FILE"
+  case "$V_STATUS" in PASS) exit 0 ;; FAIL) exit 1 ;; *) exit 3 ;; esac
+fi
+
+[[ -d "$INBOX" ]] || die "inbox $INBOX does not exist; run: channel-setup $DIAG $NODE"
+if compgen -G "$INBOX/claimed/*" >/dev/null; then
+  say "WARNING $INBOX/claimed/ holds messages from an earlier run; they are not redone automatically:"
+  ls -1 "$INBOX/claimed/"
+fi
+
+if [[ $ONCE == 1 ]]; then
+  f=$(oldest_message)
+  [[ -n "$f" ]] || { say "NO-MESSAGE in $INBOX"; exit 0; }
+  if handle_message "$f"; then rc=0; else rc=1; fi
+  wait
+  exit "$rc"
+fi
+
+if [[ $DRY == 1 ]]; then
+  say "DRY-RUN would watch: $CHAN --arm $DIAG $NODE"
+  f=$(oldest_message); [[ -n "$f" ]] && { say "DRY-RUN oldest message:"; handle_message "$f" || true; }
+  exit 0
+fi
+
+say "WATCH $CHAN --arm $DIAG $NODE"
+coproc ARM { exec "$CHAN" --arm "$DIAG" "$NODE"; }
+WATCH_PID=$ARM_PID
+stop_watch() { if kill -0 "$WATCH_PID" 2>/dev/null; then kill "$WATCH_PID"; fi; }
+trap stop_watch EXIT
+while IFS= read -r line <&"${ARM[0]}"; do
+  case "$line" in
+    READY) say "READY" ;;
+    ALREADY-WATCHING*) say "$line"; die "another watch holds node $NODE; not starting a second one" ;;
+    FILE\ *) handle_message "${line#FILE }" || true ;;
+    *) vlog "arm: $line" ;;
+  esac
+done
+if wait "$WATCH_PID"; then :; else say "channel-arm exited with status $?"; fi

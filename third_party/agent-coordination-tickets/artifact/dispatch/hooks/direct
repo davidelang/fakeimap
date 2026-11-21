@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Trivial launch hook: runs the agent as the current user, no landlock, no
+# config changes. For tests and as the template for a real hook.
+#   direct --role ROLE --access ACCESS --job-dir DIR --worktree DIR -- ARGV...
+# A real hook (a consumer's run-* wrapper) picks the account, landlock,
+# config home (e.g. GROK_HOME for a 500K window) and environment from ROLE
+# and ACCESS, then runs ARGV the same way.
+set -euo pipefail
+wt=""
+while [[ $# -gt 0 && "$1" != -- ]]; do
+  case "$1" in
+    --worktree) wt="$2"; shift 2 ;;
+    --role|--access|--job-dir) shift 2 ;;
+    *) echo "direct: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+[[ "${1:-}" == -- ]] || { echo "direct: missing -- before the agent command" >&2; exit 2; }
+shift
+[[ -n "$wt" ]] && cd -- "$wt"
+exec "$@"

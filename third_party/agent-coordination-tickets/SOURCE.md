@@ -4,7 +4,7 @@ Channel programs for passing one file from one agent to the next.
 
 | | |
 |--|--|
-| **Upstream** | `davidelang/agent-coordination-tickets` @ `7eb1f645265edcd3baaf1212853c144aac20ce38` (`master`) |
+| **Upstream** | `davidelang/agent-coordination-tickets` @ `0023bd143a52101fe577b86d5fe4f742c77d2b36` (branch `dispatch-v1`; `track_branch` stays `master`) |
 | **Profile** | Source plus one build step: `go build` of `src/go/channel` (static, stdlib only, reproducible); the result is committed as `artifact/channel` (sha256 in libpin.toml). |
 | **Host clone** | `/home/dlang/git/agent-coordination-tickets` |
 
@@ -20,3 +20,8 @@ build with `./third_party/fetch-deps build agent-coordination-tickets`, then com
 and the artifact `sha256` together. `fetch-deps build --record agent-coordination-tickets` writes the new
 artifact `sha256` into libpin.toml (old -> new printed); `fetch-deps upgrade NAME --ref REF` does the same
 together with `git_sha`/`git_describe`.
+
+The dispatcher ships as plain copies (no build) under `artifact/dispatch/`, one `[[artifact]]` row per file in
+libpin.toml, in the same layout as upstream `dispatch/` (`artifact/dispatch/dispatch` finds `lib/`, `backends/`,
+`roles/` and `hooks/` from its own path). Launchers run `artifact/dispatch/dispatch` with a launch hook; see
+upstream `docs/dispatch.md`. Adding or removing a file under upstream `dispatch/` needs a matching row here.

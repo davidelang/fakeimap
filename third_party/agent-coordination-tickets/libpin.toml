@@ -1,18 +1,111 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "3d6dadd5b17204faa4bf64241c34d5199fb3fe04"
-git_describe = "3d6dadd"
+git_sha = "0023bd143a52101fe577b86d5fe4f742c77d2b36"
+git_describe = "0023bd1"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
 requires_writable_src = false
 # GOCACHE and GOTMPDIR (go build's work dir) in src/build, the pin's writable build scratch, never /tmp; removed after the build.
 build = ["mkdir -p src/build && d=$(mktemp -d \"$PWD/src/build/gocache.XXXXXX\") && cd src/go && GOCACHE=$d GOTMPDIR=$d GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off go build -trimpath -buildvcs=false -ldflags '-s -w' -o channel . ; rc=$?; rm -rf \"$d\"; exit $rc"]
-consumer_note = "Channel handoff tools. The built go/channel is committed as artifact/channel (multi-call: artifact/channel-{setup,arm,send,ping,status,rebind} are symlinks to it); agents run only those from the repo root and never need src/. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them. Consumers do not rerun the connector's tests."
+consumer_note = "Channel handoff tools. The built go/channel is committed as artifact/channel (multi-call: artifact/channel-{setup,arm,send,ping,status,rebind} are symlinks to it); agents run only those from the repo root and never need src/. src/bin/channel (POSIX sh) and src/bin/channel.py are alternative implementations of the same tool, kept in step by the connector tests; agents do not run them. Consumers do not rerun the connector's tests. artifact/dispatch/ holds the headless dispatcher (dispatch/dispatch plus its lib, backends, hooks and roles), copied unchanged from src/dispatch/."
 
 [[artifact]]
 # Static Go binary (CGO_ENABLED=0, -trimpath, -buildvcs=false: same bytes from any checkout): committed, so a new worktree needs no library checkout.
 path = "artifact/channel"
 from = "src/go/channel"
 sha256 = "cc92785158aa4f74dc8d2f2ecf40ad385ba320356bafa41a7edb73ba231b81d9"
+
+# dispatch/: the headless dispatcher (docs/dispatch.md upstream). Plain copies of source files, no build;
+# they keep their layout under artifact/dispatch/ because dispatch/dispatch finds the rest from its own path.
+
+[[artifact]]
+path = "artifact/dispatch/backends/antigravity.sh"
+from = "src/dispatch/backends/antigravity.sh"
+sha256 = "a4a7f8ccaf96cb5e00b93bca0bbb601050aa1d5b85974f8084716b0c68f525b3"
+
+[[artifact]]
+path = "artifact/dispatch/backends/cursor.sh"
+from = "src/dispatch/backends/cursor.sh"
+sha256 = "78c5d8dd4c84a6ae984373dc84ccab59c5597b4796d446bfe11d93ca8949ceca"
+
+[[artifact]]
+path = "artifact/dispatch/backends/grok-build.sh"
+from = "src/dispatch/backends/grok-build.sh"
+sha256 = "d81b661d191b401ac318718d79fa0643cf369ed691bc5d277e01b3af744569ed"
+
+[[artifact]]
+path = "artifact/dispatch/backends/grokbot-webhook.sh"
+from = "src/dispatch/backends/grokbot-webhook.sh"
+sha256 = "8ea9ac0a98993326f3aa11f25cc4977233dd2c25b4f3173bfe58735f62276ade"
+
+[[artifact]]
+path = "artifact/dispatch/dispatch"
+from = "src/dispatch/dispatch"
+sha256 = "7242a958ba7eacacdb831300aa74ace3f70ee1af5260bf602cc1650b29f6a05e"
+
+[[artifact]]
+path = "artifact/dispatch/hooks/direct"
+from = "src/dispatch/hooks/direct"
+sha256 = "d8eaad701610e6d95cf735f6748ecf404b55432d0f256ac428274d655c17871f"
+
+[[artifact]]
+path = "artifact/dispatch/lib/common.sh"
+from = "src/dispatch/lib/common.sh"
+sha256 = "dc2eaf2d39bc6dfe0032cc83e5d8d076132d82f1d7ae93b0a1268b0385624587"
+
+[[artifact]]
+path = "artifact/dispatch/roles/executor-evidence.prompt"
+from = "src/dispatch/roles/executor-evidence.prompt"
+sha256 = "76d4384d3c4007d355cff5a327333ccf1eae62a69cf5d7dd2500021de32b33cb"
+
+[[artifact]]
+path = "artifact/dispatch/roles/executor-fix.prompt"
+from = "src/dispatch/roles/executor-fix.prompt"
+sha256 = "fe274bc6eb608e66dfd4cf5c9286fbd14b9e9057cf379ceab9fc00a294befea0"
+
+[[artifact]]
+path = "artifact/dispatch/roles/executor.conf"
+from = "src/dispatch/roles/executor.conf"
+sha256 = "04b803a17077076f231ea9b84db62fbe8d1614999f77b737fc75efad3be043eb"
+
+[[artifact]]
+path = "artifact/dispatch/roles/executor.md"
+from = "src/dispatch/roles/executor.md"
+sha256 = "acf04b10599533547721b649ffeed207fda43a910961297f900bdb48b52686e9"
+
+[[artifact]]
+path = "artifact/dispatch/roles/executor.prompt"
+from = "src/dispatch/roles/executor.prompt"
+sha256 = "3b664b4ddb4fa06d98fcdebb49325aed899fab86620a0f5b70a171858e9e2232"
+
+[[artifact]]
+path = "artifact/dispatch/roles/reviewer.conf"
+from = "src/dispatch/roles/reviewer.conf"
+sha256 = "6539555b3c90a44d3d571b17ac0dda74f76fb4e9c5adb6364915b2da80059b4a"
+
+[[artifact]]
+path = "artifact/dispatch/roles/reviewer.md"
+from = "src/dispatch/roles/reviewer.md"
+sha256 = "4cfccdfbc053dfce35435c077f8d21caeb00403170e718b0cc50984e6c0a8cef"
+
+[[artifact]]
+path = "artifact/dispatch/roles/reviewer.prompt"
+from = "src/dispatch/roles/reviewer.prompt"
+sha256 = "ccd9ddb7f746d6345500931ab037b5ccf702ed6956c9ccbcda2db6eae98e84bc"
+
+[[artifact]]
+path = "artifact/dispatch/roles/tester.conf"
+from = "src/dispatch/roles/tester.conf"
+sha256 = "56a14213af1fbc3a1fecfd74be7b5ae89e7e0cb88ccc7a46446474789f6a9f92"
+
+[[artifact]]
+path = "artifact/dispatch/roles/tester.md"
+from = "src/dispatch/roles/tester.md"
+sha256 = "6f9fdf4f8a55e8ef76ebbb2f9cf5a6202f9ab1f40a05f619f84e74f1e8d2dd7c"
+
+[[artifact]]
+path = "artifact/dispatch/roles/tester.prompt"
+from = "src/dispatch/roles/tester.prompt"
+sha256 = "98c60af3b26c160a971a547086e581fb14a4158a6b9910bcdd76409890fb98ad"

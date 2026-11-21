@@ -1,0 +1,20 @@
+Fix round {{ROUND}} for an approved plan. You are a fresh session; the earlier executor and reviewer sessions are gone, so everything you need is below or in the files named.
+
+Plan: {{PLAN}}
+Worktree (your cwd): {{WORKTREE}}
+Commit range implemented so far: {{RANGE}} (recorded HEAD {{RECORDED_HEAD}})
+Reviewer verdict file: {{VERDICT_FILE}}
+
+The reviewer's verdict:
+----
+{{VERDICT}}
+----
+
+For each finding:
+1. Verify it against the code in the range before changing anything. A reviewer can be wrong.
+2. If it holds and is inside the plan's Aim, fix it.
+3. If it does not hold, or is outside the Aim, do not change code for it; say which finding and why.
+
+Commit your fixes. If you rejected every finding and changed nothing, end with STATUS: NEEDS-INPUT and the reasons.
+{{ADDENDUM}}
+End with exactly one STATUS line as your last line (SUCCESS, FAILURE <reason>, BLOCKED <reason>, NEEDS-INPUT <reason>).

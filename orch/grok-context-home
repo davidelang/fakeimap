@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# grok-context-home: make or refresh a Grok config home whose only difference from the
+# current user's ~/.grok is the context window, and print its path.
+#   grok-context-home -d|--dir DIR -c|--context TOKENS [-m|--model ID] [-b|--base DIR]
+# Grok has no CLI flag for the window and its GROK_CONFIG overlay ignores context_window,
+# but GROK_HOME=DIR with DIR/config.toml holding
+#   [model."grok-4.7"]
+#   context_window = 500000
+# gives a headless run that window (tested with grok 1.0.92: the session recorded
+# contextWindowTokens 500000). Every other entry of the base is a symlink back to it, so
+# sign-in, sessions and settings stay in ~/.grok. Run it as the user the agent runs as.
+# Files Grok itself creates in DIR (settings_cache.json, ...) are left alone.
+set -euo pipefail
+prog=grok-context-home
+parsed=$(getopt -n "$prog" -o d:c:m:b:h -l dir:,context:,model:,base:,help -- "$@") \
+  || { echo "usage: $prog -d DIR -c TOKENS [-m MODEL] [-b BASE]" >&2; exit 2; }
+eval set -- "$parsed"
+dir=""; ctx=""; model=grok-4.7; base="$HOME/.grok"
+while true; do
+  case "$1" in
+    -d|--dir) dir="$2"; shift 2 ;;
+    -c|--context) ctx="$2"; shift 2 ;;
+    -m|--model) model="$2"; shift 2 ;;
+    -b|--base) base="$2"; shift 2 ;;
+    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift; break ;;
+  esac
+done
+[[ -n "$dir" && "$ctx" =~ ^[0-9]+$ ]] || { echo "$prog: need --dir DIR and --context TOKENS (digits)" >&2; exit 2; }
+[[ -d "$base" ]] || { echo "$prog: base $base is not a directory (sign in to grok as $(id -un) first)" >&2; exit 2; }
+base="$(cd "$base" && pwd)"
+if [[ ! -d "$dir" ]]; then mkdir -p "$dir"; chmod 0755 "$dir"; fi
+dir="$(cd "$dir" && pwd)"
+[[ "$dir" != "$base" ]] || { echo "$prog: --dir is the base itself" >&2; exit 2; }
+
+shopt -s dotglob nullglob
+for src in "$base"/*; do
+  name="${src##*/}"
+  [[ "$name" == config.toml ]] && continue
+  dst="$dir/$name"
+  if [[ -L "$dst" ]]; then
+    [[ "$(readlink "$dst")" == "$src" ]] && continue
+    rm -f -- "$dst"
+  elif [[ -e "$dst" ]]; then
+    continue
+  fi
+  ln -s -- "$src" "$dst"
+done
+
+hdr="[model.\"$model\"]"
+tmp="$dir/config.toml.$$"
+{
+  if [[ -f "$base/config.toml" ]]; then
+    awk -v hdr="$hdr" -v n="$ctx" '
+      $0 == hdr { print; print "context_window = " n; intab = 1; done = 1; next }
+      /^[ \t]*\[/ { intab = 0 }
+      intab && /^[ \t]*context_window[ \t]*=/ { next }
+      { print }
+      END { if (!done) { print ""; print hdr; print "context_window = " n } }' "$base/config.toml"
+  else
+    printf '%s\ncontext_window = %s\n' "$hdr" "$ctx"
+  fi
+} >"$tmp"
+chmod 0644 "$tmp"
+mv -f -- "$tmp" "$dir/config.toml"
+printf '%s\n' "$dir"
