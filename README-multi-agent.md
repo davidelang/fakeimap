@@ -125,7 +125,7 @@ reviewer or tester role with no human at the keyboard: each job is a fresh grok 
 `orch/dispatch-launch-hook` as the role's ai-* user (project.config) under agent-landlock,
 with model/effort from roles.config and, when roles.config `context=` is not 256k, a
 per-user Grok config home (`orch/grok-context-home`) carrying `context_window`.
-Without `-d` they offer `<sandbox_dir>/connect/<git-branch>/config` (asked on a terminal, `-y`
+Without `-d` they offer `<sandbox_dir>/connect/<git-branch>/config.diag` (asked on a terminal, `-y`
 accepts, no terminal exits 2). Every dispatcher option passes through. Needs passwordless
 `sudo -n -u <ai-user>` for the launching user (`-U` runs as yourself for tests).
 See `docs/dispatch-wrappers.md` and the example sidecar `docs/dispatch-wrappers.example.dispatch`.

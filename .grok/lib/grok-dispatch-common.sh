@@ -110,7 +110,7 @@ user, Landlock profile and Grok config home (context window) for each role.
 
 Wrapper options:
   -d, --diag FILE   channel plan. Without it the standard plan
-                    <sandbox_dir>/connect/<git-branch>/config is offered: on a terminal
+                    <sandbox_dir>/connect/<git-branch>/config.diag is offered: on a terminal
                     you are asked; without a terminal it is an error unless -y.
   -y, --yes         use the standard plan without asking
   -U, --as-me       start agents as the current user (tests; no sudo). Landlock still
@@ -152,7 +152,7 @@ dispatch_wrapper_main() {
 
   if [[ -z "$diag" ]]; then
     branch="$(git -C "$DC_ROOT" symbolic-ref -q --short HEAD)" || dc_die "no -d/--diag and HEAD is detached, so there is no standard plan; pass -d FILE"
-    def="$(dc_sandbox_dir "$DC_ROOT")/connect/$branch/config"
+    def="$(dc_sandbox_dir "$DC_ROOT")/connect/$branch/config.diag"
     [[ -f "$def" ]] || dc_die "no -d/--diag and no standard plan at $def"
     if [[ $yes == 1 ]]; then
       diag="$def"

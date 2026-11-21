@@ -13,9 +13,9 @@ The reviewer uses the planner's account and Landlock profile, not a new account.
 ## Running
 
 ```sh
-./run-script-grok-coder 2>&1 | tee "$T/coder.log"            # asks before using <sandbox_dir>/connect/<branch>/config
+./run-script-grok-coder 2>&1 | tee "$T/coder.log"            # asks before using <sandbox_dir>/connect/<branch>/config.diag
 ./run-script-grok-coder -y                                    # use it without asking
-./run-script-grok-coder -d sandbox/connect/feature-x/config -1   # oldest message only
+./run-script-grok-coder -d sandbox/connect/feature-x/config.diag -1   # oldest message only
 ./run-script-grok-coder -d DIAG -p sandbox/plans/x-plan.md     # one plan, no channel
 ./run-script-grok-reviewer -d DIAG -p PLAN -R A..B             # one review, no channel
 ./run-script-grok-coder -d DIAG -n                             # dry run: settings and agent command lines
@@ -23,7 +23,7 @@ The reviewer uses the planner's account and Landlock profile, not a new account.
 
 Options are GNU `getopt` (short and long). The wrapper's own: `-d/--diag`, `-y/--yes`, `-U/--as-me` (agents as the current user, no sudo; for tests), `-h/--help`. Every dispatcher option passes through (`-t/--max-turns`, `-k/--rounds`, `-N/--node`, `-s/--sidecar`, `-v`, ...); `-h` prints both. The wrapper adds `-l orch/dispatch-launch-hook -c <pin>/artifact/channel -C <worktree>` (and for the coder `-N coder` unless the diag or its sidecar sets `executor.node`); giving one again overrides it.
 
-**Plan file.** Without `-d`, the wrapper offers the standard plan of the channel tools, `<sandbox_dir>/connect/<git-branch>/config`, where `<sandbox_dir>` is project.config `sandbox_dir` resolved the way `grok-launch-common.sh` does (relative to the worktree, or absolute). On a terminal it asks `Use ...? [y/N]`; `-y` accepts without asking; with no terminal and no `-y` it exits 2. The dispatcher itself never prompts.
+**Plan file.** Without `-d`, the wrapper offers the standard plan of the channel tools, `<sandbox_dir>/connect/<git-branch>/config.diag`, where `<sandbox_dir>` is project.config `sandbox_dir` resolved the way `grok-launch-common.sh` does (relative to the worktree, or absolute). On a terminal it asks `Use ...? [y/N]`; `-y` accepts without asking; with no terminal and no `-y` it exits 2. The dispatcher itself never prompts.
 
 ## The launch hook
 
@@ -58,7 +58,7 @@ To give the executor 500K, change its row: `executor ... context=500k`.
 
 ## Example
 
-`docs/dispatch-wrappers.example.dispatch` is a sidecar for `sandbox/connect/<workspace>/config`: copy it to `sandbox/connect/<workspace>/config.dispatch`. The diag needs `COMPLETE`, `FAILURE`, `BLOCKED` and `STOPPED` message blocks on the coder-to-planner arrow (as in the channel example).
+`docs/dispatch-wrappers.example.dispatch` is a sidecar for `sandbox/connect/<workspace>/config.diag`: copy it to `sandbox/connect/<workspace>/config.diag.dispatch`. The diag needs `COMPLETE`, `FAILURE`, `BLOCKED` and `STOPPED` message blocks on the coder-to-planner arrow (as in the channel example).
 
 ## Not covered here
 
