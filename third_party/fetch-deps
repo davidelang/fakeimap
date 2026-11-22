@@ -1670,6 +1670,7 @@ materialize_from_host() {
       checkout_pin_clean "$src" "$full"
       ensure_remotes "$src" "$host" "$origin"
       check_no_submodules_lfs "$src" "$name" || return 1
+      MATERIALIZED_SHA="$full"
       return 0
     fi
     echo "    fetch $full from host into existing src"
@@ -1685,6 +1686,7 @@ materialize_from_host() {
     checkout_pin_clean "$src" "$full"
     ensure_remotes "$src" "$host" "$origin"
     check_no_submodules_lfs "$src" "$name" || return 1
+    MATERIALIZED_SHA="$full"
     return 0
   fi
   if [[ -e "$src" ]]; then
@@ -1704,6 +1706,7 @@ materialize_from_host() {
   ensure_remotes "$src" "$host" "$origin"
   check_no_submodules_lfs "$src" "$name" || return 1
   echo "    checkout --detach $full (host $host)"
+  MATERIALIZED_SHA="$full"
   return 0
 }
 
@@ -1723,26 +1726,35 @@ remote_fetch() {
   return 0
 }
 
+# A sha REF may be reused from src; a branch or tag name is always fetched
+# from origin and taken from FETCH_HEAD, so a stale local branch of the same
+# name in src is never used.
 materialize_from_remote() {
-  local name="$1" sha="$2" url="$3" src="$4" full
+  local name="$1" sha="$2" url="$3" src="$4" full byname=0
+  is_real_sha "$sha" || byname=1
   if [[ -d "$src" ]] && is_standalone_clone "$src"; then
     local has=0 rc=0
-    repo_has_commit "$src" "$sha" src && has=1 || rc=$?
-    [[ "$rc" -eq 2 ]] && return 1
+    if [[ "$byname" -eq 0 ]]; then
+      repo_has_commit "$src" "$sha" src && has=1 || rc=$?
+      [[ "$rc" -eq 2 ]] && return 1
+    fi
     if [[ "$has" -eq 1 ]]; then
       full="$(resolve_commit "$src" "$sha" src)" || return 1
       echo "    reuse standalone src @ $full"
       checkout_pin_clean "$src" "$full"
       ensure_remotes "$src" "" "$url"
       check_no_submodules_lfs "$src" "$name" || return 1
+      MATERIALIZED_SHA="$full"
       return 0
     fi
     echo "    fetch $sha from origin $url"
     ensure_remotes "$src" "" "$url"
     remote_fetch "$src" "$url" "$sha" "$name" || return 1
-    full="$(resolve_commit "$src" "$sha" src)" || return 1
+    full="$(fetched_commit "$src" "$sha" "$byname")" || return 1
     checkout_pin_clean "$src" "$full"
     check_no_submodules_lfs "$src" "$name" || return 1
+    [[ "$byname" -eq 1 ]] && echo "    $sha @ $full from origin"
+    MATERIALIZED_SHA="$full"
     return 0
   fi
   if [[ -e "$src" ]]; then
@@ -1753,10 +1765,22 @@ materialize_from_remote() {
   git -C "$src" init
   git -C "$src" remote add origin "$url"
   remote_fetch "$src" "$url" "$sha" "$name" || return 1
-  full="$(resolve_commit "$src" "$sha" src)" || return 1
+  full="$(fetched_commit "$src" "$sha" "$byname")" || return 1
   git_nofilter "$src" checkout --detach "$full"
   check_no_submodules_lfs "$src" "$name" || return 1
+  [[ "$byname" -eq 1 ]] && echo "    $sha @ $full from origin"
+  MATERIALIZED_SHA="$full"
   return 0
+}
+
+# Commit just fetched for REF: FETCH_HEAD for a name, else REF itself.
+fetched_commit() {
+  local src="$1" ref="$2" byname="$3"
+  if [[ "$byname" -eq 1 ]]; then
+    resolve_commit "$src" FETCH_HEAD src
+  else
+    resolve_commit "$src" "$ref" src
+  fi
 }
 
 materialize_seed_src() {
@@ -1829,8 +1853,11 @@ materialize_from_url_or_seed() {
 }
 
 # Declared fallback, printed: host shortcut, else git_https, else git_ssh, else seed-src.
+# Sets MATERIALIZED_SHA to the full commit REF resolved to upstream (host or
+# origin); empty for seed-src, where REF can only be resolved in src.
 materialize_git() {
   local name="$1" sha="$2" src lock origin host rc=0 hrc=0
+  MATERIALIZED_SHA=""
   src="$(src_path "$name")"
   lock="$(pin_path "$name")"
   origin="$(pin_remote_url "$name")" || origin=""
@@ -1850,6 +1877,16 @@ materialize_git() {
     echo "    host shortcut unusable; declared fallback to remote" >&2
   fi
   materialize_from_url_or_seed "$name" "$sha" "$src"
+}
+
+# Commit to branch from after materialize_git: the upstream-resolved sha,
+# never a same-named local branch in src (seed-src falls back to src).
+materialized_commit() {
+  if [[ -n "${MATERIALIZED_SHA:-}" ]]; then
+    printf '%s\n' "$MATERIALIZED_SHA"
+  else
+    resolve_commit "$1" "$2" src
+  fi
 }
 
 cmd_ro() {
@@ -1913,7 +1950,7 @@ cmd_rw() {
     reenter_self lib "$name" rw
     return $?
   fi
-  local lock src sha branch base host rc=0 https
+  local lock src sha branch base host rc=0 https full
   lock="$(pin_path "$name")"
   src="$(src_path "$name")"
   branch="${BRANCH_OVERRIDE:-work}"
@@ -1939,8 +1976,9 @@ cmd_rw() {
   base="${BASE_REF:-$RESOLVED_SHA}"
   materialize_git "$name" "$base" || return 1
   ensure_writable_tree "$src"
-  git_nofilter "$src" checkout -B "$branch" "$base"
-  echo "    branch $branch @ $base"
+  full="$(materialized_commit "$src" "$base")" || return 1
+  git_nofilter "$src" checkout -B "$branch" "$full"
+  echo "    branch $branch @ $base ($full)"
   apply_patches "$name" "$src" "$lock" || {
     echo "    FAIL $name: patch did not apply; tree left as is, nothing built" >&2
     return 1
@@ -2236,7 +2274,9 @@ cmd_upgrade() {
   fi
   materialize_git "$name" "$ref" || return 1
   ensure_writable_tree "$src"
-  git_nofilter "$src" checkout -B "$branch" "$ref"
+  sha="$(materialized_commit "$src" "$ref")" || return 1
+  git_nofilter "$src" checkout -B "$branch" "$sha"
+  echo "    $ref @ $sha"
   sha="$(git -C "$src" rev-parse HEAD)"
   if ! apply_patches "$name" "$src" "$(pin_path "$name")"; then
     echo "    FAIL upgrade $name: patch did not apply at $sha; not building, lock unchanged" >&2
