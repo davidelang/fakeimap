@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cursor-channel-watch PLAN NODE : channel watch for cursor-agent. Use only when David
+# cursor-channel-watch PLAN NODE : channel watch for cursor-agent and agy. Use only when David
 # names the plan/node (docs/rules/channel.md).
 # Run it as a BACKGROUND shell (block_until_ms: 0). cursor-agent wakes an idle agent only
 # when a background shell FINISHES (output alone wakes nothing), so this command ENDS as soon
@@ -33,7 +33,11 @@
 set -uo pipefail
 [[ $# -ge 2 ]] || { echo "usage: $0 PLAN NODE [--stop]" >&2; exit 2; }
 plan="$1" node="$2" mode="${3:-}"
-top="$(git rev-parse --show-toplevel)" || { echo "cursor-channel-watch: run it inside the project repo" >&2; exit 1; }
+top="$(git -C "${GROK_PROMPT_ROOT:-.}" rev-parse --show-toplevel 2>/dev/null || git rev-parse --show-toplevel)" || { echo "cursor-channel-watch: run it inside the project repo" >&2; exit 1; }
+if [[ "$plan" != /* && ! -f "$top/$plan" && -f "$plan" ]]; then
+  plan="$(cd "$(dirname "$plan")" && pwd)/$(basename "$plan")"
+fi
+cd "$top" || { echo "cursor-channel-watch: cannot cd to $top" >&2; exit 1; }
 arm="$top/third_party/agent-coordination-tickets/artifact/channel-arm"
 blocked() { echo "STATUS: BLOCKED channel artifact missing/too old in third_party/agent-coordination-tickets/artifact ($1)"; exit 1; }
 [[ -x "$arm" ]] || blocked "no $arm"
@@ -52,7 +56,7 @@ mkdir -p "$st" && chmod 700 "$st" || { echo "WATCH-ENDED cannot create watch sta
 # The posttool hook computes the same key for this conversation's channel-armed-<cid>.
 key="$(printf '%s %s %s' "$top" "$plan" "$node" | sha256sum | cut -c1-12)"
 log="$st/channel-$key.log" pidf="$st/channel-$key.pid"
-current() { local p=""; read -r p <"$pidf" 2>/dev/null; echo "$p"; }
+current() { local p=""; [[ -r "$pidf" ]] && read -r p <"$pidf" 2>/dev/null; echo "$p"; }
 if [[ "$mode" == --stop ]]; then
   p="$(current)"; [[ -n "$p" ]] && kill -- "-$p" 2>/dev/null; rm -f "$pidf"; echo "stopped"; exit 0
 fi
@@ -61,7 +65,7 @@ start_candidate() {
   # Started from a subshell so the loop is not this process's child, in its own session.
   ( setsid bash -c '
     me=$$ arm=$1 plan=$2 node=$3 log=$4 pidf=$5
-    owner() { local p=""; read -r p <"$pidf" 2>/dev/null; echo "$p"; }
+    owner() { local p=""; [[ -r "$pidf" ]] && read -r p <"$pidf" 2>/dev/null; echo "$p"; }
     for _ in $(seq 100); do [[ -n "$(owner)" ]] && break; sleep 0.05; done
     [[ "$(owner)" == "$me" ]] || exit 0
     : >"$log"

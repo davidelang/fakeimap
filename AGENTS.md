@@ -15,6 +15,7 @@ This is the law for every agent and tool. Your role card comes from the launcher
 - A denial on a path your role may not write is the rules working: do your role's job instead (a planner writes the change into a plan). Only when a path your role should write is blocked: stop and report the command, the error, the path, and the user. Never work around a denial.
 
 ## Commits, tags, deploy
+- A change is not complete until it is committed via this checkout's `project-facts.md` **Commit** path (normally commit before building, or commit the changes directly when **Build** is `none`). Do not stop with uncommitted changes and call the work done.
 - Build and commit only with the **Build** and **Commit** lines of this checkout's `project-facts.md` `## Build and commit` (Android apps: `./build_app --standard --test`, e.g. `./build_app --standard --test @msg.txt files...`; never `--play`, which needs David at a terminal; others: their own, e.g. `./commit-build`). The Commit line is the only commit path, authored as David Lang <david@lang.hm>. `none` or a missing line stops: `STATUS: BLOCKED no build/commit path in project-facts.md`. Do not `git add`, `git commit`, `git reset`, or `git push`. A command on the Commit line is how that checkout commits. Do not push. Do not `git reset`.
 - Tags are `<branch>/builds|deployed|works`; on `master` they are unprefixed. `backup-<branch>` comes only from `./orch/prepare-pr-rewrite`; never move or delete it. Agents do not deploy and do not move `works`.
 - Run helpers as `./helper` from your checkout. No `cd … && ./helper`.

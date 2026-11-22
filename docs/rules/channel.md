@@ -6,7 +6,7 @@ To join, David runs `/channel <node>` (or `/channel <diag path> <node>`). The sk
 
 `third_party/agent-coordination-tickets/artifact/channel-arm <node> --whatineedtoknow`
 
-and you follow its output. It is the whole instruction set: it detects the agent tool from `CHANNEL_AGENT` (set by the `run-cursor-*` / `run-grok-*` launchers; anything else fails loudly) and gives the exact watch, PING/PONG, send, reply, and BLOCKED steps and your duties on each arrow of the diag. Run it again after a compaction.
+and you follow its output. It is the whole instruction set: it detects the agent tool from `CHANNEL_AGENT` (set by the `run-cursor-*` / `run-grok-*` / `run-antigravity*` launchers; anything else fails loudly) and gives the exact watch, PING/PONG, send, reply, and BLOCKED steps and your duties on each arrow of the diag. Run it again after a compaction.
 
 After `/new`, David runs `/channel rebind`. The skill runs `artifact/channel-rebind` (no path or node). One leftover watch: it kills it and prints the same header; follow that. Several: it prints `REBIND-CHOOSE` and you ask David which `pid` to take, then `channel-rebind --pid N`. None: tell him `REBIND-NONE`.
 

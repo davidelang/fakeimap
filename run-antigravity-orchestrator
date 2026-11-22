@@ -1,0 +1,11 @@
+#!/bin/bash
+# run-antigravity-orchestrator — Antigravity CLI (agy) launcher, role orchestrator (no project rules in this file).
+# Rules: AGENTS.md (auto-loaded as GEMINI.md) + roles/orchestrator.md (-i); Landlock + env via grok-launch-common.sh
+set -euo pipefail
+GROK_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export GROK_LAUNCHER_DIR
+ROLE_KEY=orchestrator
+export ROLE_KEY
+# shellcheck source=/dev/null
+source "$GROK_LAUNCHER_DIR/.grok/lib/grok-launch-common.sh"
+antigravity_launch_main "$@"

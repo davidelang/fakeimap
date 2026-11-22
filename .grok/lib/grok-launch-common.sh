@@ -1,8 +1,8 @@
-# grok-launch-common.sh — shared machinery for run-grok* and run-cursor* (no project law).
+# grok-launch-common.sh — shared machinery for run-grok*, run-cursor* and run-antigravity* (no project law).
 # Install at: <repo>/.grok/lib/grok-launch-common.sh
 # Thin wrappers set GROK_LAUNCHER_DIR + ROLE_KEY, then source this and call
-# grok_launch_main "$@" (grok) or cursor_launch_main "$@" (cursor-agent; see
-# .cursor/lib/cursor-launch-common.sh).
+# grok_launch_main "$@" (grok), cursor_launch_main "$@" (cursor-agent; see
+# .cursor/lib/cursor-launch-common.sh), or antigravity_launch_main "$@" (agy).
 #
 # Rules: AGENTS.md (auto-loaded) + roles/<ROLE_KEY>.md (grok: --rules; cursor: sessionStart
 # hook in .cursor/hooks.json); settings in roles.config (cursor: cursor_model=)
@@ -88,6 +88,14 @@ cursor_memory_max() {
     def=8G
   fi
   agent_memory_max CURSOR_MEMORY_MAX "$def"
+}
+
+antigravity_memory_max() {
+  local def=4G
+  if [[ "${ROLE_KEY:-}" == coder || "${ROLE_KEY:-}" == master ]]; then
+    def=8G
+  fi
+  agent_memory_max ANTIGRAVITY_MEMORY_MAX "$def"
 }
 
 # bash -c script: set oom_score_adj, optional umask, then exec "$@".
@@ -540,4 +548,73 @@ launch_cursor_with_prompt() {
 cursor_launch_main() {
   prepare_prompt "$@"
   launch_cursor_with_prompt "$PROMPT"
+}
+
+# ---- antigravity (agy) ----------------------------------------------------
+# Same users, Landlock (incl. ~/.gemini/antigravity-cli + /dev/ptmx,/dev/pts/*),
+# env and roles.config as grok/cursor. Differences:
+#   model   ANTIGRAVITY_FORCE_MODEL / FORCE_MODEL / ANTIGRAVITY_<ROLE>_MODEL / roles.config antigravity_model=
+#   card    passed via -i "<role card>\n\nLaw: AGENTS.md ..." (agy has no --rules flag)
+#   flags   --add-dir "$SANDBOX_DIR"; CHANNEL_AGENT=agy
+launch_antigravity_with_prompt() {
+  local run_user
+  run_user="$(resolve_run_user)"
+  ANTIGRAVITY_BIN="$(need_cfg antigravity_bin)"
+  ANTIGRAVITY_BIN="$(_expand_path "$ANTIGRAVITY_BIN")"
+  if [[ ! -x "$ANTIGRAVITY_BIN" ]]; then
+    echo "ERROR: antigravity (agy) binary not found or not executable: $ANTIGRAVITY_BIN" >&2
+    echo "Set antigravity_bin in project.config" >&2
+    exit 1
+  fi
+  cd "$SCRIPT_DIR" || exit 1
+  local role_model_var="ANTIGRAVITY_${ROLE_KEY^^}_MODEL"
+  local model="${ANTIGRAVITY_FORCE_MODEL:-${FORCE_MODEL:-${!role_model_var:-$(role_cfg antigravity_model)}}}"
+  local model_args=()
+  [[ -n "$model" ]] && model_args=(--model "$model")
+  local effort_args=()
+  if [[ -z "$model" && -n "${ANTIGRAVITY_REASONING_EFFORT:-}" && "${ANTIGRAVITY_REASONING_EFFORT}" != "0" && "${ANTIGRAVITY_REASONING_EFFORT}" != "off" ]]; then
+    local e="${ANTIGRAVITY_REASONING_EFFORT}"
+    case "$e" in
+      xhigh|max) e=max ;;
+      low|medium|high) ;;
+      minimal|none) e=low ;;
+    esac
+    effort_args=(--effort "$e")
+  fi
+  local agy_prompt
+  agy_prompt="$(cat "$ROLE_CARD")
+
+Law: AGENTS.md (auto-loaded as GEMINI.md). Confirm pwd once, then wait for a directive."
+  echo "Launching Antigravity (agy) role=$ROLE_KEY root=$SCRIPT_DIR"
+  echo "Antigravity binary: $ANTIGRAVITY_BIN"
+  echo "Sandbox: $SANDBOX_DIR"
+  echo "Running as: $run_user"
+  echo "Model: ${model:-<agy default>}"
+  echo "Role card (-i): $ROLE_CARD"
+  echo "Tip: Ctrl+M or /multiline for multi-line input."
+  build_landlock_args "$run_user"
+  local mem_max
+  mem_max="$(antigravity_memory_max)"
+  # shellcheck disable=SC2086
+  start_role_process "$mem_max" sudo -u "$run_user" -- env \
+    ${ANDROID_SHARED:+ANDROID_USER_HOME="$ANDROID_SHARED"} \
+    ${ORCH_ROOT:+ORCH_ROOT="$ORCH_ROOT"} \
+    ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"} \
+    GROK_PROMPT_ROOT="$SCRIPT_DIR" \
+    ROLE_KEY="$ROLE_KEY" \
+    CHANNEL_AGENT=agy \
+    GIT_HOME="$GIT_HOME" \
+    bash -c "$(role_exec_bash "$LAUNCH_UMASK")" bash \
+      ${LANDLOCK_ARGS[@]+"${LANDLOCK_ARGS[@]}"} \
+      "$ANTIGRAVITY_BIN" \
+      -i "$agy_prompt" \
+      ${model_args[@]+"${model_args[@]}"} \
+      ${effort_args[@]+"${effort_args[@]}"} \
+      --add-dir "$SANDBOX_DIR" \
+      ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+}
+
+antigravity_launch_main() {
+  prepare_prompt "$@"
+  launch_antigravity_with_prompt
 }

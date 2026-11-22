@@ -342,7 +342,7 @@ ensure_worktree_scripts_executable() {
     filter-apply-config filter-clean-config setup-project
     set-sandbox-perms
     run-grok run-grok-master run-grok-planner run-grok-coder run-grok-orchestrator
-    run-antigravity run-gemini
+    run-antigravity run-antigravity-coder run-antigravity-master run-antigravity-orchestrator run-antigravity-planner run-gemini
     orch/get-builds-tag.sh orch/ve-resolve-orch orch/install-merge-drivers.sh orch/merge-branch-into-master.sh
     orch/agent-landlock orch/todo-append orch/todo-close orch/env
     orch/landlock-smoke-matrix orch/landlock-write-probe
