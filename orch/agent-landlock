@@ -460,8 +460,10 @@ def resolve_grants(
         if cur.is_dir():
             dirs.append(str(cur))
         # Optional caches some CLIs use (cursor-agent self-updates into .local/share/cursor-agent)
+        # agy (Antigravity): ~/.gemini/antigravity-cli holds its log, state, conversations and
+        # the file login token it refreshes; headless agy fails "not logged in" without it.
         for sub in (".cache/grok", ".local/share/grok", ".config/cursor", ".cache/cursor",
-                    ".local/share/cursor-agent"):
+                    ".local/share/cursor-agent", ".gemini/antigravity-cli"):
             cand = Path(home) / sub
             if cand.is_dir():
                 dirs.append(str(cand.resolve()))

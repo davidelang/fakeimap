@@ -9,9 +9,9 @@
 #   grok      --model / --reasoning-effort from roles.config when the dispatcher set none;
 #             context=500k (anything but 256k) -> GROK_HOME = a per-user config home made by
 #             orch/grok-context-home under <sandbox_dir>/grok-home/<current user>/ctx-<tokens>
-#   agy       (UNTESTED) --effort from roles.config when none was given, xhigh -> max
-#             (agy takes low|medium|high|max); --add-dir <sandbox_dir>. Inserted after
-#             argv[0]: agy reads flags only before its prompt.
+#   agy       --add-dir <sandbox_dir>; with --model no --effort (agy refuses it: the model
+#             name carries the effort), else --effort from roles.config, xhigh -> max.
+#             Inserted after argv[0]: agy reads flags only before --print=<prompt>.
 #   paths     project.config $HOME values are the invoking user's (DISPATCH_INVOKER_HOME
 #             from the wrapper), not coder_user's
 #   refusals  before the agent starts: reason on stderr, exit 127 (dispatcher: BLOCKED)
@@ -79,20 +79,29 @@ if [[ "$prog" == grok ]]; then
 fi
 
 if [[ "$prog" == agy ]]; then
+  # agy models carry the effort in their name ("Gemini 3.8 Flash (Low)") and agy refuses
+  # --effort beside --model, so: with --model, no --effort; without, the role's
+  # roles.config effort mapped to low|medium|high|max (xhigh -> max).
   agy_effort() { case "$1" in xhigh|max) echo max ;; low|medium|high) echo "$1" ;; minimal|none) echo low ;; *) echo "" ;; esac; }
-  have_effort=0; ins=(--add-dir "$sandbox")
+  have_model=0; have_effort=0; ins=(--add-dir "$sandbox"); out=("${argv[0]}")
+  for a in "${argv[@]:1}"; do [[ "$a" == --model || "$a" == --model=* ]] && have_model=1; done
   for ((i = 1; i < ${#argv[@]}; i++)); do
     if [[ "${argv[i]}" == --effort ]]; then
+      if [[ $have_model == 1 ]]; then
+        echo "$DC_PROG: agy: --effort ${argv[i+1]:-} dropped (the effort is part of the model name)" >&2
+        i=$((i + 1)); continue
+      fi
       have_effort=1; e="$(agy_effort "${argv[i+1]:-}")"
       [[ -n "$e" ]] || dc_die "effort '${argv[i+1]:-}' has no agy equivalent"
-      argv[i+1]="$e"
+      out+=(--effort "$e"); i=$((i + 1)); continue
     fi
+    out+=("${argv[i]}")
   done
-  if [[ $have_effort == 0 ]]; then
+  if [[ $have_model == 0 && $have_effort == 0 ]]; then
     e="$(agy_effort "$(dc_role_cfg "$ROOT" "$role" effort)")"
     [[ -n "$e" ]] && ins+=(--effort "$e")
   fi
-  argv=("${argv[0]}" "${ins[@]}" "${argv[@]:1}")
+  argv=("${out[0]}" "${ins[@]}" "${out[@]:1}")
 fi
 
 landlock=("$ROOT/orch/agent-landlock" --role "$DC_LANDLOCK" --worktree "$wt" --)

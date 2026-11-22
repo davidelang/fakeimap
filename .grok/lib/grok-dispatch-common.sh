@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # grok-dispatch-common.sh: shared body of run-script-grok-{coder,reviewer,tester},
-# run-script-antigravity-{coder,reviewer,tester} (UNTESTED: no live agy run yet) and
+# run-script-antigravity-{coder,reviewer,tester} (command line checked live once; no full job yet) and
 # helpers for orch/dispatch-launch-hook.
 # A wrapper sets WRAPPER_ROLE, and for antigravity WRAPPER_BACKEND=antigravity plus
 # WRAPPER_MODEL (its default, overridable by ANTIGRAVITY_<ROLE>_MODEL, as run-antigravity-*).
@@ -153,7 +153,7 @@ Defaults the wrapper adds (any of them may be given again to override), all foun
 from this worktree at run time:
   -N $WRAPPER_ROLE  -l orch/dispatch-launch-hook  -c <pin>/artifact/channel  -C <this worktree>
 U
-  [[ "$WRAPPER_BACKEND" == antigravity ]] && echo "  -b antigravity  -m '${WRAPPER_MODEL:-}'   (UNTESTED; agy has no turn cap, effort xhigh -> max)"
+  [[ "$WRAPPER_BACKEND" == antigravity ]] && echo "  -b antigravity  -m '${WRAPPER_MODEL:-}'   (agy: no turn cap; the model name carries the effort)"
   [[ "$WRAPPER_ROLE" == coder ]] && echo "  --done-tag $DC_DONE_TAG  --retry-effort <roles.config executor retry_effort>  --failure-log-dir <sandbox>/implementation-failure-logs"
   echo
   if [[ -x "$DC_DISPATCH" ]]; then echo "Dispatcher options:"; "$DC_DISPATCH" --help; fi

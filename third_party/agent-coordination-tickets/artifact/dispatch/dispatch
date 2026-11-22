@@ -193,7 +193,8 @@ role_card() {
 # when it refuses before starting the agent (missing program, bad config, no sandbox).
 run_agent() {
   local role="$1" review="$2" dir="$3" prompt="$4" backend hook access rules tmo
-  backend=$(cfg "$role" backend grok-build "$review")
+  # One backend per process (-b): an in-process review runs on it too.
+  backend="${CFG_CLI[backend]:-grok-build}"
   [[ -f "$HERE/backends/$backend.sh" ]] || die "unknown backend '$backend'"
   # shellcheck source=/dev/null
   . "$HERE/backends/$backend.sh"

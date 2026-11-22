@@ -1,8 +1,8 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "4b3c6d4787c0e05a389be9220b1b1a44d58dd42f"
-git_describe = "4b3c6d4"
+git_sha = "433d8a5ab5c1e7f1238af897a1c55e70eac9448b"
+git_describe = "433d8a5"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
@@ -23,7 +23,7 @@ sha256 = "6bc22dcc61f038320e076c85063c10003da6fdec8bdd5ec08cf37efe2ce27fde"
 [[artifact]]
 path = "artifact/dispatch/backends/antigravity.sh"
 from = "src/dispatch/backends/antigravity.sh"
-sha256 = "08262839aab4ca0c268a1ed7b049a40ec52c4ae3f2ae6406ff54bd711fb1037f"
+sha256 = "75465c6c508d8fd0bdcd087a5fa1d3b3f72f64868f7d13febbd8030d337c4e6d"
 
 [[artifact]]
 path = "artifact/dispatch/backends/cursor.sh"
@@ -43,7 +43,7 @@ sha256 = "8ea9ac0a98993326f3aa11f25cc4977233dd2c25b4f3173bfe58735f62276ade"
 [[artifact]]
 path = "artifact/dispatch/dispatch"
 from = "src/dispatch/dispatch"
-sha256 = "3100d5e451610e708798ec698bca38bc9027a9a532af8fb4c6cdc994dbc0190a"
+sha256 = "dd66b93afbdc12295b2784a658a7c274f38d538f91cabbfb00b88d6836305e3b"
 
 [[artifact]]
 path = "artifact/dispatch/hooks/direct"

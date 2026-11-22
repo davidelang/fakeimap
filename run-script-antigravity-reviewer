@@ -1,15 +1,16 @@
 #!/bin/bash
 # run-script-antigravity-reviewer: headless dispatcher for the reviewer role, run with Antigravity (agy).
-# UNTESTED: no live agy run yet. Same body as run-script-grok-reviewer
+# Command line checked live once; no full job yet. Same body as run-script-grok-reviewer
 # (.grok/lib/grok-dispatch-common.sh) with -b antigravity and this model; agents start
-# through orch/dispatch-launch-hook (Landlock, effort xhigh -> max, --add-dir <sandbox>).
+# through orch/dispatch-launch-hook (Landlock, --add-dir <sandbox>).
 set -euo pipefail
 GROK_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export GROK_LAUNCHER_DIR
 WRAPPER_ROLE=reviewer
 WRAPPER_BACKEND=antigravity
 # Model: as run-antigravity-planner / -master, a default here, overridable from the environment.
-WRAPPER_MODEL="${ANTIGRAVITY_REVIEWER_MODEL:-Gemini 3.5 Flash (High)}"
+# Names come from `agy models` (3.5 Flash is no longer listed); the name carries the effort.
+WRAPPER_MODEL="${ANTIGRAVITY_REVIEWER_MODEL:-Gemini 3.8 Flash (High)}"
 # shellcheck source=/dev/null
 source "$GROK_LAUNCHER_DIR/.grok/lib/grok-dispatch-common.sh"
 dispatch_wrapper_main "$@"
