@@ -1,8 +1,8 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "433d8a5ab5c1e7f1238af897a1c55e70eac9448b"
-git_describe = "433d8a5"
+git_sha = "e3adf5efdfe36e39ab122831c991ad1ced8534b4"
+git_describe = "e3adf5e"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
@@ -15,7 +15,7 @@ consumer_note = "Channel handoff tools. The built go/channel is committed as art
 # Static Go binary (CGO_ENABLED=0, -trimpath, -buildvcs=false: same bytes from any checkout): committed, so a new worktree needs no library checkout.
 path = "artifact/channel"
 from = "src/go/channel"
-sha256 = "6bc22dcc61f038320e076c85063c10003da6fdec8bdd5ec08cf37efe2ce27fde"
+sha256 = "10fb2229e21ebe6ceea6ac9c2741e46b2368f13e030785afc9b558101f2b5dfc"
 
 # dispatch/: the headless dispatcher (docs/dispatch.md upstream). Plain copies of source files, no build;
 # they keep their layout under artifact/dispatch/ because dispatch/dispatch finds the rest from its own path.
