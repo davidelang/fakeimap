@@ -1,8 +1,8 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "39edf84f2b93c3a4b6d2f0849da937c42accb407"
-git_describe = "39edf84"
+git_sha = "4b3c6d4787c0e05a389be9220b1b1a44d58dd42f"
+git_describe = "4b3c6d4"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
@@ -43,12 +43,12 @@ sha256 = "8ea9ac0a98993326f3aa11f25cc4977233dd2c25b4f3173bfe58735f62276ade"
 [[artifact]]
 path = "artifact/dispatch/dispatch"
 from = "src/dispatch/dispatch"
-sha256 = "f16a7745ee1bb7c02abe846ea46c5271e533e8037a1292d273204b79220e8c35"
+sha256 = "3100d5e451610e708798ec698bca38bc9027a9a532af8fb4c6cdc994dbc0190a"
 
 [[artifact]]
 path = "artifact/dispatch/hooks/direct"
 from = "src/dispatch/hooks/direct"
-sha256 = "d8eaad701610e6d95cf735f6748ecf404b55432d0f256ac428274d655c17871f"
+sha256 = "d998cf6cd006361a77d771084569563ab5b54bffef92e5824b96916fa611da77"
 
 [[artifact]]
 path = "artifact/dispatch/lib/common.sh"

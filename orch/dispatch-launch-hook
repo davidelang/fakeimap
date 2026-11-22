@@ -12,16 +12,22 @@
 #   agy       (UNTESTED) --effort from roles.config when none was given, xhigh -> max
 #             (agy takes low|medium|high|max); --add-dir <sandbox_dir>. Inserted after
 #             argv[0]: agy reads flags only before its prompt.
+#   paths     project.config $HOME values are the invoking user's (DISPATCH_INVOKER_HOME
+#             from the wrapper), not coder_user's
+#   refusals  before the agent starts: reason on stderr, exit 127 (dispatcher: BLOCKED)
 #   cwd       the worktree, umask 002
 # stdout is the agent's stdout (the dispatcher parses it); notes go to stderr.
 set -euo pipefail
 DC_PROG=dispatch-launch-hook
+# Every refusal here is before the agent starts: exit 127 with the reason on stderr, so the
+# dispatcher sends BLOCKED with it instead of retrying (docs/dispatch.md, launch hook).
+DC_DIE_RC=127
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=/dev/null
 DISPATCH_FUNCS_ONLY=1 . "$ROOT/.grok/lib/grok-dispatch-common.sh"
 
 parsed=$(getopt -n "$DC_PROG" -o r:a:j:w:h -l role:,access:,job-dir:,worktree:,help -- "$@") \
-  || { echo "usage: $DC_PROG --role ROLE --access ACCESS --job-dir DIR --worktree DIR -- ARGV..." >&2; exit 2; }
+  || { echo "usage: $DC_PROG --role ROLE --access ACCESS --job-dir DIR --worktree DIR -- ARGV..." >&2; exit 127; }
 eval set -- "$parsed"
 role=""; access=""; jobdir=""; wt=""
 while true; do
@@ -30,7 +36,7 @@ while true; do
     -a|--access) access="$2"; shift 2 ;;
     -j|--job-dir) jobdir="$2"; shift 2 ;;
     -w|--worktree) wt="$2"; shift 2 ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed -n 's/^# \{0,1\}//p'; exit 0 ;;
     --) shift; break ;;
   esac
 done
@@ -91,6 +97,11 @@ fi
 
 landlock=("$ROOT/orch/agent-landlock" --role "$DC_LANDLOCK" --worktree "$wt" --)
 [[ -f "${landlock[0]}" ]] || dc_die "missing ${landlock[0]}; refusing to start an agent without Landlock"
+# Landlock problems (no landlock.config, no ABI) would show only after exec, as the agent's
+# exit status; check first so they are refusals too.
+if ! ll_err=$(cd "$wt" && env "${envs[@]}" "${landlock[@]}" true 2>&1); then
+  dc_die "agent-landlock --role $DC_LANDLOCK refused: $(tr -s '\n' ' ' <<<"$ll_err")"
+fi
 
 echo "$DC_PROG: role=$role access=$access user=$run_user landlock=$DC_LANDLOCK grok_home=${gh:-default} job=$jobdir" >&2
 cd "$wt"

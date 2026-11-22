@@ -186,7 +186,11 @@ role_card() {
 
 # ----------------------------------------------------------- agent launch
 # run_agent ROLE REVIEW JOBDIR PROMPTFILE
-# Sets A_RC (hook exit), A_TEXT (file with the agent's final text), A_COST.
+# Sets A_RC (hook exit), A_TEXT (file with the agent's final text), A_COST, and
+# A_LAUNCH (non-empty: the agent never started; the text is the hook's error).
+# Launch failure = exit 126 or 127 with nothing on stdout: what exec/bash give for a
+# program that is not executable / not found, and what a launch hook must exit with
+# when it refuses before starting the agent (missing program, bad config, no sandbox).
 run_agent() {
   local role="$1" review="$2" dir="$3" prompt="$4" backend hook access rules tmo
   backend=$(cfg "$role" backend grok-build "$review")
@@ -215,7 +219,7 @@ run_agent() {
   tmo=$(cfg "$role" timeout 0 "$review")
   [[ "$tmo" =~ ^[0-9]+$ && "$tmo" -gt 0 ]] && cmd=(timeout -k 30 "$tmo" "${cmd[@]}")
   printf '%q ' "${cmd[@]}" >"$dir/argv.txt"; echo >>"$dir/argv.txt"
-  A_TEXT="$dir/result.txt"; A_COST=""; A_RC=0
+  A_TEXT="$dir/result.txt"; A_COST=""; A_RC=0; A_LAUNCH=""
   if [[ $DRY == 1 ]]; then
     say "DRY-RUN $role${review:+ ($review)}: would run (argv in $dir/argv.txt):"
     local a prev="" out=""
@@ -241,11 +245,17 @@ run_agent() {
   # A backend without a cost field (cursor, antigravity) leaves A_COST empty; the reason is in cost.err.
   if ! A_COST=$(backend_cost "$dir/agent.out" 2>"$dir/cost.err"); then A_COST=""; fi
   say "END $role${review:+ ($review)} rc=$A_RC cost=${A_COST:-?}"
+  if [[ ( $A_RC -eq 126 || $A_RC -eq 127 ) && ! -s "$dir/agent.out" ]]; then
+    A_LAUNCH=$(tail -n 5 "$dir/agent.err" 2>/dev/null | tr -s '\n' ' ' | sed 's/ *$//')
+    A_LAUNCH="agent did not start (launch exit $A_RC): ${A_LAUNCH:-no error text} (see $dir/agent.err)"
+    say "LAUNCH FAILED $role${review:+ ($review)}: $A_LAUNCH"
+  fi
   printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$role${review:+:$review}" "$A_RC" "${A_COST:-?}" >>"$LOG_DIR/costs.tsv"
 }
 
 # ---------------------------------------------------------------- reviews
-# run_review NAME DIR PLAN RANGE -> V_STATUS PASS|FAIL|ERROR, V_FILE, V_REASON
+# run_review NAME DIR PLAN RANGE -> V_STATUS PASS|FAIL|ERROR|BLOCKED, V_FILE, V_REASON
+# (BLOCKED: the agent never started)
 run_review() {
   local name="$1" dir="$2" plan="$3" range="$4" role h0 d0 st
   role=reviewer; [[ -z "$name" ]] && role="$ROLE"
@@ -260,6 +270,7 @@ run_review() {
   run_agent "$role" "$name" "$dir" "$dir/prompt.txt"
   [[ $DRY == 1 ]] && { V_STATUS=PASS; V_REASON="dry run"; return 0; }
   cp "$A_TEXT" "$V_FILE"
+  if [[ -n "$A_LAUNCH" ]]; then V_STATUS=BLOCKED; V_REASON="$A_LAUNCH"; return 0; fi
   if [[ "$(git_head)" != "$h0" || "$(git_dirty)" != "$d0" ]]; then
     V_REASON="the $role changed the worktree (read-only role)"; return 0
   fi
@@ -307,7 +318,9 @@ check_done() {
 # session gets the full review to fix, then the range is reviewed again. A FAIL that reports
 # as many problems (PROBLEMS: N) as the review before it or more, or a FAIL on the last
 # cycle, goes back to the sender with the review history: FAILURE, re-plan needed.
-# (BLOCKED is only for the agent's own STATUS: BLOCKED, something preventing progress.) Build-blocking slips
+# (BLOCKED is for something outside the code preventing progress: the agent's own STATUS:
+# BLOCKED, or an agent that never started, i.e. the launch hook exited 126/127 with
+# nothing on stdout; neither is retried.) Build-blocking slips
 # (a missed reference, a typo) are the agent's to fix inside its own session; the
 # dispatcher counts no strikes. A session that ends not done gets one fresh retry per job;
 # a second one goes back to the sender. The dispatcher never resets the worktree.
@@ -367,7 +380,7 @@ channel_review_wait() {
       if [[ "${MF[REF]:-}" == "$ref" ]]; then
         cp -- "$f" "$dir/reply.txt"
         st="${MF[STATUS]:-}"; st="${st%% *}"
-        case "$st" in PASS|FAIL) V_STATUS="$st" ;; *) V_STATUS=ERROR ;; esac
+        case "$st" in PASS|FAIL|BLOCKED) V_STATUS="$st" ;; *) V_STATUS=ERROR ;; esac
         V_REASON="${MF[REASON]:-}"; [[ "$V_REASON" == none ]] && V_REASON=""
         vf="${MF[VERDICT-FILE]:-${MF[VERDICT]:-}}"
         if [[ -n "$vf" && -r "$vf" ]]; then cp -- "$vf" "$V_FILE"; else cp -- "$f" "$V_FILE"; fi
@@ -392,7 +405,7 @@ channel_review_wait() {
   fi
 }
 
-# blocking_reviews ROUND DIRPREFIX PLAN RANGE -> R_RESULT pass|fail|error|stopped, with V_*
+# blocking_reviews ROUND DIRPREFIX PLAN RANGE -> R_RESULT pass|fail|error|blocked|stopped, with V_*
 # A review that gives no verdict is retried once as a fresh run (roles/coder.md).
 blocking_reviews() {
   local round="$1" pre="$2" plan="$3" range="$4" n rr try
@@ -410,12 +423,14 @@ blocking_reviews() {
         V_STATUS=ERROR; V_REASON="FAIL without a 'PROBLEMS: N' line (the count is compared across cycles)"
       fi
       say "REVIEW $n cycle $round: $V_STATUS ${V_REASON}"
+      # BLOCKED (the review agent did not start) is not retried: a rerun fails the same way.
       [[ "$V_STATUS" == ERROR && $try == 1 ]] && { say "review $n gave no verdict; one fresh retry"; continue; }
       break
     done
     case "$V_STATUS" in
       PASS) ;;
       FAIL) R_RESULT=fail; R_NAME="$n"; return 0 ;;
+      BLOCKED) R_RESULT=blocked; R_NAME="$n"; return 0 ;;
       *) R_RESULT=error; R_NAME="$n"; return 0 ;;
     esac
   done
@@ -445,6 +460,8 @@ run_executor_job() {
     say "ROUND $round: $kind session (review cycle $((cycle + 1)) of $MAX_REVIEW_CYCLES${EFFORT_OVERRIDE:+, effort $EFFORT_OVERRIDE})"
     start=$(git_head)
     run_agent executor "" "$dir" "$dir/prompt.txt"
+    # The agent never started: something outside the code. Not retried (a retry fails the same way).
+    if [[ -n "$A_LAUNCH" ]]; then J_KIND=blocked; J_REASON="round $round: $A_LAUNCH"; return; fi
     if [[ $DRY == 1 ]]; then D_KIND=complete; else check_done "$start"; fi
     case "$D_KIND" in
       blocked) J_KIND=blocked; J_REASON="round $round: $D_REASON"; return ;;
@@ -463,6 +480,7 @@ run_executor_job() {
     case "$R_RESULT" in
       pass) J_KIND=complete; J_REASON="range $before..$(git_head)${prev:+ (passed review cycle $cycle)}"; return ;;
       stopped) J_KIND=stopped; J_REASON="$V_REASON (round $round)"; return ;;
+      blocked) J_KIND=blocked; J_REASON="review $R_NAME: $V_REASON"; return ;;
       error) J_KIND=failure; J_REASON="review $R_NAME gave no verdict twice: $V_REASON (verdict $V_FILE)${prev:+; reviews so far: $hist}"; return ;;
     esac
     # FAIL: keep the full review of this cycle
@@ -548,7 +566,8 @@ handle_message() {
         local h0; h0=$(git_head)
         run_agent executor "" "$dir" "$dir/prompt.txt"
         local st; st=$(last_status "$A_TEXT" || true)
-        if [[ "${st%%$'\t'*}" == SUCCESS && "$(git_head)" == "$h0" ]]; then kind=complete; J_REASON="evidence in $A_TEXT"
+        if [[ -n "$A_LAUNCH" ]]; then kind=blocked; J_REASON="$A_LAUNCH"
+        elif [[ "${st%%$'\t'*}" == SUCCESS && "$(git_head)" == "$h0" ]]; then kind=complete; J_REASON="evidence in $A_TEXT"
         else kind=failure; J_REASON="evidence: ${st:-no STATUS line} (see $A_TEXT)"; fi ;;
       STOP) kind=stopped; J_REASON="no job running (jobs run one at a time; a STOP is read between jobs)" ;;
       *) kind=failure; J_REASON="the dispatcher does not handle '$action'" ;;
@@ -562,7 +581,9 @@ handle_message() {
       run_review "" "$job/review" "${MF[PLAN]:-none}" "${MF[RANGE]}"
     fi
     kind=$(tr '[:upper:]' '[:lower:]' <<<"$V_STATUS")
-    want="$M_VERB-$V_STATUS"; verb=$(reply_verb "$want")
+    # The diag has no -BLOCKED verb: an agent that never started goes out as -ERROR with
+    # STATUS: BLOCKED, which the waiting executor reads as BLOCKED (not retried).
+    want="$M_VERB-${V_STATUS/#BLOCKED/ERROR}"; verb=$(reply_verb "$want")
     F[STATUS]="$V_STATUS"; F[REASON]="${V_REASON:-$V_STATUS}"; F[VERDICT]="$V_FILE"; F[VERDICT-FILE]="$V_FILE"
     F[PROBLEMS]=$(problem_count "$V_FILE"); [[ -n "${F[PROBLEMS]}" ]] || F[PROBLEMS]=none
   fi

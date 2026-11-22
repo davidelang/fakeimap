@@ -5,16 +5,20 @@
 # A real hook (a consumer's run-* wrapper) picks the account, landlock,
 # config home (e.g. GROK_HOME for a 500K window) and environment from ROLE
 # and ACCESS, then runs ARGV the same way.
+# Contract: when the hook refuses before the agent starts (bad options, missing program,
+# bad config) it prints the reason on stderr, nothing on stdout, and exits 127. The
+# dispatcher then sends BLOCKED with that text instead of retrying. (exec gives 127 / 126
+# itself for a program that is missing / not executable.)
 set -euo pipefail
 wt=""
 while [[ $# -gt 0 && "$1" != -- ]]; do
   case "$1" in
     --worktree) wt="$2"; shift 2 ;;
     --role|--access|--job-dir) shift 2 ;;
-    *) echo "direct: unknown option $1" >&2; exit 2 ;;
+    *) echo "direct: unknown option $1" >&2; exit 127 ;;
   esac
 done
-[[ "${1:-}" == -- ]] || { echo "direct: missing -- before the agent command" >&2; exit 2; }
+[[ "${1:-}" == -- ]] || { echo "direct: missing -- before the agent command" >&2; exit 127; }
 shift
 [[ -n "$wt" ]] && cd -- "$wt"
 exec "$@"

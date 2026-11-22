@@ -36,7 +36,9 @@
 # ------------------------------------------------------------ shared helpers
 declare -A DC_PC=()
 
-dc_die() { echo "${DC_PROG:-dispatch}: $*" >&2; exit 2; }
+# DC_DIE_RC: the hook sets 127 (refused before the agent started; the dispatcher reports
+# BLOCKED with the message and does not retry). The wrappers keep 2.
+dc_die() { echo "${DC_PROG:-dispatch}: $*" >&2; exit "${DC_DIE_RC:-2}"; }
 
 # dc_load_project_config ROOT: KEY=VALUE lines of ROOT/project.config into DC_PC.
 dc_load_project_config() {
@@ -52,10 +54,14 @@ dc_load_project_config() {
 }
 
 # dc_cfg KEY [DEFAULT]: project.config value, $HOME and ~ expanded. An @@TOKEN@@ is an error.
+# $HOME is the INVOKING user's home (DISPATCH_INVOKER_HOME, set by the wrapper before it
+# switches to coder_user), as run-grok-* / run-antigravity-* expand project.config values
+# before their sudo: grok_bin_default=$HOME/git/... names the invoker's copy, not
+# /home/<coder_user>/git/...
 dc_cfg() {
-  local v="${DC_PC[$1]:-${2:-}}"
+  local v="${DC_PC[$1]:-${2:-}}" home="${DISPATCH_INVOKER_HOME:-$HOME}"
   [[ "$v" == @@* ]] && dc_die "$1 is still the token $v in project.config"
-  v="${v/#\~/$HOME}"; v="${v//\$HOME/$HOME}"
+  v="${v/#\~/$home}"; v="${v//\$HOME/$home}"
   printf '%s' "$v"
 }
 
@@ -172,7 +178,7 @@ dc_switch_user() {
     ${ORCH_ROOT:+ORCH_ROOT="$ORCH_ROOT"}
     ${GRADLE_USER_HOME:+GRADLE_USER_HOME="$GRADLE_USER_HOME"}
     ${AGENT_LANDLOCK_DISABLE:+AGENT_LANDLOCK_DISABLE="$AGENT_LANDLOCK_DISABLE"}
-    GIT_HOME="$GIT_HOME" ROLE_KEY=coder
+    GIT_HOME="$GIT_HOME" ROLE_KEY=coder DISPATCH_INVOKER_HOME="$DISPATCH_INVOKER_HOME"
     bash -c "$(role_exec_bash "$LAUNCH_UMASK")" bash
     "$DC_ROOT/$DC_PROG" "$@")
   if [[ "$dry" == 1 ]]; then
@@ -228,6 +234,12 @@ dispatch_wrapper_main() {
   fi
   [[ -f "$diag" ]] || dc_die "diag not found: $diag"
   diag="$(readlink -f "$diag")"
+  # project.config $HOME values are the invoker's (see dc_cfg); kept across the user switch.
+  export DISPATCH_INVOKER_HOME="${DISPATCH_INVOKER_HOME:-$HOME}"
+  local bin_key bin
+  case "$WRAPPER_BACKEND" in grok) bin_key=grok_bin_default ;; antigravity) bin_key=antigravity_bin ;; esac
+  bin="$(dc_cfg "$bin_key")"
+  [[ -n "$bin" && -x "$bin" ]] || dc_die "agent program not executable: ${bin:-<empty>} (project.config $bin_key)"
   # Asked (if at all) before the switch; the re-run gets the answer as -d.
   [[ $as_me == 1 ]] || dc_switch_user "$dry" "${orig[@]}" -d "$diag"
 
