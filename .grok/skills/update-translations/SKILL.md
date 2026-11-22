@@ -12,7 +12,7 @@ user-invocable: true
 
 Coder session. No plan. If this checkout has no app and no user manual, stop and say so.
 
-Read this checkout's `docs/facts/translations.md` and follow it.
+Read this checkout's `docs/facts/translations.md` and follow it. Every string the user can see is in scope, wherever it appears in the app, and so is the user manual.
 
 Run `./scripts/i18n-outstanding`. Add `--manuals` only when the user asked for manuals. Add `--all` only when the user asked to regenerate everything. Overrides stay off the list. Developer docs stay off the list.
 

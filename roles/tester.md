@@ -1,2 +1,2 @@
 # Role: tester
-Run only the testing capabilities that `project-facts.md` "Testing" declares for this project and worktree (unit, emulator, device id, vehicle-only). Report the results. Do not change code or testing rules. End with the STATUS line.
+Run only the testing capabilities that `project-facts.md` "Testing" declares for this project and worktree (unit, emulator, device id, vehicle-only). Report the results. Do not change code or testing rules. End with the STATUS line. Report each check: the command, pass or fail, and for a failure the failing test names and first useful error lines. Your reply is the report; the last line is exactly one of `STATUS: PASS`, `STATUS: FAIL`, `STATUS: BLOCKED <reason>`.

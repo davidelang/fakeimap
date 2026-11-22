@@ -1,6 +1,8 @@
 # Translations
 
-A person edits English only in the file that already defines the feature. Scripts and `/update-translations` do the rest. `strings.xml`, locale packs, and the machine catalog are not places to change wording.
+Every string the user can see is translated, wherever it appears in the app: any screen, dialog, menu, notification, or message. The user manual is translated too.
+
+The programmer writes English only, as if the app had no translations: `S("...")` in code, or the English in the feature's JSON file or the manual. The build and `/update-translations` do the rest. A person edits English only in the file that already defines the feature. `strings.xml`, locale packs, and the machine catalog are not places to change wording.
 
 ## Definition sites
 
@@ -8,9 +10,11 @@ A person edits English only in the file that already defines the feature. Script
 - A JSON file, when that feature already stores its English sentence there.
 - The user manual, when the app has one: `docs/user-manual/manual.md`.
 
+Every user-visible string comes from one of these sites.
+
 Resource names are generated. Call sites do not use `R.string`.
 
-Developer docs stay English. Short in-app help sentences are app strings, not the manual.
+Developer docs stay English. Text shown on the app's own screens is an app string, not part of the manual.
 
 ## Catalog
 
@@ -54,14 +58,14 @@ The skill does not change English wording in code, JSON, or the manual.
 
 These rules apply when the app has a user manual. They are not a reason to add one.
 
-The APK bundles the English manual only.
+The manual is translated like the app strings: `./scripts/i18n-outstanding --manuals` lists its changed sentences. The translations are published on the web, not bundled. The APK bundles the English manual.
 
-The manual reader has two actions, and only there. Help and About open the full manual. They do not get a translate action.
+The manual reader has two language actions:
 
 - **This language on the web** opens the published translation for the app's current language. Hidden when that page does not exist. Hidden when the app is in English.
 - **Translate the latest English** opens the public English HTML through Google Translate. The app does not upload the manual. Hidden until that public URL exists.
 
-Published translations are static HTML on GitHub so each language can show its own screenshots. Until a language has been photographed, its page points at the English image. The text skill does not invent screenshots and does not copy the English file into each language directory.
+Published translations are static HTML on GitHub, so each language can show its own screenshots. Until a language has been photographed, its page points at the English image. The text skill does not invent screenshots and does not copy the English file into each language directory.
 
 Stored screenshots are JPEG, maximum width 1080, quality about 75, metadata stripped. They are normal git files, not Git LFS. Full-resolution captures are not committed.
 

@@ -53,8 +53,6 @@ shared .grok/lib/grok-dispatch-common.sh
 shared orch/dispatch-launch-hook
 shared orch/grok-context-home
 shared docs/dispatch-wrappers.md
-shared docs/dispatch-wrappers.example.dispatch
-shared docs/dispatch-executor-addendum.md
 shared run-cursor
 shared run-cursor-coder
 shared run-cursor-master
@@ -121,6 +119,10 @@ shared third_party/agent-coordination-tickets/artifact/dispatch/**
 opt run-antigravity
 opt run-antigravity-master
 opt run-antigravity-planner
+# Headless dispatcher wrappers for Antigravity (UNTESTED; same body as run-script-grok-*)
+shared run-script-antigravity-coder
+shared run-script-antigravity-reviewer
+shared run-script-antigravity-tester
 opt landlock.config
 opt landlock.config.example
 shared orch/agent-landlock
@@ -131,6 +133,8 @@ opt .gemini/system_prompt.md
 
 retired MASTER_AGENT_MANDATE.md
 purge new_grok_agent_prompt
+purge docs/dispatch-wrappers.example.dispatch
+purge docs/dispatch-executor-addendum.md
 purge sync_infrastructure.sh
 purge fix-android-sdk-perms
 purge sync-debug-keystores

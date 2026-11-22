@@ -1,0 +1,15 @@
+#!/bin/bash
+# run-script-antigravity-coder: headless dispatcher for the executor role, run with Antigravity (agy).
+# UNTESTED: no live agy run yet. Same body as run-script-grok-coder
+# (.grok/lib/grok-dispatch-common.sh) with -b antigravity and this model; agents start
+# through orch/dispatch-launch-hook (Landlock, effort xhigh -> max, --add-dir <sandbox>).
+set -euo pipefail
+GROK_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export GROK_LAUNCHER_DIR
+WRAPPER_ROLE=coder
+WRAPPER_BACKEND=antigravity
+# Model: as run-antigravity-planner / -master, a default here, overridable from the environment.
+WRAPPER_MODEL="${ANTIGRAVITY_CODER_MODEL:-Gemini 3.5 Flash (High)}"
+# shellcheck source=/dev/null
+source "$GROK_LAUNCHER_DIR/.grok/lib/grok-dispatch-common.sh"
+dispatch_wrapper_main "$@"

@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# dispatch-launch-hook: the launch hook run-script-grok-{coder,reviewer,tester} give the
+# dispatch-launch-hook: the launch hook run-script-{grok,antigravity}-{coder,reviewer,tester} give the
 # pinned dispatcher (-l). The dispatcher calls
 #   dispatch-launch-hook --role ROLE --access read-write|read-only --job-dir DIR --worktree DIR -- AGENT-ARGV...
-# and this runs AGENT-ARGV for that role:
-#   user      project.config <role>_user (executor/tester: coder_user, reviewer: planning_user)
+# and this runs AGENT-ARGV for that role, as the user it is called as (the wrapper already
+# switched to project.config coder_user once at start; no sudo here):
 #   Landlock  orch/agent-landlock --role <role>_landlock (executor/tester: coder, reviewer: planner)
 #   program   grok / cursor-agent / agy -> grok_bin_default / cursor_bin / antigravity_bin
 #   grok      --model / --reasoning-effort from roles.config when the dispatcher set none;
 #             context=500k (anything but 256k) -> GROK_HOME = a per-user config home made by
-#             orch/grok-context-home under <sandbox_dir>/grok-home/<user>/ctx-<tokens>
+#             orch/grok-context-home under <sandbox_dir>/grok-home/<current user>/ctx-<tokens>
+#   agy       (UNTESTED) --effort from roles.config when none was given, xhigh -> max
+#             (agy takes low|medium|high|max); --add-dir <sandbox_dir>. Inserted after
+#             argv[0]: agy reads flags only before its prompt.
 #   cwd       the worktree, umask 002
 # stdout is the agent's stdout (the dispatcher parses it); notes go to stderr.
-# DISPATCH_HOOK_AS_ME=1 (run-script-grok-* -U): run as the current user, no sudo (tests).
 set -euo pipefail
 DC_PROG=dispatch-launch-hook
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -49,15 +51,7 @@ case "$prog" in
 esac
 [[ -x "${argv[0]}" ]] || dc_die "agent program not executable: ${argv[0]} (project.config)"
 
-self="$(id -un)"
-as_me=0
-[[ "${DISPATCH_HOOK_AS_ME:-}" == 1 || "$DC_USER" == "$self" ]] && as_me=1
-run_user="$DC_USER"; [[ $as_me == 1 ]] && run_user="$self"
-
-# as_user CMD...: run CMD as the role's user (directly when that is us).
-as_user() {
-  if [[ $as_me == 1 ]]; then "$@"; else sudo -n -u "$run_user" -- "$@"; fi
-}
+run_user="$(id -un)"
 
 gh=""
 envs=(GIT_HOME="$(dc_cfg git_home)" ROLE_KEY="$DC_LANDLOCK" DISPATCH_ROLE="$role" DISPATCH_ACCESS="$access")
@@ -73,18 +67,32 @@ if [[ "$prog" == grok ]]; then
   ctx="$(dc_context_tokens "$(dc_role_cfg "$ROOT" "$role" context)")"
   if [[ -n "$ctx" && "$ctx" != 256000 ]]; then
     gh="$sandbox/grok-home/$run_user/ctx-$ctx"
-    as_user "$ROOT/orch/grok-context-home" --dir "$gh" --context "$ctx" --model "${model:-grok-4.7}" >/dev/null
+    "$ROOT/orch/grok-context-home" --dir "$gh" --context "$ctx" --model "${model:-grok-4.7}" >/dev/null
     envs+=(GROK_HOME="$gh")
   fi
+fi
+
+if [[ "$prog" == agy ]]; then
+  agy_effort() { case "$1" in xhigh|max) echo max ;; low|medium|high) echo "$1" ;; minimal|none) echo low ;; *) echo "" ;; esac; }
+  have_effort=0; ins=(--add-dir "$sandbox")
+  for ((i = 1; i < ${#argv[@]}; i++)); do
+    if [[ "${argv[i]}" == --effort ]]; then
+      have_effort=1; e="$(agy_effort "${argv[i+1]:-}")"
+      [[ -n "$e" ]] || dc_die "effort '${argv[i+1]:-}' has no agy equivalent"
+      argv[i+1]="$e"
+    fi
+  done
+  if [[ $have_effort == 0 ]]; then
+    e="$(agy_effort "$(dc_role_cfg "$ROOT" "$role" effort)")"
+    [[ -n "$e" ]] && ins+=(--effort "$e")
+  fi
+  argv=("${argv[0]}" "${ins[@]}" "${argv[@]:1}")
 fi
 
 landlock=("$ROOT/orch/agent-landlock" --role "$DC_LANDLOCK" --worktree "$wt" --)
 [[ -f "${landlock[0]}" ]] || dc_die "missing ${landlock[0]}; refusing to start an agent without Landlock"
 
 echo "$DC_PROG: role=$role access=$access user=$run_user landlock=$DC_LANDLOCK grok_home=${gh:-default} job=$jobdir" >&2
-if [[ $as_me == 1 ]]; then
-  cd "$wt"; umask 002
-  exec env "${envs[@]}" "${landlock[@]}" "${argv[@]}"
-fi
-exec sudo -n -u "$run_user" -- env "${envs[@]}" \
-  bash -c 'cd "$1" && umask 002 && shift && exec "$@"' bash "$wt" "${landlock[@]}" "${argv[@]}"
+cd "$wt"
+umask 002
+exec env "${envs[@]}" "${landlock[@]}" "${argv[@]}"

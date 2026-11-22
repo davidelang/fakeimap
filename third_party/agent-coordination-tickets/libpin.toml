@@ -1,8 +1,8 @@
 name = "agent-coordination-tickets"
 git_https = "https://github.com/davidelang/agent-coordination-tickets.git"
 git_ssh = "git@github.com:davidelang/agent-coordination-tickets.git"
-git_sha = "0023bd143a52101fe577b86d5fe4f742c77d2b36"
-git_describe = "0023bd1"
+git_sha = "39edf84f2b93c3a4b6d2f0849da937c42accb407"
+git_describe = "39edf84"
 track_branch = "master"
 reproducible = true
 build_time = "minutes"
@@ -15,7 +15,7 @@ consumer_note = "Channel handoff tools. The built go/channel is committed as art
 # Static Go binary (CGO_ENABLED=0, -trimpath, -buildvcs=false: same bytes from any checkout): committed, so a new worktree needs no library checkout.
 path = "artifact/channel"
 from = "src/go/channel"
-sha256 = "cc92785158aa4f74dc8d2f2ecf40ad385ba320356bafa41a7edb73ba231b81d9"
+sha256 = "6bc22dcc61f038320e076c85063c10003da6fdec8bdd5ec08cf37efe2ce27fde"
 
 # dispatch/: the headless dispatcher (docs/dispatch.md upstream). Plain copies of source files, no build;
 # they keep their layout under artifact/dispatch/ because dispatch/dispatch finds the rest from its own path.
@@ -23,7 +23,7 @@ sha256 = "cc92785158aa4f74dc8d2f2ecf40ad385ba320356bafa41a7edb73ba231b81d9"
 [[artifact]]
 path = "artifact/dispatch/backends/antigravity.sh"
 from = "src/dispatch/backends/antigravity.sh"
-sha256 = "a4a7f8ccaf96cb5e00b93bca0bbb601050aa1d5b85974f8084716b0c68f525b3"
+sha256 = "08262839aab4ca0c268a1ed7b049a40ec52c4ae3f2ae6406ff54bd711fb1037f"
 
 [[artifact]]
 path = "artifact/dispatch/backends/cursor.sh"
@@ -43,7 +43,7 @@ sha256 = "8ea9ac0a98993326f3aa11f25cc4977233dd2c25b4f3173bfe58735f62276ade"
 [[artifact]]
 path = "artifact/dispatch/dispatch"
 from = "src/dispatch/dispatch"
-sha256 = "7242a958ba7eacacdb831300aa74ace3f70ee1af5260bf602cc1650b29f6a05e"
+sha256 = "f16a7745ee1bb7c02abe846ea46c5271e533e8037a1292d273204b79220e8c35"
 
 [[artifact]]
 path = "artifact/dispatch/hooks/direct"
@@ -53,59 +53,20 @@ sha256 = "d8eaad701610e6d95cf735f6748ecf404b55432d0f256ac428274d655c17871f"
 [[artifact]]
 path = "artifact/dispatch/lib/common.sh"
 from = "src/dispatch/lib/common.sh"
-sha256 = "dc2eaf2d39bc6dfe0032cc83e5d8d076132d82f1d7ae93b0a1268b0385624587"
-
-[[artifact]]
-path = "artifact/dispatch/roles/executor-evidence.prompt"
-from = "src/dispatch/roles/executor-evidence.prompt"
-sha256 = "76d4384d3c4007d355cff5a327333ccf1eae62a69cf5d7dd2500021de32b33cb"
-
-[[artifact]]
-path = "artifact/dispatch/roles/executor-fix.prompt"
-from = "src/dispatch/roles/executor-fix.prompt"
-sha256 = "fe274bc6eb608e66dfd4cf5c9286fbd14b9e9057cf379ceab9fc00a294befea0"
-
-[[artifact]]
-path = "artifact/dispatch/roles/executor.conf"
-from = "src/dispatch/roles/executor.conf"
-sha256 = "04b803a17077076f231ea9b84db62fbe8d1614999f77b737fc75efad3be043eb"
+sha256 = "47e795409078f3f5a5aac8d4649214f2b6aaea7135d4d0a043e7e17b4d0000ad"
 
 [[artifact]]
 path = "artifact/dispatch/roles/executor.md"
 from = "src/dispatch/roles/executor.md"
-sha256 = "acf04b10599533547721b649ffeed207fda43a910961297f900bdb48b52686e9"
-
-[[artifact]]
-path = "artifact/dispatch/roles/executor.prompt"
-from = "src/dispatch/roles/executor.prompt"
-sha256 = "3b664b4ddb4fa06d98fcdebb49325aed899fab86620a0f5b70a171858e9e2232"
-
-[[artifact]]
-path = "artifact/dispatch/roles/reviewer.conf"
-from = "src/dispatch/roles/reviewer.conf"
-sha256 = "6539555b3c90a44d3d571b17ac0dda74f76fb4e9c5adb6364915b2da80059b4a"
+sha256 = "35a9a5278830222628ccabe46f5ac2c2250b8ea83c70b968f503bc00f0ceb047"
 
 [[artifact]]
 path = "artifact/dispatch/roles/reviewer.md"
 from = "src/dispatch/roles/reviewer.md"
-sha256 = "4cfccdfbc053dfce35435c077f8d21caeb00403170e718b0cc50984e6c0a8cef"
-
-[[artifact]]
-path = "artifact/dispatch/roles/reviewer.prompt"
-from = "src/dispatch/roles/reviewer.prompt"
-sha256 = "ccd9ddb7f746d6345500931ab037b5ccf702ed6956c9ccbcda2db6eae98e84bc"
-
-[[artifact]]
-path = "artifact/dispatch/roles/tester.conf"
-from = "src/dispatch/roles/tester.conf"
-sha256 = "56a14213af1fbc3a1fecfd74be7b5ae89e7e0cb88ccc7a46446474789f6a9f92"
+sha256 = "c34af5f7c5d811463590d30735f86da0505c72936fedb2cf64dbb5ff89d36192"
 
 [[artifact]]
 path = "artifact/dispatch/roles/tester.md"
 from = "src/dispatch/roles/tester.md"
-sha256 = "6f9fdf4f8a55e8ef76ebbb2f9cf5a6202f9ab1f40a05f619f84e74f1e8d2dd7c"
+sha256 = "608c805669f3605f53359327551848036079f1cac7b939cf8da6eddacc4d414d"
 
-[[artifact]]
-path = "artifact/dispatch/roles/tester.prompt"
-from = "src/dispatch/roles/tester.prompt"
-sha256 = "98c60af3b26c160a971a547086e581fb14a4158a6b9910bcdd76409890fb98ad"

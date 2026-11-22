@@ -46,6 +46,11 @@ Rules:
 - No write access to a target gives a read-only report for it, not a failure.
 - Commits use `git commit --only` on exactly the copied paths; other changes are untouched.
 - Never forces, resets, or rewrites history.
+- Output: one row per tree that changes or has a problem; up-to-date trees are one line. The run ends
+  with a PROBLEMS block (only when there are any): every skipped tree with each file and reason and
+  the fix, then per-file skips and warnings. The last line counts the trees NOT updated. --apply
+  exits 1 when any tree was skipped or failed. By-design exclusions (checkouts under a nested
+  third_party/*/src or grok-worktrees/) are EXCLUDED rows, not problems.
 """
 import argparse, fnmatch, os, re, subprocess, sys, datetime
 
@@ -143,11 +148,11 @@ def worktrees(host):
             continue
         reason = None
         if w.get("prunable"):
-            reason = "prunable"
+            reason = Skip([("prunable", "")])
         elif "/grok-worktrees/" in p or re.search(r"/third_party/[^/]+/src(/|$)", p):
-            reason = "excluded path"
+            reason = Skip([("excluded", "")], by_design=True)  # by design: never published, not a problem
         elif not os.path.isdir(p):
-            reason = "missing"
+            reason = Skip([("missing", "")])
         res.append((p, reason))
     return res
 
@@ -208,21 +213,90 @@ def known_smudged(src, wt, path, blob):
             return True
     return False
 
+SKIP_LABEL = {"dirty": "dirty", "ahead": "ahead of source", "diverged": "diverged",
+              "untracked": "untracked file in the way", "nohead": "no HEAD", "prunable": "prunable",
+              "missing": "missing", "excluded": "excluded path"}
+
+class Skip:
+    """Why a whole tree is not updated: [(kind, file)], every blocking file. by_design marks an
+    exclusion (never published to that path), which is not a problem."""
+    def __init__(self, items, by_design=False):
+        self.items, self.by_design = list(items), by_design
+    def __str__(self):
+        return "; ".join(SKIP_LABEL[k] + (" (%s)" % f if k == "nohead" else (": " + f if f else ""))
+                         for k, f in self.items)
+
+def skip_fix(kind, f, tree_name, path, host):
+    """One explanation and fix for one blocking file of a skipped tree."""
+    if kind == "ahead":
+        return ("%s changed shared rule file %s since the last publish (canon has the older version). "
+                "Fix: move the change into canon, or rerun with -o %s so canon wins." % (tree_name, f, path))
+    if kind == "diverged":
+        return ("%s and canon both changed shared rule file %s since the last publish. "
+                "Fix: merge the change into canon, or rerun with -o %s so canon wins." % (tree_name, f, path))
+    if kind == "dirty":
+        return ("%s has uncommitted changes in %s (an agent may be working there). "
+                "Fix: commit or discard them, then rerun; -o does not override uncommitted files." % (f, path))
+    if kind == "untracked":
+        return "an untracked %s in %s is in the way. Fix: remove or commit it, then rerun." % (f, path)
+    if kind == "nohead":
+        return "%s has no readable HEAD (%s). Fix: repair that checkout." % (path, f)
+    if kind == "prunable":
+        return "git lists %s as prunable (its directory is gone). Fix: git -C %s worktree prune." % (path, host)
+    if kind == "missing":
+        return "%s does not exist. Fix: restore it, or git -C %s worktree prune." % (path, host)
+    return "%s: %s" % (kind, f)
+
 class Report:
     def __init__(self):
         self.rows, self.fail, self.warn = [], [], []
+        self.skips = []  # (host, wt label, path, host path, Skip)
     def row(self, host, wt, status, detail=""):
         self.rows.append((host, wt, status, detail))
-    def print(self):
-        print("\n==== SUMMARY ====")
-        for f in self.fail:
-            print("FAIL: " + f)
-        for w in self.warn:
-            print("WARN: " + w)
-        if not self.fail and not self.warn:
-            print("no failures or warnings")
+    def skip(self, host, wt, path, host_path, why):
+        """A whole tree not updated (or, by design, never updated)."""
+        if why.by_design:
+            self.row(host, wt, "EXCLUDED", "%s (by design)" % why)
+            return
+        self.row(host, wt, "SKIPPED", why)
+        self.skips.append((host, wt, path, host_path, why))
+    def not_updated(self):
+        """Trees not updated: each skipped or failed (host, tree) once, in order."""
+        out = []
         for host, wt, st, d in self.rows:
-            print("%-28s %-34s %-12s %s" % (host, wt, st, d))
+            if st in ("SKIPPED", "FAILED") and (host, wt) not in out:
+                out.append((host, wt))
+        return out
+    def print(self, apply):
+        print("\n==== RESULTS ====")
+        quiet = []
+        for host, wt, st, d in self.rows:
+            if st == "up-to-date":
+                quiet.append("%s %s%s" % (host, wt, " [%s]" % d if d else ""))
+            else:
+                print("%-28s %-34s %-12s %s" % (host, wt, st, d))
+        if quiet:
+            print("up-to-date (%d): %s" % (len(quiet), ", ".join(quiet)))
+        bad = self.not_updated()
+        if self.skips or self.fail or self.warn:
+            print("\n==== PROBLEMS ====")
+            for host, wt, path, host_path, why in self.skips:
+                print("SKIPPED %s %s: nothing in that tree was %s." % (host, wt, "updated" if apply else "going to be updated"))
+                for kind, f in why.items:
+                    print("  - " + skip_fix(kind, f, "%s %s" % (host, wt), path, host_path))
+            for f in self.fail:
+                print("FAIL: " + f)
+            if self.warn:
+                print("Per-file (only that file was left; the rest of its tree was updated):")
+                for w in self.warn:
+                    print("  - " + w)
+        names = ", ".join("%s %s" % hw for hw in bad)
+        if bad:
+            print("==== %d tree(s) %s: %s ====" % (len(bad), "NOT updated" if apply else "would NOT be updated", names))
+        elif self.fail:
+            print("==== %d failure(s); see PROBLEMS ====" % len(self.fail))
+        else:
+            print("==== no problems%s ====" % ("; %d per-file warning(s) above" % len(self.warn) if self.warn else ""))
 
 def local_seeded(host):
     p = os.path.join(host, "rules.manifest.local")
@@ -247,13 +321,13 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label, purge_pats=())
     try:
         t_tree = tree(wt)
     except RuntimeError as e:
-        return None, "no HEAD (%s)" % e
+        return None, Skip([("nohead", str(e))])
     status = git(wt, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
     dirty = set()
     for e in status:
         if len(e) > 3:
             dirty.add(e[3:].decode(errors="replace"))
-    acts = []
+    acts, block = [], []
     for p, cls in sorted(sel.items()):
         mode, blob = src_tree[p]
         cur = t_tree.get(p)
@@ -275,12 +349,12 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label, purge_pats=())
         if p in dirty:
             if cls == "local":
                 rep.warn.append("%s: left local %s (dirty)" % (label, p)); continue
-            return None, "dirty: " + p
+            block.append(("dirty", p)); continue
         if cur is None:
             if cls == "opt":
                 continue
             if os.path.lexists(os.path.join(wt, p)):
-                return None, "untracked file in the way: " + p
+                block.append(("untracked", p)); continue
             acts.append(("add", p, mode, blob))
             continue
         if cls == "replace" or os.path.realpath(wt) in OVERRIDE:
@@ -293,21 +367,23 @@ def plan_target(src, src_tree, sel, retired_pats, wt, rep, label, purge_pats=())
         elif cls == "local":
             rep.warn.append("%s: left local %s (%s)" % (label, p, "ahead" if blob in history(wt, p) else "diverged"))
         elif blob in history(wt, p):
-            return None, "ahead of source: " + p
+            block.append(("ahead", p)); continue
         else:
-            return None, "diverged: " + p
+            block.append(("diverged", p)); continue
     for p in sorted(t_tree):
         if any(glob_match(pat, p) for pat in purge_pats) and p not in sel:
             if p in dirty:
-                return None, "dirty: " + p
+                block.append(("dirty", p)); continue
             acts.append(("delete", p, None, None)); continue
         if any(glob_match(pat, p) for pat in retired_pats) and p not in sel:
             if p in dirty:
-                return None, "dirty: " + p
+                block.append(("dirty", p)); continue
             if known(src, wt, p, t_tree[p][1]):
                 acts.append(("delete", p, None, None))
             else:
                 rep.warn.append("%s: kept retired %s (local-only version)" % (label, p))
+    if block:
+        return None, Skip(block)
     return acts, None
 
 _PERM = None
@@ -395,27 +471,30 @@ def master_acts(wt, dirty):
     try:
         t_tree = tree(wt)
     except RuntimeError as e:
-        return None, "no HEAD (%s)" % e
-    acts = []
+        return None, Skip([("nohead", str(e))])
+    acts, block = [], []
     for p in sorted(MASTER_SEL):
         mode, blob = MASTER_TREE[p]
         cur = t_tree.get(p)
         if p in dirty:
-            return None, "dirty: " + p
+            block.append(("dirty", p)); continue
         if on:
             if cur and cur[1] == blob:
                 continue
             if cur is None and os.path.lexists(os.path.join(wt, p)):
-                return None, "untracked file in the way: " + p
+                block.append(("untracked", p)); continue
             data = git(MASTER_REPO, "cat-file", "blob", blob, binary=True)
             acts.append(("add" if cur is None else "update", p, mode, data))
         elif cur is not None:
             acts.append(("delete", p, None, None))
+    if block:
+        return None, Skip(block)
     return acts, None
 
-def sync(src, wt, sel, src_tree, retired, rep, host_label, wt_label, apply, msg):
+def sync(src, wt, sel, src_tree, retired, rep, host_label, wt_label, apply, msg, host_path):
+    label = "%s %s" % (host_label, wt_label)
     if not writable(wt):
-        acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label, PURGE)
+        acts, why = plan_target(src, src_tree, sel, retired, wt, rep, label, PURGE)
         status = git(wt, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
         dirty = set(e[3:].decode(errors="replace") for e in status if len(e) > 3)
         extra, why2 = master_acts(wt, dirty)
@@ -423,19 +502,17 @@ def sync(src, wt, sel, src_tree, retired, rep, host_label, wt_label, apply, msg)
             why = why2
         elif extra:
             acts = list(acts or []) + extra
-        rep.row(host_label, wt_label, "REPORT-ONLY", "no write access; " + (why or "%d change(s) pending" % len(acts or [])))
+        rep.row(host_label, wt_label, "REPORT-ONLY", "no write access; " + (str(why) if why else "%d change(s) pending" % len(acts or [])))
         return False
-    acts, why = plan_target(src, src_tree, sel, retired, wt, rep, wt_label, PURGE)
+    acts, why = plan_target(src, src_tree, sel, retired, wt, rep, label, PURGE)
     if why:
-        rep.row(host_label, wt_label, "SKIPPED", why)
-        rep.warn.append("%s %s skipped: %s" % (host_label, wt_label, why))
+        rep.skip(host_label, wt_label, wt, host_path, why)
         return False
     status = git(wt, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
     dirty = set(e[3:].decode(errors="replace") for e in status if len(e) > 3)
     extra, why = master_acts(wt, dirty)
     if why:
-        rep.row(host_label, wt_label, "SKIPPED", why)
-        rep.warn.append("%s %s skipped: %s" % (host_label, wt_label, why))
+        rep.skip(host_label, wt_label, wt, host_path, why)
         return False
     acts = list(acts) + extra
     if not acts:
@@ -753,7 +830,7 @@ def main():
             u_tree = tree(upstream)
             sel = entries_for(upstream, src_man, u_tree, ("law", "shared", "opt", "replace", "root"))
             msg = MSG.format(src=os.path.basename(upstream), sha=git(upstream, "rev-parse", "--short", "HEAD").strip())
-            changed = sync(upstream, host, sel, u_tree, retired, rep, hl, "(root)", apply, msg)
+            changed = sync(upstream, host, sel, u_tree, retired, rep, hl, "(root)", apply, msg, host)
             if changed:
                 pushed.append(host)
             # Seed the host-local manifest from its legacy update-rules.sh on first publish.
@@ -795,8 +872,8 @@ def main():
                     continue
                 wl = os.path.relpath(wt, host) if wt.startswith(host + "/") else wt
                 if why:
-                    rep.row(hl, wl, "SKIPPED", why); continue
-                acts, w2 = plan_target(first_src, u_tree, sel_u, retired, wt, rep, wl, PURGE)
+                    rep.skip(hl, wl, wt, host, why); continue
+                acts, w2 = plan_target(first_src, u_tree, sel_u, retired, wt, rep, "%s %s" % (hl, wl), PURGE)
                 if not w2:
                     status = git(wt, "status", "--porcelain", "-z", "--untracked-files=no", binary=True).split(b"\0")
                     dirty = set(e[3:].decode(errors="replace") for e in status if len(e) > 3)
@@ -805,8 +882,11 @@ def main():
                         w2 = w3
                     else:
                         acts = list(acts or []) + extra
-                rep.row(hl, wl, "SKIPPED" if w2 else ("WOULD-COMMIT" if acts else "up-to-date"),
-                        w2 or ("%d change(s) after root" % len(acts) if acts else ""))
+                if w2:
+                    rep.skip(hl, wl, wt, host, w2)
+                else:
+                    rep.row(hl, wl, "WOULD-COMMIT" if acts else "up-to-date",
+                            "%d change(s) after root" % len(acts) if acts else "")
             continue
         msg = MSG.format(src=hl + " root", sha=git(host, "rev-parse", "--short", "HEAD").strip())
         for wt, why in worktrees(host):
@@ -814,9 +894,9 @@ def main():
                 continue
             wl = os.path.relpath(wt, host) if wt.startswith(host + "/") else wt
             if why:
-                rep.row(hl, wl, "SKIPPED", why)
+                rep.skip(hl, wl, wt, host, why)
                 continue
-            if sync(host, wt, sel, h_tree, retired, rep, hl, wl, apply, msg):
+            if sync(host, wt, sel, h_tree, retired, rep, hl, wl, apply, msg, host):
                 pushed.append(wt)
     if a.push and apply:
         for r in pushed:
@@ -825,8 +905,8 @@ def main():
                 rep.fail.append("push %s: %s" % (r, p.stderr.strip()[:200]))
             else:
                 rep.row(os.path.basename(r), "", "PUSHED")
-    rep.print()
-    return 1 if rep.fail else 0
+    rep.print(apply)
+    return 1 if rep.fail or (apply and rep.not_updated()) else 0
 
 if __name__ == "__main__":
     sys.exit(main())

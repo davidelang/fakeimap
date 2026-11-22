@@ -118,14 +118,17 @@ STATUS line run through `.cursor/lib/cursor-hooks.sh`. One-time login per user:
 `sudo -u <ai-user> -H env NO_OPEN_BROWSER=1 ~/git/cursor/bin/cursor-agent login`.
 Never run cursor.com/install: it replaces `~/.local/bin/agent` (grok).
 
-## Headless dispatcher (run-script-grok-*)
+## Headless dispatcher (run-script-grok-*, run-script-antigravity-*)
+`./run-script-antigravity-coder|-reviewer|-tester` are the same with Antigravity (agy); untested, see `docs/dispatch-wrappers.md`.
 `./run-script-grok-coder|-reviewer|-tester` run the pinned channel dispatcher
 (`third_party/agent-coordination-tickets/artifact/dispatch/dispatch`) for the executor,
-reviewer or tester role with no human at the keyboard: each job is a fresh grok started by
-`orch/dispatch-launch-hook` as the role's ai-* user (project.config) under agent-landlock,
+reviewer or tester role with no human at the keyboard. Each wrapper switches once to
+project.config `coder_user` (sudo -u, as run-grok-coder), so the dispatcher and every job run as
+that user; each job is a fresh grok started by `orch/dispatch-launch-hook` under agent-landlock
+(`coder` profile for executor/tester, `planner` for the reviewer and the in-job review),
 with model/effort from roles.config and, when roles.config `context=` is not 256k, a
 per-user Grok config home (`orch/grok-context-home`) carrying `context_window`.
 Without `-d` they offer `<sandbox_dir>/connect/<git-branch>/config.diag` (asked on a terminal, `-y`
-accepts, no terminal exits 2). Every dispatcher option passes through. Needs passwordless
-`sudo -n -u <ai-user>` for the launching user (`-U` runs as yourself for tests).
-See `docs/dispatch-wrappers.md` and the example sidecar `docs/dispatch-wrappers.example.dispatch`.
+accepts, no terminal exits 2). Every dispatcher option passes through. Needs
+`sudo -u <coder_user>` for the launching user, at most one prompt per start (`-U` stays yourself).
+There is no settings file: the wrappers pass the role cards (`roles/<role>.md`), node and project parameters found from the worktree, and verbs come from the diag. See `docs/dispatch-wrappers.md`.
