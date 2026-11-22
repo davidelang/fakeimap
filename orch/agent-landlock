@@ -159,11 +159,13 @@ def _open_path_fd(path: str, directory: bool) -> int:
 
 
 def _add_path_rule(
-    libc, add_nr: int, ruleset_fd: int, path: str, directory: bool
+    libc, add_nr: int, ruleset_fd: int, path: str, directory: bool,
+    access: Optional[int] = None,
 ) -> None:
     parent_fd = _open_path_fd(path, directory=directory)
     try:
-        access = ALLOWED_BENEATH if directory else FILE_ACCESS
+        if access is None:
+            access = ALLOWED_BENEATH if directory else FILE_ACCESS
         pb = LandlockPathBeneathAttr(access, parent_fd)
         r = libc.syscall(
             add_nr,
@@ -217,7 +219,16 @@ def apply_landlock(dir_paths: Sequence[str], file_paths: Sequence[str] = ()) -> 
             "/dev/urandom",
             "/dev/random",
             "/dev/tty",
+            # Pseudo-terminals: openpty() opens /dev/ptmx read-write, then the new
+            # /dev/pts/N (agy runs its shell tools in a PTY: "failed to create PTY: open
+            # /dev/ptmx: permission denied" without this). /dev/pts below gets only
+            # write/truncate on existing nodes (devpts creates them; no make/remove).
+            # PTY ioctls (TIOCSPTLCK, TIOCGPTN, ...) need no grant: this ruleset does not
+            # handle LANDLOCK_ACCESS_FS_IOCTL_DEV (ABI 5); add these paths to an ioctl
+            # grant if it ever does.
+            "/dev/ptmx",
         ]
+        pty_dirs = ["/dev/pts"]
 
         seen_dirs: Set[str] = set()
         n_ok = 0
@@ -236,6 +247,14 @@ def apply_landlock(dir_paths: Sequence[str], file_paths: Sequence[str] = ()) -> 
                 n_ok += 1
             except OSError as exc:
                 _debug(f"skip dir {resolved}: {exc}")
+
+        for d in pty_dirs:
+            if os.path.isdir(d):
+                try:
+                    _add_path_rule(libc, add_nr, ruleset_fd, d, directory=True, access=FILE_ACCESS)
+                    n_ok += 1
+                except OSError as exc:
+                    _debug(f"skip pty dir {d}: {exc}")
 
         seen_files: Set[str] = set()
         for fp in files:
