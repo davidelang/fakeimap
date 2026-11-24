@@ -20,6 +20,13 @@
 #   print the exact command the owner can run (chmod/setfacl/ssh); the agent
 #   then uses the remote URL when present. Ambiguous sha on a readable host
 #   is a hard fail (do not network for a different commit).
+# chmod runs only on paths owned by the current user. A path owned by someone
+# else must already have the mode this step needs (source files have no write
+# bit, directories include u+rwx,go+rx, a tree being opened for write is
+# already writable by this user). Otherwise fetch-deps stops and prints that
+# owner's chmod. Symlinks are not followed. After a build, src/build and
+# src/bin are re-opened with ug+w; a symlink there is its target, and a
+# dangling one fails. A chmod error on a path this user owns is never ignored.
 # Pins with default = false are omitted from the default NAME set.
 #
 # git_home= is smudged by consumers (lowercase LHS). --git-home DIR overrides.
@@ -1165,35 +1172,227 @@ status_get() {
   sed -n "s/^${key}:[[:space:]]*//p" "$sp" | head -1
 }
 
-ensure_writable_tree() {
-  local src="$1"
-  [[ -d "$src" ]] || return 0
-  chmod -R u+w -- "$src" || { echo "fetch-deps: chmod -R u+w $src failed (you are $(id -un))" >&2; exit 1; }
+# chmod only paths owned by this uid. A path owned by someone else must already
+# have the effective mode for this step. If it does not, stop and print the
+# command that owner runs. Never chown, chgrp, or ignore a chmod error on a
+# path this uid owns.
+#
+# kind:
+#   writable  this process has access(W_OK) (ensure_writable_tree, scratch ug+w)
+#   ro-file   no write bit (the a-w pin)
+#   ro-dir    mode includes u+rwx,go+rx (extra bits, including group write, stay)
+
+mode_fail_scan() {
+  echo "fetch-deps: could not scan permissions under $1 (you are $(id -un))" >&2
+  exit 1
 }
 
+mode_fail_chmod() {
+  echo "fetch-deps: chmod $2 on paths owned by $(id -un) under $1 failed" >&2
+  exit 1
+}
+
+# $1 tree  $2 kind  $3 example path
+# Further args are paths the read-only pass left untouched. The owner's command
+# prunes them too, including when they are not present yet.
+foreign_mode_fail() {
+  local tree="$1" kind="$2" example="$3"
+  shift 3
+  local me owner group mode qtree qowner qgit st="" rc=0
+  local clause qpath p
+  me="$(id -un)"
+  st="$(stat -c '%U|%G|%a' "$example")" || rc=$?
+  if [[ "$rc" -ne 0 || -z "$st" ]]; then
+    echo "fetch-deps: stat $example failed (you are $me)" >&2
+    owner="?"
+    group="?"
+    mode="?"
+  else
+    IFS='|' read -r owner group mode <<<"$st"
+  fi
+  qtree="$(printf '%q' "$tree")"
+  qowner="$(printf '%q' "$owner")"
+  qgit="$(printf '%q' "$tree/.git")"
+  clause="-path $qgit"
+  for p in "$@"; do
+    qpath="$(printf '%q' "$p")"
+    clause+=" -o -path $qpath"
+  done
+  case "$kind" in
+    writable)
+      echo "fetch-deps: $example is not writable by $me (owner=$owner group=$group mode=$mode)" >&2
+      echo "  owner ($owner): find $qtree ! -type l -user $qowner -exec chmod ug+w {} +" >&2
+      ;;
+    ro-file)
+      echo "fetch-deps: $example is still writable and is not owned by $me (owner=$owner group=$group mode=$mode)" >&2
+      echo "  owner ($owner): find $qtree \\( $clause \\) -prune -o -user $qowner -type f -exec chmod a-w {} +" >&2
+      ;;
+    ro-dir)
+      echo "fetch-deps: $example lacks u+rwx,go+rx and is not owned by $me (owner=$owner group=$group mode=$mode)" >&2
+      echo "  owner ($owner): find $qtree \\( $clause \\) -prune -o -user $qowner -type d -exec chmod u+rwx,go+rx {} +" >&2
+      ;;
+    *)
+      echo "fetch-deps: internal mode kind $kind" >&2
+      ;;
+  esac
+  exit 1
+}
+
+# Fill array $1 with the find prefix for $2.
+# $3 is 1 when src/.git is a file (linked worktree): do not chmod that file.
+# Remaining args are trees to prune (left untouched). Missing paths are skipped.
+# GNU find operator precedence: (prunes) -prune OR the caller's predicates.
+fill_find_prefix() {
+  local -n _fp=$1
+  local tree="$2" gitfile="$3"
+  shift 3
+  local -a _paths=()
+  local p first=1
+  _fp=()
+  if [[ -d "$tree/.git" ]]; then
+    _paths+=("$tree/.git")
+  fi
+  for p in "$@"; do
+    if [[ -e "$p" || -L "$p" ]]; then
+      _paths+=("$p")
+    fi
+  done
+  if [[ ${#_paths[@]} -gt 0 ]]; then
+    _fp+=( \( )
+    first=1
+    for p in "${_paths[@]}"; do
+      if [[ "$first" -eq 0 ]]; then
+        _fp+=( -o )
+      fi
+      first=0
+      _fp+=( -path "$p" )
+    done
+    _fp+=( \) -prune -o )
+  fi
+  if [[ "$gitfile" -eq 1 ]]; then
+    _fp+=( ! -name .git )
+  fi
+}
+
+# $1 tree  $2 mode  $3 prefix-array name  remaining find predicates (before -user)
+# ! -type l: find passes the path to chmod, and chmod follows a symlink.
+chmod_owned() {
+  local tree="$1" mode="$2"
+  local -n _co_pre=$3
+  shift 3
+  local uid rc=0
+  uid="$(id -u)"
+  find "$tree" "${_co_pre[@]}" "$@" ! -type l -user "$uid" -exec chmod "$mode" {} + || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    mode_fail_chmod "$tree" "$mode"
+  fi
+}
+
+# $1 dest variable name  $2 tree  $3 kind  $4 prefix-array name
+first_mode_mismatch() {
+  local -n _mm_dest=$1
+  local -n _mm_pre=$4
+  local tree="$2" kind="$3" rc=0 uid
+  local -a pred=()
+  uid="$(id -u)"
+  case "$kind" in
+    writable) pred=( ! -type l ! -user "$uid" ! -writable ) ;;
+    ro-file) pred=( -type f ! -user "$uid" -perm /222 ) ;;
+    ro-dir) pred=( -type d ! -user "$uid" ! -perm -u+rwx,g+rx,o+rx ) ;;
+    *) echo "fetch-deps: internal mode kind $kind" >&2; exit 1 ;;
+  esac
+  _mm_dest="$(find "$tree" "${_mm_pre[@]}" "${pred[@]}" -print -quit)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    mode_fail_scan "$tree"
+  fi
+}
+
+ensure_writable_tree() {
+  local src="$1" example=""
+  local -a prefix=()
+  [[ -d "$src" ]] || return 0
+  fill_find_prefix prefix "$src" 0
+  chmod_owned "$src" u+w prefix
+  first_mode_mismatch example "$src" writable prefix
+  [[ -z "$example" ]] || foreign_mode_fail "$src" writable "$example"
+}
+
+# $1 tree. Further args are paths to leave untouched (finish_ro_tree passes
+# src/build and src/bin, which it re-opens afterward).
 make_readonly_tree() {
   local src="$1"
+  shift
+  local -a prefix=()
+  local example="" gitfile=0
   [[ -d "$src" ]] || return 0
-  local rc=0
-  if [[ -d "$src/.git" ]]; then
-    find "$src" -path "$src/.git" -prune -o -type f -exec chmod a-w {} + || rc=1
-    find "$src" -path "$src/.git" -prune -o -type d -exec chmod u+rwx,go+rx {} + || rc=1
-  elif [[ -f "$src/.git" ]]; then
-    find "$src" -type f ! -name .git -exec chmod a-w {} + || rc=1
-  else
-    find "$src" -type f -exec chmod a-w {} + || rc=1
-    find "$src" -type d -exec chmod u+rwx,go+rx {} + || rc=1
+  if [[ -f "$src/.git" && ! -d "$src/.git" ]]; then
+    gitfile=1
   fi
-  [[ "$rc" -eq 0 ]] || { echo "fetch-deps: making $src read-only failed (you are $(id -un))" >&2; exit 1; }
+  fill_find_prefix prefix "$src" "$gitfile" "$@"
+  chmod_owned "$src" a-w prefix -type f
+  first_mode_mismatch example "$src" ro-file prefix
+  [[ -z "$example" ]] || foreign_mode_fail "$src" ro-file "$example" "$@"
+  # A linked worktree (.git file) only clears write bits on files. A real
+  # .git directory, or a tree with no .git, also keeps directories traversable.
+  if [[ "$gitfile" -eq 0 ]]; then
+    example=""
+    chmod_owned "$src" 'u+rwx,go+rx' prefix -type d
+    first_mode_mismatch example "$src" ro-dir prefix
+    [[ -z "$example" ]] || foreign_mode_fail "$src" ro-dir "$example" "$@"
+  fi
 }
 
-# RO pin: sources a-w; build/ and bin/ stay writable so rebuilds can iterate.
+# Re-open one scratch path with ug+w. chmod -R follows a symlink named on the
+# command line and does not follow one met while walking. Match that: a symlink
+# here is its target, and a symlink under the target is left alone. A dangling
+# symlink fails before any chmod.
+reopen_scratch() {
+  local scratch="$1" target example="" uid fuid rc=0
+  local -a prefix=()
+  if [[ -L "$scratch" && ! -e "$scratch" ]]; then
+    echo "fetch-deps: $scratch is a dangling symlink; cannot re-open it for write" >&2
+    exit 1
+  fi
+  if [[ -L "$scratch" ]]; then
+    target="$(realpath -- "$scratch")" || {
+      echo "fetch-deps: could not resolve $scratch" >&2
+      exit 1
+    }
+  else
+    target="$scratch"
+  fi
+  if [[ -d "$target" ]]; then
+    fill_find_prefix prefix "$target" 0
+    chmod_owned "$target" ug+w prefix
+    first_mode_mismatch example "$target" writable prefix
+    [[ -z "$example" ]] || foreign_mode_fail "$target" writable "$example"
+    return 0
+  fi
+  if [[ -f "$target" ]]; then
+    uid="$(id -u)"
+    fuid="$(stat -c %u -- "$target")" || rc=$?
+    if [[ "$rc" -ne 0 || -z "$fuid" ]]; then
+      echo "fetch-deps: stat $target failed (you are $(id -un))" >&2
+      exit 1
+    fi
+    if [[ "$fuid" == "$uid" ]]; then
+      chmod ug+w -- "$target" || mode_fail_chmod "$target" ug+w
+    elif [[ ! -w "$target" ]]; then
+      foreign_mode_fail "$target" writable "$target"
+    fi
+    return 0
+  fi
+  echo "fetch-deps: $scratch is not a file or directory; cannot re-open it for write" >&2
+  exit 1
+}
+
+# RO pin: sources a-w; build/ and bin/ stay group-writable so rebuilds can iterate.
 finish_ro_tree() {
   local src="$1" scratch
-  make_readonly_tree "$src"
+  make_readonly_tree "$src" "$src/build" "$src/bin"
   for scratch in "$src/build" "$src/bin"; do
-    [[ -e "$scratch" ]] || continue
-    chmod -R u+w -- "$scratch" || { echo "    FAIL: chmod -R u+w $scratch" >&2; exit 1; }
+    [[ -e "$scratch" || -L "$scratch" ]] || continue
+    reopen_scratch "$scratch"
   done
 }
 

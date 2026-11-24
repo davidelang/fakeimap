@@ -22,6 +22,11 @@
 #            newest | sort | sort-n  (must be written explicitly for globs with many matches)
 #   sha256   required. 64 zeros is the --record placeholder. Empty or TBD are errors.
 #
+# An existing destination is unlinked, then copied. Replacing a read-only or
+# hardlinked file needs write permission on its directory. get-artifacts does
+# not chmod the destination. A failed unlink, copy, or mkdir fails that row
+# and prints chmod ug+w when the directory is not writable.
+#
 # Pins with default = false are omitted from the default NAME set.
 LIBPIN_VERSION=2026.10.24
 set -euo pipefail
@@ -37,7 +42,7 @@ MODE=verify
 ZERO_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
 
 usage() {
-  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -230,6 +235,68 @@ sha256_file() {
   printf '%s\n' "${out%% *}"
 }
 
+# Walk $1 up to the first path that exists. That is the directory mkdir could
+# not write through when a parent component is missing.
+existing_ancestor() {
+  local p="$1"
+  while [[ -n "$p" && "$p" != "/" && ! -e "$p" && ! -L "$p" ]]; do
+    p="$(dirname -- "$p")"
+  done
+  printf '%s\n' "$p"
+}
+
+# $1 $2 $3 are names for owner, group, and mode. $4 is the path.
+# A stat failure is printed; the names stay "?".
+read_owner_mode() {
+  local -n _o=$1 _g=$2 _m=$3
+  local dir="$4" st="" rc=0
+  _o="?"
+  _g="?"
+  _m="?"
+  st="$(stat -c '%U|%G|%a' -- "$dir")" || rc=$?
+  if [[ "$rc" -ne 0 || -z "$st" ]]; then
+    echo "    FAIL: stat $dir failed (you are $(id -un))" >&2
+    return 0
+  fi
+  IFS='|' read -r _o _g _m <<<"$st"
+}
+
+# Print the owner's chmod when $1 is a directory this process cannot write.
+hint_ug_w_if_blocked() {
+  local dir="$1" owner group mode
+  [[ -d "$dir" && ! -w "$dir" ]] || return 0
+  read_owner_mode owner group mode "$dir"
+  echo "    owner ($owner): chmod ug+w $(printf '%q' "$dir")" >&2
+}
+
+# Unlink $2, then copy $1 onto it. A hard link is dropped instead of rewritten
+# in place. The directory must be writable; the file's own mode is irrelevant.
+install_artifact() {
+  local chosen="$1" dest="$2" parent owner group mode block
+  parent="$(dirname -- "$dest")"
+  if ! mkdir -p -- "$parent"; then
+    echo "    FAIL: mkdir $parent" >&2
+    block="$(existing_ancestor "$parent")"
+    hint_ug_w_if_blocked "$block"
+    return 1
+  fi
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if ! rm -f -- "$dest"; then
+      read_owner_mode owner group mode "$parent"
+      echo "    FAIL: cannot remove $dest before copy (you are $(id -un); directory owner=$owner group=$group mode=$mode)" >&2
+      if [[ ! -w "$parent" ]]; then
+        echo "    owner ($owner): chmod ug+w $(printf '%q' "$parent")" >&2
+      fi
+      return 1
+    fi
+  fi
+  if ! cp -a -- "$chosen" "$dest"; then
+    echo "    FAIL: cp $chosen → $dest" >&2
+    hint_ug_w_if_blocked "$parent"
+    return 1
+  fi
+}
+
 collect_one() {
   local name="$1"
   local dir="$ROOT/$name"
@@ -296,11 +363,7 @@ collect_one() {
       fi
     fi
     dest="$(resolve_dest "$dir" "$path")" || { row_fail=1; continue; }
-    mkdir -p "$(dirname "$dest")"
-    if [[ -e "$dest" && ! -w "$dest" ]]; then
-      chmod u+w "$dest" || { echo "    FAIL: chmod u+w $dest" >&2; row_fail=1; continue; }
-    fi
-    cp -a "$chosen" "$dest"
+    install_artifact "$chosen" "$dest" || { row_fail=1; continue; }
     echo "    $chosen → $dest"
   done <<< "$rows"
 
